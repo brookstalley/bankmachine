@@ -167,23 +167,37 @@ That is the engine spec telling you it is missing something, and the fix belongs
 
 ## 8. Match tokens for the leak guard
 
-Engine AC-0.3 requires an automated check that no roster name reaches the source or schema roots,
-and it requires the roster to **carry its own explicit match tokens** rather than have the check
-guess them from labels. Guessing fails both ways: a label is the institution's own spelling, so a
+Engine AC-0.3 requires roster identity to be matched by **explicit tokens the roster carries**,
+never guessed from labels. Guessing fails both ways: a label is the institution's own spelling, so a
 shortened form used in code slips past a literal match, while tokenizing a label collides with
 unrelated legitimate text.
 
-So the filled-in copy is accompanied by a plain token list, one token per line, at
-`deployment/roster-tokens.txt`:
+So the filled-in copy is accompanied by two plain token lists in the same gitignored directory:
+
+| File | Holds |
+|---|---|
+| `deployment/roster-tokens.txt` | financial-institution spellings |
+| `deployment/identity-tokens.txt` | the operator's name, username, machine name |
 
 ```
-# One match token per line. Blank lines and #-comments ignored.
-# Include every spelling that could plausibly appear in code or a doc:
-# the institution's own name, any shortened form, and any internal nickname.
+# One token per line. Blank lines and #-comments ignored.
 examplebank
 exbank
 ```
 
-`scripts/check-no-personal-data.sh` matches these on word boundaries across tracked files. A
-checkout with no `deployment/` directory has no roster to leak, and the guard passes with a note
-— that is the ordinary state for anyone who is not this deployment's operator.
+🔴 **A token is a SINGLE WORD** of letters, digits, `_` or `-`. The guard rejects anything else
+loudly rather than accepting it, because both failure modes are silent: a multi-word line collapses
+into a spelling that appears nowhere, and a regex metacharacter invalidates the whole pattern — and
+in each case the bad token still counts toward a reassuring total. **List a multi-word institution
+as the spellings that actually appear in prose, one per line.**
+
+Identity tokens live here rather than in the guard's source for two reasons. A script carrying the
+names it hunts for cannot scan itself, so the one tracked file guaranteed to contain them would be
+the one file never checked. And anyone cloning a published copy of this repository would otherwise
+inherit a guard protecting a stranger's identity while protecting none of their own.
+
+`scripts/check-no-personal-data.sh` matches these on word boundaries, case-insensitively, across
+**every commit being pushed** — not the working tree, because the leak this project actually had was
+documentation in already-pushed history behind a clean tip. A checkout with no `deployment/`
+directory has no tokens, nothing to leak, and passes with a note; that is the ordinary state for
+anyone who is not this deployment's operator, and it is what makes the guard safe to publish.

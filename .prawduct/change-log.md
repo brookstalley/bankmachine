@@ -34,9 +34,14 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
-## 2026-09-05: Repository made publishable — roster out of git, history rewritten
+## 2026-09-05: Roster moved out of git and the boundary guarded (history purge is Chunk 02, pending)
 
 <!-- prawduct: scope=repo-sanitization -->
+
+🔴 **The remote still carries the roster.** This entry covers Chunk 01 only. The
+`git filter-repo` purge and force-push are Chunk 02 and are **not done**, so `origin/develop`
+still holds institution names and balances in three doc paths. The leak guard blocks a push
+until they are gone.
 
 **Why:** The operator restated the product. MCPlaid is a **general-purpose tool, not linked to
 their personal finances** — consumed by Claude Cowork, and possibly released publicly, so nothing
@@ -61,21 +66,38 @@ was grepped clean.
   matches the roster's own explicit tokens (engine AC-0.3) plus operator identity, on word
   boundaries, over every tracked file. A checkout with no `deployment/` directory has no roster to
   leak and passes with a note — which is why the guard itself is safe to publish.
+- `README.md` added, carrying the `git config core.hooksPath .githooks` step. A hooks directory is
+  per-clone config, so a fresh clone pushes unguarded and nothing says so — and the only previous
+  statement of the step lived inside the hook file the unset config prevents from running.
 - Four decisions recorded with alternatives: repository scope; MCP transport is local stdio only
   and AC-10.5 holds; macOS for v1 with the credential store and scheduler behind seams; rename
   before build step 1.
 
-**Two things the guard caught that review had not.** Its first run failed on the tree it was
-written for, which is the only way to learn that a guard is wired up. One hit was a GitHub
-repository slug — inherently public the moment the repo is — now handled by a general rule that
-strips *identity-owned* slugs only, so a path like `docs/<institution>-notes.md` is still caught.
-The other was `copilot`, which had no business in a roster token list: the incumbent aggregator is
-an evaluated alternative and §0.1 carves the aggregator out, so the prior-art analysis naming it
-stays.
+**What the review changed, and it was the important half.** The first version of this guard
+scanned the *working tree*. Critic pointed out that this passes the exact exposure the guard exists
+to stop — a leak sitting in already-pushed history behind a sanitized tip — and that the operator
+would read "clean" as "nothing I am pushing carries the roster", which was not what was checked. The
+guard now takes the ref range the pre-push hook already receives and scans **every commit being
+pushed**. Run against this repository's own history it correctly refuses: the roster is still back
+there, which is what Chunk 02 is for.
 
-**Note on the mechanism.** The guard is a shell script rather than a `tests/preferences/` test
-because no Python scaffold exists yet, and creating one would fix the package name ahead of the
-rename decision. It moves under `tests/preferences/` when the scaffold lands.
+The same review found the guard failed open at every error path, and that its hardcoded identity
+tokens forced a carve-out where the one tracked file containing the operator's name was the one file
+never scanned. Both are fixed by construction rather than by patching: **all** tokens now come from
+gitignored `deployment/`, so the script carries none and needs no self-exclusion, and every error
+condition aborts rather than reporting clean.
+
+**The self-test earned itself immediately: 7 of its 15 cases failed on first run.** The cause was a
+genuine defect — the positive control used system `grep` while the scan used `git grep`, which does
+not honour `\b` in ERE. So the control passed while the scan matched nothing: precisely the
+fail-open shape the guard was being rewritten to refuse, reproduced inside the fix. Word boundaries
+are now spelled out explicitly, and the control runs through the same engine that scans, using a
+real token rather than a synthetic sentinel.
+
+**Note on the mechanism.** Guard and self-test are shell rather than `tests/preferences/` because no
+Python scaffold exists yet and creating one would fix the package name ahead of the rename decision.
+The migration obligation is recorded in `project-preferences.md` and in `system-requirements.md` §8
+build step 1 — the step that lands the test runner, and therefore the moment it is triggered.
 
 ## 2026-09-05: Discovery captured; requirements split into engine and roster layers
 

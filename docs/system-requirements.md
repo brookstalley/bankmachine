@@ -51,15 +51,29 @@ there.
 **AC-0.2** — Institutions and accounts are added and removed over the system's life. Neither is a
 code change, and removal never destroys history (see FR-6).
 
-**AC-0.3** — An automated check asserts that no name from the deployment roster appears under the
-source root. A second, wider check — `scripts/check-no-personal-data.sh`, wired into `pre-push` —
-asserts the same over **every tracked file**, because this repository may be published and the
-leak this project actually had was in documentation, not in code. 🔴 **The roster config carries explicit per-entry match tokens** and the check matches
-*those*, on word boundaries, over the source and schema roots only. Matching on roster labels
-directly fails both ways: a label is the institution's own spelling, so a shortened token in code
-slips past a literal match, while tokenizing a label collides with unrelated legitimate text (a
-hardware or OS name that happens to share a word). Either failure ends with someone weakening this
-norm's own test on its first red run.
+**AC-0.3** — 🔴 **Roster identity is matched by explicit per-entry tokens carried in the roster
+config**, on word boundaries — never by matching institution labels directly. Matching labels fails
+both ways: a label is the institution's own spelling, so a shortened token in code slips past a
+literal match, while tokenizing a label collides with unrelated legitimate text (a hardware or OS
+name that happens to share a word). Either failure ends with someone weakening this norm's own test
+on its first red run. A token that cannot match is worse than a missing one, because it still counts
+toward a reassuring total — so tokens are **validated at load and rejected loudly**, never silently
+normalized into something unmatchable.
+
+**AC-0.4** — Two automated checks apply that token rule at two different scopes, and the scopes are
+stated separately because they are not the same guarantee:
+
+- **Source and schema roots** — asserts no roster name reaches the code. This is the engine-level
+  norm, and it is what a build regression would trip.
+- **Every commit being pushed** — asserts no roster or operator identity reaches a remote, over the
+  *commits* rather than the working tree. This is wider on purpose: the exposure this project
+  actually had was documentation sitting in already-pushed history behind a clean tip, which a
+  worktree or tip-only check reports clean. `scripts/check-no-personal-data.sh`, wired into
+  `pre-push`, is this one.
+
+🔴 Both **fail closed.** An error condition — an unreadable token file, a regex the engine rejects,
+a missing script — must abort, never report clean: a check whose only bad-news channel is the
+absence of output cannot report that it stopped checking.
 
 > **Scope note on "provider".** In this document *provider* means a financial institution. The
 > **aggregator** — the API vendor through which institutions are reached — is a single named
@@ -395,7 +409,11 @@ complete.
 
 ## 8. Build sequence
 
-1. Schema, migrations, raw-response layer, encrypted datastore, **and `sync shell`**
+1. Schema, migrations, raw-response layer, encrypted datastore, **and `sync shell`**. This step
+   fixes the package name, the keychain service name and the scheduler label, so **the rename
+   decision must be settled before it starts** (§9.3). It also lands the test runner, which is when
+   `scripts/check-no-personal-data.sh` moves under `tests/preferences/` — a test runner invokes it
+   without the per-clone `core.hooksPath` config a git hook needs.
 2. Aggregator client against sandbox fixtures; full test suite
 3. Enrollment flow — 🔴 **verify the granted history window on ONE real connection before enrolling
    any others.** Getting this wrong means re-linking every institution.
