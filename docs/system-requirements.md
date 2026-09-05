@@ -1,12 +1,14 @@
 # MCPlaid — System Requirements v2
 
-**Layer:** the engine. **Companion:** `deployment-requirements.md` (one operator's roster).
+**Layer:** the engine. **Companion:** a deployment-requirements document (one operator's roster),
+which is deliberately not in this repository — `deployment-requirements.template.md` is its shape
+and says where the filled-in copy goes.
 **Date:** 2026-09-05 (v2 — provider-agnostic split) · **Status:** ready to plan
 
-> **Supersedes** `plaid-pipeline-acceptance-criteria.md` (v1), which split into two documents:
-> this one, holding the engine, and `deployment-requirements.md`, holding the roster. Every v1
-> criterion lands in one of the two, generalized or instantiated, except AC-A.4 — explicitly
-> superseded in `deployment-requirements.md` DAC-2.3.
+> **Supersedes** a v1 acceptance-criteria document that split into two: this one, holding the
+> engine, and a deployment-requirements document holding the roster. Every v1 criterion lands in
+> one of the two, generalized or instantiated, except one — a pre-enrollment entity check that
+> the roster explicitly superseded by deciding not to enroll that connection at all.
 
 ---
 
@@ -35,10 +37,13 @@ dependency in v1 (see the scope note below), so its client package, the keychain
 the product name may name it. The rule binds *roster* identity.
 
 The set of institutions an operator actually connects — which ones, in what order, which need file
-import instead of the aggregator, which carry special rules — lives in `deployment-requirements.md`
-and is expressed as **configuration and adapters**.
+import instead of the aggregator, which carry special rules — lives in the operator's own
+deployment-requirements document and is expressed as **configuration and adapters**. 🔴 That
+document is **not** version-controlled here: a roster names institutions and usually balances, and
+this repository is a general-purpose tool. `deployment-requirements.template.md` carries the shape
+and the contract; `scripts/check-no-personal-data.sh` enforces the boundary on every push.
 
-**AC-0.1** — 🔴 Every requirement in `deployment-requirements.md` must be satisfiable by
+**AC-0.1** — 🔴 Every requirement in the deployment-requirements document must be satisfiable by
 configuration plus an adapter, with **zero change to this system.** A deployment requirement that
 cannot be met that way is a gap in *this* document, and must be fixed here rather than special-cased
 there.
@@ -46,13 +51,29 @@ there.
 **AC-0.2** — Institutions and accounts are added and removed over the system's life. Neither is a
 code change, and removal never destroys history (see FR-6).
 
-**AC-0.3** — An automated check asserts that no name from the deployment roster appears under the
-source root. 🔴 **The roster config carries explicit per-entry match tokens** and the check matches
-*those*, on word boundaries, over the source and schema roots only. Matching on roster labels
-directly fails both ways: a label is the institution's own spelling, so a shortened token in code
-slips past a literal match, while tokenizing a label collides with unrelated legitimate text (a
-hardware or OS name that happens to share a word). Either failure ends with someone weakening this
-norm's own test on its first red run.
+**AC-0.3** — 🔴 **Roster identity is matched by explicit per-entry tokens carried in the roster
+config**, on word boundaries — never by matching institution labels directly. Matching labels fails
+both ways: a label is the institution's own spelling, so a shortened token in code slips past a
+literal match, while tokenizing a label collides with unrelated legitimate text (a hardware or OS
+name that happens to share a word). Either failure ends with someone weakening this norm's own test
+on its first red run. A token that cannot match is worse than a missing one, because it still counts
+toward a reassuring total — so tokens are **validated at load and rejected loudly**, never silently
+normalized into something unmatchable.
+
+**AC-0.4** — Two automated checks apply that token rule at two different scopes, and the scopes are
+stated separately because they are not the same guarantee:
+
+- **Source and schema roots** — asserts no roster name reaches the code. This is the engine-level
+  norm, and it is what a build regression would trip.
+- **Every commit being pushed** — asserts no roster or operator identity reaches a remote, over the
+  *commits* rather than the working tree. This is wider on purpose: the exposure this project
+  actually had was documentation sitting in already-pushed history behind a clean tip, which a
+  worktree or tip-only check reports clean. `scripts/check-no-personal-data.sh`, wired into
+  `pre-push`, is this one.
+
+🔴 Both **fail closed.** An error condition — an unreadable token file, a regex the engine rejects,
+a missing script — must abort, never report clean: a check whose only bad-news channel is the
+absence of output cannot report that it stopped checking.
 
 > **Scope note on "provider".** In this document *provider* means a financial institution. The
 > **aggregator** — the API vendor through which institutions are reached — is a single named
@@ -388,7 +409,11 @@ complete.
 
 ## 8. Build sequence
 
-1. Schema, migrations, raw-response layer, encrypted datastore, **and `sync shell`**
+1. Schema, migrations, raw-response layer, encrypted datastore, **and `sync shell`**. This step
+   fixes the package name, the keychain service name and the scheduler label, so **the rename
+   decision must be settled before it starts** (§9.3). It also lands the test runner, which is when
+   `scripts/check-no-personal-data.sh` moves under `tests/preferences/` — a test runner invokes it
+   without the per-clone `core.hooksPath` config a git hook needs.
 2. Aggregator client against sandbox fixtures; full test suite
 3. Enrollment flow — 🔴 **verify the granted history window on ONE real connection before enrolling
    any others.** Getting this wrong means re-linking every institution.
@@ -411,4 +436,5 @@ complete.
 3. **Project name.** `MCPlaid` is a working name. Cost of renaming rises once package names, the
    scheduler label, and the keychain service name are fixed.
 
-Deployment-layer open questions live in `deployment-requirements.md`.
+Deployment-layer open questions live in the operator's own deployment-requirements document, and
+so are not listed here — see `deployment-requirements.template.md` §6 for how they are tracked.

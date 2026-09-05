@@ -25,6 +25,11 @@ __pycache__/
 # Prawduct plugin version marker (per-repo last-seen)
 .prawduct/.prawduct-version
 
+# Deployment roster — this operator's institutions, accounts and match tokens.
+# The engine is provider-agnostic and public; the roster is configuration and local.
+# See docs/deployment-requirements.template.md.
+deployment/
+
 # Product data — financial data never leaves this machine (AC-10.4, AC-10.5)
 data/
 logs/
