@@ -4,9 +4,9 @@ Developer preferences for how code is written in this project. Captured during d
 
 ## Language & Runtime
 
-- **Language**:
-- **Version**:
-- **Package manager**:
+- **Language**: Python
+- **Version**: 3.11+ (verified on 3.12.3, Apple Silicon). Native macOS, not containerized.
+- **Package manager**: (unset — pending confirmation)
 
 ## Code Style
 
@@ -77,6 +77,7 @@ the Direction entry it points at.
 
 | Preference / norm | Mechanism | Enforcement artifact | Audit home | Why |
 |---|---|---|---|---|
+| Provider-agnostic engine: no institution, vendor, account or product name in code or schema; the roster, per-account rules, product capabilities and import-format adapters are configuration | Test | `tests/preferences/test_no_provider_identity.py` | janitor | The roster changes over the product's life — accounts are added and removed. Hardcoding it makes every roster change a code change and a regression risk, and turns the product into one operator's script. The test reads the roster config and asserts no roster name appears under the source root, which catches the dominant violation mechanically; the residual judgment case — code that *branches* on provider identity without naming one — is Critic's, under the same norm. |
 
 **A filled `Delegation` / `Delegate verification` row states a norm, and it takes `Critic`** — a policy stated in prose is judgment-required by construction, so no linter or test can grade it; audit home `janitor`, and the why is the sentence the owner gave for it. One row covers the policy the two state together. `Delegation approval` is a setting like `PR creation`, not a norm. The row is written when the policy is **ratified** (`/prawduct:doctor` proposes, the owner confirms), never shipped here, because this table ships empty.
 
