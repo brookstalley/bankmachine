@@ -34,6 +34,45 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-05: AC-ARCH.7 resolved — the system architecture, measured rather than assumed
+
+<!-- prawduct: scope=architecture -->
+
+**Why:** `docs/system-requirements.md` AC-ARCH.7 deliberately deferred journal mode, locking
+behaviour and reader isolation under encryption to "the system architecture" — a document that did
+not exist. Build step 1 is the encrypted datastore, so step 1 would have been the component that
+"encountered them first", which is precisely what the criterion forbids.
+
+**What landed.** `.prawduct/artifacts/architecture.md`: topology, component responsibilities, the
+three channels (one of which is the datastore file), data ownership, failure modes, deployment and
+version skew, cross-cutting runtime concerns, and a decision log. It is this product's first
+strategy-class artifact and its first `## Direction` section.
+
+**The concurrency answer.** WAL journal mode, set after keying. Writer-role processes serialise on
+a `flock` held for a whole run, above SQLite's own locking. The MCP reader opens `query_only` and
+releases its snapshot at the end of every tool call. Nothing creates the datastore implicitly. A
+process that does not recognise the schema version refuses to serve.
+
+**Measured, not remembered.** Every concurrency claim was probed against `sqlcipher3-wheels` 0.5.7
+(SQLCipher 4.12.0, SQLite 3.51.1) on this machine. The probes earned their keep three times: the
+WAL and shm files are themselves encrypted, which had to be true or WAL would have traded AC-ARCH.5
+away for AC-ARCH.7; a reader holding a snapshot starved a passive checkpoint at 0 of 93 frames and
+93 of 93 the instant it released, which turned the reader's snapshot discipline from advice into a
+norm; and a plain `connect()` to a missing path silently creates an empty encrypted store, which
+under AC-ARCH.4's configurable path would answer every question confidently from nothing.
+
+**One premise was falsified.** The design was going to route around a believed limitation — that a
+`mode=ro` connection cannot read a WAL database without an existing `-shm`, and would fail against
+a hot WAL from a crashed writer. It read correctly in every probed case, including after a
+`SIGKILL` mid-write. `query_only` is still the choice, on its two surviving reasons; the reason
+that did not survive is struck and recorded as struck, in the artifact's Decision Log.
+
+**Norm bookkeeping.** Four norms born, all before any code exists, so no retroactivity decision
+applies — there is nothing to migrate, contain or grandfather. Four pointer rows added to the
+preferences norm index, and `ARC-7K2M` filed for the enforcement tests, because a mechanism named
+and never built is the aspirational failure with extra steps.
+
+
 ## 2026-09-05: Named — the product is `bankmachine`
 
 <!-- prawduct: scope=rename -->

@@ -390,6 +390,33 @@ technical_decisions:
         it first.
       alternatives_considered: "A single process serving both roles. Rejected: the MCP server must not depend on sync liveness, and vice versa."
       date: 2026-09-05
+    - decision: >
+        AC-ARCH.7 RESOLVED, in .prawduct/artifacts/architecture.md. WAL journal mode set at store
+        init after keying; a process-level flock held by writer-role processes for a whole run;
+        the MCP reader opens query_only and holds no read transaction across tool calls; no
+        component creates the datastore implicitly; a process that does not recognise the schema
+        version refuses to serve. The last four are ratified norms in that artifact's Direction
+        section, born before any code exists, so no retroactivity decision applies.
+      rationale: >
+        Every claim was measured on this machine against sqlcipher3-wheels 0.5.7 (SQLCipher 4.12.0,
+        SQLite 3.51.1) rather than taken from documentation. WAL gives the reader a non-blocking
+        snapshot while a multi-hour backfill runs, and its WAL and shm files are themselves
+        encrypted — checked, because an unencrypted WAL would have traded AC-ARCH.5 away for
+        AC-ARCH.7. A second writer gets `database is locked` once busy_timeout expires, so the unit
+        that must be serialised is the run rather than the transaction, and flock is the only
+        mechanism the kernel releases when AC-2.5's kill test kills the holder. A reader holding an
+        open snapshot starved a passive checkpoint at 0 of 93 frames and 93 of 93 immediately after
+        release, which is why the reader's snapshot discipline is a norm and not advice. A plain
+        connect() to a missing path silently creates an empty encrypted store, which under
+        AC-ARCH.4's configurable path would answer every question confidently from nothing.
+      alternatives_considered: >
+        Rollback journal (blocks readers for the length of a backfill); a busy_timeout alone
+        (converts a fast failure into a slow one at an arbitrary point mid-run); a lease row in
+        sync_state (survives SIGKILL and strands every later run); mode=ro for the reader (works —
+        the read-only-WAL hazard that motivated avoiding it was probed and did not reproduce, which
+        is recorded as a falsified premise in the artifact's Decision Log); a socket or signal
+        between the two processes (creates exactly the liveness dependency AC-ARCH.7 forbids).
+      date: 2026-09-05
 
   technology:
     - decision: "Python 3.11+ on macOS, native."
@@ -704,6 +731,13 @@ artifact_manifest:
       file_path: docs/build-vs-adopt-investigation.md
       version: 1
       depends_on: []
+    - name: "Architecture"
+      file_path: .prawduct/artifacts/architecture.md
+      version: 1
+      depends_on: ["System requirements"]
+      # Home of AC-ARCH.7 and of this product's first ratified norms (Direction section).
+      # The template's usual upstreams (product brief, data model, security model, NFRs) do not
+      # exist as separate artifacts here; their content is in docs/system-requirements.md.
 
 # =============================================================================
 # BUILD STATE
