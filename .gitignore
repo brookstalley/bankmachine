@@ -25,7 +25,7 @@ __pycache__/
 # Prawduct plugin version marker (per-repo last-seen)
 .prawduct/.prawduct-version
 
-# Product data — financial data never leaves this machine (AC-1)
+# Product data — financial data never leaves this machine (AC-10.4, AC-10.5)
 data/
 logs/
 *.db

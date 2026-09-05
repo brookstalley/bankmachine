@@ -419,6 +419,18 @@ design_decisions:
     - decision: "The engine's code carries no roster knowledge; the roster (institutions, accounts, rules, import formats) is configuration and data the operator owns."
       rationale: "See technical_decisions.architecture — this is that norm expressed as an IA boundary. The line between 'in git' and 'in config' is the line between the product and one operator's situation."
       date: 2026-09-05
+    - decision: >
+        Requirement identifiers are unique within a requirements document, and the two documents
+        cite each other by those ids.
+      rationale: >
+        The layer split gave requirement ids a cross-document job they were never numbered for. A
+        duplicate id does not fail loudly — it resolves a citation to the wrong requirement, and the
+        one a reader lands on by accident is as likely to be a scheduled job as the immutable
+        enrollment parameter the engine doc calls its highest-stakes one. The deployment doc's
+        traceability table calls itself the checkable form of the layering rule, and it cannot be
+        checked against an ambiguous key. Ratified as a norm with a test as its mechanism, because
+        uniqueness is assertable by grep and should never again be caught by review.
+      date: 2026-09-05
     - decision: "Account rules are typed and data-driven; the first type is contribution-only (count inbound transfers from the operator's own accounts as a single expense category; exclude that account's outbound spending from personal aggregates)."
       rationale: >
         The requirements name a specific institution for this rule; the institution is an instance,
