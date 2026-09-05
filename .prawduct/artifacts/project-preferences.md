@@ -6,36 +6,46 @@ Developer preferences for how code is written in this project. Captured during d
 
 - **Language**: Python
 - **Version**: 3.11+ (verified on 3.12.3, Apple Silicon). Native macOS, not containerized.
-- **Package manager**: (unset — pending confirmation)
+- **Package manager**: uv (dependency resolution, lockfile, venv). `uv run` for all dev commands.
 
 ## Code Style
 
-- **Naming**: (e.g., snake_case functions, PascalCase classes)
-- **Formatting**: (e.g., black, prettier, gofmt)
-- **Linting**: (e.g., ruff, eslint)
-- **Type annotations**: (e.g., required, preferred, not used)
-- **Imports**: (e.g., absolute, grouped by stdlib/third-party/local)
+- **Naming**: snake_case functions and modules, PascalCase classes, SCREAMING_SNAKE constants
+- **Formatting**: ruff format
+- **Linting**: ruff
+- **Type annotations**: required — mypy strict. Money is integer minor units and dates are of two
+  distinct kinds (calendar date vs UTC instant); the type checker is what stops those being mixed.
+- **Imports**: absolute, grouped stdlib / third-party / local (ruff isort rules)
 
 ## Testing
 
-- **Framework**: (e.g., pytest, vitest, go test)
-- **Style**: (e.g., descriptive names, AAA pattern, table-driven)
-- **Coverage expectations**: (e.g., happy path + error cases, comprehensive edge cases)
-- **Testing strategies**: (e.g., property-based (hypothesis), property-based (proptest), contract testing, not applicable)
-- **Test location**: (e.g., tests/ mirror of src/, colocated, __tests__/)
-- **Parallelization**: (e.g., pytest-xdist with --dist loadgroup, vitest threads)
+- **Framework**: pytest
+- **Style**: descriptive test names stating the behaviour, AAA
+- **Coverage expectations**: happy path plus error cases everywhere; **comprehensive edge cases** on
+  the sync/cursor path, money arithmetic, dedup, and the rebuild — a defect there is silent wrong
+  analysis, not a crash
+- **Testing strategies**: property-based (hypothesis) for money arithmetic, idempotency, and
+  rebuild losslessness — these are invariants, and invariants are what property tests are for.
+  Integration tests against real SQLCipher, real Keychain (test-scoped service name), and the
+  aggregator's sandbox. Import adapters tested against real exported sample files.
+- **Test location**: `tests/` mirroring the source tree; `tests/preferences/` for norm tests
+- **Parallelization**: (unset — revisit if the suite gets slow)
 
 ## Architecture Patterns
 
-- **Data modeling**: (e.g., Pydantic v2, TypeScript interfaces, Go structs)
-- **Error handling**: (e.g., exceptions, Result types, error codes)
-- **Async**: (e.g., async/await throughout, sync unless needed)
-- **File organization**: (e.g., feature folders, layer folders, flat)
+- **Data modeling**: (unset — decide during planning; a typed model layer is expected given mypy strict)
+- **Error handling**: exceptions, specific not broad. Per-connection errors are caught and recorded,
+  never allowed to abort other connections. Silence is the one disallowed outcome.
+- **Async**: sync unless needed. The workload is a daily batch and a stdio MCP server; neither is
+  concurrency-bound.
+- **File organization**: layer folders (store / connector / sync / rules / mcp / cli)
 
 ## Tooling
 
-- **Key libraries**: (list anything non-obvious that new sessions should know about)
-- **Dev commands**: (e.g., `pytest tests/`, `npm run dev`, `cargo test`)
+- **Key libraries**: `sqlcipher3-wheels` — this is the package that works on Apple Silicon.
+  `sqlcipher3-binary` is unavailable for this platform; `sqlcipher3` and `pysqlcipher3` need a
+  Homebrew build step. Keychain access is via the `security` CLI, verified round-tripping.
+- **Dev commands**: (unset — set when the project scaffold lands)
 
 ## Workflow
 

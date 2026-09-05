@@ -276,6 +276,23 @@ technical_decisions:
         Encode the known roster directly, as the acceptance-criteria doc's Addendum A implies.
         Rejected: faster to first sync, wrong for the product's whole life after that.
       date: 2026-09-05
+    - decision: >
+        TWO-LAYER REQUIREMENTS. docs/system-requirements.md specifies a provider-agnostic engine and
+        contains no institution name; docs/deployment-requirements.md specifies this operator's
+        roster as real acceptance criteria for the instance built on that engine.
+      rationale: >
+        The operator's correction: the roster requirements are genuine, they simply belong to a
+        different layer than the engine. The split carries a load-bearing rule — every deployment
+        requirement must be satisfiable by configuration plus an adapter with zero engine change, so
+        a deployment requirement that cannot be expressed that way is a GAP IN THE ENGINE SPEC
+        rather than a special case. That makes the split a checkable test rather than a filing
+        convention; deployment-requirements.md §7 carries the traceability table.
+      alternatives_considered: >
+        (a) Rewrite the requirements doc in place and demote the roster to non-normative operator
+        notes — rejected by the operator: it discards real requirements. (b) A superseding addendum
+        — rejected: leaves a reader reconciling two sections of one document. (c) Generalize in code
+        only and leave the doc — rejected: the spec stays misleading to every later reader.
+      date: 2026-09-05
     - decision: "Two processes over one datastore: a scheduled sync writer and a long-lived MCP reader."
       rationale: >
         The MCP server may be mid-query when the daily sync wakes. Concurrency and durability
@@ -367,6 +384,14 @@ technical_decisions:
       date: 2026-09-05
 
   operational:
+    - decision: "No filesystem path is hardcoded; the datastore path, log directory, and config location are configuration with documented defaults."
+      rationale: >
+        The requirements doc named an absolute repo and datastore path that does not match where the
+        repo actually lives. Rather than make either literal true, both become configuration — which
+        is the same config-over-code line the provider-agnostic norm draws, applied to the
+        filesystem. The repo stays where it is; no code path assumes its location.
+      alternatives_considered: "Relocate the repo to match the doc; or hardcode the doc's absolute datastore path."
+      date: 2026-09-05
     - decision: "launchd user agent, daily, with missed-window recovery rather than window-skipping."
       rationale: "A laptop asleep at the scheduled time is the normal case, not the exception. Skipping is silent data staleness (AC-1.2)."
       alternatives_considered: "cron. Rejected: does not survive sleep or handle missed windows on macOS."
@@ -483,46 +508,32 @@ design_decisions:
 # =============================================================================
 
 open_questions:
-  - question: >
-      The requirements docs name specific institutions in places that read as code-shaping
-      requirements — investments pulled "for <institution>", the CSV importer built "against
-      <institution>'s format specifically", the account rule named for its institution, a literal
-      10-Item cap, and reconciliation "against <vendor>'s linked-account list". Confirm these are
-      all instances of general requirements, and let me rewrite them provider-agnostically in the
-      acceptance-criteria doc.
-    blocking: "Schema and module design — this decides whether provider identity is a column or a code path."
-    waiting_on: user
-    priority: high
-  - question: "Repo and datastore location: AC-1 says the repo lives at ~/finances/ with the DB at ~/finances/data/finances.db. The repo is actually ~/source/MCPlaid. Which is authoritative, and should the DB path be configuration rather than either?"
-    blocking: "Setup documentation, launchd plist, and the AC-1.1 clean-clone test."
-    waiting_on: user
-    priority: high
-  - question: >
-      AC-11.5 requires a byte-identical rebuild from raw responses. That is only well-defined if the
-      derivation logic is versioned and the version recorded in the datastore — otherwise an upstream
-      taxonomy change silently breaks a gate meant to be a permanent invariant. Approve rewording to
-      "byte-identical given a recorded derivation version"?
-    blocking: "The rebuild design and the verification gate's pass criteria."
-    waiting_on: user
-    priority: high
-  - question: "Which paths should count as risk surfaces (deeper review at any diff size)? Proposal once the layout is fixed: the Plaid client, the sync/cursor layer, schema and migrations, the account-rule engine, and the secrets layer."
-    blocking: "Review-depth calibration. Absent is the safe default, so this is not urgent — but it should be set before the first schema chunk."
+  - question: "Aggregator pluggability. v1 builds exactly one aggregator implementation. Is a second ever expected? The answer changes how hard the connector boundary is drawn — and note the product name currently embeds the aggregator's name."
+    blocking: "How strictly the connector boundary is drawn in the system architecture. Not blocking chunk 1."
     waiting_on: user
     priority: medium
-  - question: "Investment account types per institution (retirement vs. brokerage vs. rollover) — affects whether the investments product covers them and what cost basis means."
+  - question: "Which paths should count as risk surfaces (deeper review at any diff size)? Proposal once the layout is fixed: the aggregator client, the sync/cursor layer, schema and migrations, the account-rule engine, and the secrets layer."
+    blocking: "Review-depth calibration. Absent is the safe default, so not urgent — but set it before the first schema chunk."
+    waiting_on: user
+    priority: medium
+  - question: "Investment account types per institution (retirement vs. brokerage vs. rollover) — affects whether the aggregator's investments product covers them and what cost basis means. Tracked as deployment open question 6.1."
     blocking: "The investments portion of FR-3 and the cost-basis field in list_holdings."
     waiting_on: user
     priority: medium
-  - question: "The complete institution roster. The recalled list and the incumbent aggregator's list disagree materially, with several accounts still unidentified."
-    blocking: "Enrollment (build step 3) only. Steps 1-2 — schema, raw layer, Plaid client against Sandbox — do not depend on it."
+  - question: "The complete institution roster. Tracked as deployment open question 6.2."
+    blocking: "Enrollment (build step 3) only. Steps 1-2 — schema, raw layer, aggregator client against sandbox — do not depend on it."
+    waiting_on: user
+    priority: medium
+  - question: "Should docs/deployment-requirements.md live in the repo at all? It names institutions and carries balances, while .gitignore otherwise excludes every financial specific. Tracked as deployment open question 6.4."
+    blocking: "Nothing technical. It is a data-exposure decision the operator owns."
     waiting_on: user
     priority: medium
   - question: "Retention policy for raw responses: keep indefinitely (recommended — volume is trivial and it is the system of record) or prune after N months?"
     blocking: "Nothing immediately; it is a config default with a documented rationale."
     waiting_on: user
     priority: low
-  - question: "Project name — MCPlaid is a working name and rename is still open."
-    blocking: "Nothing yet. Costs increase once package names, the launchd label, and the Keychain service name are chosen."
+  - question: "Project name — MCPlaid is a working name and rename is still open. Cost rises once package names, the scheduler label, and the keychain service name are fixed."
+    blocking: "Nothing yet."
     waiting_on: user
     priority: low
 
@@ -581,7 +592,23 @@ health_check:
 # =============================================================================
 
 artifact_manifest:
-  artifacts: []
+  artifacts:
+    - name: "System requirements"
+      file_path: docs/system-requirements.md
+      version: 2
+      depends_on: []
+    - name: "Deployment requirements"
+      file_path: docs/deployment-requirements.md
+      version: 1
+      depends_on: ["System requirements"]
+    - name: "Account inventory evidence"
+      file_path: docs/data-sources.md
+      version: 1
+      depends_on: []
+    - name: "Build-vs-adopt decision record"
+      file_path: docs/build-vs-adopt-investigation.md
+      version: 1
+      depends_on: []
 
 # =============================================================================
 # BUILD STATE
