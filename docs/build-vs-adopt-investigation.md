@@ -5,7 +5,9 @@
 **Answer:** **Build clean-slate in Python.** Harvest `mbafford/plaid-sync`'s Plaid-client layer as
 an attributed reference. Do not fork anything.
 
-**Status:** recommendation only. No code written. Project renamed to `MCPlaid` (working name; rename still open). Prawduct scaffold not yet run.
+**Status:** recommendation only. No code written. Written under the working name `MCPlaid`; the
+project was named **bankmachine** on 2026-09-05, before any identifier was fixed. Prawduct scaffold
+not yet run.
 
 ---
 
@@ -211,11 +213,12 @@ Suggested rewording: *byte-identical given a recorded derivation version*.
 
 ## 7. Open items carried forward
 
-- **Project name.** `MCPlaid` is a working name; rename still open, and now load-bearing — the
-  name is fixed by build step 1 (package, keychain service, scheduler label), and the keychain
-  service name is the expensive one to change, because altering it after enrollment orphans
-  stored access tokens. Candidates considered and declined: assay, assayer, principal, quipu,
-  exchequer, corpus, custodian, basis, tally, ledgerdemain, sclerotium.
+- ~~**Project name.**~~ **Closed 2026-09-05: the project is named `bankmachine`.** It was settled
+  before build step 1, which is what fixes the package name, the keychain service name and the
+  scheduler label — the keychain one being the expensive one to change, because altering it after
+  enrollment orphans stored access tokens. Candidates considered and declined across two rounds:
+  assay, assayer, principal, quipu, exchequer, corpus, custodian, basis, tally, ledgerdemain,
+  sclerotium, coffer, fiscus, moneta.
 - **Open questions remain unanswered and gate enrollment.** Engine-layer ones are
   `system-requirements.md` §9. Deployment-layer ones — above all the complete institution
   roster, which blocks build step 3 — belong to the operator's own roster document, which is

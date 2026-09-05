@@ -1,4 +1,4 @@
-# Boundary Patterns — MCPlaid
+# Boundary Patterns — bankmachine
 
 <!-- Contract surfaces where components interact. When changes cross these
      boundaries, the builder investigates consumer impact before completing

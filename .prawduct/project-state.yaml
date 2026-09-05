@@ -1,4 +1,4 @@
-# Project State — MCPlaid
+# Project State — bankmachine
 #
 # Single source of truth for all project decisions.
 # Read at session start to understand where things stand.
@@ -222,7 +222,7 @@ product_definition:
         rationale: "The only network destinations are Plaid's API hosts (AC-10.4)."
 
   product_identity:
-    name: "MCPlaid"
+    name: "bankmachine"
     # Working name; rename still open (docs/build-vs-adopt-investigation.md §7).
     personality: null
     visual_preferences: null
@@ -339,16 +339,28 @@ technical_decisions:
         scheduler implementation before anything ships.
       date: 2026-09-05
     - decision: >
-        RENAME BEFORE BUILD STEP 1. The name is not yet chosen. `MCPlaid` embeds a third-party
-        trademark and locks the product to one aggregator.
+        THE PRODUCT IS NAMED `bankmachine`. Chosen 2026-09-05, before build step 1 fixed any
+        identifier, and before any code existed. This DISCHARGES the rename-before-step-1 decision
+        recorded the same day: `MCPlaid` embedded a third-party trademark and locked the product to
+        one aggregator.
       rationale: >
         Build step 1 fixes the Python package name, the keychain service name, the scheduler label
         and the MCP server name. The keychain service name is the expensive one: changing it after
-        enrollment orphans stored access tokens.
+        enrollment orphans stored access tokens. Settling the name while the repository still held
+        zero lines of code made the rename a documentation sweep rather than a migration.
+        `bankmachine` is aggregator-neutral and carries no third-party mark; PyPI returned 404 for
+        it on 2026-09-05, so the package name was free at the time of choosing.
       alternatives_considered: >
-        (a) Keep MCPlaid and decide at publish time — rejected: accepts rework and risks the name
-        becoming load-bearing. (b) Keep MCPlaid permanently — rejected: a brand-permission question
-        the operator would own.
+        (a) Keep MCPlaid, at publish time or permanently — rejected: a brand-permission question
+        the operator would own, and a name locked to one aggregator. (b) coffer, fiscus, moneta,
+        quipu, perfin-mcp — offered as a shortlist; the operator chose bankmachine.
+      caveat: >
+        Recorded so it is not rediscovered as a surprise: "bank machine" is the ordinary term for an
+        ATM in Canada and parts of the UK, which suggests a device that DISPENSES money for a
+        product whose §2 non-goals make "read-only, permanently — no write path to any aggregator
+        or institution" a headline commitment. Raised once and accepted by the operator; it is a
+        naming-connotation risk, not a technical one, and it argues for the tagline and README
+        opening to say "read-only" early rather than for a different name.
       date: 2026-09-05
     - decision: >
         TWO-LAYER REQUIREMENTS. docs/system-requirements.md specifies a provider-agnostic engine and
@@ -599,7 +611,7 @@ design_decisions:
 # =============================================================================
 
 open_questions:
-  - question: "Aggregator pluggability. v1 builds exactly one aggregator implementation. Is a second ever expected? The answer changes how hard the connector boundary is drawn — and note the product name currently embeds the aggregator's name."
+  - question: "Aggregator pluggability. v1 builds exactly one aggregator implementation. Is a second ever expected? The answer changes how hard the connector boundary is drawn. (The clause that used to sit here — that the product name embedded the aggregator's name — no longer applies: the rename to bankmachine removed that coupling, which is one fewer reason the question is forced.)"
     blocking: "How strictly the connector boundary is drawn in the system architecture. Not blocking chunk 1."
     waiting_on: user
     priority: medium
@@ -617,10 +629,6 @@ open_questions:
     priority: medium
   - question: "Retention policy for raw responses: keep indefinitely (recommended — volume is trivial and it is the system of record) or prune after N months?"
     blocking: "Nothing immediately; it is a config default with a documented rationale."
-    waiting_on: user
-    priority: low
-  - question: "Project name — MCPlaid is a working name and rename is still open. Cost rises once package names, the scheduler label, and the keychain service name are fixed."
-    blocking: "Nothing yet."
     waiting_on: user
     priority: low
 

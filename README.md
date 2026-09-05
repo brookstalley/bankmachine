@@ -1,8 +1,7 @@
-# MCPlaid
+# bankmachine
 
-> **Working name.** `MCPlaid` embeds a third-party trademark and locks the project to one
-> aggregator; a rename is decided but not yet chosen, and must land before the first build step
-> fixes the package name, the keychain service name and the scheduler label.
+**Read-only.** It never moves money, and has no write path to any bank or aggregator — see
+[What it is not](#what-it-is-not).
 
 A locally-hosted service that pulls **your own** financial data from an aggregator API and from
 file imports into an encrypted local datastore, and exposes it read-only over MCP — so an analyst

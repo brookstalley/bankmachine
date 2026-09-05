@@ -1,4 +1,4 @@
-# Backlog — MCPlaid
+# Backlog — bankmachine
 
 <!-- Structured backlog (Prawduct v1.7+). Managed with the `/backlog` skill:
      /backlog            summary + menu

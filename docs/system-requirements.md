@@ -1,4 +1,4 @@
-# MCPlaid — System Requirements v2
+# bankmachine — System Requirements v2
 
 **Layer:** the engine. **Companion:** a deployment-requirements document (one operator's roster),
 which is deliberately not in this repository — `deployment-requirements.template.md` is its shape
@@ -433,8 +433,8 @@ complete.
    system of record) or prune after N months?
 2. **Aggregator pluggability.** v1 builds one aggregator implementation. Is a second ever expected?
    The answer changes how hard the connector boundary is drawn.
-3. **Project name.** `MCPlaid` is a working name. Cost of renaming rises once package names, the
-   scheduler label, and the keychain service name are fixed.
+*(The project-name question that stood here is closed: the product is named **bankmachine**,
+chosen 2026-09-05 before build step 1 fixed any identifier. See `project-state.yaml`.)*
 
 Deployment-layer open questions live in the operator's own deployment-requirements document, and
 so are not listed here — see `deployment-requirements.template.md` §6 for how they are tracked.

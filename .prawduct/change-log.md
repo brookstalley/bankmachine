@@ -1,4 +1,4 @@
-# Change Log — MCPlaid
+# Change Log — bankmachine
 
 <!-- Append new entries at the top. Each entry is a ## section.
      This file is separate from project-state.yaml to reduce merge conflicts
@@ -33,6 +33,37 @@
      the entry BODY, where release notes and readers actually find it: a
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
+
+## 2026-09-05: Named — the product is `bankmachine`
+
+<!-- prawduct: scope=rename -->
+
+**Why:** The working name embedded a third-party trademark and locked the product to one
+aggregator, and build step 1 is what fixes the Python package name, the keychain service name, the
+scheduler label and the MCP server name. The keychain service name is the expensive one — changing
+it after enrollment orphans stored access tokens. Settling the name while the repository still held
+**zero lines of code** made this a documentation sweep rather than a migration; that timing was the
+whole point of deciding the rename before step 1 rather than at publish.
+
+Verified rather than assumed: PyPI returned 404 for `bankmachine`, so the package name was free at
+the time of choosing.
+
+**What changed:** titles and labels across the requirements doc, README, change-log, backlog,
+boundary patterns and project-state; the name open questions in `system-requirements.md` §9 and
+`project-state.yaml` closed; the aggregator-pluggability question's stale clause corrected, since
+the product name no longer embeds the aggregator's name — one fewer reason that question is forced.
+
+Six occurrences of the old name were deliberately **left in place**: two historical change-log and
+archived-plan entries that record what was said on the day, the decision entry that names what was
+renamed away from, and the GitHub repository slug, which is still accurate because the remote has
+not been renamed.
+
+**Recorded caveat, raised once and accepted.** "Bank machine" is the ordinary term for an ATM in
+Canada and parts of the UK — a name suggesting a device that *dispenses money*, for a product whose
+§2 non-goals make "read-only, permanently" a headline commitment. This is a connotation risk, not a
+technical one, and the mitigation is placement rather than a different name: the README now leads
+with **"Read-only. It never moves money"** above the description, where a reader arriving from the
+name meets the correction first.
 
 ## 2026-09-05: Repository made publishable — roster out of git, history purged, boundary guarded
 

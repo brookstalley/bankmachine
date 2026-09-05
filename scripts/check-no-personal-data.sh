@@ -153,7 +153,7 @@ pattern=$(build_pattern "${tokens[@]}")
 # caught, and a general rule would exempt exactly that.
 #
 # Stripping rather than skipping keeps the rest of the line in scope, so
-# `<owner>/MCPlaid -- <institution> roster` still fails on the institution.
+# `<owner>/<repo> -- <institution> roster` still fails on the institution.
 #
 # BSD sed (macOS) has no `\b`, hence anchoring on the token alternation instead.
 token_alt=$(printf '%s|' "${tokens[@]}")
