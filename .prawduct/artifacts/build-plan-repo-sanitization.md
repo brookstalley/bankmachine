@@ -203,14 +203,27 @@ accounts it was derived from.
 - **Deliverables:**
   - a full mirror backup of the pre-rewrite repo in the session scratchpad, taken before
     anything is rewritten and kept until the operator confirms the result
-  - history rewritten with `git filter-repo --invert-paths` over exactly four paths:
+  - history rewritten with `git filter-repo --invert-paths` over **five** paths:
     `docs/data-sources.md`, `docs/deployment-requirements.md`,
-    `docs/plaid-pipeline-acceptance-criteria.md`, `docs/build-vs-adopt-investigation.md`
+    `docs/plaid-pipeline-acceptance-criteria.md`, `docs/build-vs-adopt-investigation.md`,
+    and `scripts/check-no-personal-data.sh`.
+
+    🔴 **The fifth path surfaced during the build and is recorded rather than absorbed.**
+    Chunk 01's own first commit (`b83ae2f`) hardcoded `IDENTITY_TOKENS` in the guard — the
+    arrangement the Critic's R-9 made us remove — so the guard's own history carries the
+    operator's name and machine name. The enumeration that found it was the finished guard
+    scanning all history, which is the check doing exactly its job on its author.
+  - two files are re-added at their current content **after** the purge, because their paths
+    are purged wholesale rather than scrubbed line by line:
+    `docs/build-vs-adopt-investigation.md` (sanitized) and `scripts/check-no-personal-data.sh`
+    (post-review). Copies are taken to the scratchpad before the rewrite.
   - `origin` re-added (filter-repo removes it by design)
   - `develop` and `main` force-pushed
 - **Tests:** none automated — the verification is the fresh-clone inspection below
 - **Acceptance criteria:**
-  1. `git log --all --pretty=format: --name-only | sort -u` names none of the four paths
+  1. `git log --all --pretty=format: --name-only | sort -u` names none of the five paths, and
+     the guard itself reports clean over every commit reachable from `develop` and from `main` —
+     which is the check that matters, since it is the one that reads content rather than names
   2. A fresh clone of `origin` into the scratchpad shows the same
   3. `docs/build-vs-adopt-investigation.md` is present in the working tree at its sanitized
      content, re-added after the purge, and its history starts clean
