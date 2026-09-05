@@ -12,7 +12,12 @@ governed_by:
       - "requirement ids unique within a requirements document → inapplicable because this plan adds no numbered requirements"
 partition: serial — Chunk 02 rewrites the history Chunk 01 writes into, so they cannot overlap
 last_validated: 2026-09-05
+lifecycle: completed
+archived: 2026-09-05
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 ## Requirements Confidence
 
