@@ -1011,4 +1011,4 @@ distribution: plugin
 # the Issues backend from day one (init-product --backlog-repo). The normal
 # path is markdown-first and sets this later, at scrub/cutover.
 # `/prawduct:backlog` routes on this scalar.
-backlog_service_repo: brookstalley/MCPlaid
+backlog_service_repo: brookstalley/bankmachine
