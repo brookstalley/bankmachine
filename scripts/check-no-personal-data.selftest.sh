@@ -16,7 +16,8 @@
 
 set -euo pipefail
 
-GUARD=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-no-personal-data.sh
+SRC_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+GUARD="$SRC_DIR/check-no-personal-data.sh"
 [[ -x $GUARD ]] || { echo "selftest: guard not executable at $GUARD" >&2; exit 1; }
 
 pass=0
@@ -46,6 +47,9 @@ git config user.name "Self Test"
 mkdir -p scripts deployment
 cp "$GUARD" scripts/check-no-personal-data.sh
 GUARD="$sandbox/scripts/check-no-personal-data.sh"
+mkdir -p .githooks
+cp "$SRC_DIR/../.githooks/pre-push" .githooks/pre-push 2>/dev/null || true
+HOOK="$sandbox/.githooks/pre-push"
 printf 'deployment/\n' >.gitignore
 printf 'examplebank\n' >deployment/roster-tokens.txt
 printf 'someoperator\n' >deployment/identity-tokens.txt
@@ -87,6 +91,10 @@ check "tip revision alone is clean" 0 --rev "$sanitized_tip"
 check "RANGE still catches the leak behind a clean tip" 1 --range "$clean_tip" "$sanitized_tip"
 zero=$(printf '%040d' 0)
 check "new-branch push scans all reachable history" 1 --range "$zero" "$sanitized_tip"
+# A backwards force-push yields an empty range. Expanding an empty array under `set -u`
+# is an error on bash 3.2, which is /bin/bash on macOS -- so this case is about the
+# guard surviving, not about what it finds.
+check "empty range (backwards force-push) is not an error" 0 --range "$sanitized_tip" "$sanitized_tip"
 
 echo
 echo "failing closed"
@@ -101,6 +109,53 @@ printf 'examplebank' >deployment/roster-tokens.txt
 printf 'ExampleBank appears here.\n' >>docs.md
 check "  ...and that last token actually matches" 1
 git checkout -q docs.md 2>/dev/null || true
+
+echo
+echo "pre-push hook -- the guard's only real consumer"
+ZERO40=$(printf '%040d' 0)
+
+# The hook reads `<local_ref> <local_sha> <remote_ref> <remote_sha>` on stdin. These
+# cases exercise that parsing, the deletion skip, and the fail-closed branch -- none of
+# which the guard's own cases can reach.
+hook_check() {
+    local name=$1 expected=$2 stdin=$3
+    local rc=0
+    printf '%s\n' "$stdin" | "$HOOK" >/dev/null 2>&1 || rc=$?
+    if [[ $rc == "$expected" ]]; then
+        printf '  ok    %-58s (exit %s)\n' "$name" "$rc"
+        pass=$((pass + 1))
+    else
+        printf '  FAIL  %-58s (exit %s, wanted %s)\n' "$name" "$rc" "$expected"
+        fail=$((fail + 1))
+    fi
+}
+
+if [[ -x $HOOK ]]; then
+    printf 'examplebank\n' >deployment/roster-tokens.txt
+    printf 'someoperator\n' >deployment/identity-tokens.txt
+
+    hook_check "clean range passes" 0 \
+        "refs/heads/develop $clean_tip refs/heads/develop $clean_tip"
+    hook_check "range carrying the leak is blocked" 1 \
+        "refs/heads/develop $sanitized_tip refs/heads/develop $clean_tip"
+    hook_check "new branch (all-zero remote) scans all history" 1 \
+        "refs/heads/develop $sanitized_tip refs/heads/develop $ZERO40"
+    hook_check "branch deletion pushes no content, so it passes" 0 \
+        "refs/heads/develop $ZERO40 refs/heads/develop $sanitized_tip"
+
+    chmod -x scripts/check-no-personal-data.sh
+    hook_check "non-executable guard BLOCKS rather than passing silently" 1 \
+        "refs/heads/develop $clean_tip refs/heads/develop $clean_tip"
+    chmod +x scripts/check-no-personal-data.sh
+
+    mv scripts/check-no-personal-data.sh scripts/.stashed
+    hook_check "missing guard BLOCKS rather than passing silently" 1 \
+        "refs/heads/develop $clean_tip refs/heads/develop $clean_tip"
+    mv scripts/.stashed scripts/check-no-personal-data.sh
+else
+    printf '  FAIL  %-58s (hook not found at %s)\n' "pre-push hook present" "$HOOK"
+    fail=$((fail + 1))
+fi
 
 echo
 echo "no roster present -- the state every other clone is in"

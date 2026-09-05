@@ -41,10 +41,10 @@ to confirm, and neither blocks Chunk 01.
 
 ## Status
 
-- [ ] Chunk 01: Rebuild the public surface — roster out, layering contract kept
+- [x] Chunk 01: Rebuild the public surface — roster out, layering contract kept
 - [ ] Chunk 02: Purge the roster from history and force-push
 
-Context: Chunk 01 built and reviewed (rev-20260905T203743Z-4323aa3a: 3 blocking, 10 warning, 6 note — all dispositioned in one pass). Supersedes deployment-requirements.md
+Context: Chunk 01 COMPLETE. Reviewed twice — rev-20260905T203743Z-4323aa3a (3 blocking, 10 warning, 6 note, all dispositioned in one pass) and rev-20260905T205926Z-54fa7e28 (0/0/0, 13 of 13 resolutions verified fixed). All six demoted observations from the second review were taken. Supersedes deployment-requirements.md
 open question 6.4, which asked where the roster should live: the operator's answer this
 session — MCPlaid is a general-purpose tool that may be published, with nothing specific to
 them in it — resolves it to option (a), plus the history rewrite that option (a) left open.
@@ -71,8 +71,13 @@ No Python test runner exists yet, and creating one would fix the package name ah
 rename decision. So the guard and its self-test are shell, run directly:
 
 ```sh
-./scripts/check-no-personal-data.selftest.sh   # 15 cases; must report 0 failed
+./scripts/check-no-personal-data.selftest.sh   # 22 cases; must report 0 failed
 ```
+
+No `test_command:` is declared in `project-state.yaml`: that key's contract requires the value to
+contain a `{junit_xml}` literal, and a 22-case shell script has no business emitting JUnit. It
+would pass today — evidence is recorded via `--from-counts` — and break the first time anything
+tried to launch it.
 
 The migration obligation is recorded in two durable places, not just here: the
 `project-preferences.md` norm row, and `docs/system-requirements.md` §8 build step 1 — which is
@@ -80,12 +85,18 @@ the step that lands the test runner and therefore the moment the move is trigger
 
 ### Scaffold Verification
 
-`bash scripts/check-no-personal-data.selftest.sh` runs 15 cases in a throwaway repository under
-`$TMPDIR` and must report `0 failed`. It covers both directions — clean passes, tokens caught —
-plus the two that matter most and are not obvious: **a leak in history behind a sanitized tip**
-(which a worktree-only guard reports clean, and which is the exposure this project actually had),
-and **failing closed** on a malformed token file. A guard only ever tested green is a guard nobody
-knows is wired up; this one failed 7 of 15 on its first run and caught a real defect in the guard.
+`./scripts/check-no-personal-data.selftest.sh` runs 22 cases in a throwaway repository under
+`$TMPDIR` and must report `0 failed`. Verified under both bash 5 and `/bin/bash` 3.2, which is what
+macOS actually ships. It covers both directions — clean passes, tokens caught — plus the four that
+matter and are not obvious: **a leak in history behind a sanitized tip** (which a worktree-only
+guard reports clean, and which is the exposure this project actually had); **failing closed** on a
+malformed token file; **the pre-push hook's own stdin parsing**, deletion skip and missing-guard
+branch, because exercising a guard but never its only caller leaves the claim one layer short of
+the boundary it defends; and an **empty range**, where expanding an empty array under `set -u`
+errors on bash 3.2.
+
+A guard only ever tested green is a guard nobody knows is wired up. This one failed 7 of its first
+15 cases and the cause was a real defect in the guard, not in the test.
 
 ### Verification Strategy
 
@@ -150,8 +161,9 @@ accounts it was derived from.
   - `docs/build-vs-adopt-investigation.md` sanitized in place: no operator name, no machine
     name, no institution name, no account counts
   - new `scripts/check-no-personal-data.sh`
-  - new `scripts/check-no-personal-data.selftest.sh` — 15 cases in a throwaway repo, so
-    "exercised in both directions" is reproducible rather than asserted
+  - new `scripts/check-no-personal-data.selftest.sh` — 22 cases in a throwaway repo covering
+    the guard AND the hook that calls it, so "exercised in both directions" is reproducible
+    rather than asserted
   - new `README.md` — carries the `core.hooksPath` enable step, which cannot live only
     inside the hook file it enables
   - `.githooks/pre-push` calls the guard on every push, not just pushes to `main`
@@ -159,8 +171,8 @@ accounts it was derived from.
   - `.prawduct/project-state.yaml` `artifact_manifest` updated: the two moved docs are no
     longer repo artifacts; the template is
   - `docs/system-requirements.md` companion references repointed at the template
-- **Tests:** `scripts/check-no-personal-data.selftest.sh` — 15 cases, all passing, run and
-  recorded as test evidence
+- **Tests:** `scripts/check-no-personal-data.selftest.sh` — 22 cases, all passing on bash 5 and
+  bash 3.2, run and recorded as test evidence
 - **Acceptance criteria:**
   1. No tracked file contains an institution name, the operator's name, the machine name, or a
      balance figure — **except** an identity-owned GitHub repository slug (`<owner>/<repo>`),

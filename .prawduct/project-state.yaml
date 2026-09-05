@@ -704,9 +704,12 @@ artifact_manifest:
 build_state:
   source_root: null           # Set during planning, before the first build chunk.
 
-# The suite is shell until the Python scaffold lands (build step 1), because a
-# `tests/` tree would fix the package name ahead of the rename decision.
-test_command: ./scripts/check-no-personal-data.selftest.sh
+# No `test_command:` is declared. The suite is `./scripts/check-no-personal-data.selftest.sh`
+# -- shell, until the Python scaffold lands at build step 1 -- and this key's contract
+# requires the value to contain the `{junit_xml}` literal, which a 15-case shell script has
+# no business emitting. Declaring it anyway would pass today (evidence is recorded via
+# --from-counts) and break the first time anything tried to launch it. The command is
+# recorded in the build plan's Build & Test Configuration instead.
 
 # =============================================================================
 # ACTIVE BUILD PLAN (optional)

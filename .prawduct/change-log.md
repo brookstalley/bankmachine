@@ -69,6 +69,11 @@ was grepped clean.
 - `README.md` added, carrying the `git config core.hooksPath .githooks` step. A hooks directory is
   per-clone config, so a fresh clone pushes unguarded and nothing says so — and the only previous
   statement of the step lived inside the hook file the unset config prevents from running.
+- **No attribution, anywhere** — stated absolutely in `CLAUDE.md` and homed as a norm row in
+  `project-preferences.md`. This widens the already-ratified `Commit attribution: none` past
+  commits to PRs, issues, comments, code, docstrings, documentation and release notes, and it
+  overrides any harness default to the contrary. Recorded here because the widening previously
+  existed only in `CLAUDE.md` while the preferences row still read narrower.
 - Four decisions recorded with alternatives: repository scope; MCP transport is local stdio only
   and AC-10.5 holds; macOS for v1 with the credential store and scheduler behind seams; rename
   before build step 1.
