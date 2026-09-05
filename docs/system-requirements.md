@@ -3,6 +3,11 @@
 **Layer:** the engine. **Companion:** `deployment-requirements.md` (one operator's roster).
 **Date:** 2026-09-05 (v2 — provider-agnostic split) · **Status:** ready to plan
 
+> **Supersedes** `plaid-pipeline-acceptance-criteria.md` (v1), which split into two documents:
+> this one, holding the engine, and `deployment-requirements.md`, holding the roster. Every v1
+> criterion lands in one of the two, generalized or instantiated, except AC-A.4 — explicitly
+> superseded in `deployment-requirements.md` DAC-2.3.
+
 ---
 
 ## 0. Purpose and success condition
@@ -22,7 +27,12 @@ happens downstream, after the verification gate in §7 passes.
 ### 0.1 The layering rule
 
 This document describes a system that **knows nothing about any particular financial institution.**
-No institution, vendor, or product name appears in this document, in the code, or in the schema.
+No **financial-institution, account, or financial-product name** appears in this document, in the
+code, or in the schema.
+
+The **aggregator is expressly carved out** and is not what this rule governs: it is a single named
+dependency in v1 (see the scope note below), so its client package, the keychain service name, and
+the product name may name it. The rule binds *roster* identity.
 
 The set of institutions an operator actually connects — which ones, in what order, which need file
 import instead of the aggregator, which carry special rules — lives in `deployment-requirements.md`
@@ -37,7 +47,12 @@ there.
 code change, and removal never destroys history (see FR-6).
 
 **AC-0.3** — An automated check asserts that no name from the deployment roster appears under the
-source root.
+source root. 🔴 **The roster config carries explicit per-entry match tokens** and the check matches
+*those*, on word boundaries, over the source and schema roots only. Matching on roster labels
+directly fails both ways: a label is the institution's own spelling, so a shortened token in code
+slips past a literal match, while tokenizing a label collides with unrelated legitimate text (a
+hardware or OS name that happens to share a word). Either failure ends with someone weakening this
+norm's own test on its first red run.
 
 > **Scope note on "provider".** In this document *provider* means a financial institution. The
 > **aggregator** — the API vendor through which institutions are reached — is a single named
@@ -61,28 +76,28 @@ file imports  ──┘                                                         
 - **Scheduling:** an OS-level user agent, daily. Survives reboot; requires no open terminal.
 - **MCP transport:** stdio, registered in the MCP client's config.
 
-**AC-1.1** — A fresh clone plus documented setup steps produce a working sync on a clean machine,
+**AC-ARCH.1** — A fresh clone plus documented setup steps produce a working sync on a clean machine,
 with no undocumented manual steps.
 
-**AC-1.2** — The scheduled job runs daily, logs to a configured log directory, and **recovers from a
+**AC-ARCH.2** — The scheduled job runs daily, logs to a configured log directory, and **recovers from a
 missed run** (machine asleep) on next wake rather than skipping the window.
 
-**AC-1.3** — The MCP server starts successfully when the datastore is empty or missing, and reports
+**AC-ARCH.3** — The MCP server starts successfully when the datastore is empty or missing, and reports
 that state through `get_pipeline_health` rather than crashing.
 
-**AC-1.4** — 🔴 **No filesystem path is hardcoded.** The datastore path, log directory, and config
+**AC-ARCH.4** — 🔴 **No filesystem path is hardcoded.** The datastore path, log directory, and config
 location are configuration values with documented defaults. The repo location is not assumed by
 any code path.
 
-**AC-1.5** — The datastore is encrypted at rest with page-level encryption, so that a file-copy
+**AC-ARCH.5** — The datastore is encrypted at rest with page-level encryption, so that a file-copy
 backup is ciphertext without further work. Encryption is verified by a test asserting that a known
 plaintext written through the schema is not recoverable from the raw file bytes.
 
-**AC-1.6** — Because page encryption breaks ad-hoc SQL tooling, the system ships `sync shell` — an
+**AC-ARCH.6** — Because page encryption breaks ad-hoc SQL tooling, the system ships `sync shell` — an
 authenticated REPL against the datastore. 🔴 **Built in step 1, not step 9:** it is the primary
 debugging affordance for every step in between, most of all the §7 gate.
 
-**AC-1.7** — The sync writer and the MCP reader are separate processes over one datastore file, and
+**AC-ARCH.7** — The sync writer and the MCP reader are separate processes over one datastore file, and
 may run concurrently. Journal mode, locking behavior, and reader isolation under encryption are
 specified in the system architecture, not left to whichever component encounters them first. The
 MCP server must not depend on sync liveness, nor the reverse.
@@ -160,6 +175,14 @@ enrollment and stored per connection. Securities live in their own table, refere
 
 **AC-3.3** — Investment pulls request the full configured window where supported, and **record the
 actual date range returned**, so shortfalls are visible rather than silent.
+
+**AC-3.4** — 🔴 **Liability accounts (loans, lines of credit) are covered by account type, balance,
+and transactions — the same path as any other account.** Liability-*product* detail (APR, minimum
+payment, payoff date, statement schedule) is **explicitly out of scope for v1**, and no liabilities
+capability or table is specified. This is a recorded descope, not an omission: a debt's contribution
+to net worth and cashflow needs only its balance and its transactions, both of which the general
+path supplies. Adding liability detail later is a new capability under AC-3.2's model, not a
+redesign.
 
 ### FR-4 · Connection health and re-auth
 

@@ -19,7 +19,7 @@ classification:
     has_human_interface:
       modality: terminal
       platform: desktop
-    # launchd user agent, daily, must survive reboot and missed windows (AC-1.2).
+    # launchd user agent, daily, must survive reboot and missed windows (AC-ARCH.2).
     runs_unattended:
       trigger: scheduled
     # MCP server over stdio consumed by Claude Desktop/Cowork; CLI for the operator.
@@ -45,7 +45,7 @@ classification:
       implications:
         - "A degraded feed produces confidently wrong analysis, not an error."
         - "Every MCP response carries a freshness stamp (AC-9.2) and a gap/degraded warning (AC-9.3)."
-        - "Health must record LAST SUCCESSFUL SYNC, not just a degraded flag, so the hole is computable (AC-A.5)."
+        - "Health must record LAST SUCCESSFUL SYNC, not just a degraded flag, so the hole is computable (AC-4.5)."
     - characteristic: "The provider roster changes over time; the engine must not"
       implications:
         - "No institution, account, or vendor name may appear in code or schema. See technical_decisions.architecture."
@@ -182,7 +182,7 @@ product_definition:
       - "Data-driven account rules, including the contribution-only shared-account rule (FR-8)"
       - "Read-only aggregate-first MCP surface, 10 tools, freshness stamps and gap warnings (§5)"
       - "Keychain-backed secrets, SQLCipher at rest, redacted logs, no telemetry (§6)"
-      - "launchd scheduling with missed-window recovery and logging (AC-1.2)"
+      - "launchd scheduling with missed-window recovery and logging (AC-ARCH.2)"
       - "`sync shell` — authenticated SQLCipher REPL, built in step 1 as the debugging affordance for every later step"
       - "The §7 verification gate, run and published"
     accommodate:
@@ -227,8 +227,8 @@ product_definition:
       over 24 months. Scale is not a design driver; correctness is.
     uptime: >
       The sync is a daily scheduled job, not a service — a missed window must be recovered on next
-      wake rather than skipped (AC-1.2). The MCP server must start and answer even when the
-      database is empty or missing, reporting that state rather than crashing (AC-1.3).
+      wake rather than skipped (AC-ARCH.2). The MCP server must start and answer even when the
+      database is empty or missing, reporting that state rather than crashing (AC-ARCH.3).
     cost_constraints: >
       Plaid Trial plan — hard cap of 10 Items, which the enrollment path must enforce (AC-1.5) as
       configuration rather than a literal. No hosting cost: everything runs locally.
@@ -258,8 +258,11 @@ technical_decisions:
       alternatives_considered: "Fork or clone-and-run one of six candidate repos, all read at source level."
       date: 2026-09-05
     - decision: >
-        PROVIDER-AGNOSTIC ENGINE. No institution, vendor, account, or product name appears in code,
-        schema, or query logic. Provider-specific behavior is expressed as data: the institution
+        PROVIDER-AGNOSTIC ENGINE. No financial-institution, account, or financial-product name from
+        the deployment roster appears in code, schema, or query logic. The AGGREGATOR is expressly
+        carved out — it is a single named dependency in v1 (system-requirements.md §0.1 scope note),
+        so its client package, the keychain service name, and the product name may name it. The norm
+        binds roster identity, not the aggregator. Provider-specific behavior is expressed as data: the institution
         roster, per-account rules, product capabilities per Item, and import-format adapters are all
         configuration the operator edits, and accounts are added and removed over the product's life
         without a code change.
@@ -304,8 +307,8 @@ technical_decisions:
 
   technology:
     - decision: "Python 3.11+ on macOS, native."
-      rationale: "Builder's choice per AC-1; strongest ecosystem for the data and SQLite layers here. Verified on this machine at 3.12.3."
-      alternatives_considered: "Node 22+, permitted by AC-1."
+      rationale: "Builder's choice per system-requirements.md §1 Architecture; strongest ecosystem for the data and SQLite layers here. Verified on this machine at 3.12.3."
+      alternatives_considered: "Node 22+, permitted by the v1 requirements doc before this decision narrowed it."
       date: 2026-09-05
     - decision: "SQLCipher Community Edition via the sqlcipher3-wheels package, key held in Keychain."
       rationale: >
@@ -316,7 +319,9 @@ technical_decisions:
         known plaintext not recoverable from raw bytes, wrong key raises rather than returning
         garbage.
       alternatives_considered: >
-        (a) Plain SQLite as AC-1 literally specifies — rejected, leaves the backup in plaintext.
+        (a) Plain SQLite, as the v1 requirements doc specified before this decision superseded it —
+        rejected, leaves the backup in plaintext. system-requirements.md §1 now specifies page
+        encryption (AC-ARCH.5), so the doc and this decision agree.
         (b) Plain SQLite with application-level AES on sensitive columns — rejected, and the
         rejection is load-bearing: it destroys the SQL queryability that AC-9.1's aggregate-first
         design depends on (no range scans on date, no GROUP BY category, no SUM in SQL, no useful
@@ -393,7 +398,7 @@ technical_decisions:
       alternatives_considered: "Relocate the repo to match the doc; or hardcode the doc's absolute datastore path."
       date: 2026-09-05
     - decision: "launchd user agent, daily, with missed-window recovery rather than window-skipping."
-      rationale: "A laptop asleep at the scheduled time is the normal case, not the exception. Skipping is silent data staleness (AC-1.2)."
+      rationale: "A laptop asleep at the scheduled time is the normal case, not the exception. Skipping is silent data staleness (AC-ARCH.2)."
       alternatives_considered: "cron. Rejected: does not survive sleep or handle missed windows on macOS."
       date: 2026-09-05
     - decision: "Secrets live in the macOS Keychain — provider credentials, access tokens, and the datastore key. Never in the repo, a dotfile, shell history, or a log line."
@@ -401,7 +406,7 @@ technical_decisions:
       alternatives_considered: "An encrypted dotfile. Rejected: moves the key problem rather than solving it."
       date: 2026-09-05
     - decision: "One broken Item never aborts the sync for the others; degradation is recorded with its error code AND the timestamp of last successful sync."
-      rationale: "A degraded flag without a date makes the size of the resulting data hole unguessable. Observed live in the incumbent system, where two connections had been dead for an unknown duration (AC-A.5)."
+      rationale: "A degraded flag without a date makes the size of the resulting data hole unguessable. Observed live in the incumbent system, where two connections had been dead for an unknown duration (AC-4.5)."
       alternatives_considered: "Fail the run on any Item error."
       date: 2026-09-05
 
@@ -524,10 +529,19 @@ open_questions:
     blocking: "Enrollment (build step 3) only. Steps 1-2 — schema, raw layer, aggregator client against sandbox — do not depend on it."
     waiting_on: user
     priority: medium
-  - question: "Should docs/deployment-requirements.md live in the repo at all? It names institutions and carries balances, while .gitignore otherwise excludes every financial specific. Tracked as deployment open question 6.4."
-    blocking: "Nothing technical. It is a data-exposure decision the operator owns."
+  - question: >
+      Where should the roster live? This is RETROSPECTIVE, not prospective: origin/develop already
+      contains docs/data-sources.md carrying institution names and balances (and the v1 requirements
+      doc in history), so the data has already left the machine once — against the constraint
+      recorded in this file and the intent stated in .gitignore. The remote is verified PRIVATE.
+      Two live options: (a) move the roster to a gitignored config/data path, which is the ratified
+      norm applied to itself, and decide whether the already-pushed files need history rewriting or
+      acceptance; or (b) accept the private remote and record it as a decision here with the
+      remote's visibility stated, so the constraint's real boundary is written down rather than
+      contradicted in silence. Tracked as deployment open question 6.4.
+    blocking: "Nothing technical, but it should be settled before the next push rather than after."
     waiting_on: user
-    priority: medium
+    priority: high
   - question: "Retention policy for raw responses: keep indefinitely (recommended — volume is trivial and it is the system of record) or prune after N months?"
     blocking: "Nothing immediately; it is a config default with a documented rationale."
     waiting_on: user
@@ -549,7 +563,7 @@ user_expertise:
   evidence:
     - dimension: product_thinking
       signal: "Wrote acceptance criteria with explicit non-goals, a named primary failure mode, and a verification gate placed before any analysis."
-      inferred_from: "docs/plaid-pipeline-acceptance-criteria.md §2, §7"
+      inferred_from: "docs/system-requirements.md §2, §7"
     - dimension: product_thinking
       signal: "Interrupted a discovery pass to impose a generality constraint before any code existed, rather than discovering it during a later refactor."
       inferred_from: "Session 2026-09-05: no hardcoded account providers."
@@ -558,13 +572,13 @@ user_expertise:
       inferred_from: "Session 2026-09-05."
     - dimension: technical_depth
       signal: "Specified cursor-based sync with transactional cursor persistence, integer cents, and a bronze/silver split unprompted."
-      inferred_from: "docs/plaid-pipeline-acceptance-criteria.md FR-2, FR-5, AC-6.2"
+      inferred_from: "docs/system-requirements.md FR-2, FR-5, AC-6.2"
     - dimension: domain_knowledge
       signal: "Identified days_requested immutability as the single highest-stakes parameter before building anything."
-      inferred_from: "docs/plaid-pipeline-acceptance-criteria.md AC-1.2, §9"
+      inferred_from: "docs/system-requirements.md AC-1.2 (FR-1), §8 build sequence"
     - dimension: operational_awareness
       signal: "Required missed-window recovery rather than window-skipping, and last-successful-sync dating on degraded feeds."
-      inferred_from: "AC-1.2, AC-A.5"
+      inferred_from: "docs/system-requirements.md AC-ARCH.2, AC-4.5"
     - dimension: operational_awareness
       signal: "Vetted a candidate dependency at source level and rejected it on undisclosed browser-storage scraping that its README did not describe."
       inferred_from: "docs/data-sources.md"
