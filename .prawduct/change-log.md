@@ -34,14 +34,9 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
-## 2026-09-05: Roster moved out of git and the boundary guarded (history purge is Chunk 02, pending)
+## 2026-09-05: Repository made publishable — roster out of git, history purged, boundary guarded
 
 <!-- prawduct: scope=repo-sanitization -->
-
-🔴 **The remote still carries the roster.** This entry covers Chunk 01 only. The
-`git filter-repo` purge and force-push are Chunk 02 and are **not done**, so `origin/develop`
-still holds institution names and balances in three doc paths. The leak guard blocks a push
-until they are gone.
 
 **Why:** The operator restated the product. MCPlaid is a **general-purpose tool, not linked to
 their personal finances** — consumed by Claude Cowork, and possibly released publicly, so nothing
@@ -74,6 +69,15 @@ was grepped clean.
   commits to PRs, issues, comments, code, docstrings, documentation and release notes, and it
   overrides any harness default to the contrary. Recorded here because the widening previously
   existed only in `CLAUDE.md` while the preferences row still read narrower.
+- **History purged.** `git filter-repo` removed five paths from every commit; `develop` and `main`
+  were force-pushed. Verified by fresh clone: zero institution or operator tokens anywhere in the
+  remote's history. Two paths were purged and re-added at their current content rather than
+  scrubbed in place — the decision record and the guard itself, both of which carried in early
+  revisions exactly what the purge exists to remove.
+- **The fifth path was found by the guard, not by us.** The purge was planned as four paths. The
+  finished guard, scanning all history, reported a fifth: Chunk 01's own first commit hardcoded
+  identity tokens in the guard's source — the arrangement the Critic's R-9 had just made us
+  remove. The check caught its author.
 - Four decisions recorded with alternatives: repository scope; MCP transport is local stdio only
   and AC-10.5 holds; macOS for v1 with the credential store and scheduler behind seams; rename
   before build step 1.

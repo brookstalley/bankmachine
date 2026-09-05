@@ -42,14 +42,19 @@ to confirm, and neither blocks Chunk 01.
 ## Status
 
 - [x] Chunk 01: Rebuild the public surface — roster out, layering contract kept
-- [ ] Chunk 02: Purge the roster from history and force-push
+- [x] Chunk 02: Purge the roster from history and force-push
 
 Context: Chunk 01 COMPLETE. Reviewed twice — rev-20260905T203743Z-4323aa3a (3 blocking, 10 warning, 6 note, all dispositioned in one pass) and rev-20260905T205926Z-54fa7e28 (0/0/0, 13 of 13 resolutions verified fixed). All six demoted observations from the second review were taken. Supersedes deployment-requirements.md
 open question 6.4, which asked where the roster should live: the operator's answer this
 session — MCPlaid is a general-purpose tool that may be published, with nothing specific to
 them in it — resolves it to option (a), plus the history rewrite that option (a) left open.
-Next: Chunk 02, the history purge. 🔴 Until it lands, `origin` still carries the roster and the
-leak guard blocks every push — which is the guard working, not a problem to route around.
+Chunk 02 COMPLETE 2026-09-05: five paths purged from all history, `develop` and `main`
+force-pushed, verified by fresh clone — zero roster or operator tokens across the remote's entire
+history. Plan is done; both boxes ticked.
+
+The pre-rewrite mirror backup is at `<session scratchpad>/pre-rewrite-backup.git` and is the only
+copy of the deleted history. It disappears with the session directory, which is the intent — but
+if anything about the rewrite needs revisiting, it must be revisited before then.
 
 ## Scaffolding
 
