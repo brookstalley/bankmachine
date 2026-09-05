@@ -1,12 +1,14 @@
 # MCPlaid — System Requirements v2
 
-**Layer:** the engine. **Companion:** `deployment-requirements.md` (one operator's roster).
+**Layer:** the engine. **Companion:** a deployment-requirements document (one operator's roster),
+which is deliberately not in this repository — `deployment-requirements.template.md` is its shape
+and says where the filled-in copy goes.
 **Date:** 2026-09-05 (v2 — provider-agnostic split) · **Status:** ready to plan
 
-> **Supersedes** `plaid-pipeline-acceptance-criteria.md` (v1), which split into two documents:
-> this one, holding the engine, and `deployment-requirements.md`, holding the roster. Every v1
-> criterion lands in one of the two, generalized or instantiated, except AC-A.4 — explicitly
-> superseded in `deployment-requirements.md` DAC-2.3.
+> **Supersedes** a v1 acceptance-criteria document that split into two: this one, holding the
+> engine, and a deployment-requirements document holding the roster. Every v1 criterion lands in
+> one of the two, generalized or instantiated, except one — a pre-enrollment entity check that
+> the roster explicitly superseded by deciding not to enroll that connection at all.
 
 ---
 
@@ -35,10 +37,13 @@ dependency in v1 (see the scope note below), so its client package, the keychain
 the product name may name it. The rule binds *roster* identity.
 
 The set of institutions an operator actually connects — which ones, in what order, which need file
-import instead of the aggregator, which carry special rules — lives in `deployment-requirements.md`
-and is expressed as **configuration and adapters**.
+import instead of the aggregator, which carry special rules — lives in the operator's own
+deployment-requirements document and is expressed as **configuration and adapters**. 🔴 That
+document is **not** version-controlled here: a roster names institutions and usually balances, and
+this repository is a general-purpose tool. `deployment-requirements.template.md` carries the shape
+and the contract; `scripts/check-no-personal-data.sh` enforces the boundary on every push.
 
-**AC-0.1** — 🔴 Every requirement in `deployment-requirements.md` must be satisfiable by
+**AC-0.1** — 🔴 Every requirement in the deployment-requirements document must be satisfiable by
 configuration plus an adapter, with **zero change to this system.** A deployment requirement that
 cannot be met that way is a gap in *this* document, and must be fixed here rather than special-cased
 there.
@@ -47,7 +52,9 @@ there.
 code change, and removal never destroys history (see FR-6).
 
 **AC-0.3** — An automated check asserts that no name from the deployment roster appears under the
-source root. 🔴 **The roster config carries explicit per-entry match tokens** and the check matches
+source root. A second, wider check — `scripts/check-no-personal-data.sh`, wired into `pre-push` —
+asserts the same over **every tracked file**, because this repository may be published and the
+leak this project actually had was in documentation, not in code. 🔴 **The roster config carries explicit per-entry match tokens** and the check matches
 *those*, on word boundaries, over the source and schema roots only. Matching on roster labels
 directly fails both ways: a label is the institution's own spelling, so a shortened token in code
 slips past a literal match, while tokenizing a label collides with unrelated legitimate text (a
@@ -411,4 +418,5 @@ complete.
 3. **Project name.** `MCPlaid` is a working name. Cost of renaming rises once package names, the
    scheduler label, and the keychain service name are fixed.
 
-Deployment-layer open questions live in `deployment-requirements.md`.
+Deployment-layer open questions live in the operator's own deployment-requirements document, and
+so are not listed here — see `deployment-requirements.template.md` §6 for how they are tracked.

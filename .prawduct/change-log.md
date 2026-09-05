@@ -34,6 +34,49 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-05: Repository made publishable — roster out of git, history rewritten
+
+<!-- prawduct: scope=repo-sanitization -->
+
+**Why:** The operator restated the product. MCPlaid is a **general-purpose tool, not linked to
+their personal finances** — consumed by Claude Cowork, and possibly released publicly, so nothing
+specific to them may be in it. That resolved the open question the previous entry left standing,
+and resolved it harder than either option on the table: the roster does not belong in this
+repository at all.
+
+The exposure was measured rather than estimated. `origin/develop` carried the operator's
+institution names and balances in exactly three paths, and every other tracked file at that ref
+was grepped clean.
+
+**What changed:**
+
+- The roster and its account-inventory evidence moved to the gitignored `deployment/` directory.
+  `docs/deployment-requirements.template.md` keeps what was worth keeping — the zero-engine-change
+  contract and the §7 traceability table — with no institution, balance or account count in it.
+  That contract is what makes the engine spec trustworthy to a reader who is not this operator.
+- `docs/build-vs-adopt-investigation.md` sanitized in place: operator name, machine name,
+  institution names and account counts out; every technical finding, including the source-level
+  vetting of the candidate MCP servers, kept intact.
+- `scripts/check-no-personal-data.sh` added and wired into `pre-push` on **every** branch. It
+  matches the roster's own explicit tokens (engine AC-0.3) plus operator identity, on word
+  boundaries, over every tracked file. A checkout with no `deployment/` directory has no roster to
+  leak and passes with a note — which is why the guard itself is safe to publish.
+- Four decisions recorded with alternatives: repository scope; MCP transport is local stdio only
+  and AC-10.5 holds; macOS for v1 with the credential store and scheduler behind seams; rename
+  before build step 1.
+
+**Two things the guard caught that review had not.** Its first run failed on the tree it was
+written for, which is the only way to learn that a guard is wired up. One hit was a GitHub
+repository slug — inherently public the moment the repo is — now handled by a general rule that
+strips *identity-owned* slugs only, so a path like `docs/<institution>-notes.md` is still caught.
+The other was `copilot`, which had no business in a roster token list: the incumbent aggregator is
+an evaluated alternative and §0.1 carves the aggregator out, so the prior-art analysis naming it
+stays.
+
+**Note on the mechanism.** The guard is a shell script rather than a `tests/preferences/` test
+because no Python scaffold exists yet, and creating one would fix the package name ahead of the
+rename decision. It moves under `tests/preferences/` when the scaffold lands.
+
 ## 2026-09-05: Discovery captured; requirements split into engine and roster layers
 
 **Why:** The repo held three substantial docs but a template-default `project-state.yaml`, so
@@ -48,10 +91,10 @@ they simply belong to a different layer than the engine.
 
 **What changed:**
 
-- `docs/plaid-pipeline-acceptance-criteria.md` split into `docs/system-requirements.md` (the
-  provider-agnostic engine, no institution name in it) and `docs/deployment-requirements.md` (this
-  operator's roster, as real acceptance criteria). All 47 v1 criteria land in one or the other,
-  generalized or instantiated; one is explicitly superseded.
+- The v1 acceptance-criteria document split into `docs/system-requirements.md` (the
+  provider-agnostic engine, no institution name in it) and a deployment-requirements document
+  holding this operator's roster, as real acceptance criteria. All 47 v1 criteria land in one or
+  the other, generalized or instantiated; one is explicitly superseded.
 - A load-bearing rule connects them: every deployment requirement must be satisfiable by
   configuration plus an adapter with zero engine change. The traceability table is its checkable
   form — a deployment requirement that cannot be expressed that way is a gap in the engine spec.
@@ -64,7 +107,8 @@ they simply belong to a different layer than the engine.
 
 **Open, and the operator's to decide:** where the roster lives. `origin/develop` already carries
 institution names and balances, against the constraint this project records; the remote is private.
-Both options are written up in `deployment-requirements.md` §6.4.
+*(Closed 2026-09-05 by the entry above this one: the roster moved out of git and the history was
+rewritten.)*
 
 **Reviewed:** `rev-20260905T195208Z-c1f3c450` (2 blocking, 9 warning, 5 note — all resolved),
 verified clean by `rev-20260905T200406Z-290b9dcb`.

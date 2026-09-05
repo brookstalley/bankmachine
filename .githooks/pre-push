@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 #
-# Gitflow guard: main is a release-only branch.
+# Two independent pre-push guards:
+#
+#   1. Leak guard: no roster or operator identity in a tracked file. Runs on
+#      EVERY push, because this repository is a general-purpose tool that may be
+#      published, and the leak this guard exists to stop was documentation
+#      reaching a remote -- which no branch-scoped check would have caught.
+#
+#   2. Gitflow guard: main is a release-only branch.
 #
 # GitHub-side branch protection is a paid feature on private repos, so this
 # hook stands in for it locally. It is a guardrail against slips, not an
@@ -17,6 +24,15 @@
 
 set -euo pipefail
 
+# --- 1. Leak guard -------------------------------------------------------
+# Runs before the gitflow guard: a push carrying roster identity is wrong no
+# matter which branch it targets.
+repo_root=$(git rev-parse --show-toplevel)
+if [ -x "$repo_root/scripts/check-no-personal-data.sh" ]; then
+    "$repo_root/scripts/check-no-personal-data.sh" || exit 1
+fi
+
+# --- 2. Gitflow guard ----------------------------------------------------
 PROTECTED="refs/heads/main"
 ZERO=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
 

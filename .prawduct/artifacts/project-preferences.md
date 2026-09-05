@@ -6,6 +6,8 @@ Developer preferences for how code is written in this project. Captured during d
 
 - **Language**: Python
 - **Version**: 3.11+ (verified on 3.12.3, Apple Silicon). Native macOS, not containerized.
+  **macOS is supported and tested; other platforms are unverified, not excluded** — the credential
+  store and the scheduler sit behind seams so a port is a new implementation, not a refactor.
 - **Package manager**: uv (dependency resolution, lockfile, venv). `uv run` for all dev commands.
 
 ## Code Style
@@ -44,7 +46,11 @@ Developer preferences for how code is written in this project. Captured during d
 
 - **Key libraries**: `sqlcipher3-wheels` — this is the package that works on Apple Silicon.
   `sqlcipher3-binary` is unavailable for this platform; `sqlcipher3` and `pysqlcipher3` need a
-  Homebrew build step. Keychain access is via the `security` CLI, verified round-tripping.
+  Homebrew build step. **Credential storage goes through `keyring`**, not direct `security` CLI
+  calls: it wraps macOS Keychain, Windows Credential Manager and SecretService behind one
+  interface, so the one part of the system that is genuinely painful to port later costs nothing
+  to abstract now. The `security` CLI round-trip was verified during discovery and remains the
+  fallback if `keyring` proves unsuitable — but it is no longer the specified mechanism.
 - **Dev commands**: (unset — set when the project scaffold lands)
 
 ## Workflow
@@ -88,7 +94,8 @@ the Direction entry it points at.
 | Preference / norm | Mechanism | Enforcement artifact | Audit home | Why |
 |---|---|---|---|---|
 | Provider-agnostic engine: no **financial-institution, account or financial-product name from the deployment roster** in code or schema; the roster, per-account rules, product capabilities and import-format adapters are configuration. **The aggregator is expressly carved out** — a single named dependency in v1 (`system-requirements.md` §0.1), so its client package, the keychain service name and the product name may name it | Test | `tests/preferences/test_no_provider_identity.py` | janitor | The roster changes over the product's life — accounts are added and removed. Hardcoding it makes every roster change a code change and a regression risk, and turns the product into one operator's script. The carve-out is stated because without it the norm forbids what the spec expressly permits, and a reviewer would file a false departure against the connector layer. The test matches the roster config's explicit per-entry tokens on word boundaries over the source and schema roots (`AC-0.3`); the residual judgment case — code that *branches* on provider identity without naming one — is Critic's, under the same norm. |
-| Requirement ids are unique within a requirements document | Test | `tests/preferences/test_requirement_ids_unique.py` | janitor | The two requirements docs cite each other by id, and `deployment-requirements.md` §7 calls itself "the checkable form of §0.1" — which it cannot be against an ambiguous key. A duplicate id silently resolves a citation to the wrong requirement, and the one a reader lands on by accident is as likely to be a scheduled job as the immutable enrollment parameter the doc calls its highest-stakes one. Uniqueness is assertable by grep over `**AC-` headers, so it should never again be caught by review. |
+| No roster or operator identity in a tracked file: no institution, account, balance, operator name or machine name anywhere in the repository, not only under the source root | Test | `scripts/check-no-personal-data.sh`, wired into `.githooks/pre-push` on every branch | advisory | This repository is a general-purpose tool that may be published, and the leak it actually had was in **documentation** — three doc paths reached a remote — which a source-root check would never have seen. The guard reads the roster's own explicit match tokens from the gitignored `deployment/roster-tokens.txt` (engine AC-0.3) rather than guessing them from labels, and matches on word boundaries. A checkout with no `deployment/` directory has no roster to leak and passes with a note, which is what makes the guard itself publishable. 🔴 **Migration obligation:** it is a shell script only because no Python scaffold exists yet and creating one would fix the package name ahead of the rename decision — move it under `tests/preferences/` when the scaffold lands. |
+| Requirement ids are unique within a requirements document | Test | `tests/preferences/test_requirement_ids_unique.py` | janitor | The two requirements docs cite each other by id, and §7 of a roster document calls itself "the checkable form of §0.1" — which it cannot be against an ambiguous key. A duplicate id silently resolves a citation to the wrong requirement, and the one a reader lands on by accident is as likely to be a scheduled job as the immutable enrollment parameter the doc calls its highest-stakes one. Uniqueness is assertable by grep over `**AC-` headers, so it should never again be caught by review. |
 
 **A filled `Delegation` / `Delegate verification` row states a norm, and it takes `Critic`** — a policy stated in prose is judgment-required by construction, so no linter or test can grade it; audit home `janitor`, and the why is the sentence the owner gave for it. One row covers the policy the two state together. `Delegation approval` is a setting like `PR creation`, not a norm. The row is written when the policy is **ratified** (`/prawduct:doctor` proposes, the owner confirms), never shipped here, because this table ships empty.
 

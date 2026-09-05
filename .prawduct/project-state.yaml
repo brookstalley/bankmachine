@@ -81,9 +81,21 @@ classification:
       - factor: "Data loss or corruption mid-sync"
         level: medium
         rationale: "Cursor advancement must be transactional with the data it accompanies (AC-2.1, AC-2.5), or history is silently skipped."
-      - factor: "Single user, no deadline, no downstream consumers"
+      - factor: "Single operator per deployment, no deadline"
         level: low
-        rationale: "Lowers schedule and blast-radius risk. Does not lower correctness risk, which is the binding one here."
+        rationale: "Lowers schedule and blast-radius risk for any one deployment. Does not lower correctness risk, which is the binding one here."
+      - factor: "Public distribution — the tool travels, the data does not"
+        level: medium
+        rationale: >
+          Recorded 2026-09-05 when the product was restated as a general-purpose tool that may be
+          published. It REPLACES the earlier reading that there are no downstream consumers. Note
+          what does NOT change: each user self-hosts, so no third party's financial data ever
+          reaches this project or its author, and the `regulatory: []` reasoning above still holds.
+          What DOES change is a supply-chain surface — a malicious dependency or an accepted
+          contribution reaches real bank data on a stranger's machine — which argues for a
+          deliberately small dependency surface. The §7 verification gate also stops being internal
+          discipline and becomes a user-facing safety feature: a stranger will not read §7, so the
+          incomplete-data warning has to reach them some other way.
 
   prior_art:
     - name: "Plaid API (/transactions/sync, /investments/*, Hosted Link)"
@@ -280,16 +292,78 @@ technical_decisions:
         Rejected: faster to first sync, wrong for the product's whole life after that.
       date: 2026-09-05
     - decision: >
+        REPOSITORY SCOPE. This repository is a GENERAL-PURPOSE TOOL that may be published. No
+        operator's roster, institution name, account detail, balance, operator name or machine name
+        may appear in a tracked file. The roster lives in the gitignored `deployment/` directory;
+        docs/deployment-requirements.template.md carries its shape and the layering contract.
+      rationale: >
+        The operator restated the product: it is consumed by Claude Cowork and may be released
+        publicly, so nothing specific to them belongs in it. This RESOLVES the former open question
+        "where should the roster live" in favour of moving the roster out of git, and adds what that
+        option had left open — the already-pushed history is rewritten rather than accepted, because
+        the repository was three pushed commits old and the cost never gets lower.
+        Enforced by scripts/check-no-personal-data.sh on every push.
+      alternatives_considered: >
+        (a) Keep the repository private forever and extract a clean public repository later —
+        rejected: it splits the work and risks a copy-paste leak at extraction time. (b) Accept the
+        private remote and record the constraint's real boundary — rejected once public release
+        became a live intention. (c) Delete and recreate the GitHub repository, which would leave no
+        unreachable objects at all — offered and declined by the operator: no credentials or
+        balances of consequence are exposed, the remote is private, and account existence is not
+        sensitive to them.
+      date: 2026-09-05
+    - decision: >
+        MCP TRANSPORT IS LOCAL STDIO ONLY, CONFIRMED. Claude Cowork reaches the server on the same
+        machine. AC-10.5 (the MCP server opens no network sockets) therefore HOLDS.
+      rationale: >
+        Recorded because it was previously an unexamined default rather than a decision, and it is
+        the one architectural choice that would have been expensive to reverse: a remote transport
+        would require authn/authz, TLS and rate limiting, and would expose a financial datastore to
+        a socket. Confirmed with the operator 2026-09-05.
+      alternatives_considered: >
+        (a) HTTP/remote transport — rejected, not needed and materially enlarges the security model.
+        (b) Both behind a transport seam — rejected as speculative generality for v1.
+      date: 2026-09-05
+    - decision: >
+        PLATFORM: macOS for v1, WITH SEAMS FROM DAY ONE. Ship and test on macOS only, but the
+        credential store goes behind the `keyring` library rather than direct `security` CLI calls,
+        and the scheduler goes behind an interface with launchd as its only implementation.
+        Documentation states "macOS supported, other platforms unverified".
+      rationale: >
+        A public tool that hardcodes one OS's credential store is painful to port later and nearly
+        free to abstract now. This supersedes the project-preferences note specifying Keychain
+        access via the `security` CLI.
+      alternatives_considered: >
+        (a) macOS only, stated as a permanent constraint — rejected: forecloses a cheap option.
+        (b) Cross-platform built and tested in v1 — rejected: needs CI on two platforms and a second
+        scheduler implementation before anything ships.
+      date: 2026-09-05
+    - decision: >
+        RENAME BEFORE BUILD STEP 1. The name is not yet chosen. `MCPlaid` embeds a third-party
+        trademark and locks the product to one aggregator.
+      rationale: >
+        Build step 1 fixes the Python package name, the keychain service name, the scheduler label
+        and the MCP server name. The keychain service name is the expensive one: changing it after
+        enrollment orphans stored access tokens.
+      alternatives_considered: >
+        (a) Keep MCPlaid and decide at publish time — rejected: accepts rework and risks the name
+        becoming load-bearing. (b) Keep MCPlaid permanently — rejected: a brand-permission question
+        the operator would own.
+      date: 2026-09-05
+    - decision: >
         TWO-LAYER REQUIREMENTS. docs/system-requirements.md specifies a provider-agnostic engine and
-        contains no institution name; docs/deployment-requirements.md specifies this operator's
-        roster as real acceptance criteria for the instance built on that engine.
+        contains no institution name; a deployment-requirements document specifies one operator's
+        roster as real acceptance criteria for the instance built on that engine. The engine layer
+        is version-controlled and publishable; the roster layer is not (see the 2026-09-05 decision
+        on repository scope).
       rationale: >
         The operator's correction: the roster requirements are genuine, they simply belong to a
         different layer than the engine. The split carries a load-bearing rule — every deployment
         requirement must be satisfiable by configuration plus an adapter with zero engine change, so
         a deployment requirement that cannot be expressed that way is a GAP IN THE ENGINE SPEC
         rather than a special case. That makes the split a checkable test rather than a filing
-        convention; deployment-requirements.md §7 carries the traceability table.
+        convention; §7 of the roster document carries the traceability table, and
+        docs/deployment-requirements.template.md carries that table's shape for anyone filling one in.
       alternatives_considered: >
         (a) Rewrite the requirements doc in place and demote the roster to non-normative operator
         notes — rejected by the operator: it discards real requirements. (b) A superseding addendum
@@ -541,19 +615,6 @@ open_questions:
     blocking: "Enrollment (build step 3) only. Steps 1-2 — schema, raw layer, aggregator client against sandbox — do not depend on it."
     waiting_on: user
     priority: medium
-  - question: >
-      Where should the roster live? This is RETROSPECTIVE, not prospective: origin/develop already
-      contains docs/data-sources.md carrying institution names and balances (and the v1 requirements
-      doc in history), so the data has already left the machine once — against the constraint
-      recorded in this file and the intent stated in .gitignore. The remote is verified PRIVATE.
-      Two live options: (a) move the roster to a gitignored config/data path, which is the ratified
-      norm applied to itself, and decide whether the already-pushed files need history rewriting or
-      acceptance; or (b) accept the private remote and record it as a decision here with the
-      remote's visibility stated, so the constraint's real boundary is written down rather than
-      contradicted in silence. Tracked as deployment open question 6.4.
-    blocking: "Nothing technical, but it should be settled before the next push rather than after."
-    waiting_on: user
-    priority: high
   - question: "Retention policy for raw responses: keep indefinitely (recommended — volume is trivial and it is the system of record) or prune after N months?"
     blocking: "Nothing immediately; it is a config default with a documented rationale."
     waiting_on: user
@@ -593,7 +654,7 @@ user_expertise:
       inferred_from: "docs/system-requirements.md AC-ARCH.2, AC-4.5"
     - dimension: operational_awareness
       signal: "Vetted a candidate dependency at source level and rejected it on undisclosed browser-storage scraping that its README did not describe."
-      inferred_from: "docs/data-sources.md"
+      inferred_from: "candidate-dependency vetting recorded during discovery, 2026-09-05"
   operational_awareness: advanced
 
 # =============================================================================
@@ -623,14 +684,14 @@ artifact_manifest:
       file_path: docs/system-requirements.md
       version: 2
       depends_on: []
-    - name: "Deployment requirements"
-      file_path: docs/deployment-requirements.md
+    - name: "Deployment requirements template"
+      file_path: docs/deployment-requirements.template.md
       version: 1
       depends_on: ["System requirements"]
-    - name: "Account inventory evidence"
-      file_path: docs/data-sources.md
-      version: 1
-      depends_on: []
+      # The FILLED-IN roster and its account-inventory evidence are deliberately not
+      # repository artifacts: they name institutions and carry balances, and this
+      # repository is a general-purpose tool that may be published. They live in the
+      # gitignored `deployment/` directory. See the 2026-09-05 repository-scope decision.
     - name: "Build-vs-adopt decision record"
       file_path: docs/build-vs-adopt-investigation.md
       version: 1
