@@ -771,6 +771,8 @@ build_state:
 #
 # active_build_plan: artifacts/build-plan-my-scope.md
 
+active_build_plan: artifacts/build-plan-datastore-v1.md
+
 # =============================================================================
 # BASE BRANCH (opt-in, unset by default)
 # =============================================================================
