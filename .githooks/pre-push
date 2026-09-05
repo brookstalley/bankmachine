@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+#
+# Gitflow guard: main is a release-only branch.
+#
+# GitHub-side branch protection is a paid feature on private repos, so this
+# hook stands in for it locally. It is a guardrail against slips, not an
+# access control -- `git push --no-verify` bypasses it by design.
+#
+# Enabled per clone via:  git config core.hooksPath .githooks
+#
+# Rejects, on refs/heads/main only:
+#   - deletion
+#   - non-fast-forward (force push)
+#   - a tip that is not a merge commit (work committed straight onto main)
+#   - a merge whose merged-in side is not a release/* or hotfix/* branch
+# Every other branch pushes untouched.
+
+set -euo pipefail
+
+PROTECTED="refs/heads/main"
+ZERO=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
+
+die() {
+    echo "pre-push: BLOCKED -- $1" >&2
+    echo "pre-push: main is release-only. Merge a release/* or hotfix/* branch into it," >&2
+    echo "pre-push: or use --no-verify if you know what you are doing." >&2
+    exit 1
+}
+
+while read -r _local_ref local_sha remote_ref remote_sha; do
+    [ "$remote_ref" = "$PROTECTED" ] || continue
+
+    if [ "$local_sha" = "$ZERO" ]; then
+        die "refusing to delete main"
+    fi
+
+    if [ "$remote_sha" != "$ZERO" ] && ! git merge-base --is-ancestor "$remote_sha" "$local_sha"; then
+        die "refusing non-fast-forward push to main"
+    fi
+
+    # A release lands on main as a merge commit; direct commits do not.
+    if [ -z "$(git rev-parse --verify --quiet "${local_sha}^2" || true)" ]; then
+        die "main tip ${local_sha:0:8} is not a merge commit"
+    fi
+
+    merged_side=$(git rev-parse "${local_sha}^2")
+    if ! git for-each-ref --format='%(refname)' \
+            'refs/heads/release/*' 'refs/heads/hotfix/*' \
+            'refs/remotes/*/release/*' 'refs/remotes/*/hotfix/*' \
+        | while read -r ref; do
+              if git merge-base --is-ancestor "$merged_side" "$ref" 2>/dev/null; then
+                  echo found
+                  break
+              fi
+          done | grep -q found
+    then
+        die "merged-in commit ${merged_side:0:8} is not on any release/* or hotfix/* branch"
+    fi
+done
+
+exit 0
