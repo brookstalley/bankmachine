@@ -58,6 +58,12 @@ archived-plan entries that record what was said on the day, the decision entry t
 renamed away from, and the GitHub repository slug, which is still accurate because the remote has
 not been renamed.
 
+**Carried through to the remote and the checkout.** The GitHub repository was renamed
+`brookstalley/MCPlaid` → `brookstalley/bankmachine` (verified still private), `backlog_service_repo`
+repointed at it rather than left to lean on GitHub's redirect, and the local checkout moved to
+`~/source/bankmachine`. Verified after the move that `core.hooksPath` survived, the guard is clean,
+the self-test still passes 22/22, and both branches are in sync with the renamed remote.
+
 **Recorded caveat, raised once and accepted.** "Bank machine" is the ordinary term for an ATM in
 Canada and parts of the UK — a name suggesting a device that *dispenses money*, for a product whose
 §2 non-goals make "read-only, permanently" a headline commitment. This is a connotation risk, not a
