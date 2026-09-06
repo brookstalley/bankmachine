@@ -232,6 +232,13 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         f"{SECRETS_TESTS}::test_a_key_of_the_right_length_that_is_not_hex_is_rejected",
     ),
     (
+        "AC-ARCH.3: a filesystem refusal becomes a StoreError instead of escaping",
+        CONNECTION,
+        "    except OSError as exc:\n        raise DatastorePathUnusableError",
+        "    except ValueError as exc:\n        raise DatastorePathUnusableError",
+        f"{NORMS}::test_inspect_reports_an_unopenable_lock_file_rather_than_raising",
+    ),
+    (
         "no-fallback: an unreadable datastore is not reported as a rejected key",
         CONNECTION,
         'if getattr(exc, "sqlite_errorname", "") == "SQLITE_NOTADB":',

@@ -127,6 +127,18 @@ surface. Two boundaries make that rule precise:
   `source_investment_transaction_id` is exactly 32, so the column name came out
   `[REDACTED]` until this split.
 
+**The residual: free text the operator typed.** The echoed statement and driver
+error messages are mixtures of structure and value, and no property separates
+the two inside one string — so they keep the value rule, and a schema
+identifier over 32 characters is blanked in them. Typing
+`SELECT source_investment_transaction_id FROM investment_transactions;` echoes
+as `SELECT [REDACTED] FROM ...`, and `no such column: <that name>` reads
+`no such column: [REDACTED]`. Over-redaction is the safe direction here and the
+result is still usable, but it is a real wart on this surface's core use rather
+than a free choice. The idea worth trying, if it is worth fixing: redact free
+text against the datastore's own `sqlite_master` identifiers, which is a
+property of this store rather than a hand-maintained allow-list. Filed as #6.
+
 Row values keep bare-length matching, cost included: `raw_responses.body_sha256`
 is 64 hex characters and is blanked. That is the direction to be wrong in while
 "no credential is persisted verbatim" is still a recorded decision rather than a

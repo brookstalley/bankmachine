@@ -218,6 +218,52 @@ def test_the_measured_unreadable_edge_is_not_reported_as_a_bad_key(
         assert conn.execute("SELECT COUNT(*) FROM hot_wal").fetchone()[0] == 400
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root opens a mode-000 file anyway")
+def test_a_lock_file_this_process_cannot_open_is_a_named_error(
+    initialized_config: Config,
+) -> None:
+    """A filesystem refusal arrives as `OSError`, not from the driver.
+
+    Nothing else in the store layer would map it, so without this it escapes
+    every handler that catches `StoreError` -- and the caller most exposed is
+    `inspect`, whose contract is to report a state rather than raise on one.
+    """
+    initialized_config.lock_path.touch()
+    initialized_config.lock_path.chmod(0o000)
+    try:
+        with pytest.raises(connection.DatastorePathUnusableError) as excinfo:
+            connection.writer_lock_held(initialized_config)
+    finally:
+        initialized_config.lock_path.chmod(0o600)
+
+    assert str(initialized_config.lock_path) in str(excinfo.value)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root opens a mode-000 file anyway")
+def test_inspect_reports_an_unopenable_lock_file_rather_than_raising(
+    initialized_config: Config,
+) -> None:
+    """AC-ARCH.3 / AC-4.4: `inspect` reports a state, it does not raise on one.
+
+    The MCP server starts on this branch. A datastore restored from a backup
+    under another user, or one on a volume this process cannot write to, reaches
+    it -- and a traceback out of the function whose whole job is to describe
+    that situation is the failure this asserts against.
+    """
+    initialized_config.lock_path.touch()
+    initialized_config.lock_path.chmod(0o000)
+    try:
+        status = connection.inspect(initialized_config)
+    finally:
+        initialized_config.lock_path.chmod(0o600)
+
+    assert status.exists
+    assert not status.readable
+    assert not status.healthy
+    assert status.problem is not None
+    assert str(initialized_config.lock_path) in status.problem
+
+
 def _kill_a_writer_holding_a_hot_wal(config: Config) -> None:
     """Leave a WAL behind that no clean close ever checkpointed."""
     killed = subprocess.run(
