@@ -99,9 +99,10 @@ moved, and `requires-python` stays `>=3.11` because nothing in the code needs mo
 structural break caught by the harness — which now covers the schema's guarantees, the frozen-DDL
 hash, and the index guard's partial predicates as well as the connection layer's four norms. `store init` and `store status` were driven against a real
 encrypted datastore, reporting schema version 2, with a known plaintext written through the schema
-unrecoverable from the file's raw bytes. **The lock-in check was executed, not read:** one
-representative SQL query per enumerated consumer question was run against a seeded datastore, and
-all fourteen returned — including the per-account gap walk, the plain-sum net worth, and the
+unrecoverable from the file's raw bytes. **The lock-in check was executed, not read:** the plan's
+seven enumerated consumer questions were run as real SQL against a seeded datastore — fourteen
+queries, because several questions take more than one and the remaining §5 tools were covered too —
+and every one returned, including the per-account gap walk, the plain-sum net worth, and the
 freshness stamp for an import-only account with no connection.
 
 ## 2026-09-06: The walking skeleton — an encrypted WAL datastore with its four norms enforced
