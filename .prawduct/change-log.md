@@ -318,9 +318,11 @@ datastore → migration → read back through the reader role → print from the
   directions, so neither state is the quiet one.
 - `cli/` and `__main__.py` — `bankmachine store init` (the only creator) and `store status` (which
   reports a missing or unrecognized datastore rather than crashing or creating one, AC-ARCH.3).
-- 83 tests, mypy strict clean, ruff clean.
+- Suite green, mypy strict clean, ruff clean (`prawduct-hook test-status`).
 
-**The norms are now mechanisms, and issue #1 is closed by this work.** Each of the four has a test,
+**The norms are now mechanisms, and issue #1's ask is delivered by this work** — its close is
+owed at merge, because on the Issues backend a status change is an immediate API call with no
+branch to be abandoned alongside. Each of the four has a test,
 and each test was verified to go **red** with its norm deliberately broken —
 `tests/preferences/verify_norms_go_red.py` keeps that reproducible rather than a sentence in a
 commit message. Two things that came out of running it are worth recording:
@@ -413,7 +415,7 @@ the FR-6 core schema, the FR-5 raw-response layer and rebuild, and `sync shell`.
 deliberately the widest because it proves the topology; Chunk 02 is the lock-in chunk, so the
 questions its schema must answer are enumerated from the §5 tool table before any field is designed.
 Chunk 01 also carries the `tests/preferences/` guard migration that three separate records have been
-promising, and closes issue #1.
+promising, and delivers what issue #1 asked for.
 
 **A dependency decision rides with it.** The store layer uses **SQLAlchemy Core** — typed table
 metadata and the query builder, no ORM, no session or identity map — decided by the owner over a
