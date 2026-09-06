@@ -14,6 +14,7 @@ from bankmachine.secrets import (
 )
 from bankmachine.store import connection
 from bankmachine.store.migrations import migrate
+from bankmachine.store.rebuild import RebuildReport, rebuild
 
 logger = get_logger("cli.store")
 
@@ -35,6 +36,29 @@ def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
 
     status = commands.add_parser("status", help="report the datastore's state without changing it")
     status.set_defaults(handler=cmd_status)
+
+    rebuild_command = commands.add_parser(
+        "rebuild",
+        help="reconstruct the normalized tables from the raw responses (AC-5.2)",
+        description=(
+            "Deletes every row that was derived from a raw response, replays the whole "
+            "archive through this build's derivation logic, and refuses to commit the "
+            "result if it differs from what it replaced at an unchanged derivation "
+            "version. Rows this archive cannot recreate -- anything imported from a "
+            "file, and the accounts and connections that history hangs off -- are left "
+            "alone."
+        ),
+    )
+    rebuild_command.add_argument(
+        "--accept-content-change",
+        action="store_true",
+        help=(
+            "commit a rebuild whose content differs at an unchanged derivation version. "
+            "The honest use is an archive that was deliberately pruned; anything else is a "
+            "deriver that is not a pure function of its response"
+        ),
+    )
+    rebuild_command.set_defaults(handler=cmd_rebuild)
 
 
 def cmd_init(config: Config, _args: argparse.Namespace) -> int:
@@ -113,3 +137,34 @@ def _print_status(status: connection.DatastoreStatus) -> None:
     print(f"healthy:         {'yes' if status.healthy else 'no'}")
     if status.problem:
         print(f"problem:         {status.problem}")
+
+
+def cmd_rebuild(config: Config, args: argparse.Namespace) -> int:
+    report = rebuild(config, accept_content_change=args.accept_content_change)
+    _print_rebuild(report)
+    return 0
+
+
+def _print_rebuild(report: RebuildReport) -> None:
+    print(f"raw responses replayed:  {report.responses_replayed}")
+    # "replaced", not "rebuilt": this counts the rows the replay cleared, and
+    # under --accept-content-change the replay is allowed to produce fewer.
+    print(f"rows replaced:           {sum(report.rows_deleted.values())}")
+    for table, count in sorted(report.rows_deleted.items()):
+        if count:
+            print(f"  {table}: {count}")
+    print(f"derivation version:      {report.derivation_version}")
+    if report.previous_derivation_versions:
+        previous = ", ".join(str(v) for v in report.previous_derivation_versions)
+        print(f"previous version(s):     {previous}")
+    if not report.content_changed:
+        print("content:                 identical to what it replaced")
+    elif report.change_was_expected:
+        print(
+            "content:                 changed, as expected at a new derivation version -- "
+            "every rebuilt row now names it"
+        )
+    else:
+        # Reached only under --accept-content-change; without it the rebuild
+        # raises and this line is never printed against an unexplained change.
+        print("content:                 CHANGED at an unchanged derivation version, accepted")

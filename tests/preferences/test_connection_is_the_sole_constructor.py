@@ -51,22 +51,58 @@ def test_only_the_store_layer_imports_a_database_driver() -> None:
     )
 
 
-def test_only_connection_py_calls_connect() -> None:
-    """`engine.py` may name the driver -- it hands it to SQLAlchemy -- but not call it."""
+def _connect_calls(path: Path) -> list[ast.Call]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    calls = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if name == "connect":
+                calls.append(node)
+    return calls
+
+
+def test_only_connection_py_constructs_a_connection() -> None:
+    """`engine.py` may name the driver and check a handle out; it may not open one.
+
+    A role is decided by the parameters a handle is opened with: the URI mode,
+    the key, the lock taken first. `connection.py` is the only place any of those
+    are passed. `engine.py` is permitted a *checkout* -- `engine.connect()` over
+    an engine whose `creator=` already returns a constructed handle -- and the
+    discriminator is not the file it sits in but the fact that a checkout carries
+    no arguments at all. A `connect(...)` with anything in the parentheses is
+    choosing how a database is opened, and there is exactly one place that
+    happens.
+    """
     offenders: list[str] = []
     for path in _source_files():
         if path == CONNECTION_MODULE:
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                func = node.func
-                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-                if name == "connect":
-                    offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
+        for call in _connect_calls(path):
+            if path == ENGINE_MODULE and not call.args and not call.keywords:
+                continue
+            offenders.append(f"{path.relative_to(REPO_ROOT)}:{call.lineno}")
     assert not offenders, (
         "a connection is constructed outside store/connection.py, so role membership "
         "is no longer a property of construction:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_the_checkout_engine_py_is_permitted_is_really_a_checkout() -> None:
+    """The positive control for the carve-out above.
+
+    Without this, "engine.py may call connect with no arguments" would pass just
+    as happily on an engine.py that had stopped calling it at all -- and the
+    exemption would then be protecting nothing while still being available to
+    the next thing that wants it.
+    """
+    checkouts = [
+        call for call in _connect_calls(ENGINE_MODULE) if not call.args and not call.keywords
+    ]
+    assert checkouts, (
+        "engine.py checks out no connection, so the carve-out in "
+        "test_only_connection_py_constructs_a_connection is exempting nothing"
     )
 
 

@@ -15,6 +15,7 @@ between.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date
@@ -264,8 +265,28 @@ def test_the_metadata_matches_the_migrated_database(writer: SAConnection) -> Non
         )
 
 
-def _database_indexes(conn: SAConnection) -> set[tuple[str, str, bool, bool, tuple[str, ...]]]:
-    found: set[tuple[str, str, bool, bool, tuple[str, ...]]] = set()
+#: (name, table, unique, partial predicate or None, columns)
+IndexShape = tuple[str, str, bool, str | None, tuple[str, ...]]
+
+
+def _normalized_predicate(predicate: str | None, table_name: str) -> str | None:
+    """Both sides' spelling of the same condition, reduced to one form.
+
+    The two are written independently -- the DDL says `retired_at IS NULL` and
+    SQLAlchemy compiles `connections.retired_at IS NULL` -- so the comparison
+    needs the qualifier, the whitespace and the case out of the way. Nothing else
+    is normalized: an inverted or rewritten condition must still differ, because
+    telling those apart is the entire point of comparing the text rather than
+    asking whether a predicate exists.
+    """
+    if predicate is None:
+        return None
+    collapsed = " ".join(predicate.split()).lower()
+    return collapsed.replace(f"{table_name.lower()}.", "").strip("() ")
+
+
+def _database_indexes(conn: SAConnection) -> set[IndexShape]:
+    found: set[IndexShape] = set()
     for table_name in CORE_TABLES:
         for index in conn.execute(text(f"PRAGMA index_list('{table_name}')")).fetchall():
             if index.origin != "c":  # 'u' and 'pk' are constraint autoindexes
@@ -274,24 +295,47 @@ def _database_indexes(conn: SAConnection) -> set[tuple[str, str, bool, bool, tup
                 str(part.name)
                 for part in conn.execute(text(f"PRAGMA index_info('{index.name}')")).fetchall()
             )
+            predicate = None
+            if index.partial:
+                # `PRAGMA index_list` says only *that* an index is partial. What
+                # it is partial ON is in the statement that created it.
+                sql = conn.execute(
+                    text("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = :name"),
+                    {"name": str(index.name)},
+                ).scalar_one()
+                predicate = re.split(r"\bWHERE\b", str(sql), maxsplit=1, flags=re.IGNORECASE)[1]
             found.add(
-                (str(index.name), table_name, bool(index.unique), bool(index.partial), columns)
+                (
+                    str(index.name),
+                    table_name,
+                    bool(index.unique),
+                    _normalized_predicate(predicate, table_name),
+                    columns,
+                )
             )
     return found
 
 
-def _metadata_indexes() -> set[tuple[str, str, bool, bool, tuple[str, ...]]]:
-    return {
-        (
-            str(index.name),
-            table.name,
-            bool(index.unique),
-            index.dialect_kwargs.get("sqlite_where") is not None,
-            tuple(column.name for column in index.columns),
-        )
-        for table in metadata.tables.values()
-        for index in table.indexes
-    }
+def _metadata_indexes() -> set[IndexShape]:
+    shapes: set[IndexShape] = set()
+    for table in metadata.tables.values():
+        for index in table.indexes:
+            where = index.dialect_kwargs.get("sqlite_where")
+            predicate = (
+                None
+                if where is None
+                else str(where.compile(dialect=_DIALECT, compile_kwargs={"literal_binds": True}))
+            )
+            shapes.add(
+                (
+                    str(index.name),
+                    table.name,
+                    bool(index.unique),
+                    _normalized_predicate(predicate, table.name),
+                    tuple(column.name for column in index.columns),
+                )
+            )
+    return shapes
 
 
 def test_the_metadata_declares_the_same_indexes_as_the_database(writer: SAConnection) -> None:
@@ -300,9 +344,20 @@ def test_the_metadata_declares_the_same_indexes_as_the_database(writer: SAConnec
     `connections_one_live_per_institution` declared on the wrong column, or
     without its `sqlite_where`, is a different index doing a different job under
     a name that still matches. Uniqueness and the partial predicate are where
-    the schema's idempotency guarantees actually live, so they are compared too.
+    the schema's idempotency guarantees actually live, so they are compared too --
+    and the predicate is compared by what it *says*, not by whether one exists.
+    A condition inverted to `retired_at IS NOT NULL` keeps every other property of
+    the index intact while making it enforce the opposite rule.
     """
     assert _metadata_indexes() == _database_indexes(writer)
+
+
+def test_the_index_comparison_actually_reads_some_predicates(writer: SAConnection) -> None:
+    """The positive control: a normalizer that returned None for everything would
+    make the comparison above agree with itself forever."""
+    predicates = {shape[3] for shape in _metadata_indexes() if shape[3] is not None}
+    assert "retired_at is null" in predicates
+    assert predicates == {shape[3] for shape in _database_indexes(writer) if shape[3] is not None}
 
 
 def test_migrations_are_idempotent_when_re_run(initialized_config: Config) -> None:

@@ -67,7 +67,7 @@ gate any chunk here.
 
 - [x] Chunk 01: Walking skeleton — config, key, encrypted WAL datastore, and the two connection roles
 - [x] Chunk 02: The core schema (FR-6)
-- [ ] Chunk 03: Raw-response layer and rebuild (FR-5)
+- [x] Chunk 03: Raw-response layer and rebuild (FR-5)
 - [ ] Chunk 04: `sync shell` (AC-ARCH.6)
 Context: Plan drawn 2026-09-05, directly after `.prawduct/artifacts/architecture.md` resolved
 AC-ARCH.7. **Chunk 01 landed 2026-09-06** on `feature/datastore-v1` — the uv package, config /
@@ -98,12 +98,38 @@ provenance CHECK requires an aggregator row to name the raw response it came fro
 comment already claimed; and the drift guard compares each index's columns, uniqueness and partial
 predicate rather than only its name.
 
-Next: Chunk 03, the raw-response layer and rebuild. Two things are still carried rather than done:
-the no-fallback norm's measured edge is unstaged (a decision owed at Chunk 04, recorded there), and
+**Chunk 03 landed 2026-09-06** on the same branch — `store/raw.py` (verbatim, compressed, hashed,
+verified on read), `store/derivation.py` (the seam build step 2 registers against, shipped with an
+empty registry), `store/rebuild.py` and `bankmachine store rebuild`. The rebuild is one transaction
+under the writer lock that checks its own work: it hashes the datastore's content before and after
+and refuses to commit a rebuild that did not reproduce what it replaced, unless the derivation
+version changed. Suite green, mypy strict and ruff clean, and the norm-break harness now runs 24
+cases — six of them new, all red. Chunk 03 also closed a gap in norm 4 that it was the first work
+to expose: only the *reader* refused an unrecognized schema version, and `store rebuild` is the
+first writer that is not the migration runner. Both roles now call one check.
+
+The Critic round returned no blocking findings and tightened two seam decisions, both recorded in
+`boundary-patterns.md` because build step 2 is where they land: a derived table is either
+rebuildable or a dimension a deriver must upsert (`securities` is the only dimension, and it has no
+raw provenance to point at), and a credential-bearing response is never persisted verbatim.
+
+Two decisions in Chunk 03 are worth carrying rather than rediscovering. **"Byte-identically"
+(AC-11.5) is read as excluding a table's own single-column integer primary key where nothing
+references it** — those are rowid allocations, and requiring `transaction_id` to come back identical
+would make the criterion a statement about SQLite's allocator rather than about the data. **The
+sole-constructor norm was made precise rather than exempted:** `engine.connect()` is a pool
+checkout, so the rule now turns on whether a `connect` call carries connection parameters, and
+`engine.py` gained `writer_connection` / `reader_connection` so nothing outside the store layer
+checks a handle out.
+
+Next: Chunk 04, `sync shell`. Three things are still carried rather than done: the no-fallback
+norm's measured edge is unstaged (a decision owed at Chunk 04, recorded there);
 `account_rules.parameters` holds local account ids in JSON where SQLite cannot enforce a foreign
-key — the rule engine validates them when it lands. This plan covers build step 1 of
-`docs/system-requirements.md` §8 and nothing beyond it; step 2 (the aggregator client) gets its own
-plan.
+key — the rule engine validates them when it lands; and `content_digest` scans every table twice per
+rebuild, which is free at today's volumes and is the first thing to look at if a rebuild ever feels
+slow. This plan covers build step 1 of `docs/system-requirements.md` §8 and nothing beyond it; step
+2 (the aggregator client) gets its own plan, and the contract it must be written against is now
+recorded as the Derivation Seam in `boundary-patterns.md`.
 
 ## Scaffolding
 

@@ -34,6 +34,93 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-06: Raw preservation and rebuild — a bronze layer that checks its own work
+
+<!-- prawduct: scope=datastore-v1 -->
+
+**Why:** FR-5's bronze/silver split turns a categorization bug into a re-run instead of a re-fetch,
+and a re-fetch is often impossible — an aggregator's history window does not come back. It is built
+now, with no aggregator to feed it, because a sync path written first would normalize straight into
+the tables and retro-fitting raw preservation around it afterwards means rewriting the part that
+already worked.
+
+**What landed:**
+
+- **`store/raw.py`** — every response persisted verbatim, compressed and hashed, before anything
+  reads it (AC-5.1). The digest is over the *plaintext*, so it identifies the response independently
+  of how it was compressed, and `load_response` recomputes it: a body that no longer matches what
+  was recorded is refused rather than derived from. The archive is append-only — two identical
+  responses at two times are two facts, and collapsing them would destroy the evidence that the
+  source repeated itself.
+- **`store/derivation.py`** — the seam build step 2 plugs into, shipped empty. One normalization,
+  two callers: the sync path and `store rebuild` run the same derivers over the same responses, so
+  rebuild is not a second implementation that has to be kept in step with the first. A deriver is a
+  pure function of its response — `DerivationContext` carries no clock, because a `first_seen_at`
+  stamped `now()` is the one mistake that makes a rebuild unreproducible.
+- **Persist first, then derive, in two transactions.** A deriver that raises must not take the
+  archive down with it: the response may be unfetchable afterwards, while the derivation can be
+  re-run at any time. A crash mid-derive leaves the response kept and no half-derived rows.
+- **`bankmachine store rebuild`** (AC-5.2) — one transaction under the exclusive writer lock:
+  delete every row the archive can recreate, replay the whole archive in received order, and then
+  **check its own work**. It hashes the datastore's content before and after and refuses to commit a
+  rebuild that did not reproduce what it replaced, unless the derivation version changed (AC-5.3,
+  AC-11.5). Without that refusal a rebuild is an irreversible bulk operation whose only failure
+  signal is analysis quietly turning wrong weeks later.
+- **What it deletes is derived, not listed.** A table is rebuildable when it holds a foreign key
+  *pointing at* a raw response. The first draft matched on the column name, which put `raw_responses`
+  itself — whose primary key is `raw_response_id` — first in the list of tables to empty before
+  replaying them. A test caught it; the fix was a better predicate, not a longer exception list.
+- **Rows nothing can recreate are never deleted.** Imported rows name a file rather than a response,
+  and accounts carry the local ids every row of history points at (AC-6.3). Both survive a rebuild
+  untouched, and the content digest covers them, so a rebuild that orphaned or renumbered anything
+  fails its own check.
+- **"Byte-identically" (AC-11.5), read deliberately:** the digest covers every column of every table
+  except a table's own single-column integer primary key where nothing references it. Those are
+  rowid allocations, not facts about the world — requiring `transaction_id` to come back identical
+  would make the criterion a statement about SQLite's allocator. Every id that *is* a fact is
+  covered.
+- **The sole-constructor norm got sharper, not looser.** `engine.connect()` is a pool checkout over
+  a handle `store/connection.py` already keyed and locked, but the AST scan matched any call named
+  `connect`. Rather than exempt a file, the rule now says what it always meant: a role is decided by
+  the parameters a handle is opened with, and a checkout carries none. `engine.py` gained
+  `writer_connection` / `reader_connection` so nothing outside the store layer checks one out, and a
+  positive control fails if that carve-out ever stops exempting anything real.
+- **Norm 4 now covers writers too.** Only the reader refused a schema version this build does not
+  recognize; `store rebuild` is the first writer that is not the migration runner, and a writer that
+  misunderstands a schema writes wrong answers down rather than merely returning them. The check
+  moved into one helper both roles call, and `initializing_writer` still skips it — bringing an old
+  datastore forward is the one job that has to open a version this build does not serve.
+- **The Chunk 02 ride-along is discharged: the index drift guard now compares what a partial
+  predicate *says*, not whether one exists.** It read `sqlite_where is not None` against
+  `PRAGMA index_list.partial`, so a condition inverted to `retired_at IS NOT NULL` kept every other
+  property of the index intact while making it enforce the opposite rule. Both sides' text is
+  normalized only for the qualifier, whitespace and case — never for meaning — and a positive
+  control fails if the normalizer ever starts returning nothing.
+- **Six more cases in `verify_norms_go_red.py`**, covering the body-integrity refusal, the
+  table-classification rule, the reproducibility refusal, the checkout carve-out, the writer's
+  schema refusal and an inverted index predicate. All 24 breaks go red.
+
+**The Critic round returned no blocking findings and tightened two seam decisions**, both of which
+would have landed on build step 2 rather than here:
+
+- **A derived table is now either rebuildable or a dimension, from one property.** `securities`
+  carries a `derivation_version_id` but no raw provenance, so "derived" was being reconstructed from
+  two signals that disagreed on exactly one table. The first deriver to write a security would have
+  hit the `source_security_id` unique index on replay, or upserted and left stale rows that the
+  content digest then reports as an unreproducible rebuild — sending the next reader hunting a
+  purity bug that is really a classification gap. A table is *derived* when it references
+  `derivation_versions`; of those, the ones referencing `raw_responses` are rebuilt and the rest are
+  dimensions a deriver must upsert. Fixing it turned up the same trap a second time:
+  `derivation_versions` names its own primary key `derivation_version_id`, exactly as
+  `raw_responses` names `raw_response_id`, so both classifications now go through one
+  reference test.
+- **The archive does not hold credentials.** AC-5.1 keeps every response verbatim and AC-10.1 keeps
+  every access token in the keychain; a token in `body_gzip` satisfies the first by breaking the
+  second, permanently, because the table is append-only and a datastore backup travels. Recorded as
+  clause 7 of the Derivation Seam, where step 2 meets it, and it is what keeps Chunk 04's AC-10.3
+  redaction from needing to cover a table nobody planned to redact. Each of these guarantees is a refusal, so each fails silently and in the direction of
+  looking finished.
+
 ## 2026-09-06: The core schema — thirteen tables, with the requirements built into them
 
 <!-- prawduct: scope=datastore-v1 -->

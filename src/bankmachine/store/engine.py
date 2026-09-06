@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+from sqlalchemy import Connection as SAConnection
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.pool import StaticPool
 from sqlcipher3 import dbapi2
@@ -64,3 +65,47 @@ def reader_engine(config: Config) -> Iterator[Engine]:
             yield engine
         finally:
             engine.dispose()
+
+
+@contextmanager
+def writer_connection(config: Config) -> Iterator[SAConnection]:
+    """A checked-out handle in the writer role, ready for the query builder.
+
+    Callers take a connection from here rather than calling `engine.connect()`
+    themselves, so the checkout stays inside the store layer: a role is decided
+    by the parameters a handle was opened with, and every one of those is
+    settled before this yields.
+    """
+    with writer_engine(config) as engine, engine.connect() as conn:
+        yield conn
+
+
+@contextmanager
+def reader_connection(config: Config) -> Iterator[SAConnection]:
+    """A checked-out handle in the read role. Writes through it fail at the file."""
+    with reader_engine(config) as engine, engine.connect() as conn:
+        yield conn
+
+
+@contextmanager
+def transaction(conn: SAConnection) -> Iterator[None]:
+    """One atomic unit over a handle SQLAlchemy cannot open a transaction on.
+
+    This is the workaround for the inheritance described above, kept here rather
+    than repeated at each call site: the handles are in autocommit, so the
+    transaction boundary has to be issued on the driver. `BEGIN IMMEDIATE` takes
+    the write lock at the start rather than on first write, so a unit that will
+    write cannot get partway in and then discover it has to fail.
+
+    It does not nest. SQLite has savepoints, but a caller that wants a nested
+    unit almost always wants a different boundary instead, and a helper that
+    silently degrades to a no-op inside an open transaction is how a rollback
+    stops rolling anything back.
+    """
+    conn.exec_driver_sql("BEGIN IMMEDIATE")
+    try:
+        yield
+    except BaseException:
+        conn.exec_driver_sql("ROLLBACK")
+        raise
+    conn.exec_driver_sql("COMMIT")

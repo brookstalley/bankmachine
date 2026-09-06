@@ -199,10 +199,29 @@ def _exclusive_lock(config: Config) -> Iterator[None]:
         os.close(fd)
 
 
+def _require_supported_schema(conn: Connection, config: Config, *, consequence: str) -> None:
+    """Norm 4's check, with one home because both roles need it.
+
+    A reader that misreads a schema it does not recognize returns answers that
+    are wrong; a writer that misunderstands one writes them down. Only
+    `initializing_writer` skips this, because bringing an old datastore forward
+    is the one job that has to open a version this build does not serve.
+    """
+    version = read_schema_version(conn)
+    if version != SUPPORTED_SCHEMA_VERSION:
+        raise SchemaVersionUnsupportedError(
+            f"{config.datastore_path} is at schema version {version}; this build serves version "
+            f"{SUPPORTED_SCHEMA_VERSION} only. Refusing rather than {consequence}"
+        )
+
+
 @contextmanager
 def writer(config: Config) -> Iterator[Connection]:
     """A writable handle to an existing datastore, under the exclusive lock."""
     with _writer(config, create=False) as conn:
+        _require_supported_schema(
+            conn, config, consequence="writing into a schema it does not understand"
+        )
         yield conn
 
 
@@ -248,13 +267,11 @@ def reader(config: Config, *, require_supported_schema: bool = True) -> Iterator
         _key_and_prepare(conn, config, key)
         conn.execute("PRAGMA query_only = ON")
         if require_supported_schema:
-            version = read_schema_version(conn)
-            if version != SUPPORTED_SCHEMA_VERSION:
-                raise SchemaVersionUnsupportedError(
-                    f"{config.datastore_path} is at schema version {version}; this build serves "
-                    f"version {SUPPORTED_SCHEMA_VERSION} only. Refusing to serve rather than "
-                    f"return answers derived from a schema it does not understand"
-                )
+            _require_supported_schema(
+                conn,
+                config,
+                consequence="returning answers derived from a schema it does not understand",
+            )
         yield conn
     finally:
         conn.close()

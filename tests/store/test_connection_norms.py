@@ -265,6 +265,25 @@ def test_a_reader_refuses_an_unrecognized_schema_version(initialized_config: Con
         pass
 
 
+def test_a_writer_refuses_an_unrecognized_schema_version(initialized_config: Config) -> None:
+    # The reader's case is above. This one matters more: a reader that misreads
+    # a schema it does not recognize returns wrong answers, and a writer that
+    # misunderstands one writes them down. `store rebuild` is the first writer
+    # that is not the migration runner, and the runner takes the initializing
+    # writer precisely because opening an old version is its job.
+    future = connection.SUPPORTED_SCHEMA_VERSION + 1
+    with writer(initialized_config) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        connection.stamp_schema_version(conn, future)
+        conn.execute("COMMIT")
+
+    with (
+        pytest.raises(SchemaVersionUnsupportedError, match=str(future)),
+        writer(initialized_config),
+    ):
+        pass
+
+
 def test_status_reports_an_unrecognized_schema_version_as_unhealthy(
     initialized_config: Config,
 ) -> None:

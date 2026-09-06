@@ -14,7 +14,10 @@ list from memory is how it quietly stops being asked.
 It covers the four architecture norms and, since the core schema landed, the
 guarantees migration 002 builds into the database itself -- the money and
 temporal CHECKs, the identity indexes, and the drift guard that keeps the Core
-metadata and the frozen DDL describing the same tables.
+metadata and the frozen DDL describing the same tables. The raw-response layer
+adds four more, and they are the same shape as the rest: each is a refusal, so
+each fails silently and in the direction of looking finished if its check ever
+stops firing.
 
 Each case restores the file it edited, including on failure.
 """
@@ -27,11 +30,17 @@ import subprocess
 import sys
 
 CONNECTION = pathlib.Path("src/bankmachine/store/connection.py")
+ENGINE = pathlib.Path("src/bankmachine/store/engine.py")
+RAW = pathlib.Path("src/bankmachine/store/raw.py")
+REBUILD = pathlib.Path("src/bankmachine/store/rebuild.py")
 MIGRATIONS = pathlib.Path("src/bankmachine/store/migrations/__init__.py")
 DDL = pathlib.Path("src/bankmachine/store/migrations/core_schema.py")
 METADATA = pathlib.Path("src/bankmachine/store/schema.py")
 NORMS = "tests/store/test_connection_norms.py"
 SCHEMA = "tests/store/test_schema.py"
+SOLE_CONSTRUCTOR = "tests/preferences/test_connection_is_the_sole_constructor.py"
+RAW_TESTS = "tests/store/test_raw.py"
+REBUILD_TESTS = "tests/store/test_rebuild.py"
 
 #: (description, file, text to replace, replacement, the test that must go red)
 CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
@@ -76,6 +85,13 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "if version != SUPPORTED_SCHEMA_VERSION:",
         "if False:",
         f"{NORMS}::test_a_reader_refuses_an_unrecognized_schema_version",
+    ),
+    (
+        "norm 4: a writer refuses to write into a version it does not recognize",
+        CONNECTION,
+        "if version != SUPPORTED_SCHEMA_VERSION:",
+        "if False:",
+        f"{NORMS}::test_a_writer_refuses_an_unrecognized_schema_version",
     ),
     (
         "migration atomicity: DDL and version stamp commit together",
@@ -162,11 +178,46 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         f"{SCHEMA}::test_the_metadata_declares_the_same_indexes_as_the_database",
     ),
     (
+        "drift: an index whose partial predicate is inverted enforces the opposite rule",
+        METADATA,
+        "sqlite_where=connections.c.retired_at.is_(None),",
+        "sqlite_where=connections.c.retired_at.is_not(None),",
+        f"{SCHEMA}::test_the_metadata_declares_the_same_indexes_as_the_database",
+    ),
+    (
         "drift: the Core metadata and the frozen DDL describe the same tables",
         METADATA,
         'Column("amount_minor", MinorUnitsColumn, nullable=False),',
         'Column("amount_minor", MinorUnitsColumn, nullable=True),',
         f"{SCHEMA}::test_the_metadata_matches_the_migrated_database",
+    ),
+    (
+        "checkout: the carve-out for engine.py does not admit a parameterized connect",
+        ENGINE,
+        "engine.connect() as conn",
+        "engine.connect(None) as conn",
+        f"{SOLE_CONSTRUCTOR}::test_only_connection_py_constructs_a_connection",
+    ),
+    (
+        "bronze: a stored body that no longer matches its digest is refused",
+        RAW,
+        "if recomputed != body_sha256 or len(body) != body_bytes:",
+        "if False:",
+        f"{RAW_TESTS}::test_a_body_that_no_longer_matches_its_digest_is_refused",
+    ),
+    (
+        "rebuild: a table is classified by what it references, never by a column name",
+        REBUILD,
+        "return any(key.column is target for key in column.foreign_keys)",
+        "return True",
+        f"{REBUILD_TESTS}::test_neither_registry_is_classified_as_derived_from_itself",
+    ),
+    (
+        "rebuild: content it could not reproduce is rolled back rather than committed",
+        REBUILD,
+        "            if report.content_changed and not report.change_was_expected:",
+        "            if False:",
+        f"{REBUILD_TESTS}::test_a_rebuild_that_cannot_reproduce_its_input_is_rolled_back",
     ),
 ]
 

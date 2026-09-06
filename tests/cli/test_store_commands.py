@@ -9,6 +9,7 @@ import pytest
 from bankmachine.cli import run
 from bankmachine.config import Config
 from bankmachine.store.connection import SUPPORTED_SCHEMA_VERSION
+from bankmachine.store.rebuild import RebuildReport
 
 
 @pytest.fixture
@@ -124,3 +125,79 @@ def test_init_still_creates_a_key_when_there_is_no_datastore(cli_env: Config) ->
     assert not cli_env.datastore_path.exists()
     assert run(["store", "init"]) == 0
     assert get_datastore_key(cli_env)
+
+
+def test_rebuild_on_a_fresh_datastore_reports_that_it_changed_nothing(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run(["store", "init"]) == 0
+    capsys.readouterr()
+
+    exit_code = run(["store", "rebuild"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "raw responses replayed:  0" in out
+    assert "content:                 identical to what it replaced" in out
+
+
+def test_rebuild_refuses_a_datastore_that_does_not_exist(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # `store init` is the only thing that creates a datastore; a typo'd path is
+    # reported rather than turned into an empty store that rebuilds to nothing.
+    exit_code = run(["store", "rebuild"])
+
+    assert exit_code == 2
+    assert "run `bankmachine store init`" in capsys.readouterr().err
+    assert not cli_env.datastore_path.exists()
+
+
+def _report(*, previous: tuple[int, ...], changed: bool) -> RebuildReport:
+    """A report whose digests differ or match, so the printer's branches are reachable.
+
+    Constructed rather than provoked: the two branches below are pure formatting
+    over a `RebuildReport`, and driving a real datastore into each state would
+    test the rebuild again rather than the sentence an operator reads.
+    """
+    return RebuildReport(
+        responses_replayed=4,
+        rows_deleted={"transactions": 3, "balances_daily": 1, "holdings": 0},
+        derivation_version=2,
+        derivation_version_id=7,
+        previous_derivation_versions=previous,
+        digest_before="aaaa",
+        digest_after="bbbb" if changed else "aaaa",
+    )
+
+
+def test_rebuild_says_a_new_derivation_version_explains_the_difference(
+    cli_env: Config, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "bankmachine.cli.store.rebuild",
+        lambda config, **kwargs: _report(previous=(1,), changed=True),
+    )
+
+    assert run(["store", "rebuild"]) == 0
+    out = capsys.readouterr().out
+
+    assert "rows replaced:           4" in out
+    assert "  holdings" not in out  # a table with nothing to replace is not listed
+    assert "previous version(s):     1" in out
+    assert "changed, as expected at a new derivation version" in out
+
+
+def test_rebuild_names_an_accepted_change_as_unexplained(
+    cli_env: Config, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Only reachable under --accept-content-change; without it the rebuild raises
+    # and this line is never printed against a difference nobody accounted for.
+    monkeypatch.setattr(
+        "bankmachine.cli.store.rebuild",
+        lambda config, **kwargs: _report(previous=(2,), changed=True),
+    )
+
+    assert run(["store", "rebuild", "--accept-content-change"]) == 0
+
+    assert "CHANGED at an unchanged derivation version, accepted" in capsys.readouterr().out

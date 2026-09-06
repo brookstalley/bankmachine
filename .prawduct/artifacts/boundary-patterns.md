@@ -22,9 +22,9 @@ that creates the tables, and the only thing that ever has.
 tables for the query builder.
 
 **Consumers:** everything downstream of the store. Today: `store/engine.py`,
-`cli/store.py`. By build step: the sync writer (steps 4–6), the rebuild path
-(FR-5), `sync shell` (Chunk 04), the MCP tool surface (step 7), and the import
-adapters (step 10). The MCP tools in `system-requirements.md` §5 are the
+`store/raw.py`, `store/derivation.py`, `store/rebuild.py`, `cli/store.py`. By
+build step: the sync writer (steps 4–6), `sync shell` (Chunk 04), the MCP tool
+surface (step 7), and the import adapters (step 10). The MCP tools in `system-requirements.md` §5 are the
 consumers this schema was designed *from* — its columns were chosen by
 enumerating their queries before any field was drawn.
 
@@ -48,7 +48,10 @@ inferable from a column name:
    `manual`, and exactly one of `raw_response_id` / `manual_import_id` is set —
    a CHECK, so a row cannot claim an origin it has no link to. Every row also
    names the `derivation_version_id` that produced it (AC-5.3), which is what
-   makes rebuild losslessness (AC-11.5) a well-defined claim.
+   makes rebuild losslessness (AC-11.5) a well-defined claim. **These two foreign
+   keys are also the schema's classification**: which tables a rebuild may empty,
+   and which a deriver must upsert, are read off them rather than off a list
+   anyone maintains — see the Derivation Seam, clause 6.
 5. **Local ids are the only stable ones.** History references `account_id`, never
    `source_account_id`, because the aggregator's id changes when a connection is
    re-linked (AC-6.3).
@@ -87,7 +90,16 @@ enforces the structural half of it.
 🔴 **The inherited surprise:** every handle is in autocommit
 (`isolation_level=None`), so `engine.begin()` opens no transaction and block-exit
 rollback undoes nothing. A multi-statement unit that must be atomic issues
-`BEGIN IMMEDIATE` / `COMMIT` on the driver, the way the migration runner does.
+`BEGIN IMMEDIATE` / `COMMIT` on the driver — through `engine.transaction(conn)`,
+which is that workaround kept in one place rather than repeated at call sites. It
+does not nest.
+
+**Taking a handle:** callers use `engine.writer_connection(config)` /
+`engine.reader_connection(config)` and never call `engine.connect()` themselves.
+A role is decided by the parameters a handle is opened with — URI mode, key, lock
+taken first — and a pool checkout carries none, which is the discriminator
+`tests/preferences/test_connection_is_the_sole_constructor.py` now uses in place
+of matching on the name `connect`.
 
 ### Configuration Interface
 
@@ -123,6 +135,69 @@ degraded data (AC-9.3), and stated units, sign conventions and applied rules
 (AC-9.4). This *is* the product's public API contract; `api-contract.md` is the
 artifact that will hold it, and it does not exist yet.
 
+### Derivation Seam — the contract build step 2 is written against
+
+**Producer:** `src/bankmachine/store/derivation.py` — the `Deriver` signature,
+the endpoint registry, and `apply_response`, which persists a response and
+commits it before anything derives from it.
+
+**Consumers:** `src/bankmachine/store/rebuild.py` today. The aggregator client
+(build step 2) is the consumer it exists for: it registers a deriver per endpoint
+in `DERIVERS`, which ships empty.
+
+**Contract**, and every clause is load-bearing:
+
+1. **One normalization, two callers.** The live sync path and `store rebuild`
+   run the same derivers over the same responses. Rebuild is the first
+   implementation replayed, not a second one kept in step with it — which is
+   what makes AC-11.5 checkable rather than aspirational.
+2. 🔴 **A deriver is a pure function of `(RawResponse, DerivationContext)`.**
+   Same inputs, same rows, every time, on any machine. The rule with teeth is
+   *never call the clock*: stamp rows from `response.received_at`, which is when
+   this system actually learned the thing. `DerivationContext` carries no clock
+   and no configuration so the pure route is also the convenient one, and
+   `store rebuild` catches the impure one by comparing content before and after.
+3. **Persist first, derive second, in two transactions.** A deriver that raises
+   leaves the response kept and no half-derived rows. The asymmetry is
+   deliberate: a response may be unfetchable afterwards, a derivation is always
+   re-runnable.
+4. **A response with no registered deriver is a refusal, not a skip.** A rebuild
+   that stepped over an endpoint it could not interpret would report success over
+   a dataset missing whatever that endpoint carried, and every number in it would
+   still add up.
+5. **Every derived row carries `derivation_version_id`**, and the version is
+   recorded on first use rather than seeded. Bump `DERIVATION_VERSION` in the
+   same commit as any deriver change that could produce different rows from the
+   same response.
+6. 🔴 **A derived table is either rebuildable or a dimension, and a deriver must
+   know which before it writes a row.** Both answers come from one property in
+   `store/rebuild.py`, never from a column name: a table is *derived* when it
+   references `derivation_versions`, and of those, the ones referencing
+   `raw_responses` are **rebuildable** — emptied before the replay — while the
+   rest are **derived dimensions**. `securities` is the only dimension today. A
+   dimension row is shared: one security is named by holdings and investment
+   transactions across many responses, so it has no single response to point at
+   and no id that could be reassigned without orphaning them. **A deriver writing
+   a dimension row upserts on its natural key**, because the replay meets rows it
+   did not delete — a plain insert raises on the second pass, and neither failure
+   is the deriver-purity bug it will look like.
+7. 🔴 **A credential-bearing response is not persisted verbatim.** AC-5.1 keeps
+   every response and AC-10.1 keeps every access token in the keychain; a token
+   in `raw_responses.body_gzip` satisfies the first by breaking the second,
+   permanently, because the table is append-only and a datastore backup travels.
+   The archive is for responses carrying *data*. `request_context` records what
+   was asked, never what it was asked with — no `Authorization` header, no token
+   in a query string. This is a recorded decision rather than a mechanism: the
+   endpoint vocabulary that could enforce it is the aggregator client's, so this
+   is the clause step 2 meets. It is also what keeps `sync shell`'s AC-10.3
+   redaction (Chunk 04) from needing to cover a table nobody planned to redact.
+
+**Crossing it:** registering a deriver, or changing one, changes what a rebuild
+of every existing datastore produces. `tests/store/test_rebuild.py` carries
+stand-in derivers that exercise the three shapes the schema has — an identity
+table a rebuild must not delete, an append-only series, and a fact table it
+rebuilds outright.
+
 ### Aggregator Client — *not built; build step 2*
 
 **Producer:** `src/bankmachine/connector/` (does not exist yet).
@@ -143,5 +218,5 @@ is ever expected decides how hard this boundary is drawn.
 **The negative-control run.** `uv run python tests/preferences/verify_norms_go_red.py`
 breaks each structural guarantee in turn and confirms its test goes red. It is
 not collected by pytest because it edits the source tree. Run it whenever the
-connection layer or the schema changes: a contract test that has never been red
+connection layer, the schema or the raw/rebuild layer changes: a contract test that has never been red
 is a claim, not a check.
