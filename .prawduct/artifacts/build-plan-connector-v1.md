@@ -56,18 +56,17 @@ Derivation Seam — was built in step 1 specifically so step 2 would have someth
 
 **Open assumptions:**
 
-- `[ASSUMPTION: credential-issuing responses are exempt from the raw archive | HIGH impact | user can
-  veto]` **This is the one to look at first.** AC-5.1 says every aggregator response is persisted
-  verbatim, and `/item/public_token/exchange` returns a live `access_token` while
-  `/link/token/create` returns a short-lived `link_token`. Archiving them verbatim would copy a
-  credential out of the Credential Seam and into the datastore, where `store rebuild` reads it and a
-  file-copy backup carries it. The archive exists to make normalized tables rebuildable (AC-5.2), and
-  a credential response derives no rows — so the exemption costs nothing the archive was for. The
-  alternative, archiving with the token elided, is worse: it breaks "verbatim" while still implying
-  the response is replayable. Chunk 03 records the exemption in `boundary-patterns.md` and enforces it
-  with a test naming the two exempt endpoints; **everything that carries data is archived verbatim,
-  with no exceptions.** If you would rather archive them, say so — it is a two-line change in Chunk 03
-  and a paragraph in AC-5.1.
+- ~~`[ASSUMPTION: credential-issuing responses are exempt from the raw archive | HIGH impact]`~~
+  **Withdrawn 2026-09-06, before any code: this was already decided in build step 1 and is an
+  obligation this plan inherits, not a departure it proposes.** `src/bankmachine/store/raw.py`'s
+  module docstring records it — a response whose body carries a token would satisfy AC-5.1 by
+  breaking AC-10.1, permanently, because the table is append-only and a datastore backup travels —
+  and it names *this* build step as where the rule stops being a decision and becomes a mechanism:
+  "the endpoint vocabulary that could enforce it belongs to the aggregator client (build step 2),
+  which is where the rule is recorded to be met." Chunk 03 owes that mechanism. The same docstring
+  extends the rule to `request_context`, which records what was asked rather than what it was asked
+  with — no header, no token in a query string — so Chunk 01's `request_context` is written under it
+  too.
 - `[ASSUMPTION: "full test suite" in §8 means fixtures replayed offline by default, with live-sandbox
   tests opt-in behind a marker | MED impact | user can override]` A suite that needs network and
   credentials on every run stops being run, and step 1's suite is currently 212 tests that pass
@@ -101,7 +100,14 @@ Three positions, since a plan handed over without one reads as endorsed:
    Plaid's default. This is the cheapest possible insurance against the most expensive mistake in the
    system, and it costs one keyword.
 
-3. **The risk this plan does not price is that sandbox shapes are not production shapes.** Plaid's
+3. **The credential exemption needed no argument from me — step 1 had already made it.** I drafted it
+   as a HIGH-impact assumption for the owner to veto, and reading `store/raw.py` before writing any
+   code found the decision already recorded there, with build step 2 named as the step that owes the
+   mechanism. Worth stating as a process point rather than quietly fixing: the plan's own
+   `verify-api`-first discipline is what caught it, and the general lesson is that a "new" departure
+   in a well-documented codebase is more often an obligation someone already wrote down.
+
+4. **The risk this plan does not price is that sandbox shapes are not production shapes.** Plaid's
    sandbox returns tidy, complete, small responses; production returns nulls in optional fields,
    institutions with missing logos, and accounts whose `mask` is absent. Fixtures recorded from
    sandbox will make the derivers look finished. I have put a hostile-fixture step in Chunk 04 rather
@@ -115,11 +121,27 @@ Three positions, since a plan handed over without one reads as endorsed:
 - [ ] Chunk 03: Enrollment endpoints — link token, exchange, capability discovery
 - [ ] Chunk 04: Institutions and accounts derivers; rebuild on a real archive
 Context: Plan drawn 2026-09-06, directly after `build-plan-datastore-v1.md` closed and merged as
-`4c7a491`. Nothing built yet; `feature/connector-v1` is not cut. Next: Chunk 01, whose step 0 is
-`verify-api` and whose first act is reading `plaid-python`'s source rather than writing any client
-code. The datastore layer this plan archives through is complete and green (212 tests); the
-`DERIVERS` registry it registers into is deliberately empty, and `store rebuild` refuses a real
-archive until Chunk 04 fills it.
+`4c7a491`.
+
+**Chunk 01 is built but deliberately NOT ticked.** Its offline half is complete and green —
+the `connector/` package with the SDK contained, `connector check` / `set-secret`, aggregator
+credentials on the existing keychain seam, the `Endpoint` vocabulary, and the containment norm with
+its negative controls (suite green, 33 norm breaks all red, mypy strict and ruff clean). What is
+missing is the half no fake can supply: **no sandbox credentials exist on this machine**, so
+`tests/connector/fixtures/` is empty and the two `sandbox`-marked tests skip. Done-when 0b and the
+live acceptance criterion are the gate, tracked as **VRF-002**. Ticking the box would assert a
+criterion this plan's own text says is unmet.
+
+`verify-api` paid for itself three times before any client code was written: the SDK deserializes by
+default and would have put a model round-trip in the archive instead of the response (AC-5.1); it
+ships no `py.typed`, which is the strongest argument the containment decision got; and it leaves
+transport failures unwrapped, so an offline machine reported a `urllib3` traceback. A fourth came out
+of the Critic — `ApiException.reason` is the HTTP reason phrase, so every rejection read
+`400: Bad Request` until the error body was parsed for the cause.
+
+The datastore layer this plan archives through is complete and green; the `DERIVERS` registry it
+registers into is deliberately empty, and `store rebuild` refuses a real archive until Chunk 04
+fills it. **Next: close VRF-002 when credentials exist, then Chunk 02.**
 
 ## Scaffolding
 
@@ -199,21 +221,35 @@ relationship (who may import what), not a naming convention.
   environment + `client_id` added to `src/bankmachine/config.py`, the secret added to
   `src/bankmachine/secrets.py`, new `tests/preferences/test_connector_is_contained.py` with its
   negative control in `tests/preferences/verify_norms_go_red.py`, first fixtures under new
-  `tests/connector/fixtures/`
-- **Tests:** contract — no module outside `connector/plaid/` imports `plaid`, and `connector/`
-  imports no datastore handle; unit — response bytes reach `record_response` unaltered, digest
-  matches; integration — `connector check` against a missing datastore refuses **before** the network
-  call; sandbox (marked) — a live `/institutions/get` round-trip
-- **Acceptance criteria:** `bankmachine connector check` completes against sandbox, archives the
-  response, and prints what it found; the offline suite passes with sandbox tests deselected; the
-  containment test goes red when its norm is broken
+  `tests/connector/fixtures/` **(deferred — see Done-when 0b)**
+- **Tests:** contract — no module outside `src/bankmachine/connector/plaid/` imports the aggregator
+  SDK, and `src/bankmachine/connector/` imports no datastore handle; unit — response bytes reach
+  `record_response` unaltered, digest matches; unit — a rejected call names its cause rather than its
+  HTTP status, and an unreachable host is a sentence rather than a traceback; integration —
+  `connector check` against a missing datastore refuses **before** the network call; sandbox
+  (marked) — a live round-trip against the institutions endpoint
+- **Acceptance criteria:** *(split, 2026-09-06, because the second half needs credentials that do not
+  exist on this machine — see Done-when 0b)*
+  - **Offline:** the suite passes with sandbox tests deselected; the containment test goes red when
+    its norm is broken; a failed call names its cause; `connector check` refuses a missing datastore
+    without reaching the aggregator.
+  - **Live, gated on VRF-002:** `bankmachine connector check` completes against sandbox, archives the
+    response, and prints what it found. 🔴 **Chunk 01 is not `[x]` until this passes** — the offline
+    half proves the bytes survive a *fake*, and `project-state.yaml`'s `infrastructure_dependencies`
+    is explicit that the aggregator is verified against, never mocked at the layer under test.
 - **Foreign API:** plaid-python
 - **Visual change:** yes — `connector check`'s output is the operator's first sight of the aggregator
   layer, and the errors it prints are the ones they will meet when credentials are wrong
 - **Done when:**
-  0. verify-api — read `plaid-python`'s source and type stubs for the client construction path and the
-     `/institutions/get` response model, **then** probe sandbox and capture the actual response;
-     record both, and any disagreement between them, in new `.prawduct/artifacts/api-notes-plaid.md`
+  0a. verify-api, source and error path — **done.** Read `plaid-python` 44.0.0's source for the client
+     construction, auth wiring and the deserialize branch, and probe the real sandbox host for the
+     failure shape (which needs no valid credentials: invalid ones return a real error body). Recorded
+     in new `.prawduct/artifacts/api-notes-plaid.md`, including the two findings that changed the
+     design — responses must be taken undecoded, and the SDK leaves transport failures unwrapped.
+  0b. verify-api, success path — **blocked on credentials.** Probe `/institutions/get` for real and
+     record the fixture: `BANKMACHINE_RECORD_FIXTURES=1 uv run pytest -m sandbox`. Queued as VRF-002
+     in `.prawduct/operator-verification.md`, which also asks the operator to break it three ways and
+     read each message.
   1. Acceptance criteria met and tests pass
   2. `/prawduct:critic` run and blocking findings resolved
   3. Committed and chunk marked `[x]` in Status

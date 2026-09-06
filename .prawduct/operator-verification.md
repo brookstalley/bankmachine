@@ -101,3 +101,55 @@ the reason this command exists.
 
 Items 1-8 were exercised in that session. Item 9 is the terminal-only half:
 `input()` handles it, and a piped session cannot show it.
+
+---
+
+## VRF-002 — Chunk 01 (connector-v1) — `bankmachine connector check` against the real sandbox
+
+**Status:** pending
+
+**Why a human:** this is the first time the product reaches the outside world,
+and the two things that matter about it are things a test cannot speak to. The
+first is whether the failure text is any use — a wrong secret, a missing client
+id and an unreachable network have to be distinguishable *from the message
+alone*, because that is all the operator will have. The second is that the whole
+path is real: the offline suite proves the bytes pass through unaltered against
+a fake, and only a live call proves the SDK hands them over undecoded when a
+real server is on the other end.
+
+**Prerequisite:** sandbox credentials. From the aggregator's dashboard:
+
+```
+export BANKMACHINE_PLAID_CLIENT_ID=<client id>
+bankmachine connector set-secret        # prompts, does not echo
+```
+
+**Where to verify:** a sandbox datastore (`BANKMACHINE_ENVIRONMENT=sandbox`,
+which is the default and uses its own `store-sandbox.db`).
+
+```
+bankmachine store init
+bankmachine connector check
+```
+
+**Verify:**
+
+1. The report names the environment, the endpoint, the received timestamp, the
+   byte count and the `raw_response` id it archived — aligned, one fact per line.
+2. The institution count is the aggregator's own `total`, not the number of
+   records returned. Asking for one institution out of thousands should say so.
+3. **Nothing in the output is a credential.** Not the secret, not the client id.
+4. `bankmachine sync shell`, then `SELECT endpoint, body_bytes, request_context
+   FROM raw_responses;` — the row is there, `endpoint` is `/institutions/get`,
+   and `request_context` records the parameters with nothing that authenticated
+   the request.
+5. Break it on purpose, three ways, and read each message before fixing it:
+   an empty `BANKMACHINE_PLAID_CLIENT_ID`, a wrong secret, and (if you can)
+   no network. Each should name its own cause. **A wrong secret reported as a
+   network problem is a defect** — it sends the operator after the wrong cause.
+6. With a datastore that does not exist, `connector check` must refuse *without*
+   calling the aggregator. The message should say to run `store init`.
+7. Record the fixtures, which is what closes the chunk's `verify-api` step:
+   `BANKMACHINE_RECORD_FIXTURES=1 uv run pytest -m sandbox`, then confirm
+   `tests/connector/fixtures/institutions_get.json` exists and contains **no
+   real institution the operator banks with** — sandbox institutions only.

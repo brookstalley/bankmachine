@@ -8,9 +8,11 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from bankmachine.cli import connector as connector_commands
 from bankmachine.cli import store as store_commands
 from bankmachine.cli import sync as sync_commands
 from bankmachine.config import Config, ConfigError, load_config
+from bankmachine.connector import ConnectorError
 from bankmachine.logging_setup import configure_logging, log_startup
 from bankmachine.secrets import SecretsError
 from bankmachine.store.connection import StoreError
@@ -35,6 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verbose", action="store_true", help="log at DEBUG instead of INFO")
     subparsers = parser.add_subparsers(dest="command", required=True)
     store_commands.add_arguments(subparsers)
+    connector_commands.add_arguments(subparsers)
     sync_commands.add_arguments(subparsers)
     return parser
 
@@ -53,7 +56,7 @@ def run(argv: Sequence[str] | None = None) -> int:
 
     try:
         return int(args.handler(config, args))
-    except (StoreError, SecretsError) as exc:
+    except (StoreError, SecretsError, ConnectorError) as exc:
         # Expected failures get a sentence, not a traceback -- but they are never
         # silent, which is the one outcome this project disallows.
         print(f"bankmachine: {exc}", file=sys.stderr)
