@@ -44,6 +44,9 @@ class Config:
     log_dir: Path
     keychain_service: str
     busy_timeout_ms: int
+    plaid_client_id: str | None
+    """The aggregator client identifier. Public in the sense that it is not the secret,
+    but still an operator's own value, so it is configuration rather than a literal."""
     config_path: Path | None
     """The file the values came from, or None when nothing but defaults and env applied."""
 
@@ -65,6 +68,18 @@ class Config:
         out of every line naming this account.
         """
         return f"datastore:{self.environment}"
+
+    @property
+    def plaid_keychain_account(self) -> str:
+        """The keychain account holding the aggregator secret for THIS environment.
+
+        Separate from the datastore key's account for the same reason it is
+        separate from production's: a sandbox secret is disposable and a
+        production one is not, and one account name for both would let an
+        operator overwrite the second while believing they were replacing the
+        first.
+        """
+        return f"plaid:{self.environment}"
 
 
 def _home(env: Mapping[str, str]) -> Path:
@@ -182,6 +197,8 @@ def load_config(
 
     keychain_service = _resolve("keychain_service", env, file_values) or APP_NAME
 
+    plaid_client_id = _resolve("plaid_client_id", env, file_values)
+
     timeout_raw = _resolve("busy_timeout_ms", env, file_values)
     try:
         busy_timeout_ms = int(timeout_raw) if timeout_raw else DEFAULT_BUSY_TIMEOUT_MS
@@ -196,5 +213,6 @@ def load_config(
         log_dir=log_dir.absolute(),
         keychain_service=keychain_service,
         busy_timeout_ms=busy_timeout_ms,
+        plaid_client_id=plaid_client_id,
         config_path=config_path if explicit_config else None,
     )

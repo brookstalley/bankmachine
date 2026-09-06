@@ -261,13 +261,44 @@ stand-in derivers that exercise the three shapes the schema has — an identity
 table a rebuild must not delete, an append-only series, and a fact table it
 rebuilds outright.
 
-### Aggregator Client — *not built; build step 2*
+### Aggregator Client — *partially built; build step 2*
 
-**Producer:** `src/bankmachine/connector/` (does not exist yet).
+**Producer:** `src/bankmachine/connector/` — `plaid/client.py` makes the calls;
+`__init__.py` holds everything a caller is allowed to see.
+
 **Consumer:** the sync path, and the raw-response layer that persists what it
-returned before anything normalizes it.
-**Contract:** open in `system-requirements.md` §9.2 — whether a second aggregator
-is ever expected decides how hard this boundary is drawn.
+returned before anything normalizes it. Today: `cli/connector.py`.
+
+**Contract:** the connector returns `FetchedResponse` — an `Endpoint`, undecoded
+`body` bytes, and when they arrived — and **persists nothing**. Archiving is the
+caller's act, through `store.raw.record_response`.
+
+`system-requirements.md` §9.2 is answered (2026-09-06): one aggregator in v1,
+contained so a second is a new module rather than a rewrite. The boundary is
+therefore a package rather than an interface — a client `Protocol` with one
+implementation would encode that implementation and call it a contract.
+`tests/preferences/test_connector_is_contained.py` holds the two properties:
+nothing outside `connector/plaid/` imports the SDK, and nothing in `connector/`
+imports a module that hands out a datastore handle.
+
+🔴 **The second property is what makes AC-5.1 structural.** "Archive before
+normalize" is not a rule anyone has to follow here — the connector has no way to
+write at all, so there is no path through it that could normalize first.
+
+🔴 **The body is taken undecoded.** Every call passes `_preload_content=False`,
+because the SDK's default path deserializes into generated models that silently
+drop fields they do not know about — and those are exactly the fields a later
+rebuild would need. Verified against the SDK's source, recorded in
+`api-notes-plaid.md`, and held red by `verify_norms_go_red.py`.
+
+**`Endpoint` is a vocabulary, not a label.** `store.derivation.DERIVERS` is keyed
+by it, `store/raw.py` defers its credential-archive rule to it, and AC-ARCH.4's
+guard needs it to tell `/institutions/get` from a filesystem path.
+
+**Not built yet:** the error taxonomy and retry channel (Chunk 02), the
+enrollment endpoints and the credential-archive *mechanism* (Chunk 03), and any
+deriver at all (Chunk 04) — `DERIVERS` is still empty, so `store rebuild` still
+refuses a real archive.
 
 ## Test Levels
 

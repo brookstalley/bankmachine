@@ -30,10 +30,10 @@ second -- permanently, because this table is append-only and a datastore backup
 travels. So a credential-bearing exchange is not persisted here; the archive is
 for the responses that carry *data*. The same applies to `request_context`, which
 records what was asked rather than what it was asked with: no `Authorization`
-header, no token in a query string. This is a decision rather than a mechanism —
-nothing writes to the archive yet, and the endpoint vocabulary that could enforce
-it belongs to the aggregator client (build step 2), which is where the rule is
-recorded to be met.
+header, no token in a query string. The endpoint vocabulary that can enforce this
+lives in the aggregator client (`connector.Endpoint`); the enforcing test arrives
+with the endpoints that carry credentials, which is where the rule first has
+something to bite on.
 
 Compression is pinned to a fixed level with a zeroed mtime, so the same body
 always produces the same blob. Nothing depends on that today; it costs one

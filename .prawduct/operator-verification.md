@@ -3,7 +3,6 @@
 Pre-merge checks a human has to make with their own eyes, for changes whose
 correctness a test cannot speak to. Entries are appended by the chunk that
 creates them and drained with `prawduct-hook verify-operator-verification <ID>`.
-
 ## VRF-001 — Chunk 04 — `bankmachine sync shell` output and redaction
 
 **Status:** pending
@@ -101,3 +100,126 @@ the reason this command exists.
 
 Items 1-8 were exercised in that session. Item 9 is the terminal-only half:
 `input()` handles it, and a piped session cannot show it.
+
+---
+
+## VRF-002 — Chunk 01 (connector-v1) — `bankmachine connector check` against the real sandbox
+
+**Status:** verified
+
+**Why a human:** this is the first time the product reaches the outside world,
+and the two things that matter about it are things a test cannot speak to. The
+first is whether the failure text is any use — a wrong secret, a missing client
+id and an unreachable network have to be distinguishable *from the message
+alone*, because that is all the operator will have. The second is that the whole
+path is real: the offline suite proves the bytes pass through unaltered against
+a fake, and only a live call proves the SDK hands them over undecoded when a
+real server is on the other end.
+
+**Prerequisite:** sandbox credentials. From the aggregator's dashboard:
+
+```
+export BANKMACHINE_PLAID_CLIENT_ID=<client id>
+bankmachine connector set-secret        # prompts, does not echo
+```
+
+**Where to verify:** a sandbox datastore (`BANKMACHINE_ENVIRONMENT=sandbox`,
+which is the default and uses its own `store-sandbox.db`).
+
+```
+bankmachine store init
+bankmachine connector check
+```
+
+**Verify:**
+
+1. The report names the environment, the endpoint, the received timestamp, the
+   byte count and the `raw_response` id it archived — aligned, one fact per line.
+2. The institution count is the aggregator's own `total`, not the number of
+   records returned. Asking for one institution out of thousands should say so.
+3. **Nothing in the output is a credential.** Not the secret, not the client id.
+4. `bankmachine sync shell`, then `SELECT endpoint, body_bytes, request_context
+   FROM raw_responses;` — the row is there, `endpoint` is `/institutions/get`,
+   and `request_context` records the parameters with nothing that authenticated
+   the request.
+5. Break it on purpose, three ways, and read each message before fixing it:
+   an empty `BANKMACHINE_PLAID_CLIENT_ID`, a wrong secret, and (if you can)
+   no network. Each should name its own cause. **A wrong secret reported as a
+   network problem is a defect** — it sends the operator after the wrong cause.
+6. With a datastore that does not exist, `connector check` must refuse *without*
+   calling the aggregator. The message should say to run `store init`.
+7. Record the fixtures, which is what closes the chunk's `verify-api` step:
+   `BANKMACHINE_RECORD_FIXTURES=1 uv run pytest -m sandbox`, then confirm
+   `tests/connector/fixtures/institutions_get.json` exists and contains **no
+   real institution the operator banks with** — sandbox institutions only.
+
+---
+
+**Verified 2026-09-06, against the real sandbox.** Items 1-4, 6 and 7 pass as
+written. Item 5 passes on two of its three cases — a wrong secret and an empty
+client id. The no-network case was not exercised; the SDK's transport wrapping
+was mapped from source instead (`api-notes-plaid.md` §3), which is what the
+offline suite's unreachable-host test is written against.
+
+```
+aggregator:   sandbox
+endpoint:     /institutions/get
+received:     2026-09-06T23:16:41.731628+00:00
+body:         677 bytes, archived as raw_response 1
+institutions: 10085 matching the requested countries
+```
+
+Item 2 holds visibly: 10,085 is the aggregator's own `total`, against a page of
+one. Item 3 holds — no credential appears anywhere in that output. Item 4, the
+archived row, carries the parameters and nothing that authenticated the call:
+
+```
+bankmachine> SELECT endpoint, body_bytes, request_context FROM raw_responses;
+endpoint           body_bytes  request_context
+-----------------  ----------  ---------------------------------
+/institutions/get  677         count=1 offset=0 country_codes=US
+(1 row)
+```
+
+Item 5's two exercised cases each name their own cause, and item 6 refuses
+before reaching the aggregator:
+
+```
+$ BANKMACHINE_PLAID_CLIENT_ID= bankmachine connector check
+bankmachine: no aggregator client id is configured. Set `plaid_client_id` in the
+config file or BANKMACHINE_PLAID_CLIENT_ID in the environment
+
+$ BANKMACHINE_DATASTORE_PATH=/tmp/absent.db bankmachine connector check
+bankmachine: datastore at /tmp/absent.db is not ready (datastore missing); run
+`bankmachine store init` before reaching the aggregator
+```
+
+A third failure arrived unasked and is the most useful of them. The production
+secret was set first, against the sandbox host, and the report was
+`400 (INVALID_API_KEYS): invalid client_id or secret provided` with a
+`request_id` — a *different* error code from the `INVALID_FIELD` a malformed
+credential returns. That is item 5's real question answered from observation:
+the operator can tell a wrong credential from a malformed one and from a
+network fault, by the message alone.
+
+🔴 **Item 7's premise was wrong, and the correction is worth more than the
+item.** It asks the fixture to hold "sandbox institutions only". The sandbox's
+`/institutions/get` does not serve fictional test institutions — it serves the
+production institution catalogue: real names, real routing numbers, and a
+`total` of 10,085 for `US` alone. Any page recorded from it is public catalogue
+data.
+
+The criterion underneath that wording still holds, and was established
+mechanically rather than by reading: `tests/preferences/check-no-personal-data.sh`
+reports clean over the working tree with the fixture in it, so nothing on this
+operator's roster is in the file. What is recorded is one institution,
+`ins_130958`, 677 bytes — the same size as the response `connector check`
+archived, from its own separate call and carrying its own `request_id`.
+
+The consequence past this entry belongs to Chunk 04, and is recorded in
+`api-notes-plaid.md` §7: the plan's §4 risk that "sandbox shapes are not
+production shapes" is narrower than written for *this* endpoint, because this
+response is production's own catalogue. It stands as written for accounts and
+transactions, which do come from the fictional institutions.
+
+**Verified:** 2026-09-06

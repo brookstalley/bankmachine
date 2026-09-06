@@ -40,6 +40,7 @@ def make_config(
     *,
     environment: Environment = "sandbox",
     datastore_name: str = "store.db",
+    plaid_client_id: str | None = None,
 ) -> Config:
     return Config(
         environment=environment,
@@ -47,6 +48,7 @@ def make_config(
         log_dir=tmp_path / "logs",
         keychain_service=keychain_service,
         busy_timeout_ms=200,
+        plaid_client_id=plaid_client_id,
         config_path=None,
     )
 

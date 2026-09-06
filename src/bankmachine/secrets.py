@@ -37,6 +37,15 @@ class DatastoreKeyMissingError(SecretsError):
     """No datastore key exists for this configuration."""
 
 
+class AggregatorCredentialMissingError(SecretsError):
+    """No aggregator secret exists for this configuration.
+
+    Distinct from `DatastoreKeyMissingError` because the remedies share nothing:
+    a datastore key cannot be recovered once lost, while an aggregator secret is
+    always re-readable from the aggregator's own dashboard.
+    """
+
+
 def generate_datastore_key() -> str:
     """A fresh 256-bit key as lowercase hex."""
     return token_hex(KEY_BYTES)
@@ -101,6 +110,52 @@ def set_datastore_key(config: Config, key: str) -> None:
 def delete_datastore_key(config: Config) -> None:
     """Remove the datastore key. Absence is not an error."""
     service, account = config.keychain_service, config.keychain_account
+    try:
+        keyring.delete_password(service, account)
+    except keyring.errors.PasswordDeleteError:
+        return
+    except KeyringError as exc:
+        raise SecretsError(f"keychain {service}/{account} could not be cleared: {exc}") from exc
+
+
+def get_plaid_secret(config: Config) -> str:
+    """The aggregator secret for this environment, from the OS keychain.
+
+    Unvalidated on purpose: the aggregator's secret format is theirs to change,
+    and a length or alphabet check here would reject a rotated credential that
+    works. The datastore key is validated because a malformed one is silently
+    accepted by SQLCipher as a *different* key; a malformed aggregator secret
+    produces an authentication error from the aggregator, which is loud already.
+    """
+    service, account = config.keychain_service, config.plaid_keychain_account
+    try:
+        stored = keyring.get_password(service, account)
+    except KeyringError as exc:
+        raise SecretsError(f"keychain {service}/{account} could not be read: {exc}") from exc
+    if stored is None:
+        raise AggregatorCredentialMissingError(
+            f"no aggregator secret in keychain {service}/{account}. Store the secret for the "
+            f"{config.environment} environment with `bankmachine connector set-secret`"
+        )
+    if not stored.strip():
+        raise SecretsError(f"aggregator secret in {service}/{account} is empty")
+    return stored
+
+
+def set_plaid_secret(config: Config, secret: str) -> None:
+    """Store the aggregator secret, replacing any existing one."""
+    service, account = config.keychain_service, config.plaid_keychain_account
+    if not secret.strip():
+        raise SecretsError("refusing to store an empty aggregator secret")
+    try:
+        keyring.set_password(service, account, secret)
+    except KeyringError as exc:
+        raise SecretsError(f"keychain {service}/{account} could not be written: {exc}") from exc
+
+
+def delete_plaid_secret(config: Config) -> None:
+    """Remove the aggregator secret. Absence is not an error."""
+    service, account = config.keychain_service, config.plaid_keychain_account
     try:
         keyring.delete_password(service, account)
     except keyring.errors.PasswordDeleteError:

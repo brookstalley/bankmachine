@@ -1,0 +1,34 @@
+{
+  "institutions": [
+    {
+      "country_codes": [
+        "US"
+      ],
+      "institution_id": "ins_130958",
+      "name": "Bridge",
+      "oauth": false,
+      "products": [
+        "assets",
+        "auth",
+        "balance",
+        "cra_lend_score",
+        "cra_plaid_credit_score",
+        "identity",
+        "identity_match",
+        "income_verification",
+        "pay_by_bank",
+        "processor_payments",
+        "recurring_transactions",
+        "signal",
+        "transactions",
+        "transactions_refresh",
+        "transfer"
+      ],
+      "routing_numbers": [
+        "011401533"
+      ]
+    }
+  ],
+  "request_id": "b64a09e689885a1",
+  "total": 10085
+}

@@ -39,6 +39,8 @@ DDL = pathlib.Path("src/bankmachine/store/migrations/core_schema.py")
 METADATA = pathlib.Path("src/bankmachine/store/schema.py")
 SHELL = pathlib.Path("src/bankmachine/cli/sync.py")
 SECRETS = pathlib.Path("src/bankmachine/secrets.py")
+CLI_CONNECTOR = pathlib.Path("src/bankmachine/cli/connector.py")
+CONNECTOR_CLIENT = pathlib.Path("src/bankmachine/connector/plaid/client.py")
 NORMS = "tests/store/test_connection_norms.py"
 SCHEMA = "tests/store/test_schema.py"
 SOLE_CONSTRUCTOR = "tests/preferences/test_connection_is_the_sole_constructor.py"
@@ -46,6 +48,9 @@ RAW_TESTS = "tests/store/test_raw.py"
 REBUILD_TESTS = "tests/store/test_rebuild.py"
 SHELL_TESTS = "tests/cli/test_sync_shell.py"
 SECRETS_TESTS = "tests/test_secrets.py"
+CONTAINED = "tests/preferences/test_connector_is_contained.py"
+CONNECTOR_CLI_TESTS = "tests/cli/test_connector_commands.py"
+CONNECTOR_TESTS = "tests/connector/test_client.py"
 
 #: (description, file, text to replace, replacement, the test that must go red)
 CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
@@ -258,6 +263,38 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "    if not conn.in_transaction:\n        return\n",
         "    if True:\n        return\n",
         f"{SHELL_TESTS}::test_a_transaction_typed_at_the_prompt_is_released_before_the_prompt_returns",
+    ),
+    (
+        "§9.2: the aggregator SDK stays inside connector/plaid/",
+        CLI_CONNECTOR,
+        "from bankmachine.config import Config",
+        "import plaid  # noqa: F401\nfrom bankmachine.config import Config",
+        f"{CONTAINED}::test_only_the_plaid_package_imports_the_aggregator_sdk",
+    ),
+    (
+        "AC-5.1: the connector cannot reach the datastore, so it cannot normalize first",
+        CONNECTOR_CLIENT,
+        "from bankmachine.store.types import now_utc",
+        (
+            "from bankmachine.store.engine import writer_connection  # noqa: F401\n"
+            "from bankmachine.store.types import now_utc"
+        ),
+        f"{CONTAINED}::test_the_connector_cannot_reach_the_datastore",
+    ),
+    (
+        "AC-5.1: the body is archived as received, not round-tripped through a parser",
+        CONNECTOR_CLIENT,
+        "                _preload_content=False,",
+        "                _preload_content=True,",
+        f"{CONNECTOR_TESTS}::test_the_body_reaches_the_caller_byte_for_byte",
+    ),
+    (
+        "the datastore is checked before the aggregator is reached",
+        CLI_CONNECTOR,
+        "    if not status.healthy:",
+        "    if False:",
+        f"{CONNECTOR_CLI_TESTS}::"
+        "test_check_refuses_a_missing_datastore_before_reaching_the_aggregator",
     ),
 ]
 

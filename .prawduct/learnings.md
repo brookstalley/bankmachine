@@ -126,3 +126,31 @@ keep a second, independently-derived account of the same fact, and let a test re
 observation the shortcut is making impossible. If the answer is "the two disagreeing", write it
 twice. And when an independent oracle disagrees with your code, find out which one is wrong before
 assuming — a second implementation is evidence, not a verdict.
+
+## Blocked is a claim, and it is usually wider than the truth
+
+**Before recording a step as blocked on a credential, a device or an environment, ask which part of
+it can be checked without one. The failure paths of an external system almost never need valid
+credentials — invalid ones reach the same server and come back with the real error shape.**
+
+"Blocked on X" feels like a fact because X is genuinely absent. What makes it a claim is the scope:
+it is asserted over the whole step, when what X actually gates is one half of it. The cost is
+asymmetric and quiet — an unnecessary block defers work that would have *changed the design*, and
+nothing ever reports that it could have run.
+
+**Instances:**
+
+- *2026-09-06, the aggregator client's first chunk.* The plan's `verify-api` step said "read the
+  SDK's source, then probe sandbox", and with no sandbox credentials on the machine I filed the
+  whole probe as blocked and built against source reading alone. Three things were reachable the
+  entire time, and all three were reachable with *deliberately invalid* credentials or none:
+  whether an unreachable host escapes the SDK unwrapped (it does — a raw `urllib3.MaxRetryError`,
+  which would have printed a traceback at every offline operator); the real error-body shape; and
+  that the SDK decodes an error body to `str` before re-raising. I only probed the second after a
+  Critic finding forced it open, and it turned an unusable message — every rejection reading
+  `400: Bad Request` — into one that names its cause. **The probe that would have changed the code
+  was free, and I did not look for it because I had already written down that it was blocked.**
+- *The shape to copy.* What remained genuinely blocked was narrow and worth stating narrowly: the
+  *success* response shape, which is what derivers get written against. Splitting the plan's
+  acceptance criteria into the half that could be met and the half that could not is what made the
+  remainder a gate instead of a mood.

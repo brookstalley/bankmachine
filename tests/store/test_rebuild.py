@@ -353,6 +353,7 @@ def temporary_store(base: Path) -> Iterator[Config]:
         log_dir=base / "logs",
         keychain_service=f"bankmachine-test-{uuid.uuid4()}",
         busy_timeout_ms=200,
+        plaid_client_id=None,
         config_path=None,
     )
     set_datastore_key(config, generate_datastore_key())

@@ -34,6 +34,127 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-06: VRF-002 discharged — the connector's live half, and what the sandbox really serves
+
+<!-- prawduct: scope=connector-v1 -->
+
+**Why:** Chunk 01 shipped unticked on purpose. Its success path had never been probed —
+no sandbox credentials existed on this machine, so `tests/connector/fixtures/` was empty
+and the two `sandbox`-marked tests skipped. Credentials arrived. This is what running the
+gate produced, including the part the gate got wrong about itself.
+
+**Chunk 01 is now `[x]`.** `bankmachine connector check` completed against the real
+sandbox, archived 677 bytes as `raw_response 1`, and reported the aggregator's own `total`
+of 10,085 institutions rather than the single record on the page.
+`BANKMACHINE_RECORD_FIXTURES=1 uv run pytest -m sandbox` recorded
+`tests/connector/fixtures/institutions_get.json`, closing Done-when 0b — the last of the
+plan's `verify-api` findings, and the only one that needed a credential to reach.
+
+**What the live call established that the fake could not.** The SDK hands the bytes over
+undecoded against a real server, not only against a stub: `_preload_content=False` behaves
+in the wild the way `api_client.py`'s source said it would. That is the half of AC-5.1
+`project-state.yaml` refuses to accept mocked, and it is now evidence rather than a
+reading.
+
+🔴 **The verification's own premise was wrong, and the correction outlives the item.**
+VRF-002 item 7 asked the operator to confirm the recorded fixture held "sandbox
+institutions only". The sandbox's `/institutions/get` serves no such thing — it serves the
+production institution catalogue, real names and real routing numbers, 10,085 of them for
+`US` alone. Two consequences, both recorded in `api-notes-plaid.md` §7. Institution shapes
+recorded from sandbox *are* production shapes, so the connector plan's §4 risk — "sandbox
+shapes are not production shapes" — is narrower than written for this endpoint, while
+standing exactly as written for the accounts and transactions Chunk 04 also depends on.
+And what makes a recorded fixture safe to commit is the leak guard, not the word
+"sandbox": `check-no-personal-data.sh` reports clean over the working tree with the fixture
+in it, which is the check that was actually run.
+
+**A second error code, for free, from a mistake.** The production secret was set against
+the sandbox host first. That returns `400 INVALID_API_KEYS: invalid client_id or secret
+provided` — a different code from the `INVALID_FIELD` a *malformed* credential returns.
+Chunk 02's taxonomy now has both from observation rather than from the docs, and the
+distinction is one an operator acts on: rotate the credential, or fix the call. VRF-002
+item 5 exists to catch exactly this being reported as a network fault, and it was not.
+
+**Also in this bundle:** `.env.example` — the client id and the optional overrides, as a
+file to `source` rather than one anything reads silently. It carries no secret and says so
+in its own text: the aggregator secret has no environment variable by design, and
+`connector set-secret` puts it in the keychain, per environment.
+
+## 2026-09-06: the connector's walking skeleton — the product reaches the outside world
+
+<!-- prawduct: scope=connector-v1 -->
+
+**Why:** build step 2 is the aggregator client, and every later step reads through it.
+Chunk 01 proves the whole path before widening it: configuration resolves, the keychain
+yields a secret, the aggregator answers, and the answer lands in the archive verbatim.
+It asks for the smallest thing the aggregator will tell anyone — one page of the
+supported-institution list — because that needs client credentials and nothing else, so
+the path is provable before enrollment exists.
+
+**What shipped:** `bankmachine connector check`, which reports what it fetched and logs the
+archived response id so the unattended job later has a record; `connector set-secret`, which
+prompts without echoing at a terminal and reads a pipe when given one, so a secret reaches
+neither the shell history nor a process listing; the `connector/` package with the aggregator
+SDK confined to `connector/plaid/`; aggregator credentials added to the existing Credential
+Seam rather than a second one; and the `Endpoint` vocabulary that `DERIVERS`, the
+credential-archive rule and AC-ARCH.4's guard all turn out to need.
+
+**The boundary decision, and why it is a package rather than an interface.**
+`system-requirements.md` §9.2 — is a second aggregator ever expected — is answered: one in
+v1, contained so a second is a new module rather than a rewrite. A client `Protocol` with a
+single implementation would encode that implementation and call it a contract; the honest
+version cannot be written until a second aggregator exists to disagree with the first. The
+mechanism is `tests/preferences/test_connector_is_contained.py`, holding two properties:
+nothing outside `connector/plaid/` imports the SDK, and nothing in `connector/` imports a
+module that hands out a datastore handle. The second is the load-bearing one — AC-5.1's
+"archive before normalize" is not a rule anyone follows here, because the connector has no
+way to write at all.
+
+🔴 **The response is taken undecoded, and this was the finding that shaped the client.**
+The SDK deserializes into generated models by default, and those models silently drop
+fields they do not know about — which are exactly the fields a later `store rebuild` would
+need to reproduce rows the aggregator has since started sending. Handing the archive a
+model round-trip would have satisfied AC-5.1's letter and destroyed its point. Every call
+passes `_preload_content=False`, verified against the SDK's own source rather than its
+documentation, and held red by `verify_norms_go_red.py`.
+
+**Two things reading the code first caught that drafting from documentation would not.**
+The credential-archive exemption was already decided in build step 1 — `store/raw.py` says
+so, and names build step 2 as where it stops being a decision and becomes a mechanism — so
+it was withdrawn from this plan's open assumptions as an inherited obligation rather than a
+departure to be argued for. And `plaid-python` ships no `py.typed`, so everything it
+returns is `Any`; strictness was not relaxed, the override is scoped to the SDK alone, and
+the untyped surface stops at the module that converts to local types.
+
+**A norm's detector was corrected, not weakened.** AC-ARCH.4's guard reads any string
+opening with a separator as an absolute filesystem path, and `/institutions/get` is not
+one. The fix is the relationship rather than an exemption: a literal declared as an
+`Endpoint` is the aggregator's vocabulary, anything else is still a path. A per-file
+allowlist was rejected — it would decay on the first module someone forgot to add — and the
+new test asserts both directions, including that a `Path("/Users/...")` in an
+endpoint-declaring module is still caught.
+
+🔴 **A rejected call names its cause, which took the Critic to notice.**
+`ApiException.reason` is the HTTP reason phrase, so wrong credentials, a malformed field and
+an unsupported country all read `400: Bad Request` — leaving the operator no way to tell a
+rotated secret from a bug in this code, and the wrong guess costs a credential rotation that
+was never the problem. The cause is in the response body. Verified by probing the real
+sandbox host with deliberately invalid credentials, which needs no valid ones:
+`error_code=INVALID_FIELD`, `error_message='client_id must be a properly formatted,
+non-empty string'`, plus the `request_id` that makes a failure traceable in the aggregator's
+dashboard. Also mapped: an unreachable host, which the SDK wraps only for SSL errors and
+otherwise lets escape as a raw `urllib3.MaxRetryError` — a traceback from a library the
+operator never chose.
+
+**Not done, and the chunk is not ticked because of it.** The *success* path has never been
+probed: no sandbox credentials exist on this machine, so `tests/connector/fixtures/` is
+empty and the two `sandbox`-marked tests skip. The offline suite proves the bytes pass
+through a fake unaltered; only a live call proves the SDK hands them over undecoded against
+a real server, and `project-state.yaml` is explicit that the aggregator is verified against
+rather than mocked at the layer under test. The build plan's acceptance criteria were split
+to say so rather than leaving a done-when nobody could meet. Queued as VRF-002 — and
+discharged the same day, once credentials arrived; see the entry above.
+
 ## 2026-09-06: `sync shell` — the operator gets to look inside their own datastore
 
 <!-- prawduct: scope=datastore-v1 -->
