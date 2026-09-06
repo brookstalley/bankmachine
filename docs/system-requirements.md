@@ -123,6 +123,12 @@ may run concurrently. Journal mode, locking behavior, and reader isolation under
 specified in the system architecture, not left to whichever component encounters them first. The
 MCP server must not depend on sync liveness, nor the reverse.
 
+> **Resolved** in `.prawduct/artifacts/architecture.md`, whose Data Ownership & Consistency section
+> is this criterion's answer: WAL journal mode, a process-level `flock` serialising writer-role
+> runs, and a `query_only` reader that releases its snapshot every tool call. Four of its rules are
+> ratified norms in that artifact's Direction section. The claims were measured against this
+> platform's SQLCipher build rather than taken from documentation.
+
 ---
 
 ## 2. Non-goals

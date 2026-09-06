@@ -390,8 +390,66 @@ technical_decisions:
         it first.
       alternatives_considered: "A single process serving both roles. Rejected: the MCP server must not depend on sync liveness, and vice versa."
       date: 2026-09-05
+    - decision: >
+        AC-ARCH.7 RESOLVED, in .prawduct/artifacts/architecture.md. WAL journal mode set at store
+        init after keying; every writable handle comes from one writer factory that takes an
+        exclusive flock before it returns; every read-role handle opens mode=ro (with query_only as
+        a second layer), holds no read transaction across tool calls, and never falls back to a
+        writable handle; no component creates the datastore implicitly; a process that does not
+        recognise the schema version refuses to serve, and a migration's DDL and its version stamp
+        commit in one transaction. The last four are ratified norms in that artifact's Direction
+        section, born before any code exists, so no retroactivity decision applies.
+      rationale: >
+        Every claim was measured on this machine against sqlcipher3-wheels 0.5.7 (SQLCipher 4.12.0,
+        SQLite 3.51.1) rather than taken from documentation. WAL gives the reader a non-blocking
+        snapshot while a multi-hour backfill runs, and its WAL and shm files are themselves
+        encrypted — checked, because an unencrypted WAL would have traded AC-ARCH.5 away for
+        AC-ARCH.7. A second writer gets `database is locked` once busy_timeout expires, so the unit
+        that must be serialised is the run rather than the transaction, and flock is the only
+        mechanism the kernel releases when AC-2.5's kill test kills the holder. A reader holding an
+        open snapshot starved a passive checkpoint at 0 of 93 frames and 93 of 93 immediately after
+        release, which is why the reader's snapshot discipline is a norm and not advice. A plain
+        connect() to a missing path silently creates an empty encrypted store, which under
+        AC-ARCH.4's configurable path would answer every question confidently from nothing. And
+        PRAGMA query_only=OFF re-enables writes on a read-write handle, which is why the reader's
+        refusal had to live in the file handle (mode=ro) rather than in a session flag — sync shell
+        ships the operator the very SQL prompt that can type it.
+      alternatives_considered: >
+        Rollback journal (blocks readers for the length of a backfill); a busy_timeout alone
+        (converts a fast failure into a slow one at an arbitrary point mid-run); a lease row in
+        sync_state (survives SIGKILL and strands every later run); query_only alone on a
+        read-write handle (rejected on re-probe — reversible from inside a SQL session, and sync
+        shell ships that session; the earlier note calling the read-only-WAL hazard a falsified
+        premise was itself unscoped, and the artifact's D4 records how the second probe found the
+        edge the first missed); a socket or signal between the two processes (creates exactly the
+        liveness dependency AC-ARCH.7 forbids).
+      date: 2026-09-05
 
   technology:
+    - decision: >
+        STORE LAYER USES SQLALCHEMY CORE -- typed table metadata and the query builder, no ORM
+        (no declarative_base, no Session, no identity map). Engines are constructed with
+        create_engine(..., creator=...) where the creator is our own keyed connection from
+        store/connection.py, so SQLAlchemy never opens a connection itself.
+      rationale: >
+        Owner's decision 2026-09-05, over a builder recommendation of hand-written SQL. Table
+        metadata in one typed place is worth more across thirteen tables than the dependency costs,
+        and composable query construction is what get_coverage_report and spending_summary are
+        actually made of. The objection the recommendation rested on -- that an ORM stack has to be
+        taught SQLCipher's bespoke connection setup -- is answered by construction rather than
+        dropped: the creator= route keeps key-before-anything, WAL, mode=ro, query_only and the
+        writer lock inside the one module that owns the architecture norms. Both routes were
+        verified against SQLCipher before the decision was taken (the built-in sqlite+pysqlcipher
+        dialect resolves to sqlcipher3 and works; the creator= route works and produces a
+        ciphertext file); creator= is the one built, because the dialect route would move
+        connection setup into a URL string and out of the module the norms live in.
+      alternatives_considered: >
+        Hand-written SQL over the sqlcipher3 DBAPI with dataclass row mappings (the builder's
+        recommendation -- smallest dependency surface, but thirteen tables of hand-written mapping
+        and no single typed home for the schema). Full SQLAlchemy ORM plus Alembic (rejected: the
+        session and identity model sits awkwardly against a strict single-writer / read-only-reader
+        split, and the aggregates would drop to SQL anyway).
+      date: 2026-09-05
     - decision: "Python 3.11+ on macOS, native."
       rationale: "Builder's choice per system-requirements.md §1 Architecture; strongest ecosystem for the data and SQLite layers here. Verified on this machine at 3.12.3."
       alternatives_considered: "Node 22+, permitted by the v1 requirements doc before this decision narrowed it."
@@ -704,13 +762,24 @@ artifact_manifest:
       file_path: docs/build-vs-adopt-investigation.md
       version: 1
       depends_on: []
+    - name: "Architecture"
+      file_path: .prawduct/artifacts/architecture.md
+      version: 1
+      depends_on: ["System requirements"]
+      # Home of AC-ARCH.7 and of this product's first ratified norms (Direction section).
+      # The template's usual upstreams (product brief, data model, security model, NFRs) do not
+      # exist as separate artifacts here; their content is in docs/system-requirements.md.
 
 # =============================================================================
 # BUILD STATE
 # =============================================================================
 
 build_state:
-  source_root: null           # Set during planning, before the first build chunk.
+  source_root: src/bankmachine
+  # Set 2026-09-05 when build-plan-datastore-v1.md fixed the layout. Not deferred to Chunk 01:
+  # the briefing's architecture-coverage probe only walks this path when it is set, and a null
+  # value makes it report nothing forever without saying it did not run -- the absent-bad-news
+  # shape learnings.md already records for this project.
 
 # No `test_command:` is declared. The suite is `./scripts/check-no-personal-data.selftest.sh`
 # -- shell, until the Python scaffold lands at build step 1 -- and this key's contract
@@ -736,6 +805,8 @@ build_state:
 # by this route — the session briefing warns when resolution actually took it.
 #
 # active_build_plan: artifacts/build-plan-my-scope.md
+
+active_build_plan: artifacts/build-plan-datastore-v1.md
 
 # =============================================================================
 # BASE BRANCH (opt-in, unset by default)
@@ -765,6 +836,20 @@ build_state:
 # is non-main; set it by hand otherwise.
 #
 # base_branch: develop
+
+# =============================================================================
+# RISK SURFACES
+# =============================================================================
+# Paths that get the deeper Critic review at any diff size. Confirmed by the owner
+# 2026-09-05, closing the open question that asked for them before the first schema
+# chunk. These are the paths where a silent defect becomes wrong analysis rather than
+# a crash, which is this product's named primary failure mode (AC-4.4).
+risk_surfaces:
+  - src/bankmachine/connector      # the aggregator client
+  - src/bankmachine/sync           # sync and cursor persistence
+  - src/bankmachine/store          # schema, migrations, and the connection roles
+  - src/bankmachine/rules          # the account-rule engine
+  - src/bankmachine/secrets.py     # the secrets layer
 
 base_branch: develop
 

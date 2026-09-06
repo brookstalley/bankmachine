@@ -34,6 +34,92 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-05: AC-ARCH.7 resolved — the system architecture, measured rather than assumed
+
+<!-- prawduct: scope=architecture -->
+
+**Why:** `docs/system-requirements.md` AC-ARCH.7 deliberately deferred journal mode, locking
+behaviour and reader isolation under encryption to "the system architecture" — a document that did
+not exist. Build step 1 is the encrypted datastore, so step 1 would have been the component that
+"encountered them first", which is precisely what the criterion forbids.
+
+**What landed — two artifacts, not one.**
+
+`.prawduct/artifacts/architecture.md`: topology, component responsibilities, the four channels (one
+of which is the datastore file, and one of which is the import-file surface), data ownership,
+failure modes, deployment and version skew, cross-cutting runtime concerns, and a decision log. It
+is this product's first strategy-class artifact and its first `## Direction` section.
+
+`.prawduct/artifacts/build-plan-datastore-v1.md`: build step 1 of system-requirements §8, in four
+chunks — the walking skeleton (config, keyring, encrypted WAL datastore, the two connection roles),
+the FR-6 core schema, the FR-5 raw-response layer and rebuild, and `sync shell`. Chunk 01 is
+deliberately the widest because it proves the topology; Chunk 02 is the lock-in chunk, so the
+questions its schema must answer are enumerated from the §5 tool table before any field is designed.
+Chunk 01 also carries the `tests/preferences/` guard migration that three separate records have been
+promising, and closes issue #1.
+
+**A dependency decision rides with it.** The store layer uses **SQLAlchemy Core** — typed table
+metadata and the query builder, no ORM, no session or identity map — decided by the owner over a
+builder recommendation of hand-written SQL. It adds `sqlalchemy` as a runtime dependency at Chunk
+01, taking the runtime surface to three packages. The objection behind the recommendation is
+answered by construction rather than dropped: engines are built with `create_engine(..., creator=...)`
+over our own keyed connection, so every SQLCipher-specific step — key first, WAL, `mode=ro`,
+`query_only`, the writer lock — stays inside the module that owns the architecture norms, and
+SQLAlchemy never opens a connection itself. Both that route and the built-in `sqlite+pysqlcipher`
+dialect were verified against SQLCipher before the decision was taken. Risk surfaces were confirmed
+in the same pass and are now recorded in `project-state.yaml`.
+
+**The concurrency answer.** WAL journal mode, set after keying. Writer-role processes serialise on
+a `flock` held for a whole run, above SQLite's own locking. The MCP reader opens `query_only` and
+releases its snapshot at the end of every tool call. Nothing creates the datastore implicitly. A
+process that does not recognise the schema version refuses to serve.
+
+**Measured, not remembered.** Every concurrency claim was probed against `sqlcipher3-wheels` 0.5.7
+(SQLCipher 4.12.0, SQLite 3.51.1) on this machine. The probes earned their keep three times: the
+WAL and shm files are themselves encrypted, which had to be true or WAL would have traded AC-ARCH.5
+away for AC-ARCH.7; a reader holding a snapshot starved a passive checkpoint at 0 of 93 frames and
+93 of 93 the instant it released, which turned the reader's snapshot discipline from advice into a
+norm; and a plain `connect()` to a missing path silently creates an empty encrypted store, which
+under AC-ARCH.4's configurable path would answer every question confidently from nothing.
+
+**One premise was falsified.** The design was going to route around a believed limitation — that a
+`mode=ro` connection cannot read a WAL database without an existing `-shm`, and would fail against
+a hot WAL from a crashed writer. It read correctly in every probed case, including after a
+`SIGKILL` mid-write. `query_only` is still the choice, on its two surviving reasons; the reason
+that did not survive is struck and recorded as struck, in the artifact's Decision Log.
+
+**Norm bookkeeping.** Four norms born, all before any code exists, so no retroactivity decision
+applies — there is nothing to migrate, contain or grandfather. Four pointer rows added to the
+preferences norm index, and issue **#1** filed for the enforcement tests, because a mechanism named
+and never built is the aspirational failure with extra steps.
+
+**What the review changed, and it was two of the four norms.** The cumulative Critic returned 1
+blocking, 12 warnings, 8 notes, and two findings were defects in the norms themselves rather than in
+their presentation.
+
+The writer norm **defined the writer role by enumerating commands**, and the list had already
+omitted `store init` — which creates the file — and `store rebuild`, which rewrites every normalized
+table. A list is a thing to forget. It is now defined by construction: every writable handle comes
+from one writer factory, which takes the lock before it returns, so there is no way to be a writer
+without passing through it.
+
+The reader norm rested on `PRAGMA query_only`, which **is reversible** — re-probed on the finding,
+`query_only=OFF` restores writes on a read-write handle, and `sync shell` ships the operator exactly
+the SQL prompt that can type it. Read-role handles now open `mode=ro`, where the same sequence still
+fails because the refusal lives in the file handle. Re-probing also scoped the earlier "falsified"
+premise properly: `mode=ro` *does* fail against a hot WAL with no `-shm` under an unwritable
+directory — the first probe had missed it because the crashed writer left its `-shm` behind. So the
+norm carries a no-fallback clause: that state is a loud error, never a quiet downgrade to a writable
+handle.
+
+Also from the review: import files named as the foreign inbound surface they are (the artifact had
+claimed none existed); one canonical CLI command table instead of four disagreeing lists; a logging
+and AC-10.3 redaction rule placed in step 1 rather than step 8, because steps 1-7 all write log
+lines; migration DDL and its version stamp required to commit in one transaction, since the version
+is the *sole* signal a store is safe to serve; `source_root` and `risk_surfaces` set; and the
+enforcement item re-filed from frozen markdown into the live Issues backend.
+
+
 ## 2026-09-05: Named — the product is `bankmachine`
 
 <!-- prawduct: scope=rename -->
