@@ -53,7 +53,7 @@ done
 # Fails closed. A missing or non-executable guard is not a reason to push
 # unguarded -- it is the one moment the operator needs telling.
 repo_root=$(git rev-parse --show-toplevel)
-guard="$repo_root/scripts/check-no-personal-data.sh"
+guard="$repo_root/tests/preferences/check-no-personal-data.sh"
 
 if [ ! -x "$guard" ]; then
     echo "pre-push: BLOCKED -- leak guard missing or not executable at" >&2

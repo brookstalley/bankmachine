@@ -73,9 +73,56 @@ case to fall outside of. Prefer the second form even when the first is true toda
   false but *unscoped*, and my first probe had missed it only because the crashed writer left its
   `-shm` behind. **A probe that confirms what you expected is the one to distrust**: the failing
   case is usually one variable away from the one you set up.
+- *2026-09-06, the rebuild's list of tables to empty.* "A table is rebuildable if it has a
+  `raw_response_id` column" reads like a property derived from the schema rather than an enumeration
+  — which is exactly what makes it dangerous, because it is an enumeration wearing a predicate's
+  clothes. `raw_responses` has a `raw_response_id`: its own primary key. The rebuild would have
+  deleted the entire archive and then replayed it, finding nothing. The fix was not an exception for
+  that one table but the predicate the sentence had always meant: a table is rebuildable when it
+  holds a foreign key *pointing at* a raw response. **The tell was that the rule matched on a name
+  where it meant a relationship** — the same tell as a rule that matches on a filename where it means
+  a role, which the sole-constructor norm hit in the same chunk: `engine.connect()` is a checkout,
+  not a construction, and the rule now turns on whether the call carries connection parameters
+  rather than on which file it sits in.
 
 **How to apply:** before recording a guarantee, name the surface that could violate it and check
 that surface exists in the product. If the answer is "a future command someone forgets to add to
 the list" or "any SQL that reaches this handle", the guarantee needs a different mechanism, not a
-firmer sentence. Related: [[review-coverage]] — both are the same family, a check whose bad news
-never arrives.
+firmer sentence. And when a rule matches on a *name* — a column name, a filename, a function name —
+ask what relationship the name is standing in for, and match on that instead. Related:
+[[review-coverage]] — both are the same family, a check whose bad news never arrives.
+
+---
+
+## Two descriptions, compared
+
+**When one thing must mirror another — table metadata against the DDL that built it, a test's
+expected value against the code that computes it, a constant against the document that quotes it —
+write both independently and have something compare them. Generating one from the other, or reusing
+the same expression on both sides, removes the disagreement; the disagreement was the only thing
+that could ever have told you they had drifted.**
+
+This is the constructive half of [[guarantees-by-construction]]. That rule says a guarantee needs a
+mechanism no case can fall outside of. This one says how you find out when you were wrong anyway:
+keep a second, independently-derived account of the same fact, and let a test read both.
+
+**Instances:**
+
+- *2026-09-06, the core schema.* `store/schema.py` (SQLAlchemy Core metadata) and
+  `store/migrations/core_schema.py` (frozen DDL) describe the same thirteen tables and neither is
+  generated from the other. Every run compares them column for column. The obvious alternative —
+  emitting the migration from the metadata — would have been fewer lines and would have made every
+  future edit to a column *silently correct on both sides*, with the file on disk agreeing with
+  whatever the code currently believes. Migrations are forward-only precisely because that
+  agreement is a lie for any datastore that already ran the old one.
+- *Same day, a property test's oracle.* `test_any_two_place_decimal_converts_exactly` checked
+  `from_decimal_string` against `Decimal.scaleb`, and hypothesis failed it on
+  `100000000000000000000000000.01`. **The code was right and the oracle was wrong**:
+  `Decimal.scaleb` rounds at the default 28-digit context, while the implementation scales the
+  digit tuple and is exact. Had the test reused the implementation's own approach it would have
+  agreed with itself forever and taught nothing.
+
+**How to apply:** when you catch yourself about to derive the checker from the checked, ask what
+observation the shortcut is making impossible. If the answer is "the two disagreeing", write it
+twice. And when an independent oracle disagrees with your code, find out which one is wrong before
+assuming — a second implementation is evidence, not a verdict.

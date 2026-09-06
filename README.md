@@ -10,9 +10,14 @@ independently establish that the underlying data is complete and fresh before it
 
 It is a data pipeline. It does no budgeting, forecasting, categorization or advice.
 
-**Status: pre-implementation.** The requirements are specified and reviewed; no code exists yet.
-See `docs/system-requirements.md` for what is being built and `docs/build-vs-adopt-investigation.md`
-for why it is being built rather than adopted.
+**Status: build step 1 of ten is complete** (`docs/system-requirements.md` §8). The encrypted
+datastore, its two connection roles, the core schema, the raw-response archive with a rebuild that
+verifies its own output, and `sync shell` — an authenticated SQL prompt, since page encryption
+breaks ordinary SQL tooling — all exist and are tested. Nothing talks to an aggregator yet, so
+there is no data to read: `bankmachine store init` gives you an empty encrypted datastore and
+`bankmachine sync shell` lets you look inside it. See `docs/system-requirements.md` for what is
+being built and `docs/build-vs-adopt-investigation.md` for why it is being built rather than
+adopted.
 
 ## What it is not
 
@@ -40,7 +45,8 @@ If you use this, read that section. It is the deliverable, not a formality.
 | `docs/system-requirements.md` | the engine — provider-agnostic, names no financial institution |
 | `docs/deployment-requirements.template.md` | the shape of one operator's roster, carrying no data |
 | `docs/build-vs-adopt-investigation.md` | why clean-slate, with six candidates read at source level |
-| `scripts/` | the repository leak guard and its self-test |
+| `src/bankmachine/` | the product. `store/` is the only module that opens the datastore |
+| `tests/` | mirrors the source tree; `tests/preferences/` holds the norm tests and the leak guard |
 | `deployment/` | **gitignored** — your roster, your match tokens. Never committed. |
 
 ## Setup for contributors and forks
@@ -58,9 +64,12 @@ operator identity, and a gitflow guard that keeps `main` release-only.
 Verify the leak guard works in your clone:
 
 ```sh
-./scripts/check-no-personal-data.selftest.sh   # 15 cases, all must pass
-./scripts/check-no-personal-data.sh            # scan the working tree
+./tests/preferences/check-no-personal-data.selftest.sh   # 22 cases, all must pass
+./tests/preferences/check-no-personal-data.sh            # scan the working tree
 ```
+
+`uv run pytest tests/preferences` runs both from the test suite, which is the entry point that
+does not need each clone to have configured `core.hooksPath`.
 
 A clone with no `deployment/` directory has no tokens and nothing to leak, so the guard passes with
 a note. That is expected, and it is why the guard is safe to publish. When you fill in your own

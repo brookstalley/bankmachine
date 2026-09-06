@@ -4,10 +4,12 @@
 #
 # The guard is the sole enforcement of a ratified norm, and its Done-when claims
 # it was "exercised in both directions". This is what makes that claim
-# reproducible rather than a sentence in a commit message. It is a shell script
-# rather than a pytest case because no Python scaffold exists yet and creating
-# one would fix the package name ahead of the rename decision; it moves under
-# `tests/preferences/` when the scaffold lands.
+# reproducible rather than a sentence in a commit message. It stays a shell
+# script now that the scaffold has landed: the guard it exercises is shell, and
+# the cases drive real `git push` refspecs through a real hook in a throwaway
+# repository -- a translation to Python would test a reimplementation rather
+# than the thing that actually runs. `test_no_personal_data.py` runs it, so the
+# pytest suite is the single entry point the preferences table asks for.
 #
 # Every case runs in a THROWAWAY REPOSITORY under $TMPDIR. Nothing here touches
 # the real repo, so a failing case cannot leave the working tree dirty.
@@ -17,6 +19,10 @@
 set -euo pipefail
 
 SRC_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# Resolved through git rather than by counting `..` hops from SRC_DIR: this file
+# has already moved once, and a hardcoded hop turns that into a case that skips
+# rather than a case that runs.
+REPO_ROOT=$(cd "$SRC_DIR" && git rev-parse --show-toplevel)
 GUARD="$SRC_DIR/check-no-personal-data.sh"
 [[ -x $GUARD ]] || { echo "selftest: guard not executable at $GUARD" >&2; exit 1; }
 
@@ -44,11 +50,11 @@ cd "$sandbox"
 git init -q .
 git config user.email selftest@example.invalid
 git config user.name "Self Test"
-mkdir -p scripts deployment
-cp "$GUARD" scripts/check-no-personal-data.sh
-GUARD="$sandbox/scripts/check-no-personal-data.sh"
+mkdir -p tests/preferences deployment
+cp "$GUARD" tests/preferences/check-no-personal-data.sh
+GUARD="$sandbox/tests/preferences/check-no-personal-data.sh"
 mkdir -p .githooks
-cp "$SRC_DIR/../.githooks/pre-push" .githooks/pre-push 2>/dev/null || true
+cp "$REPO_ROOT/.githooks/pre-push" .githooks/pre-push 2>/dev/null || true
 HOOK="$sandbox/.githooks/pre-push"
 printf 'deployment/\n' >.gitignore
 printf 'examplebank\n' >deployment/roster-tokens.txt
@@ -143,15 +149,15 @@ if [[ -x $HOOK ]]; then
     hook_check "branch deletion pushes no content, so it passes" 0 \
         "refs/heads/develop $ZERO40 refs/heads/develop $sanitized_tip"
 
-    chmod -x scripts/check-no-personal-data.sh
+    chmod -x tests/preferences/check-no-personal-data.sh
     hook_check "non-executable guard BLOCKS rather than passing silently" 1 \
         "refs/heads/develop $clean_tip refs/heads/develop $clean_tip"
-    chmod +x scripts/check-no-personal-data.sh
+    chmod +x tests/preferences/check-no-personal-data.sh
 
-    mv scripts/check-no-personal-data.sh scripts/.stashed
+    mv tests/preferences/check-no-personal-data.sh tests/preferences/.stashed
     hook_check "missing guard BLOCKS rather than passing silently" 1 \
         "refs/heads/develop $clean_tip refs/heads/develop $clean_tip"
-    mv scripts/.stashed scripts/check-no-personal-data.sh
+    mv tests/preferences/.stashed tests/preferences/check-no-personal-data.sh
 else
     printf '  FAIL  %-58s (hook not found at %s)\n' "pre-push hook present" "$HOOK"
     fail=$((fail + 1))

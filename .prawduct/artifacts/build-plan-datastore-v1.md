@@ -2,11 +2,7 @@
 artifact: build-plan
 version: 2
 scope: datastore-v1
-# branch: feature/datastore-v1
-# Left commented until the branch exists — a plan claiming a branch no repo has is
-# reported as exactly that by the session briefing. This plan was drawn on
-# feature/architecture alongside the artifact it depends on; uncomment when Chunk 01
-# cuts feature/datastore-v1, and drop the active_build_plan scalar at the same time.
+branch: feature/datastore-v1
 depends_on:
   - artifact: system-requirements
     file_path: docs/system-requirements.md
@@ -69,15 +65,94 @@ gate any chunk here.
 
 ## Status
 
-- [ ] Chunk 01: Walking skeleton — config, key, encrypted WAL datastore, and the two connection roles
-- [ ] Chunk 02: The core schema (FR-6)
-- [ ] Chunk 03: Raw-response layer and rebuild (FR-5)
-- [ ] Chunk 04: `sync shell` (AC-ARCH.6)
+- [x] Chunk 01: Walking skeleton — config, key, encrypted WAL datastore, and the two connection roles
+- [x] Chunk 02: The core schema (FR-6)
+- [x] Chunk 03: Raw-response layer and rebuild (FR-5)
+- [x] Chunk 04: `sync shell` (AC-ARCH.6)
 Context: Plan drawn 2026-09-05, directly after `.prawduct/artifacts/architecture.md` resolved
-AC-ARCH.7. Nothing built yet — the repo still holds zero lines of Python. Next: Chunk 01, which is
-also where the two Requirements-Confidence questions above get answered. This plan covers build
-step 1 of `docs/system-requirements.md` §8 and nothing beyond it; step 2 (the aggregator client)
-gets its own plan.
+AC-ARCH.7. **Chunk 01 landed 2026-09-06** on `feature/datastore-v1` — the uv package, config /
+secrets / logging_setup, the two-role connection layer, the migration runner, the SQLAlchemy
+`creator=` engine, `store init|status`, and 90 tests (mypy strict and ruff clean). The four
+architecture norms are now mechanisms rather than prose, each verified red with its norm broken via
+`tests/preferences/verify_norms_go_red.py`; issue #1 is delivered. The leak guard moved to
+`tests/preferences/` with its pre-push wiring intact, and `test_command:` is declared.
+
+**Chunk 02 landed 2026-09-06** on the same branch — migration 002's frozen DDL for the thirteen
+tables, `store/schema.py`'s Core metadata, `store/types.py` (minor units, calendar date, UTC
+instant, and the column types that carry them), and `boundary-patterns.md` populated with the
+datastore schema as its first contract surface. Suite green, mypy strict and ruff clean, and the
+norm-break harness now covers the schema's guarantees as well as the connection layer's. The
+enumerated consumer questions were verified by running a query for each against a seeded datastore
+rather than by reading the tables. The owner moved the pinned interpreter to
+**Python 3.14** in the same session; the suite was re-run green on 3.14.6 before the pin changed.
+
+The lock-in checkpoint's re-read of the enumerated consumer questions found **one thing the tables
+could not answer**: `net_worth` needs assets partitioned from liabilities, and `account_type` is the
+source's vocabulary rather than a classification. Fixed while it was free, as
+`accounts.balance_class`. Everything else on the list was answerable; the one recorded limitation is
+that there is no FX table, so a multi-currency net worth is out of scope until it is asked for.
+
+The Critic round tightened three things while the migration was still uncommitted: the rendered DDL
+is now pinned by a recorded hash so a later migration cannot silently redefine version 2; the
+provenance CHECK requires an aggregator row to name the raw response it came from, which is what its
+comment already claimed; and the drift guard compares each index's columns, uniqueness and partial
+predicate rather than only its name.
+
+**Chunk 03 landed 2026-09-06** on the same branch — `store/raw.py` (verbatim, compressed, hashed,
+verified on read), `store/derivation.py` (the seam build step 2 registers against, shipped with an
+empty registry), `store/rebuild.py` and `bankmachine store rebuild`. The rebuild is one transaction
+under the writer lock that checks its own work: it hashes the datastore's content before and after
+and refuses to commit a rebuild that did not reproduce what it replaced, unless the derivation
+version changed. Suite green, mypy strict and ruff clean, and the norm-break harness now runs 24
+cases — six of them new, all red. Chunk 03 also closed a gap in norm 4 that it was the first work
+to expose: only the *reader* refused an unrecognized schema version, and `store rebuild` is the
+first writer that is not the migration runner. Both roles now call one check.
+
+The Critic round returned no blocking findings and tightened two seam decisions, both recorded in
+`boundary-patterns.md` because build step 2 is where they land: a derived table is either
+rebuildable or a dimension a deriver must upsert (`securities` is the only dimension, and it has no
+raw provenance to point at), and a credential-bearing response is never persisted verbatim.
+
+Two decisions in Chunk 03 are worth carrying rather than rediscovering. **"Byte-identically"
+(AC-11.5) is read as excluding a table's own single-column integer primary key where nothing
+references it** — those are rowid allocations, and requiring `transaction_id` to come back identical
+would make the criterion a statement about SQLite's allocator rather than about the data. **The
+sole-constructor norm was made precise rather than exempted:** `engine.connect()` is a pool
+checkout, so the rule now turns on whether a `connect` call carries connection parameters, and
+`engine.py` gained `writer_connection` / `reader_connection` so nothing outside the store layer
+checks a handle out.
+
+**Chunk 04 landed 2026-09-06** on the same branch, completing this plan — `bankmachine sync shell`,
+an authenticated SQL prompt over a read-role handle, with `store/connection.py` gaining
+`statement_is_complete` and `DriverError` so the CLI needs no driver import of its own. Suite green,
+mypy strict and ruff clean, and the norm-break harness now runs 27 cases. The by-hand check
+AC-ARCH.6 asks for is recorded as VRF-001 in `.prawduct/operator-verification.md`, with the session
+transcript; it is the one item still awaiting the owner's own eyes.
+
+Two things in this chunk are worth carrying rather than rediscovering. **The carried no-fallback
+edge was staged, and staging it found a misdiagnosis.** A hot WAL from a killed writer, with no
+`-shm`, in a directory the reader cannot write to fails at the *first read* rather than at
+`connect()` — SQLite opens lazily — so the `mode=ro` guard written around the connect call never saw
+it, and `_key_and_prepare` reported `SQLITE_CANTOPEN` as a rejected key. That sent the operator to
+restore a keychain entry that was never the problem, which is the exact failure
+`DatastoreKeyRejectedError` was introduced to prevent. `_diagnose_first_read` now separates the two
+on `SQLITE_NOTADB`, and the edge has a staged test instead of a stand-in. **The redaction rule runs
+over text and not over numbers**, because money here is an INTEGER of minor units and an account
+number is TEXT — redacting integers would blank a six-figure balance, which is the number the
+operator opened the shell to read.
+
+Two ride-alongs came out of the same work: the shell's snapshot release is a property of the
+handle (`in_transaction`) rather than a list of statements to watch for, and the piped-session echo
+is redacted like any other output, because a transcript is the most likely thing here to be
+committed or pasted into a bug report.
+
+Still carried, unchanged: `account_rules.parameters` holds local account ids in JSON where SQLite
+cannot enforce a foreign key — the rule engine validates them when it lands (FR-8, build step ~7);
+and `content_digest` scans every table twice per rebuild, which is free at today's volumes and is
+the first thing to look at if a rebuild ever feels slow. This plan covers build step 1 of
+`docs/system-requirements.md` §8 and nothing beyond it; step 2 (the aggregator client) gets its own
+plan, and the contract it must be written against is recorded as the Derivation Seam in
+`boundary-patterns.md`.
 
 ## Scaffolding
 
@@ -117,8 +192,9 @@ stand-in, and creating it properly is `public-readiness` work, not step-1 work.
 ### Build & Test Configuration
 
 `uv run pytest -q` runs everything. `tests/` mirrors `src/bankmachine/`, with `tests/preferences/`
-for norm tests — including `scripts/check-no-personal-data.sh`, which **moves under
-`tests/preferences/` in Chunk 01**. That migration is an obligation recorded in three places
+for norm tests — including the leak guard, which **moved from `scripts/` to
+`tests/preferences/check-no-personal-data.sh` in Chunk 01**. That migration was an obligation
+recorded in three places
 (`project-preferences.md`, system-requirements §8 step 1, and the handoff notes) precisely because
 it is the kind of thing that gets forgotten: the guard is a shell script only because no Python
 scaffold existed, and a test runner can invoke it without the per-clone `core.hooksPath` config a
@@ -157,6 +233,7 @@ exercise them, because each is a place where a passing test and a working produc
 src/bankmachine/
 ├── config.py          # documented defaults, no hardcoded paths (AC-ARCH.4)
 ├── secrets.py         # keyring seam: datastore key, aggregator creds, tokens
+├── logging_setup.py   # redacting formatter (AC-10.3), environment banner (AC-10.6)
 ├── store/             # the ONLY module that opens the datastore
 │   ├── connection.py  # the writer factory (flock) and the reader opener (mode=ro)
 │   ├── engine.py      # SQLAlchemy engines built with creator= over connection.py
@@ -168,6 +245,13 @@ tests/
 ├── preferences/       # norm tests + the migrated leak guard
 └── store/ …           # mirrors the source tree
 ```
+
+`logging_setup.py` was not in this plan's first draft and is a **recorded addition, not a
+discovery**: Chunk 01's own test list already required a formatter-level redaction test (AC-10.3)
+and a startup environment banner (AC-10.6), and neither has a home in `config.py`, `secrets.py` or
+`store/`. Redaction lives at the formatter because AC-10.3 is a property of *every* log line, and a
+rule enforced at call sites is one every future author has to remember — the same reasoning that
+put connection construction in one module.
 
 The command names above are the architecture artifact's canonical surface table, not a second
 enumeration — `sync shell` is `sync shell` because AC-ARCH.6 names it that. `scheduler.py` is
@@ -202,9 +286,9 @@ data-modeling decision above.
 - **Deliverables:** the uv package; new `src/bankmachine/config.py`, new `src/bankmachine/secrets.py`,
   new `src/bankmachine/store/connection.py`, new `src/bankmachine/store/engine.py`, new
   `src/bankmachine/store/migrations/` with migration 001 creating `schema_version` only, new
-  `src/bankmachine/cli/`, new `src/bankmachine/__main__.py`; `scripts/check-no-personal-data.sh`
-  moved under `tests/preferences/` with
-  its pre-push wiring intact; `test_command:` declared in `project-state.yaml`
+  `src/bankmachine/cli/`, new `src/bankmachine/logging_setup.py`, new
+  `src/bankmachine/__main__.py`; `tests/preferences/check-no-personal-data.sh` (moved there from
+  `scripts/`) with its pre-push wiring intact; `test_command:` declared in `project-state.yaml`
 - **Tests:** unit — config defaults and overrides, with a test that no absolute path is baked in;
   integration — the norm tests from issue **#1**, namely: two writer processes where the second
   refuses; a write through a read-role handle that **still** refuses after `PRAGMA query_only=OFF`
@@ -224,7 +308,19 @@ data-modeling decision above.
 - **Done when:**
   1. Acceptance criteria met and tests pass
   2. `/prawduct:critic` run and blocking findings resolved
-  3. Issue **#1** moved to `shipped` with `closed-by: datastore-v1`
+  3. ~~Issue **#1** moved to `shipped` with `closed-by: datastore-v1`~~ — **cannot happen at chunk
+     close on this backend, and that is not a slip.** `backlog_service_repo` is set, so a status
+     change is an immediate GitHub API call with no branch to be abandoned alongside; the skill
+     defers it to the merge, and refuses it before then. Closing #1 now would leave it wrongly
+     closed if this branch were reworked — the one bookkeeping error nothing later sweeps for.
+     **The work is done; the close is owed at merge**, and it is two calls, because `status`
+     records no ship handle:
+     `prawduct-hook backlog status 1 --repo brookstalley/bankmachine --to shipped --json`, then
+     `prawduct-hook backlog update 1 --repo brookstalley/bankmachine --closed-by datastore-v1 --json`.
+     A `Closes #1` line in the PR body **does** fire here — this repo's default branch is `develop`
+     and the PR base is `develop`, so the usual gitflow caveat (keywords fire only into the default
+     branch) does not apply — but it sets no `closed-by`, so it supplements the calls above rather
+     than replacing them.
   4. Committed and chunk marked `[x]` in Status
 
 ### Chunk 02: The core schema (FR-6)
@@ -233,6 +329,10 @@ data-modeling decision above.
   lock-in chunk** — the schema is the format every later consumer depends on, and it is being
   designed before its consumers exist.
 - **Depends on:** Chunk 01
+- 🔴 **Inherited from Chunk 01, and it will bite here:** every handle `src/bankmachine/store/engine.py` wraps is in
+  autocommit, so `with engine.begin():` opens no transaction and block-exit rollback undoes
+  nothing. Migrations issue `BEGIN IMMEDIATE` / `COMMIT` on the driver. The same applies to
+  Chunk 03's rebuild, which is the other place a multi-statement unit needs to be atomic.
 - **Artifacts consumed:** `docs/system-requirements.md` §4 (FR-5, FR-6, AC-6.1 through AC-6.6),
   §5 (the tool table — these are the consumers)
 - **Deliverables:** migrations 002+ creating `connections`, `institutions`, `accounts`,
@@ -313,6 +413,13 @@ data-modeling decision above.
 - **Acceptance criteria:** an operator can open the shell against a real datastore, run a query, and
   read the result. **Verified by hand, not only by test** — the whole justification for this command
   is being usable by a human under pressure, and no assertion speaks to that
+- 🔴 **Carried from Chunk 01, to be decided here or at Chunk 03:** the no-fallback clause's measured
+  edge — a hot WAL from a killed writer, no `-shm`, in a directory the reader cannot write to — is
+  the one norm case with no staged test. `test_an_unopenable_datastore_raises_and_names_the_state`
+  asserts the contract that edge shares with any unopenable store (a named error, never a widened
+  handle), which is honest but weaker than the rest of the norm suite. This chunk ships the surface
+  that makes the edge reachable in practice, so decide here: stage it, or record why it stays
+  unstaged.
 - **Type:** cumulative-final
 - **Visual change:** yes — REPL output formatting and the redaction behaviour need a human look
 - **Done when:**

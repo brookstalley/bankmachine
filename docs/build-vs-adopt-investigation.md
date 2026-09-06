@@ -141,7 +141,7 @@ server. Has investments handling and AES-256-GCM (`src/lib/encryption.ts`). Not 
 
 ## 4. Recommendation and rationale
 
-**Build clean-slate. Python 3.12. `plaid-python` SDK directly.**
+**Build clean-slate. Python 3.11+. `plaid-python` SDK directly.**
 
 **Why not clone-and-run:** no candidate exposes the required tool surface, and the two closest are
 each missing a different half of the system. `plaid-sync` has no MCP layer; `fungible` has no

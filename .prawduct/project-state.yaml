@@ -302,7 +302,7 @@ technical_decisions:
         "where should the roster live" in favour of moving the roster out of git, and adds what that
         option had left open — the already-pushed history is rewritten rather than accepted, because
         the repository was three pushed commits old and the cost never gets lower.
-        Enforced by scripts/check-no-personal-data.sh on every push.
+        Enforced by tests/preferences/check-no-personal-data.sh on every push.
       alternatives_considered: >
         (a) Keep the repository private forever and extract a clean public repository later —
         rejected: it splits the work and risks a copy-paste leak at extraction time. (b) Accept the
@@ -451,7 +451,7 @@ technical_decisions:
         split, and the aggregates would drop to SQL anyway).
       date: 2026-09-05
     - decision: "Python 3.11+ on macOS, native."
-      rationale: "Builder's choice per system-requirements.md §1 Architecture; strongest ecosystem for the data and SQLite layers here. Verified on this machine at 3.12.3."
+      rationale: "Builder's choice per system-requirements.md §1 Architecture; strongest ecosystem for the data and SQLite layers here. First verified on this machine at 3.12.3; the owner moved the pinned interpreter to 3.14 on 2026-09-06 and the suite, mypy strict and ruff were re-run green on 3.14.6 before the pin changed. requires-python stays >=3.11."
       alternatives_considered: "Node 22+, permitted by the v1 requirements doc before this decision narrowed it."
       date: 2026-09-05
     - decision: "SQLCipher Community Edition via the sqlcipher3-wheels package, key held in Keychain."
@@ -509,6 +509,41 @@ technical_decisions:
       rationale: "A transaction date is a calendar fact from the institution, not an instant; treating it as one introduces silent off-by-one-day errors at period boundaries, which is exactly where period-over-period comparisons live."
       alternatives_considered: "Uniform UTC timestamps throughout."
       date: 2026-09-05
+    - decision: "Every stored amount is signed from the operator's point of view — positive is value held or money in, negative is value owed or money out — for every account type, liabilities included."
+      rationale: >
+        One convention rather than one per account type keeps two things from needing a special
+        case: net worth is a plain sum, and AC-11.2's reconciliation is "change in balance equals
+        sum of transactions" for every account. Aggregators disagree with each other and several
+        report a card balance as a positive amount owed, so normalizing is the connector's job.
+        `available_minor` and `limit_minor` are deliberate exceptions and hold magnitudes as
+        reported; neither participates in net worth.
+      alternatives_considered: >
+        Store balances as the source reports them and let each consumer apply the sign for the
+        account type. Rejected: it makes net worth type-dependent, and any consumer that forgets
+        the special case is wrong by twice the debt — silently, and plausibly.
+      date: 2026-09-06
+    - decision: "`accounts.balance_class` classifies each account as asset or liability, as data the operator can correct."
+      rationale: >
+        `net_worth` is an enumerated consumer of the schema and `account_type` cannot answer it:
+        the types are the source's vocabulary, they differ between sources, and an import-only
+        account has none. Found by the lock-in checkpoint's re-read of the consumer questions
+        against the delivered tables, and fixed while the schema was still free. Per the sign
+        convention above it partitions a report rather than deciding an arithmetic sign, so a
+        misclassification mislabels a breakdown instead of producing a wrong total.
+      alternatives_considered: "A taxonomy of source account types hardcoded in whichever query needs it first. Rejected: it is a roster-shaped constant in the engine, and it has no answer for a manually-imported account."
+      date: 2026-09-06
+    - decision: "The Core metadata and the migration DDL are written independently and compared by a test, never generated from one another."
+      rationale: >
+        Migrations are forward-only and never edited, so metadata that emits its own migration
+        agrees with whatever the code currently believes rather than with what any existing
+        datastore actually contains. Two independent descriptions can disagree, and the
+        disagreement is the only drift signal there is.
+      alternatives_considered: "Emit the DDL from the SQLAlchemy metadata. Rejected: fewer lines, and no observation left that could reveal drift."
+      date: 2026-09-06
+    - decision: "Multi-currency net worth is out of scope: amounts carry a currency code, but there is no FX rate table and no conversion."
+      rationale: "Recorded as a limitation by the lock-in checkpoint rather than built speculatively. Adding rates later is a new table and a derivation version, not a reshaping of the existing ones."
+      alternatives_considered: "An FX rate table now. Rejected: no consumer asks for it, and a rate series nobody populates is worse than an absent one."
+      date: 2026-09-06
 
   integrations:
     - decision: "Plaid is the only network destination. Read-only endpoints only."
@@ -781,12 +816,13 @@ build_state:
   # value makes it report nothing forever without saying it did not run -- the absent-bad-news
   # shape learnings.md already records for this project.
 
-# No `test_command:` is declared. The suite is `./scripts/check-no-personal-data.selftest.sh`
-# -- shell, until the Python scaffold lands at build step 1 -- and this key's contract
-# requires the value to contain the `{junit_xml}` literal, which a 15-case shell script has
-# no business emitting. Declaring it anyway would pass today (evidence is recorded via
-# --from-counts) and break the first time anything tried to launch it. The command is
-# recorded in the build plan's Build & Test Configuration instead.
+# Declared now that the Python scaffold has landed (build step 1, Chunk 01). Until
+# then the whole suite was `check-no-personal-data.selftest.sh` -- shell, which has no
+# business emitting the `{junit_xml}` literal this key's contract requires, so the key
+# was deliberately left unset rather than declared as something nothing could launch.
+# pytest runs the shell guard too, via `tests/preferences/test_no_personal_data.py`, so
+# this one command is the whole suite.
+test_command: uv run pytest --junit-xml={junit_xml} -q
 
 # =============================================================================
 # ACTIVE BUILD PLAN (optional)
@@ -806,7 +842,8 @@ build_state:
 #
 # active_build_plan: artifacts/build-plan-my-scope.md
 
-active_build_plan: artifacts/build-plan-datastore-v1.md
+# Unset: build-plan-datastore-v1.md declares `branch: feature/datastore-v1` and is the
+# sole claimant, so the claim resolves it. The scalar would only be a tiebreak.
 
 # =============================================================================
 # BASE BRANCH (opt-in, unset by default)

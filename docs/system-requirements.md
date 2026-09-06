@@ -41,7 +41,7 @@ import instead of the aggregator, which carry special rules — lives in the ope
 deployment-requirements document and is expressed as **configuration and adapters**. 🔴 That
 document is **not** version-controlled here: a roster names institutions and usually balances, and
 this repository is a general-purpose tool. `deployment-requirements.template.md` carries the shape
-and the contract; `scripts/check-no-personal-data.sh` enforces the boundary on every push.
+and the contract; `tests/preferences/check-no-personal-data.sh` enforces the boundary on every push.
 
 **AC-0.1** — 🔴 Every requirement in the deployment-requirements document must be satisfiable by
 configuration plus an adapter, with **zero change to this system.** A deployment requirement that
@@ -68,7 +68,7 @@ stated separately because they are not the same guarantee:
 - **Every commit being pushed** — asserts no roster or operator identity reaches a remote, over the
   *commits* rather than the working tree. This is wider on purpose: the exposure this project
   actually had was documentation sitting in already-pushed history behind a clean tip, which a
-  worktree or tip-only check reports clean. `scripts/check-no-personal-data.sh`, wired into
+  worktree or tip-only check reports clean. `tests/preferences/check-no-personal-data.sh`, wired into
   `pre-push`, is this one.
 
 🔴 Both **fail closed.** An error condition — an unreadable token file, a regex the engine rejects,
@@ -418,8 +418,9 @@ complete.
 1. Schema, migrations, raw-response layer, encrypted datastore, **and `sync shell`**. This step
    fixes the package name, the keychain service name and the scheduler label, so **the rename
    decision must be settled before it starts** (§9.3). It also lands the test runner, which is when
-   `scripts/check-no-personal-data.sh` moves under `tests/preferences/` — a test runner invokes it
-   without the per-clone `core.hooksPath` config a git hook needs.
+   the leak guard moves from `scripts/` to `tests/preferences/check-no-personal-data.sh` — a test
+   runner invokes it without the per-clone `core.hooksPath` config a git hook needs. The pre-push
+   wiring follows the script, so push-time enforcement is kept rather than traded away.
 2. Aggregator client against sandbox fixtures; full test suite
 3. Enrollment flow — 🔴 **verify the granted history window on ONE real connection before enrolling
    any others.** Getting this wrong means re-linking every institution.
