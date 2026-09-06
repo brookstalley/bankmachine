@@ -120,7 +120,7 @@ stopped at Chunk 02; and `reader()`'s connect-time branch still stated the hot-W
 the disproved claim. Log rotation, unlogged run failures and archive retention are filed as #3, #4
 and #5 rather than fixed here.
 
-Suite green, mypy strict and ruff clean. The norm-break harness runs 28 cases, four of them new and
+Suite green, mypy strict and ruff clean. The norm-break harness runs 29 cases, five of them new and
 all verified red. The by-hand check AC-ARCH.6 asks for is recorded as VRF-001 in
 `.prawduct/operator-verification.md` with its session transcript, and is the one item still awaiting
 the owner's own eyes.
