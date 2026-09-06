@@ -170,18 +170,69 @@ def test_the_read_role_opens_read_only_at_the_file() -> None:
 
 
 def test_an_unopenable_datastore_raises_and_names_the_state(config: Config) -> None:
-    """The no-fallback clause: a loud error, never a retry on a writable handle.
-
-    The measured edge is a hot WAL from a killed writer in a directory the
-    reader cannot write to. That state is awkward to stage portably, so what is
-    asserted here is the contract it shares with every other unopenable store:
-    the failure surfaces as a named error rather than as a widened handle.
-    """
+    """The no-fallback clause: a loud error, never a retry on a writable handle."""
     set_datastore_key(config, generate_datastore_key())
     config.datastore_path.write_bytes(b"not a database, and not openable read-only either")
     with pytest.raises(connection.StoreError) as excinfo, reader(config):
         pass
     assert str(excinfo.value), "the failure was raised without naming the state"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root writes to a read-only directory anyway")
+def test_the_measured_unreadable_edge_is_not_reported_as_a_bad_key(
+    initialized_config: Config,
+) -> None:
+    """The one norm case that had no staged test, staged.
+
+    The state is a hot WAL from a killed writer, no `-shm` file, in a directory
+    the reader cannot write to. SQLite opens lazily, so `connect()` succeeds and
+    the failure lands on the first read as `SQLITE_CANTOPEN` -- it cannot build
+    the shared-memory index the WAL needs.
+
+    What this asserts is the diagnosis, not merely that something was raised.
+    Reported as a rejected key, this sends the operator to restore a keychain
+    entry that was never the problem, and the datastore they would restore it
+    for is fine -- checkpointing the WAL is all it needs. That misdiagnosis is
+    the exact failure `DatastoreKeyRejectedError` was introduced to prevent, so
+    it must not be the thing that produces it.
+    """
+    directory = initialized_config.datastore_path.parent
+    _kill_a_writer_holding_a_hot_wal(initialized_config)
+    assert initialized_config.datastore_path.with_suffix(".db-wal").stat().st_size > 0
+
+    initialized_config.datastore_path.with_suffix(".db-shm").unlink(missing_ok=True)
+    directory.chmod(0o555)
+    try:
+        with pytest.raises(connection.DatastoreUnreadableError) as excinfo, reader(
+            initialized_config
+        ):
+            pass
+    finally:
+        directory.chmod(0o755)
+
+    message = str(excinfo.value)
+    assert "key is not implicated" in message
+    assert "hot WAL" in message
+    # And the store was never the problem: it reads once the directory does.
+    with reader(initialized_config) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM hot_wal").fetchone()[0] == 400
+
+
+def _kill_a_writer_holding_a_hot_wal(config: Config) -> None:
+    """Leave a WAL behind that no clean close ever checkpointed."""
+    killed = subprocess.run(
+        [sys.executable, "-c", _HOT_WAL_WRITER],
+        env={
+            **os.environ,
+            "BANKMACHINE_DATASTORE_PATH": str(config.datastore_path),
+            "BANKMACHINE_KEYCHAIN_SERVICE": config.keychain_service,
+            "BANKMACHINE_LOG_DIR": str(config.log_dir),
+            "BANKMACHINE_ENVIRONMENT": config.environment,
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert killed.returncode == 9, f"the writer was not killed mid-flight: {killed.stderr}"
 
 
 # --------------------------------------------------------------------------
@@ -461,6 +512,25 @@ _LOCK_HOLDER = textwrap.dedent(
     with writer(config):
         print("locked", flush=True)
         time.sleep(120)
+    """
+)
+
+_HOT_WAL_WRITER = textwrap.dedent(
+    """
+    import os
+    from bankmachine.config import load_config
+    from bankmachine.store.connection import writer
+
+    # os._exit skips the close that would checkpoint the WAL, which is what
+    # leaves the file in the state a killed writer leaves it in.
+    with writer(load_config()) as w:
+        w.execute("CREATE TABLE hot_wal (a INTEGER, pad TEXT)")
+        w.execute("BEGIN IMMEDIATE")
+        w.executemany(
+            "INSERT INTO hot_wal VALUES (?, ?)", [(i, "x" * 512) for i in range(400)]
+        )
+        w.execute("COMMIT")
+        os._exit(9)
     """
 )
 

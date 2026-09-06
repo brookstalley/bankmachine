@@ -68,7 +68,7 @@ gate any chunk here.
 - [x] Chunk 01: Walking skeleton — config, key, encrypted WAL datastore, and the two connection roles
 - [x] Chunk 02: The core schema (FR-6)
 - [x] Chunk 03: Raw-response layer and rebuild (FR-5)
-- [ ] Chunk 04: `sync shell` (AC-ARCH.6)
+- [x] Chunk 04: `sync shell` (AC-ARCH.6)
 Context: Plan drawn 2026-09-05, directly after `.prawduct/artifacts/architecture.md` resolved
 AC-ARCH.7. **Chunk 01 landed 2026-09-06** on `feature/datastore-v1` — the uv package, config /
 secrets / logging_setup, the two-role connection layer, the migration runner, the SQLAlchemy
@@ -122,14 +122,37 @@ checkout, so the rule now turns on whether a `connect` call carries connection p
 `engine.py` gained `writer_connection` / `reader_connection` so nothing outside the store layer
 checks a handle out.
 
-Next: Chunk 04, `sync shell`. Three things are still carried rather than done: the no-fallback
-norm's measured edge is unstaged (a decision owed at Chunk 04, recorded there);
-`account_rules.parameters` holds local account ids in JSON where SQLite cannot enforce a foreign
-key — the rule engine validates them when it lands; and `content_digest` scans every table twice per
-rebuild, which is free at today's volumes and is the first thing to look at if a rebuild ever feels
-slow. This plan covers build step 1 of `docs/system-requirements.md` §8 and nothing beyond it; step
-2 (the aggregator client) gets its own plan, and the contract it must be written against is now
-recorded as the Derivation Seam in `boundary-patterns.md`.
+**Chunk 04 landed 2026-09-06** on the same branch, completing this plan — `bankmachine sync shell`,
+an authenticated SQL prompt over a read-role handle, with `store/connection.py` gaining
+`statement_is_complete` and `DriverError` so the CLI needs no driver import of its own. Suite green,
+mypy strict and ruff clean, and the norm-break harness now runs 27 cases. The by-hand check
+AC-ARCH.6 asks for is recorded as VRF-001 in `.prawduct/operator-verification.md`, with the session
+transcript; it is the one item still awaiting the owner's own eyes.
+
+Two things in this chunk are worth carrying rather than rediscovering. **The carried no-fallback
+edge was staged, and staging it found a misdiagnosis.** A hot WAL from a killed writer, with no
+`-shm`, in a directory the reader cannot write to fails at the *first read* rather than at
+`connect()` — SQLite opens lazily — so the `mode=ro` guard written around the connect call never saw
+it, and `_key_and_prepare` reported `SQLITE_CANTOPEN` as a rejected key. That sent the operator to
+restore a keychain entry that was never the problem, which is the exact failure
+`DatastoreKeyRejectedError` was introduced to prevent. `_diagnose_first_read` now separates the two
+on `SQLITE_NOTADB`, and the edge has a staged test instead of a stand-in. **The redaction rule runs
+over text and not over numbers**, because money here is an INTEGER of minor units and an account
+number is TEXT — redacting integers would blank a six-figure balance, which is the number the
+operator opened the shell to read.
+
+Two ride-alongs came out of the same work: the shell's snapshot release is a property of the
+handle (`in_transaction`) rather than a list of statements to watch for, and the piped-session echo
+is redacted like any other output, because a transcript is the most likely thing here to be
+committed or pasted into a bug report.
+
+Still carried, unchanged: `account_rules.parameters` holds local account ids in JSON where SQLite
+cannot enforce a foreign key — the rule engine validates them when it lands (FR-8, build step ~7);
+and `content_digest` scans every table twice per rebuild, which is free at today's volumes and is
+the first thing to look at if a rebuild ever feels slow. This plan covers build step 1 of
+`docs/system-requirements.md` §8 and nothing beyond it; step 2 (the aggregator client) gets its own
+plan, and the contract it must be written against is recorded as the Derivation Seam in
+`boundary-patterns.md`.
 
 ## Scaffolding
 

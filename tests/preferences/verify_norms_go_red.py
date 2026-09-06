@@ -15,9 +15,10 @@ It covers the four architecture norms and, since the core schema landed, the
 guarantees migration 002 builds into the database itself -- the money and
 temporal CHECKs, the identity indexes, and the drift guard that keeps the Core
 metadata and the frozen DDL describing the same tables. The raw-response layer
-adds four more, and they are the same shape as the rest: each is a refusal, so
-each fails silently and in the direction of looking finished if its check ever
-stops firing.
+adds four more, and `sync shell` two -- the redaction on the way out and the
+snapshot release before the prompt returns. They are the same shape as the
+rest: each is a refusal, so each fails silently and in the direction of looking
+finished if its check ever stops firing.
 
 Each case restores the file it edited, including on failure.
 """
@@ -36,11 +37,13 @@ REBUILD = pathlib.Path("src/bankmachine/store/rebuild.py")
 MIGRATIONS = pathlib.Path("src/bankmachine/store/migrations/__init__.py")
 DDL = pathlib.Path("src/bankmachine/store/migrations/core_schema.py")
 METADATA = pathlib.Path("src/bankmachine/store/schema.py")
+SHELL = pathlib.Path("src/bankmachine/cli/sync.py")
 NORMS = "tests/store/test_connection_norms.py"
 SCHEMA = "tests/store/test_schema.py"
 SOLE_CONSTRUCTOR = "tests/preferences/test_connection_is_the_sole_constructor.py"
 RAW_TESTS = "tests/store/test_raw.py"
 REBUILD_TESTS = "tests/store/test_rebuild.py"
+SHELL_TESTS = "tests/cli/test_sync_shell.py"
 
 #: (description, file, text to replace, replacement, the test that must go red)
 CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
@@ -218,6 +221,27 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "            if report.content_changed and not report.change_was_expected:",
         "            if False:",
         f"{REBUILD_TESTS}::test_a_rebuild_that_cannot_reproduce_its_input_is_rolled_back",
+    ),
+    (
+        "no-fallback: an unreadable datastore is not reported as a rejected key",
+        CONNECTION,
+        'if getattr(exc, "sqlite_errorname", "") == "SQLITE_NOTADB":',
+        "if True:",
+        f"{NORMS}::test_the_measured_unreadable_edge_is_not_reported_as_a_bad_key",
+    ),
+    (
+        "AC-10.3: the shell redacts a token on its way to the operator's terminal",
+        SHELL,
+        "        return redact(value)",
+        "        return value",
+        f"{SHELL_TESTS}::test_output_redacts_tokens_and_account_numbers_but_keeps_masks",
+    ),
+    (
+        "AC-ARCH.6: the prompt comes back holding no snapshot, whatever was typed",
+        SHELL,
+        "    if not conn.in_transaction:\n        return\n",
+        "    if True:\n        return\n",
+        f"{SHELL_TESTS}::test_a_transaction_typed_at_the_prompt_is_released_before_the_prompt_returns",
     ),
 ]
 

@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from bankmachine.cli import store as store_commands
+from bankmachine.cli import sync as sync_commands
 from bankmachine.config import Config, ConfigError, load_config
 from bankmachine.logging_setup import configure_logging, log_startup
 from bankmachine.secrets import SecretsError
@@ -34,6 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verbose", action="store_true", help="log at DEBUG instead of INFO")
     subparsers = parser.add_subparsers(dest="command", required=True)
     store_commands.add_arguments(subparsers)
+    sync_commands.add_arguments(subparsers)
     return parser
 
 

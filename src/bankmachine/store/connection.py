@@ -35,7 +35,25 @@ from bankmachine.secrets import SecretsError, get_datastore_key
 
 Connection = dbapi2.Connection
 
+#: The driver's base error class, re-exported. A caller outside the store layer
+#: -- `sync shell` is the one that exists -- has to be able to catch a statement
+#: that failed without importing a DBAPI module itself, because the moment a
+#: second module imports one, "every handle is constructed here" stops being
+#: checkable and goes back to being a convention.
+DriverError = dbapi2.Error
+
 logger = get_logger("store.connection")
+
+
+def statement_is_complete(sql: str) -> bool:
+    """Whether `sql` is a complete statement, or is still waiting for more.
+
+    The prompt in `sync shell` needs this to decide between running what it has
+    and asking for another line. It is the driver's own tokenizer, exposed here
+    for the same reason `DriverError` is: it is the store layer's business to
+    know what a SQL statement is, and nobody else's to import a driver to ask.
+    """
+    return bool(dbapi2.complete_statement(sql))
 
 #: The schema versions this build of the code understands. A datastore outside
 #: this range is refused, loudly, rather than served against.
@@ -140,11 +158,41 @@ def _key_and_prepare(conn: Connection, config: Config, key: str) -> None:
         conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
     except dbapi2.DatabaseError as exc:
         conn.close()
-        raise DatastoreKeyRejectedError(
+        raise _diagnose_first_read(exc, config) from exc
+    conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _diagnose_first_read(exc: dbapi2.DatabaseError, config: Config) -> StoreError:
+    """Tell a wrong key apart from a datastore that cannot be read at all.
+
+    Both surface here rather than at `connect()`, because SQLite opens lazily --
+    the URI is parsed and nothing is touched until the first read. That is why
+    this decision lives at the probe instead of around the connect call, where
+    the `mode=ro` guard was originally written and where this edge never
+    reaches it.
+
+    SQLCipher reports a wrong key as `SQLITE_NOTADB` -- `file is not a database`
+    -- which reads as corruption and sends the operator to the wrong recovery
+    procedure unless it is renamed. Anything else is not an authentication
+    failure and must not be reported as one: the measured case is
+    `SQLITE_CANTOPEN` from a hot WAL left by a killed writer, with no `-shm`
+    file, in a directory this process cannot write to. SQLite has to create the
+    shared-memory index before it can read the WAL, cannot, and gives up.
+    Reporting that as a bad key sends the operator to restore a keychain entry
+    that was never the problem, which is the exact failure
+    `DatastoreKeyRejectedError` was introduced to prevent.
+    """
+    if getattr(exc, "sqlite_errorname", "") == "SQLITE_NOTADB":
+        return DatastoreKeyRejectedError(
             f"the key in keychain {config.keychain_service}/{config.keychain_account} does not "
             f"decrypt {config.datastore_path} -- this is an authentication failure, not corruption"
-        ) from exc
-    conn.execute("PRAGMA foreign_keys = ON")
+        )
+    return DatastoreUnreadableError(
+        f"{config.datastore_path} could not be read ({exc}). A hot WAL from a killed writer, "
+        f"with no -shm file, in a directory this process cannot write to produces exactly this: "
+        f"the shared-memory index the WAL needs cannot be created. The key is not implicated. "
+        f"Not retried read-write -- that would restore the writes this handle exists to refuse"
+    )
 
 
 @contextmanager

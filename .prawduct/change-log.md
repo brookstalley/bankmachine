@@ -34,6 +34,68 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-06: `sync shell` — the operator gets to look inside their own datastore
+
+<!-- prawduct: scope=datastore-v1 -->
+
+**Why:** page encryption breaks every ad-hoc SQL tool — stock `sqlite3` reads this file as corrupt,
+because the pages are ciphertext. Until this command existed there was no way for the operator to
+look at their own data at all, which is why AC-ARCH.6 puts it in build step 1 rather than step 9: it
+is the debugging affordance every later step is built over. It is also the product's only surface
+that runs operator-supplied SQL, so it is where both read-role norms stop being theoretical.
+
+**What landed:**
+
+- **`bankmachine sync shell`** — an authenticated SQL prompt over a read-role handle. Statements may
+  span lines, `.tables` / `.schema` / `.help` / `.quit` are there, a failed statement costs the
+  statement and never the session, and results render as aligned columns. A blob is summarised
+  (`<blob, 402 bytes>`) rather than dumped: `raw_responses.body_gzip` is the one that comes up, and a
+  terminal full of gzip is not a debugging affordance.
+- **The refusal to write stays in the file handle.** The shell adds nothing of its own — it asks
+  `store/connection.py` for a read-role handle, which is `mode=ro`. An operator can type `PRAGMA
+  query_only = OFF`, watch the flag flip to `0`, and still be refused. The test asserts both halves,
+  because asserting only the refusal would pass just as well against a shell where the PRAGMA
+  silently did nothing.
+- **The prompt holds no snapshot between statements.** A shell left open overnight is open during
+  the nightly sync, and a read-role handle takes no writer lock, so nothing else serialises the two;
+  a pinned snapshot starves the checkpointer for hours. The release is a *property* of the handle —
+  it asks whether a transaction is open and rolls it back — rather than a list of statements to watch
+  for, because `BEGIN` opens one, so does `SAVEPOINT`, and the next thing that does would not have
+  been on the list. Three tests hold it, including a negative control that disables the release and
+  confirms the checkpoint genuinely starves; a probe that only ever confirms what was expected is
+  the one to distrust.
+- **AC-10.3 has one rule, not one per surface.** Everything the shell writes goes through
+  `logging_setup.redact`, the same function the log formatter uses — including the statement echoed
+  back in a piped session, because a transcript is the likeliest thing here to be committed or
+  pasted into a bug report. Redaction runs over text and not over numbers: money here is an INTEGER
+  of minor units and an account number is TEXT, so redacting integers would blank a six-figure
+  balance — the number the operator opened the shell to read — while protecting nothing.
+- **No writer shell.** The plan left one optional and it is declined: the product is read-only, a
+  writer shell would hold the exclusive `flock` for its whole session so the overnight prompt above
+  would block the nightly sync outright rather than merely starve it, and hand-typed rows have no
+  raw response behind them, which is what `store rebuild`'s content digest exists to catch.
+
+**The carried edge was staged, and staging it found a real misdiagnosis.** Since Chunk 01 the
+no-fallback clause has had one case with no staged test: a hot WAL from a killed writer, no `-shm`,
+in a directory the reader cannot write to. Staged here, it turned out the guard could never have
+fired — SQLite opens lazily, so `connect()` succeeds and the failure lands on the *first read*,
+where `_key_and_prepare` reported `SQLITE_CANTOPEN` as a rejected key. That told the operator to
+restore a keychain entry that was never the problem, for a datastore that only needed its WAL
+checkpointed — the exact wrong-recovery failure `DatastoreKeyRejectedError` was introduced to
+prevent. `_diagnose_first_read` now separates the two on `SQLITE_NOTADB`, and the case has a real
+test instead of a stand-in for one.
+
+**The store layer grew two exports rather than the CLI growing a driver import.** The shell needs to
+know when a statement is complete and how to catch a failed one; both now come from
+`store.connection` (`statement_is_complete`, `DriverError`). The structural test caught the import
+on the first full run — worth recording, because the norm it protects is exactly the kind that
+degrades into a convention the moment a second module imports a DBAPI.
+
+Suite green, mypy strict and ruff clean. The norm-break harness runs 27 cases, three of them new and
+all verified red. The by-hand check AC-ARCH.6 asks for is recorded as VRF-001 in
+`.prawduct/operator-verification.md` with its session transcript, and is the one item still awaiting
+the owner's own eyes.
+
 ## 2026-09-06: Raw preservation and rebuild — a bronze layer that checks its own work
 
 <!-- prawduct: scope=datastore-v1 -->

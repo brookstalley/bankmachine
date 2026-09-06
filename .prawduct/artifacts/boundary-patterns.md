@@ -101,6 +101,41 @@ taken first — and a pool checkout carries none, which is the discriminator
 `tests/preferences/test_connection_is_the_sole_constructor.py` now uses in place
 of matching on the name `connect`.
 
+### Operator SQL Surface — `sync shell`
+
+**Producer:** `src/bankmachine/cli/sync.py` — the only place operator-supplied
+SQL reaches the datastore (AC-ARCH.6).
+
+**Consumer:** a human at a terminal, and any transcript they keep.
+
+**Contract:** the shell takes a read-role handle from `store/connection.py` and
+adds nothing of its own to the refusal — `mode=ro` at the file is what makes
+`PRAGMA query_only = OFF` typed at this prompt harmless. Everything it writes,
+including the statement it echoes back in a piped session, goes through
+`logging_setup.redact`, so AC-10.3 has one rule rather than one per surface.
+Redaction runs over text and not over numbers, because money here is an INTEGER
+of minor units while an account number is TEXT (`accounts.mask`); redacting
+integers would blank a six-figure balance and protect nothing.
+
+**No writer shell.** The plan left one optional. It is declined: the product is
+read-only, a writer shell would hold the exclusive `flock` for the whole
+session — so an overnight prompt would block the nightly sync outright, not
+merely starve its checkpointer — and hand-typed rows have no raw response
+behind them, which is what `store rebuild`'s content digest exists to catch. If
+one is ever added it comes from the writer factory like every other writer.
+
+**The snapshot rule is a property, not a statement list.** `_release_snapshot`
+asks the handle whether a transaction is open and rolls it back before the
+prompt returns. `BEGIN` opens one, so does `SAVEPOINT`, and the next thing that
+does would not have been on a list.
+
+**Nothing here imports a DBAPI module.** The shell needs to know when a
+statement is complete and how to catch a failed one; both come from
+`store.connection` (`statement_is_complete`, `DriverError`). A second driver
+import anywhere outside `store/` would turn "every handle is constructed in one
+place" back into a convention, and
+`tests/preferences/test_connection_is_the_sole_constructor.py` fails on one.
+
 ### Configuration Interface
 
 **Producer:** `src/bankmachine/config.py` — the resolved `Config`, and the only
