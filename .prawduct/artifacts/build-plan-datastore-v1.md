@@ -239,7 +239,19 @@ data-modeling decision above.
 - **Done when:**
   1. Acceptance criteria met and tests pass
   2. `/prawduct:critic` run and blocking findings resolved
-  3. Issue **#1** moved to `shipped` with `closed-by: datastore-v1`
+  3. ~~Issue **#1** moved to `shipped` with `closed-by: datastore-v1`~~ — **cannot happen at chunk
+     close on this backend, and that is not a slip.** `backlog_service_repo` is set, so a status
+     change is an immediate GitHub API call with no branch to be abandoned alongside; the skill
+     defers it to the merge, and refuses it before then. Closing #1 now would leave it wrongly
+     closed if this branch were reworked — the one bookkeeping error nothing later sweeps for.
+     **The work is done; the close is owed at merge**, and it is two calls, because `status`
+     records no ship handle:
+     `prawduct-hook backlog status 1 --repo brookstalley/bankmachine --to shipped --json`, then
+     `prawduct-hook backlog update 1 --repo brookstalley/bankmachine --closed-by datastore-v1 --json`.
+     A `Closes #1` line in the PR body **does** fire here — this repo's default branch is `develop`
+     and the PR base is `develop`, so the usual gitflow caveat (keywords fire only into the default
+     branch) does not apply — but it sets no `closed-by`, so it supplements the calls above rather
+     than replacing them.
   4. Committed and chunk marked `[x]` in Status
 
 ### Chunk 02: The core schema (FR-6)
