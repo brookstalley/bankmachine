@@ -24,8 +24,9 @@ coverage advisory tracks the rest.
 **Evidence.** Every concurrency claim below was measured on this machine (macOS, Apple Silicon,
 CPython 3.12.3) against `sqlcipher3-wheels` 0.5.7 — SQLCipher 4.12.0 community, OpenSSL provider,
 SQLite 3.51.1 — not taken from documentation. Measurements are marked *(measured)* and the
-probe results are summarized in the Decision Log. One prior assumption was falsified by probing
-and is recorded there.
+probe results are summarized in the Decision Log, including a premise that probing showed to be
+true only within a scope the first probe did not reach — recorded there rather than quietly
+dropped.
 
 ---
 
@@ -35,25 +36,39 @@ Norms. These bind future work; departure is a recorded decision, never silent
 (`/prawduct:methodology norms`). All four are born **before any code exists**, so no retroactivity
 decision applies — there is nothing to migrate, contain, or grandfather.
 
-- **The datastore has exactly one writer process at a time, and it is a sync-role process.**
-  The scheduled sync, a manual `sync run`, `enroll`, `repair` and `import` all take the same
-  exclusive lock before opening a write transaction; the MCP server never takes it.
+- **Every writable handle comes from the one writer factory, and that factory takes the exclusive
+  lock before it returns.** There is no second way to obtain a connection that can write. Writer-role
+  membership is therefore a property of how a handle was constructed, not a list of commands someone
+  has to remember to keep current.
   Why: two SQLCipher connections cannot both hold a write transaction — the second fails with
   `database is locked` once `busy_timeout` expires *(measured)*, and a retry that succeeds partway
   through would interleave cursor advances against the data they are supposed to accompany,
-  breaking AC-2.1's transactional-cursor guarantee and AC-2.5's crash-resume guarantee. Serializing
-  at the process boundary turns a data-corruption risk into a wait or a clean refusal.
+  breaking AC-2.1's transactional-cursor guarantee and AC-2.5's crash-resume guarantee. **Stated as
+  an enumeration this norm decays on contact**: the first draft listed the scheduled sync, `sync
+  run`, `enroll`, `repair` and `import`, and had already omitted `store init` — which creates the
+  file — and `store rebuild`, which rewrites every normalized table. A list is a thing to forget;
+  a factory is a thing to route through.
   Status: steady-state.
 
-- **The MCP server opens the datastore `query_only` and holds no read transaction across tool
-  calls.** One snapshot per tool call, released before the call returns.
-  Why: two reasons that happen to agree. `query_only` is the mechanism that makes AC-10.5's
-  read-only claim enforced rather than asserted — it refuses writes at the SQLite layer
-  (`attempt to write a readonly database`, *measured*). And a pinned snapshot starves WAL
-  checkpointing: with one reader holding an open read transaction, a passive checkpoint moved
-  **0 of 93** frames, and the same checkpoint moved **93 of 93** the moment the reader released
-  *(measured)*. An MCP server lives as long as its client, so a snapshot held across tool calls
-  would let the WAL grow unbounded through the multi-year initial backfill.
+- **Every read-role handle is opened read-only at the file (`mode=ro`), holds no read transaction
+  across tool calls, and never falls back to a writable handle.** One snapshot per tool call,
+  released before the call returns. `PRAGMA query_only=ON` is set as well, as a second layer.
+  Why: three reasons, and the first is the one that changed this norm's mechanism. **`query_only`
+  alone is reversible** — on a read-write handle, `PRAGMA query_only=OFF` re-enables writes
+  *(measured)*, and `sync shell` exists precisely to run operator-supplied SQL, which is the surface
+  that can type it; under `mode=ro` the identical sequence still fails *(measured)*, because the
+  refusal lives in the file handle rather than in a session flag. Second, the read-only guarantee is
+  §5's mandate (*"Read-only. No mutation tools. No exceptions."*) and it should be structural rather
+  than a convention every future tool author remembers. Third, a pinned snapshot starves WAL
+  checkpointing: with one reader holding an open read transaction a passive checkpoint moved **0 of
+  93** frames, and moved **93 of 93** the instant the reader released *(measured)*; an MCP server
+  lives as long as its client, so a snapshot held across tool calls would grow the WAL unbounded
+  through the initial backfill.
+  **The no-fallback clause is load-bearing.** `mode=ro` does fail in one measured edge — a hot WAL
+  left by a killed writer, with no `-shm` present and a containing directory the reader cannot write
+  to. The correct response is a loud error naming that state. Falling back to a read-write handle
+  would silently restore the reversible guarantee this norm exists to remove, at exactly the moment
+  something has already gone wrong.
   Status: steady-state.
 
 - **No component creates the datastore implicitly.** Only an explicit `store init` and the
@@ -94,14 +109,14 @@ file. Nothing listens on a network socket.
                           │  store.db  (SQLCipher, WAL)             │
                           │  + store.db-wal, store.db-shm           │
                           └──────────────┬──────────────────────────┘
-                                         │ query_only, short snapshots
+                                         │ mode=ro, short snapshots
                           ┌──────────────┴──────────────────────────┐
   MCP client ────stdio────┤ MCP server            (reader)          │
   (analyst agent)         │  launched and owned by the MCP client   │
                           └─────────────────────────────────────────┘
 
-  operator ──terminal─────► CLI: enroll · repair · import · sync run · store init · sync shell
-                            (writer-role commands take the same lock as the sync process)
+  operator ──terminal─────► CLI — canonical command surface in Components below
+                            (every writable handle comes from the writer factory, which locks)
 
   secrets: macOS Keychain via `keyring` — datastore key, aggregator credentials, access tokens
   config:  a file at a documented default path; no path is hardcoded (AC-ARCH.4)
@@ -135,8 +150,24 @@ contact.
 
 ### CLI — the operator's hands
 
-- **Purpose:** enrollment, repair, import, manual sync, `store init`, and `sync shell` (AC-ARCH.6 —
-  built in step 1 because it is the debugging affordance for every step after it).
+- **Purpose:** the operator's entry points. **This table is the canonical command surface** — every
+  other document points here rather than restating it, because a command set restated in four places
+  is four places to disagree.
+
+  | Command | Role | Arrives at |
+  |---|---|---|
+  | `store init` | writer | step 1 — the sole creator of the datastore |
+  | `store status` | reader | step 1 |
+  | `store rebuild` | writer | step 1 — rebuilds normalized tables from raw (AC-5.2) |
+  | `sync shell` | reader by default; writer only when explicitly asked for | step 1 (AC-ARCH.6) |
+  | `enroll` | writer | step 3 |
+  | `repair` | writer | step 6 |
+  | `sync run` | writer | step 4 |
+  | `import` | writer | step 10 |
+
+  `sync shell` is the one command whose role is a choice rather than a property of the command, so
+  it is the one that has to say which it opened — it defaults to the read role, and a writer shell
+  is an explicit flag that takes the lock like any other writer.
 - **Owned state:** none of its own; its writer-role subcommands act *as* the writer and take the
   same lock.
 - **Never:** a second, parallel implementation of sync logic. `sync run` invokes the same code path
@@ -157,26 +188,42 @@ entry point, and process starter are four distinct jobs.
 
 ## Communication & Boundaries
 
-There are exactly three channels, and one of them is the datastore file.
+There are exactly four channels, and one of them is the datastore file.
 
 | Channel | Transport | Direction | Sync/async | Contract |
 |---|---|---|---|---|
 | MCP client ↔ MCP server | stdio (JSON-RPC), same machine | request/response | sync | The §5 tool surface. **This is the product's API contract** — it belongs in `api-contract.md`, not restated here |
 | sync process → aggregator | HTTPS to the aggregator's API hosts, the only network destinations permitted (AC-10.4) | outbound only | sync | The aggregator's own API; wrapped behind the connector boundary (§3 scope note) |
 | sync process ↔ MCP server | **the datastore file** | writer → reader | async | This section's Data Ownership rules |
+| operator → sync process | **import files** on the local filesystem | inbound | sync | Pluggable adapters selected by configuration (FR-7). Verified against real exported sample files, never hand-written fixtures (AC-7.3) |
 
 **The shared database is a communication channel, and it is the only one these two processes
 have.** Its coordination rule is the whole of the next section. There is no queue, no socket, no
 IPC, and no signal between them — deliberately, because AC-ARCH.7 forbids either depending on the
 other's liveness, and any direct channel would create exactly that dependency.
 
-**Trust boundaries.** Only one channel crosses one: the aggregator API is third-party and outbound.
-The stdio channel is same-machine, same-user, and carries no credential. There is no untrusted
-inbound surface anywhere in the topology — which is what makes AC-10.5 (no sockets) affordable, and
-is why that criterion is now a confirmed decision rather than an unexamined default.
+**Trust boundaries.** Two channels cross one, and they cross it in opposite directions.
 
-`boundary-patterns.md` is still a template; populating it is build-step-1 work, and the datastore
-schema is its first real entry.
+The **aggregator API** is third-party and outbound — we choose when to call it, and its responses
+are parsed, but nothing it sends can reach us unbidden.
+
+**Import files are foreign inbound data**, and this is the surface that is easy to overlook because
+it arrives by filesystem rather than by network. Their formats are not ours to define — which is
+exactly why AC-7.3 requires adapters be verified against real exported files rather than fixtures
+encoding our assumptions, and why `project-state.yaml` records them as a foreign input surface. An
+adapter parses attacker-influenceable structure in the sense that matters here: a malformed or
+hostile file must fail the import loudly, never partially apply, and never reach the normalized
+tables unvalidated. The FR-7 builder at step 10 should read this paragraph as the boundary's
+description, not the earlier draft's claim that no untrusted inbound surface existed.
+
+What *is* true is narrower and still load-bearing: **no channel accepts unsolicited inbound
+traffic**. Nothing listens. The stdio channel is same-machine, same-user, and carries no credential.
+That is what makes AC-10.5 (no sockets) affordable, and why it is now a confirmed decision rather
+than an unexamined default.
+
+`boundary-patterns.md` is still a template. Populating it is build-step-1 work and **Chunk 02 of
+`build-plan-datastore-v1.md` owns it**, because the datastore schema is its first real entry and
+Chunk 02 is the chunk that lands the schema.
 
 ---
 
@@ -234,18 +281,25 @@ not block and are not blocked.
 
 ### Reader isolation
 
-The MCP server connects, keys, and immediately issues `PRAGMA query_only=ON`. Writes then fail at
-the SQLite layer *(measured)*, which makes AC-10.5's read-only guarantee structural rather than a
-convention every future tool author has to remember.
+Read-role handles open the file read-only (`mode=ro`), then key, then set `PRAGMA query_only=ON`
+as a second layer. Writes fail at the SQLite layer *(measured)*, which makes §5's read-only mandate
+structural rather than a convention every future tool author has to remember.
 
-**Why `query_only` on a read-write handle rather than `mode=ro`.** Both work. `mode=ro` was
-probed against a hot WAL left by a `SIGKILL`ed writer and read the committed-but-uncheckpointed
-rows correctly, including with an unwritable containing directory *(measured)* — so the read-only
-WAL hazard this design was originally going to route around does not bite here. `query_only` is
-chosen anyway for two reasons that survive that finding: it keeps one connection-opening path for
-all components with a single flag distinguishing them, and it does not depend on a `-shm` file
-already existing, which `mode=ro` does in the general case. **The falsified assumption is recorded
-in the Decision Log** rather than quietly dropped.
+**Both layers are there because one of them is reversible.** `query_only` is a per-connection
+session flag: on a handle whose underlying file was opened read-write, `PRAGMA query_only=OFF`
+restores writes *(measured)*. That is not hypothetical here — `sync shell` exists to execute
+operator-supplied SQL, so the product ships the exact surface that can type that pragma. Opened
+`mode=ro`, the same sequence still fails *(measured)*: the refusal lives in the file handle, where
+SQL cannot reach it.
+
+**The one edge where `mode=ro` fails, and why it is not routed around.** A hot WAL left by a killed
+writer, with no `-shm` file and a containing directory the reader cannot write to, yields
+`unable to open database file` *(measured)* — the reader cannot build the shared-memory index it
+needs to read the WAL. In this product's actual deployment every process runs as the one operator
+who owns the directory, so the case requires an unusual filesystem state to reach at all. **The
+response is a loud error naming that state, never a fallback to a read-write handle** — a fallback
+would silently reinstate the reversible guarantee at precisely the moment something has already gone
+wrong, which is this project's recurring defect shape.
 
 Each tool call opens its snapshot and releases it before returning. A read transaction spanning
 tool calls would pin the WAL against checkpointing — the measured 0-of-93 starvation above — and
@@ -318,9 +372,20 @@ checks the schema version and refuses rather than serving. It does not attempt t
 schema it was not built for.
 
 **Migrations run in the writer role,** under the same exclusive lock, so no migration can interleave
-with a sync. Rollback of a migration that has already written data is not supported in v1 — the
-recovery path is restore-from-backup plus rebuild-from-raw (AC-5.2), which exists precisely so that
-a derivation mistake is a re-run rather than a re-fetch.
+with a sync.
+
+🔴 **A migration's DDL and its `schema_version` stamp commit in one transaction.** SQLite's DDL is
+transactional, so this costs nothing and is not optional: the fourth Direction norm makes the stored
+version the *sole* signal by which a process decides a datastore is safe to serve, and a runner that
+applies DDL and then stamps the version separately leaves a crash window in which the schema is
+half-built and the version says healthy. That is the confidently-wrong-answer failure this product
+names as its primary mode, reached through the very mechanism meant to prevent it. A partially
+applied migration must be impossible rather than detectable — which is why this is stated as a
+property of the runner and tested as one, not left to a repair command.
+
+Rollback of a migration that has already written data is not supported in v1 — the recovery path is
+restore-from-backup plus rebuild-from-raw (AC-5.2), which exists precisely so that a derivation
+mistake is a re-run rather than a re-fetch.
 
 ---
 
@@ -363,6 +428,22 @@ process start: neither process polls or reloads, so a config change takes effect
 and the next MCP client session. That is acceptable for a daily batch and is stated so it is not
 mistaken for a bug.
 
+**Logging.** Every runtime writes to the configured log directory (AC-ARCH.4 — a config value with
+a documented default, never a hardcoded path), and every line carries the run id from Correlation
+above, so a line can be tied to the fetch that produced the row it is about.
+
+🔴 **AC-10.3 redaction lives in the formatter, not at the call sites.** Access tokens and account
+numbers are redacted by the logging layer itself, so redaction is a property of the log
+configuration rather than a discipline every future `log.info` has to remember; account masks
+(last 4) are permitted through. This is stated here, in step 1, because **steps 1 through 7 all
+write log lines and "Scheduling and logging" is step 8** — deferring the rule to the step whose name
+mentions logging would mean seven steps of log lines predating the rule that governs them, and a
+redaction rule applied retroactively to existing call sites is exactly the sweep that misses one.
+
+Log retention is bounded: the directory grows monotonically otherwise, and it is the one place
+plaintext derived from an encrypted datastore accumulates. Rotation policy is a config value with a
+documented default; the operational spec owns the numbers.
+
 **The sandbox/production flag is a config value, logged loudly at every startup** (AC-10.6), and it
 is cross-cutting because getting it wrong writes fixture data into the real datastore — a failure
 that both processes would then faithfully report as real.
@@ -388,25 +469,33 @@ decision would have traded AC-ARCH.5 for AC-ARCH.7.
 datastore, held for a whole writer run. *Alternatives:* rely on SQLite locking plus a long
 `busy_timeout` (fails at an arbitrary point mid-run); a lease row in `sync_state` (survives a
 `SIGKILL`, which AC-2.5 explicitly tests for, and would strand every subsequent run). *Why:* the
-unit that must be serialized is the *run*, not the transaction. *Trade-off accepted:* advisory only
-— it coordinates cooperating processes and nothing else, which is sufficient because every writer
-is our own code.
+unit that must be serialized is the *run*, not the transaction. *Trade-off accepted:* two things, both
+deliberate. The lock is **advisory** — it coordinates cooperating processes and nothing else, which
+is sufficient because every writer is our own code and every writable handle comes from one factory.
+And **every writer-role command refuses for the duration of a run, including the multi-hour first
+backfill**: an operator who tries `store rebuild` or a writer shell that evening is told a sync is
+running and gets a non-zero exit rather than a wait. That is the correct answer for a daily batch
+with one operator — the alternative is an interleaving the norm exists to prevent — but it is a real
+edge on the one day it is longest, so it is recorded rather than discovered.
 
-**D3 — `query_only` rather than `mode=ro` for the reader.** *Chosen:* open read-write, then
-`PRAGMA query_only=ON`. *Why:* one connection path for every component, no dependency on a `-shm`
-file already existing, and a SQLite-layer refusal that makes AC-10.5 structural. *Trade-off
-accepted:* the handle is technically writable for the instant before the pragma, so opening the
-datastore is one function with one flag rather than scattered per-component logic — the norm and its
-enforcement test are what hold this, not the file mode.
+**D3 — `mode=ro` for the reader, with `query_only` as a second layer.** *Chosen:* open the file
+read-only, key it, then set `query_only`. *Alternatives:* `query_only` alone on a read-write handle
+(the first draft of this document); a separate read-only copy of the datastore (doubles storage and
+introduces a staleness window the freshness stamp would have to model). *Why:* `query_only` alone is
+reversible from inside a SQL session *(measured)*, and `sync shell` ships that session to the
+operator. *Trade-off accepted:* one measured failure edge — a hot WAL with no `-shm` under an
+unwritable directory — handled by a loud error rather than a fallback, per the norm.
 
-**D4 — A prior assumption, falsified by probing.** Before measuring, this design was going to route
-around a believed limitation: that a `mode=ro` connection cannot read a WAL-mode database when no
-`-shm` file exists, and would therefore fail against a hot WAL left by a crashed writer. **It read
-correctly in every case probed**, including after a `SIGKILL` mid-write and with an unwritable
-containing directory. D3 stands on its other two reasons; the reason that did not survive contact
-is struck rather than retained. Recorded because a specification that quietly keeps a falsified
-premise teaches the next reader to trust the wrong thing — and because the probe cost ten minutes
-against a criterion the requirements call the highest-stakes kind of mistake.
+**D4 — Two premises tested; one was falsified and one survived, and the split is why D3 reads as it
+does.** Before measuring, this design assumed `mode=ro` could not read a WAL database without an
+existing `-shm`, and would therefore fail against a hot WAL from a crashed writer. Probed, it read
+correctly *(measured)* — including after a `SIGKILL` mid-write — **so long as the `-shm` left behind
+by the crashed writer was still present**. Deleting that file and making the directory unwritable
+reproduced the original failure. So the premise was neither right nor wrong as stated: it was
+*unscoped*, and the scope is what decides the design. The version of this document that recorded it
+as simply falsified is superseded by this entry rather than deleted, because the sequence — assume,
+probe, get a partial answer, re-probe the exact edge — is the part worth keeping. **The first probe
+would have justified dropping `mode=ro`; only the second showed which layer belongs where.**
 
 **D5 — No IPC between sync and MCP server.** *Chosen:* the datastore file is their only contact.
 *Alternatives:* a Unix socket for the reader to request a sync, or a signal to notify of new data.

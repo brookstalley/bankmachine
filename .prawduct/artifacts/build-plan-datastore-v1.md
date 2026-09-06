@@ -15,10 +15,10 @@ depends_on:
 governed_by:
   - artifact: architecture
     dispositions:
-      - "one writer process at a time, serialized on a lockfile → conforms; Chunk 01 builds the lock and its test"
-      - "MCP server opens query_only and holds no cross-call read transaction → conforms; Chunk 01 builds the reader role and its checkpoint test. The MCP server itself is build step 7, so this plan holds the norm at the connection layer the server will later use"
+      - "every writable handle comes from the one writer factory, which takes the lock before it returns → conforms; Chunk 01 builds the factory and the structural test that no other path yields a writable handle"
+      - "read-role handles open mode=ro, hold no cross-call read transaction, and never fall back to a writable handle → conforms; Chunk 01 builds the reader opener, the after-query_only=OFF refusal test and the checkpoint test. The MCP server itself is build step 7, so this plan holds the norm at the connection layer the server will later use"
       - "no component creates the datastore implicitly → conforms; `store init` is the sole creator, and Chunk 01 tests that every other entry point refuses"
-      - "a process that does not recognize the schema version refuses to serve → conforms; Chunk 01 builds the version check with the migration runner"
+      - "a process that does not recognize the schema version refuses to serve, and a migration's DDL and version stamp commit in one transaction → conforms; Chunk 01 builds the version check and the single-transaction migration runner, with a kill-mid-migration test"
   - artifact: project-preferences
     dispositions:
       - "provider-agnostic engine, no roster identity in code or schema → conforms; this plan builds no institution-specific path, and Chunk 01 migrates the guard to tests/preferences/ where the test runner can invoke it"
@@ -30,41 +30,42 @@ last_validated: null
 
 ## Requirements Confidence
 
-**Level:** Medium
+**Level:** High
 
 **Why:** The requirements are unusually complete — §4 and §6 specify the schema at field level in
-places, and AC-ARCH.7 is now resolved and measured. What is *not* settled is one technology
-decision this plan must make (below) and one open question whose own text says it should be
-answered before this plan's schema chunk.
+places, AC-ARCH.7 is resolved and measured, and the two questions this plan was drawn Medium on have
+both been answered by the owner. What remains open (retention, aggregator pluggability) does not
+gate any chunk here.
 
-**Open assumptions / unknowns:**
+**Decisions taken, both by the owner on 2026-09-05:**
 
-- `[ASSUMPTION: hand-written SQL over the sqlcipher3 DBAPI with a thin typed row-mapping layer
-  (dataclasses), no ORM | HIGH impact | user can override]` — `project-preferences.md` records
-  **Data modeling: (unset — decide during planning)**, so this plan is where it gets decided. My
-  position, for the record rather than as a fait accompli: an ORM has to be taught about SQLCipher's
-  bespoke connection setup (key-before-anything, journal mode, `query_only`) and buys little here —
-  the schema is ~13 stable tables, the aggregate queries are ones AC-9.1 explicitly wants written as
-  SQL, and `mypy strict` plus dataclasses already supplies the typing the preferences ask for. The
-  standing supply-chain risk factor argues the same way. SQLAlchemy would earn its keep on a large,
-  churning schema with generated queries; that is not this. **Reversal cost is real but bounded** —
-  it is confined to the store layer by the module boundaries below, which is the point of drawing
-  them now.
-- `[ASSUMPTION: raw responses are retained indefinitely, with retention as a config value that
-  defaults to "keep" | LOW impact | user can defer]` — system-requirements §9.1 is open. Building
-  the config knob now and leaving the default at "keep" costs nothing and keeps the decision open;
-  what would be expensive is a schema with nowhere to record the answer.
+- `[DECISION: the store layer uses SQLAlchemy Core — typed table metadata and a query builder, no
+  ORM, no session or identity map | chosen over hand-written SQL and over the full ORM; the builder
+  recommended hand-written SQL and the owner chose Core | user can revisit]` The reason the
+  recommendation lost is a good one: table metadata in one typed place is worth more over thirteen
+  tables than the dependency costs, and composable query construction is what `get_coverage_report`
+  and `spending_summary` will actually be made of. **The recorded objection is answered by
+  construction rather than dropped** — SQLAlchemy is wired through `create_engine(..., creator=...)`,
+  where the creator is our own keyed connection from `store/connection.py`. That keeps every bespoke
+  step (key-before-anything, WAL, `mode=ro`, `query_only`, the writer lock) inside the module that
+  owns the norms, and leaves SQLAlchemy doing only the part it is good at. Verified before adopting:
+  both the built-in `sqlite+pysqlcipher` dialect (which resolves to `sqlcipher3`) and the `creator=`
+  route drive SQLCipher correctly and produce a ciphertext file. The `creator=` route is the one
+  this plan builds, because the dialect route would move connection setup into a URL string and out
+  of the module the norms are enforced in.
+- `[DECISION: risk surfaces are the aggregator client, the sync/cursor layer, schema and migrations,
+  the account-rule engine, and the secrets layer | the proposal already recorded in
+  project-state.yaml, confirmed | user can revisit]` Recorded as `risk_surfaces:` in
+  `project-state.yaml`, so Chunk 02 onward reviews at the deeper tier. These are the paths where a
+  silent defect becomes wrong analysis rather than a crash, which is this product's named primary
+  failure mode.
 
-**What would raise confidence:** two things, both cheap and both for the user rather than for more
-thinking.
+**Open assumptions:**
 
-1. **The data-modeling call above** — a yes or a counter-proposal. This is a persisted-format
-   lock-in decision and it lands in Chunk 01.
-2. **Risk surfaces.** `project-state.yaml` carries this as an open question whose own blocking note
-   reads *"set it before the first schema chunk"* — which is Chunk 02 of this plan. The proposal
-   already recorded there is the aggregator client, the sync/cursor layer, schema and migrations,
-   the account-rule engine, and the secrets layer. Confirming it calibrates review depth for every
-   chunk after this one; leaving it unset is the safe default and costs only shallower reviews.
+- `[ASSUMPTION: raw responses are retained indefinitely, with retention as a config value defaulting
+  to "keep" | LOW impact | user can defer]` — system-requirements §9.1 is open. Building the knob now
+  and defaulting to "keep" costs nothing and keeps the decision open; what would be expensive is a
+  schema with nowhere to record the answer.
 
 ## Status
 
@@ -83,7 +84,7 @@ gets its own plan.
 ### Project Initialization
 
 `uv init --package --name bankmachine .` then
-`uv add sqlcipher3-wheels keyring` and
+`uv add sqlcipher3-wheels sqlalchemy keyring` and
 `uv add --dev pytest hypothesis mypy ruff`.
 
 🔴 **This is the step that fixes the package name (`bankmachine`), the keychain service name, and
@@ -93,9 +94,9 @@ the test suite uses a test-scoped service name per `project-preferences.md`.
 
 ### Dependencies
 
-Four runtime and four dev, and the smallness is deliberate — the standing supply-chain risk factor
-(a public tool pulling real bank data on a stranger's machine) argues for a dependency surface small
-enough to actually read.
+Three runtime packages and four dev, and the smallness is deliberate — the standing supply-chain
+risk factor (a public tool pulling real bank data on a stranger's machine) argues for a runtime
+dependency surface small enough to actually read.
 
 - `sqlcipher3-wheels` — the SQLCipher binding that ships working wheels for Apple Silicon.
   `sqlcipher3-binary` has no wheel for this platform and `sqlcipher3`/`pysqlcipher3` need a Homebrew
@@ -103,11 +104,14 @@ enough to actually read.
   resolving AC-ARCH.7.
 - `keyring` — credential storage behind one interface, per the recorded macOS-with-seams decision.
   Its macOS backend was confirmed on this machine with a set/get/delete round-trip.
+- `sqlalchemy` — Core only (table metadata + query builder), per the recorded decision above. Wired
+  via `creator=`, so it never opens a connection itself.
 - dev: `pytest`, `hypothesis` (property tests for money arithmetic and idempotency, per
   preferences), `mypy` (strict), `ruff` (format + lint).
 
-No ORM, no migration framework, no CLI framework in this plan — argparse is stdlib and the CLI here
-is four subcommands. A dependency manifest artifact does not exist yet; this section is its
+No ORM layer (Core only — no `declarative_base`, no `Session`), no migration framework (the runner
+is ~50 lines and must own its own transaction boundary, per the architecture's migration-atomicity
+rule), and no CLI framework — argparse is stdlib and the CLI here is four subcommands. A dependency manifest artifact does not exist yet; this section is its
 stand-in, and creating it properly is `public-readiness` work, not step-1 work.
 
 ### Build & Test Configuration
@@ -154,23 +158,31 @@ src/bankmachine/
 ├── config.py          # documented defaults, no hardcoded paths (AC-ARCH.4)
 ├── secrets.py         # keyring seam: datastore key, aggregator creds, tokens
 ├── store/             # the ONLY module that opens the datastore
-│   ├── connection.py  # writer role (flock + write txn) and reader role (query_only)
-│   ├── migrations/    # numbered, forward-only; schema_version is table 1
-│   └── schema.py      # typed row mappings
-├── cli/               # argparse entry points: store init | status | shell
-└── scheduler.py       # interface only in this plan; launchd impl arrives at step 8
+│   ├── connection.py  # the writer factory (flock) and the reader opener (mode=ro)
+│   ├── engine.py      # SQLAlchemy engines built with creator= over connection.py
+│   ├── migrations/    # numbered, forward-only; DDL + version stamp in one txn
+│   └── schema.py      # SQLAlchemy Core table metadata
+├── cli/               # argparse; each command lands in the chunk that owns it
+└── __main__.py         # console-script entry point (Chunk 01)
 tests/
 ├── preferences/       # norm tests + the migrated leak guard
 └── store/ …           # mirrors the source tree
 ```
 
+The command names above are the architecture artifact's canonical surface table, not a second
+enumeration — `sync shell` is `sync shell` because AC-ARCH.6 names it that. `scheduler.py` is
+deliberately **absent**: the macOS-with-seams decision justifies the seam, but its only
+implementation and its only caller both arrive at build step 8, and an empty protocol drawn seven
+steps early is speculative generality. Step 8 introduces it alongside launchd.
+
 ### Module Boundaries
 
-**Nothing outside `store/` opens a database connection.** Every other layer — and every layer this
+**Nothing outside `store/` opens a database connection, and nothing outside `store/connection.py`
+constructs one.** `engine.py` hands SQLAlchemy a `creator=` and nothing else. Every other layer — and every layer this
 plan does not yet build (connector, sync, rules, mcp) — takes a connection from `store.connection`,
 in one of exactly two roles. That single rule is what makes the four architecture norms enforceable
 by a structural test rather than by review, and it is what bounds the reversal cost of the
-data-modeling assumption above.
+data-modeling decision above.
 
 `secrets.py` is the only module that imports `keyring`. `config.py` imports nothing of ours.
 
@@ -183,32 +195,37 @@ data-modeling assumption above.
   through the reader role → print it from the CLI. It is deliberately the widest chunk in the plan
   because it is the one that proves the architecture, and every later chunk is a table or a command
   on top of a path this chunk establishes. It also lands all four norm-enforcement tests, closing
-  backlog item `ARC-7K2M`.
+  issue **#1**.
 - **Depends on:** none
 - **Artifacts consumed:** `.prawduct/artifacts/architecture.md` (Direction, Data Ownership &
   Consistency), `docs/system-requirements.md` (AC-ARCH.3, AC-ARCH.4, AC-ARCH.5, AC-10.1, AC-10.6)
 - **Deliverables:** the uv package; new `src/bankmachine/config.py`, new `src/bankmachine/secrets.py`,
-  new `src/bankmachine/store/connection.py`, new `src/bankmachine/store/migrations/` with migration
-  001 creating `schema_version` only, new `src/bankmachine/cli/`; `scripts/check-no-personal-data.sh`
-  moved under `tests/preferences/` with its pre-push wiring intact; `test_command:` declared in
-  `project-state.yaml`
+  new `src/bankmachine/store/connection.py`, new `src/bankmachine/store/engine.py`, new
+  `src/bankmachine/store/migrations/` with migration 001 creating `schema_version` only, new
+  `src/bankmachine/cli/`, new `src/bankmachine/__main__.py`; `scripts/check-no-personal-data.sh`
+  moved under `tests/preferences/` with
+  its pre-push wiring intact; `test_command:` declared in `project-state.yaml`
 - **Tests:** unit — config defaults and overrides, with a test that no absolute path is baked in;
-  integration — the four norm tests from `ARC-7K2M` (two writers, `query_only` refusal plus the
-  checkpoint-not-starved assertion, no implicit creation, schema-version refusal), the AC-ARCH.5
-  byte-scan across all three files, a wrong-key path asserting it surfaces as an authentication
-  failure rather than the `file is not a database` message SQLCipher actually raises, and the
-  sandbox/production flag logged at startup (AC-10.6)
+  integration — the norm tests from issue **#1**, namely: two writer processes where the second
+  refuses; a write through a read-role handle that **still** refuses after `PRAGMA query_only=OFF`
+  (the on-case alone stays green while the hole is open); `wal_checkpoint(PASSIVE)` moving all frames
+  while a reader sits between calls, against a WAL holding real frames; no implicit creation, with
+  health reporting *missing* rather than *empty*; schema-version refusal; and **migration atomicity —
+  a migration interrupted between its DDL and its version stamp leaves no store that reports
+  healthy**. Also the AC-ARCH.5 byte-scan across `store.db`, `store.db-wal` and `store.db-shm`; a
+  wrong-key path asserting it surfaces as an authentication failure rather than the
+  `file is not a database` message SQLCipher actually raises; the sandbox/production flag logged at
+  startup (AC-10.6); and a formatter-level redaction test asserting a token-shaped value never
+  reaches a log line (AC-10.3)
 - **Acceptance criteria:** scaffold verification above passes end to end on a clean checkout; the
   four norms have tests that fail when the norm is violated — verified by breaking each one
   deliberately and watching its test go red, because a norm test that has never been red is a claim,
   not a check
 - **Done when:**
-  1. The two Requirements-Confidence questions are answered and the data-modeling decision recorded
-     in `project-preferences.md` (it is currently `unset`, and this chunk is where it stops being)
-  2. Acceptance criteria met and tests pass
-  3. `/prawduct:critic` run and blocking findings resolved
-  4. `ARC-7K2M` moved to `shipped` with `closed-by: datastore-v1`
-  5. Committed and chunk marked `[x]` in Status
+  1. Acceptance criteria met and tests pass
+  2. `/prawduct:critic` run and blocking findings resolved
+  3. Issue **#1** moved to `shipped` with `closed-by: datastore-v1`
+  4. Committed and chunk marked `[x]` in Status
 
 ### Chunk 02: The core schema (FR-6)
 
@@ -220,8 +237,10 @@ data-modeling assumption above.
   §5 (the tool table — these are the consumers)
 - **Deliverables:** migrations 002+ creating `connections`, `institutions`, `accounts`,
   `transactions`, `balances_daily`, `securities`, `holdings`, `investment_transactions`,
-  `sync_state`, `raw_responses`, `account_rules`, `manual_imports`, `derivation_versions`; typed row
-  mappings in `src/bankmachine/store/schema.py`
+  `sync_state`, `raw_responses`, `account_rules`, `manual_imports`, `derivation_versions`; Core table
+  metadata in `src/bankmachine/store/schema.py`; **`.prawduct/artifacts/boundary-patterns.md`
+  populated**, with the datastore schema as its first contract surface — the architecture artifact
+  declares this step-1 work and names this chunk as its owner
 - **The questions this data must answer, enumerated before any field is designed** — the planning
   guide requires this of a persisted format, and here the consumers are already written down as the
   §5 tool table, so they are elicited rather than inferred: per-account coverage windows with gaps

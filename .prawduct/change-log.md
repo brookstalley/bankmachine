@@ -69,8 +69,34 @@ that did not survive is struck and recorded as struck, in the artifact's Decisio
 
 **Norm bookkeeping.** Four norms born, all before any code exists, so no retroactivity decision
 applies — there is nothing to migrate, contain or grandfather. Four pointer rows added to the
-preferences norm index, and `ARC-7K2M` filed for the enforcement tests, because a mechanism named
+preferences norm index, and issue **#1** filed for the enforcement tests, because a mechanism named
 and never built is the aspirational failure with extra steps.
+
+**What the review changed, and it was two of the four norms.** The cumulative Critic returned 1
+blocking, 12 warnings, 8 notes, and two findings were defects in the norms themselves rather than in
+their presentation.
+
+The writer norm **defined the writer role by enumerating commands**, and the list had already
+omitted `store init` — which creates the file — and `store rebuild`, which rewrites every normalized
+table. A list is a thing to forget. It is now defined by construction: every writable handle comes
+from one writer factory, which takes the lock before it returns, so there is no way to be a writer
+without passing through it.
+
+The reader norm rested on `PRAGMA query_only`, which **is reversible** — re-probed on the finding,
+`query_only=OFF` restores writes on a read-write handle, and `sync shell` ships the operator exactly
+the SQL prompt that can type it. Read-role handles now open `mode=ro`, where the same sequence still
+fails because the refusal lives in the file handle. Re-probing also scoped the earlier "falsified"
+premise properly: `mode=ro` *does* fail against a hot WAL with no `-shm` under an unwritable
+directory — the first probe had missed it because the crashed writer left its `-shm` behind. So the
+norm carries a no-fallback clause: that state is a loud error, never a quiet downgrade to a writable
+handle.
+
+Also from the review: import files named as the foreign inbound surface they are (the artifact had
+claimed none existed); one canonical CLI command table instead of four disagreeing lists; a logging
+and AC-10.3 redaction rule placed in step 1 rather than step 8, because steps 1-7 all write log
+lines; migration DDL and its version stamp required to commit in one transaction, since the version
+is the *sole* signal a store is safe to serve; `source_root` and `risk_surfaces` set; and the
+enforcement item re-filed from frozen markdown into the live Issues backend.
 
 
 ## 2026-09-05: Named — the product is `bankmachine`

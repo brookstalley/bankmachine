@@ -72,38 +72,6 @@
 
 <!-- Items available to pick up. -->
 
-- **[ARC-7K2M]** Build the enforcement tests for the four architecture Direction norms
-  `effort: M · impact: L · area: architecture · source: builder · added: 2026-09-05 · status: open · stage: ready · refs: .prawduct/artifacts/architecture.md#direction, docs/system-requirements.md#AC-ARCH.7`
-
-  The four norms born in `.prawduct/artifacts/architecture.md` § Direction each carry `Mechanism:
-  Test` in the preferences norm index, and none of those tests exist — there is no Python scaffold
-  yet. This item is the filed mechanism the norm-birth rule requires, so the norms are not
-  aspirational. It is build-step-1 work and should be promoted into that plan rather than picked
-  independently.
-
-  All four are behavioural, and all four have strong tests available — none needs a greppy
-  heuristic, so none falls through to Critic:
-
-  1. **One writer at a time.** Start a second writer-role process while the first holds the lock;
-     assert it exits non-zero with a message naming the running sync, and that it did not write.
-     Plus a structural check that every write path opens its connection through the one writer
-     helper.
-  2. **Reader is `query_only` and holds no cross-call snapshot.** Assert a write through the MCP
-     server's connection raises; and assert `wal_checkpoint(PASSIVE)` moves all frames while the
-     MCP server is connected but between tool calls — that is the test that actually catches a
-     snapshot leaked across calls, and it is the one worth getting right.
-  3. **No implicit creation.** Point the config at a nonexistent path, start the MCP server, assert
-     the file is still absent afterwards and that `get_pipeline_health` reports the datastore
-     missing rather than empty.
-  4. **Schema-version refusal.** Stamp a schema version above the reader's supported range; assert
-     the reader refuses to serve and says so, rather than answering from tables it half-recognises.
-
-  Note for whoever writes these: the probe evidence behind the norms lives in the architecture
-  artifact's Decision Log. Test 2's checkpoint assertion is the one that reproduces the measured
-  0-of-93 starvation, so build it against a WAL with real frames in it, not an empty one — a
-  checkpoint over zero frames passes trivially and would be exactly the fail-open control this
-  project has already been burned by twice.
-
 ## Promoted
 
 <!-- Items currently being addressed in an active build plan. /backlog pick
