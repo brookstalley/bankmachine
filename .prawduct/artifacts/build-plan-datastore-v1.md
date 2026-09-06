@@ -66,7 +66,7 @@ gate any chunk here.
 ## Status
 
 - [x] Chunk 01: Walking skeleton — config, key, encrypted WAL datastore, and the two connection roles
-- [ ] Chunk 02: The core schema (FR-6)
+- [x] Chunk 02: The core schema (FR-6)
 - [ ] Chunk 03: Raw-response layer and rebuild (FR-5)
 - [ ] Chunk 04: `sync shell` (AC-ARCH.6)
 Context: Plan drawn 2026-09-05, directly after `.prawduct/artifacts/architecture.md` resolved
@@ -77,11 +77,31 @@ architecture norms are now mechanisms rather than prose, each verified red with 
 `tests/preferences/verify_norms_go_red.py`; issue #1 is delivered. The leak guard moved to
 `tests/preferences/` with its pre-push wiring intact, and `test_command:` is declared.
 
-Next: Chunk 02, the schema — **the plan's lock-in chunk**. Read its inherited-risk callout first:
-every handle `store/engine.py` wraps is in autocommit, so `engine.begin()` opens no transaction.
-Two things are carried rather than done: the no-fallback norm's measured edge is still unstaged (a
-decision owed at Chunk 04, recorded there), and Chunk 02 is where the enumerated consumer questions
-get re-read against the delivered tables. This plan covers build step 1 of
+**Chunk 02 landed 2026-09-06** on the same branch — migration 002's frozen DDL for the thirteen
+tables, `store/schema.py`'s Core metadata, `store/types.py` (minor units, calendar date, UTC
+instant, and the column types that carry them), and `boundary-patterns.md` populated with the
+datastore schema as its first contract surface. Suite green, mypy strict and ruff clean, and the
+norm-break harness now covers the schema's guarantees as well as the connection layer's. The
+enumerated consumer questions were verified by running a query for each against a seeded datastore
+rather than by reading the tables. The owner moved the pinned interpreter to
+**Python 3.14** in the same session; the suite was re-run green on 3.14.6 before the pin changed.
+
+The lock-in checkpoint's re-read of the enumerated consumer questions found **one thing the tables
+could not answer**: `net_worth` needs assets partitioned from liabilities, and `account_type` is the
+source's vocabulary rather than a classification. Fixed while it was free, as
+`accounts.balance_class`. Everything else on the list was answerable; the one recorded limitation is
+that there is no FX table, so a multi-currency net worth is out of scope until it is asked for.
+
+The Critic round tightened three things while the migration was still uncommitted: the rendered DDL
+is now pinned by a recorded hash so a later migration cannot silently redefine version 2; the
+provenance CHECK requires an aggregator row to name the raw response it came from, which is what its
+comment already claimed; and the drift guard compares each index's columns, uniqueness and partial
+predicate rather than only its name.
+
+Next: Chunk 03, the raw-response layer and rebuild. Two things are still carried rather than done:
+the no-fallback norm's measured edge is unstaged (a decision owed at Chunk 04, recorded there), and
+`account_rules.parameters` holds local account ids in JSON where SQLite cannot enforce a foreign
+key — the rule engine validates them when it lands. This plan covers build step 1 of
 `docs/system-requirements.md` §8 and nothing beyond it; step 2 (the aggregator client) gets its own
 plan.
 
@@ -260,7 +280,7 @@ data-modeling decision above.
   lock-in chunk** — the schema is the format every later consumer depends on, and it is being
   designed before its consumers exist.
 - **Depends on:** Chunk 01
-- 🔴 **Inherited from Chunk 01, and it will bite here:** every handle `store/engine.py` wraps is in
+- 🔴 **Inherited from Chunk 01, and it will bite here:** every handle `src/bankmachine/store/engine.py` wraps is in
   autocommit, so `with engine.begin():` opens no transaction and block-exit rollback undoes
   nothing. Migrations issue `BEGIN IMMEDIATE` / `COMMIT` on the driver. The same applies to
   Chunk 03's rebuild, which is the other place a multi-statement unit needs to be atomic.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Break each architecture norm in turn and confirm its test goes red.
+"""Break each structural guarantee in turn and confirm its test goes red.
 
 Not collected by pytest -- it edits the source tree, so it is run deliberately:
 
@@ -8,8 +8,13 @@ Not collected by pytest -- it edits the source tree, so it is run deliberately:
 A norm test that has never been red is a claim, not a check. The suite proves
 the norms hold; only this proves the suite would notice if they stopped. It is
 kept rather than run once and discarded because the question comes back every
-time the connection layer changes, and reconstructing the break list from
-memory is how it quietly stops being asked.
+time the connection layer or the schema changes, and reconstructing the break
+list from memory is how it quietly stops being asked.
+
+It covers the four architecture norms and, since the core schema landed, the
+guarantees migration 002 builds into the database itself -- the money and
+temporal CHECKs, the identity indexes, and the drift guard that keeps the Core
+metadata and the frozen DDL describing the same tables.
 
 Each case restores the file it edited, including on failure.
 """
@@ -23,7 +28,10 @@ import sys
 
 CONNECTION = pathlib.Path("src/bankmachine/store/connection.py")
 MIGRATIONS = pathlib.Path("src/bankmachine/store/migrations/__init__.py")
+DDL = pathlib.Path("src/bankmachine/store/migrations/core_schema.py")
+METADATA = pathlib.Path("src/bankmachine/store/schema.py")
 NORMS = "tests/store/test_connection_norms.py"
+SCHEMA = "tests/store/test_schema.py"
 
 #: (description, file, text to replace, replacement, the test that must go red)
 CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
@@ -80,6 +88,85 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "            try:\n"
         "                stamp_schema_version(conn, step.version)\n",
         f"{NORMS}::test_a_migration_killed_between_its_ddl_and_its_stamp_leaves_nothing_healthy",
+    ),
+    (
+        "AC-6.2: a monetary column refuses a float at the database",
+        DDL,
+        "CHECK (typeof(amount_minor) = 'integer')",
+        "CHECK (1)",
+        f"{SCHEMA}::test_a_float_amount_is_refused_by_the_database_itself",
+    ),
+    (
+        "AC-6.4: an instant column refuses a value carrying no zone",
+        DDL,
+        "_V2_INSTANT = \"LIKE '%+00:00'\"",
+        "_V2_INSTANT = \"LIKE '%'\"",
+        f"{SCHEMA}::test_a_naive_timestamp_is_refused_by_the_database_itself",
+    ),
+    (
+        "AC-6.4: a calendar-date column refuses an instant",
+        DDL,
+        "_V2_DATE = \"GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'\"",
+        "_V2_DATE = \"GLOB '*'\"",
+        f"{SCHEMA}::test_an_instant_in_a_calendar_date_column_is_refused",
+    ),
+    (
+        "AC-7.4: a row cannot claim a source it has no provenance link to",
+        DDL,
+        "        CHECK (CASE source\n"
+        "                 WHEN 'aggregator' THEN source_transaction_id IS NOT NULL",
+        "        CHECK (1 OR CASE source\n"
+        "                 WHEN 'aggregator' THEN source_transaction_id IS NOT NULL",
+        f"{SCHEMA}::test_a_manual_row_without_an_import_to_point_at_is_refused",
+    ),
+    (
+        "AC-1.4: one live connection per institution",
+        DDL,
+        "CREATE UNIQUE INDEX connections_one_live_per_institution",
+        "CREATE INDEX connections_one_live_per_institution",
+        f"{SCHEMA}::test_an_institution_holds_one_live_connection_at_a_time",
+    ),
+    (
+        "AC-7.5: an imported row cannot be imported twice into one account",
+        DDL,
+        "CREATE UNIQUE INDEX transactions_import_identity",
+        "CREATE INDEX transactions_import_identity",
+        f"{SCHEMA}::test_overlapping_imports_cannot_duplicate_a_row",
+    ),
+    (
+        "AC-3.1: a day's balance is written once, never overwritten",
+        DDL,
+        "        PRIMARY KEY (account_id, as_of_date)",
+        "        UNIQUE (account_id, as_of_date, current_minor)",
+        f"{SCHEMA}::test_a_days_balance_is_written_once_and_never_overwritten",
+    ),
+    (
+        "AC-7.4: a balance or holding cannot claim a source it has no link to",
+        DDL,
+        "        PRIMARY KEY (account_id, as_of_date),\n        CHECK (CASE source",
+        "        PRIMARY KEY (account_id, as_of_date),\n        CHECK (1 OR CASE source",
+        f"{SCHEMA}::test_a_balance_and_a_holding_carry_a_transactions_provenance_rule",
+    ),
+    (
+        "frozen: migration 002's DDL cannot change under a shared constraint idiom",
+        DDL,
+        "_V2_INSTANT = \"LIKE '%+00:00'\"",
+        "_V2_INSTANT = \"LIKE '%'\"",
+        f"{SCHEMA}::test_migration_002_ddl_is_frozen",
+    ),
+    (
+        "drift: an index declared without its partial predicate is a different index",
+        METADATA,
+        "    sqlite_where=connections.c.retired_at.is_(None),\n",
+        "",
+        f"{SCHEMA}::test_the_metadata_declares_the_same_indexes_as_the_database",
+    ),
+    (
+        "drift: the Core metadata and the frozen DDL describe the same tables",
+        METADATA,
+        'Column("amount_minor", MinorUnitsColumn, nullable=False),',
+        'Column("amount_minor", MinorUnitsColumn, nullable=True),',
+        f"{SCHEMA}::test_the_metadata_matches_the_migrated_database",
     ),
 ]
 

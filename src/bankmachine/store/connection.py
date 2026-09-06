@@ -39,7 +39,7 @@ logger = get_logger("store.connection")
 
 #: The schema versions this build of the code understands. A datastore outside
 #: this range is refused, loudly, rather than served against.
-SUPPORTED_SCHEMA_VERSION: Final = 1
+SUPPORTED_SCHEMA_VERSION: Final = 2
 
 SCHEMA_VERSION_TABLE: Final = "schema_version"
 

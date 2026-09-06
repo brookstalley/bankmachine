@@ -5,14 +5,16 @@ Developer preferences for how code is written in this project. Captured during d
 ## Language & Runtime
 
 - **Language**: Python
-- **Version**: 3.11+ (verified on 3.12.3, Apple Silicon). Native macOS, not containerized.
+- **Version**: 3.11+ (verified on 3.14.6, Apple Silicon). Native macOS, not containerized.
   **macOS is supported and tested; other platforms are unverified, not excluded** — the credential
   store and the scheduler sit behind seams so a port is a new implementation, not a refactor.
 - **Package manager**: uv (dependency resolution, lockfile, venv). `uv run` for all dev commands.
-  `.python-version` pins **3.12**, the version this artifact records as verified. `uv init`
-  defaulted the pin to 3.14; that was reverted rather than adopted, because moving the tested
-  interpreter is a decision for the owner and not a side effect of scaffolding. `requires-python`
-  stays `>=3.11` — the floor is a claim about the code, the pin is a claim about what was run.
+  `.python-version` pins **3.14**, the version this artifact records as verified — the owner took
+  that decision on 2026-09-06, and the whole suite, mypy strict and ruff were re-run on it before
+  the pin moved. `requires-python` stays `>=3.11` — the floor is a claim about the code, the pin is
+  a claim about what was run, and nothing here uses a 3.12+ language feature. The AC-ARCH.7
+  concurrency probes recorded in `architecture.md` were measured on 3.12.3 and are left saying so;
+  they are measurements, not settings, and the norm suite that encodes them passes on 3.14.
 
 ## Code Style
 

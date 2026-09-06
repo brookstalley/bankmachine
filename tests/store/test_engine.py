@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy import text
 
 from bankmachine.config import Config
+from bankmachine.store.connection import SUPPORTED_SCHEMA_VERSION
 from bankmachine.store.engine import reader_engine, writer_engine
 
 
@@ -49,7 +50,7 @@ def test_the_engine_speaks_to_the_encrypted_store_not_a_new_one(
     """A creator that opened its own connection would silently create a plaintext file."""
     with writer_engine(initialized_config) as engine, engine.connect() as conn:
         version = conn.execute(text("SELECT MAX(version) FROM schema_version")).scalar_one()
-    assert version == 1
+    assert version == SUPPORTED_SCHEMA_VERSION
 
     siblings = list(initialized_config.datastore_path.parent.glob("*.db"))
     assert siblings == [initialized_config.datastore_path]

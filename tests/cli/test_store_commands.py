@@ -8,6 +8,7 @@ import pytest
 
 from bankmachine.cli import run
 from bankmachine.config import Config
+from bankmachine.store.connection import SUPPORTED_SCHEMA_VERSION
 
 
 @pytest.fixture
@@ -41,7 +42,7 @@ def test_init_creates_an_encrypted_datastore_at_the_current_schema_version(
     assert exit_code == 0
     assert "datastore created at" in out
     assert "journal mode:    wal" in out
-    assert "schema version:  1" in out
+    assert f"schema version:  {SUPPORTED_SCHEMA_VERSION}" in out
     assert "healthy:         yes" in out
     assert cli_env.datastore_path.read_bytes()[:16] != b"SQLite format 3\x00"
 

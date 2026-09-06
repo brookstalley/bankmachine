@@ -21,6 +21,7 @@ from bankmachine.store.connection import (
     read_schema_version,
     stamp_schema_version,
 )
+from bankmachine.store.migrations.core_schema import apply_core_schema
 
 logger = get_logger("store.migrations")
 
@@ -47,6 +48,7 @@ def _create_schema_version(conn: Connection) -> None:
 
 MIGRATIONS: Sequence[Migration] = (
     Migration(version=1, name="create schema_version", apply=_create_schema_version),
+    Migration(version=2, name="create the core schema", apply=apply_core_schema),
 )
 
 

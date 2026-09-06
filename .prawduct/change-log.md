@@ -34,6 +34,76 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-06: The core schema — thirteen tables, with the requirements built into them
+
+<!-- prawduct: scope=datastore-v1 -->
+
+**Why:** the schema is the format every later consumer depends on, and it was being designed before
+any of those consumers exist. Chunk 02 is the plan's lock-in chunk: the last point at which changing
+it is free. The columns were not drawn from taste — the enumerated queries of the ten MCP tools in
+`system-requirements.md` §5 were written down first, and the tables answer them.
+
+**What landed:**
+
+- **`store/types.py`** — the typed vocabulary the schema is written in. `MinorUnits`, `CalendarDate`
+  and `UtcInstant` are distinct to mypy, with validating constructors, SQLAlchemy column types, and
+  a `from_decimal_string` that scales the digit tuple so no amount is too large to convert exactly
+  and no fraction is ever silently rounded away.
+- **Migration 002** — the thirteen tables of FR-6 as frozen DDL, applied inside the one transaction
+  the runner owns. Three requirement classes are enforced *by the database* rather than by the code
+  that writes to it: `typeof(x) = 'integer'` on every monetary column (AC-6.2 — SQLite stores a
+  float in an INTEGER column without complaint), format constraints separating calendar dates from
+  UTC instants (AC-6.4), and a provenance CHECK so no row can claim an origin it has no link to
+  (AC-7.4). Identity is partial unique indexes, so idempotency (AC-1.4, AC-7.5) and the
+  append-only balance series (AC-3.1) are properties of the store rather than disciplines of its
+  callers.
+- **`store/schema.py`** — SQLAlchemy Core metadata for the same tables, written independently of the
+  DDL and compared to it column by column on every run. Generating one from the other would have
+  been fewer lines and would have made drift undetectable.
+- **`boundary-patterns.md` populated** — the datastore schema as its first contract surface,
+  carrying the five parts of the contract that no column name implies, and naming the MCP tool
+  surface and aggregator client as boundaries that do not exist yet.
+- **The sign convention, decided and written down once:** every stored amount is signed from the
+  operator's point of view, liabilities included. Net worth is then a plain sum and AC-11.2's
+  reconciliation needs no per-type special case. `accounts.balance_class` partitions a *report*,
+  never an arithmetic sign.
+- **`tests/preferences/verify_norms_go_red.py` extended to cover the schema** as well as the
+  connection layer — every new structural guarantee was verified red with its mechanism broken. A
+  constraint that has never refused anything is a claim, not a check.
+- **`frozen` became a mechanism.** The DDL is rendered from two shared constraint idioms, so
+  "this never changes" rested on nobody editing them — and migration 003 will want the same two.
+  A recorded SHA-256 of the rendered statements, compared by a test, is what now stops a later
+  migration from silently redefining what version 2 means for every datastore that already ran it.
+- **An aggregator row must name the response it came from.** The provenance CHECK originally
+  permitted a row with `source = 'aggregator'` and no `raw_response_id`, while the comment above it
+  claimed exactly one link is always set. Tightened to match the claim, on all four normalized
+  tables: a row whose answer to *where did this come from* is silence looks identical to one that
+  can be traced, and Chunk 03's rebuild is written against this constraint.
+- **Provenance made symmetric across the normalized tables.** `holdings.source` accepted `'manual'`
+  while having no column to name the import it came from, and neither `holdings` nor `balances_daily`
+  carried the CHECK that `transactions` had. Found by scrub, not by the requirement: AC-7.4 is a
+  property of every normalized row, and it had been implemented on one table.
+
+**What the lock-in checkpoint caught:** re-reading the enumerated consumer questions against the
+delivered tables found one they could not answer. `net_worth` needs assets separated from
+liabilities, and `account_type` is the source's vocabulary rather than a classification — different
+between sources, and absent entirely for an import-only account. Added as `accounts.balance_class`
+while it was still free. One limitation is recorded rather than fixed: there is no FX table, so a
+multi-currency net worth is out of scope until it is asked for.
+
+**Also in this session:** the owner settled the open interpreter question — the product moves to
+**Python 3.14**. The full suite, mypy strict and ruff were re-run green on 3.14.6 before the pin
+moved, and `requires-python` stays `>=3.11` because nothing in the code needs more.
+
+**Verified:** suite green (`prawduct-hook test-status`), mypy strict and ruff clean, every
+structural break caught by the harness — which now covers the schema's guarantees, the frozen-DDL
+hash, and the index guard's partial predicates as well as the connection layer's four norms. `store init` and `store status` were driven against a real
+encrypted datastore, reporting schema version 2, with a known plaintext written through the schema
+unrecoverable from the file's raw bytes. **The lock-in check was executed, not read:** one
+representative SQL query per enumerated consumer question was run against a seeded datastore, and
+all fourteen returned — including the per-account gap walk, the plain-sum net worth, and the
+freshness stamp for an import-only account with no connection.
+
 ## 2026-09-06: The walking skeleton — an encrypted WAL datastore with its four norms enforced
 
 <!-- prawduct: scope=datastore-v1 -->

@@ -10,9 +10,10 @@ independently establish that the underlying data is complete and fresh before it
 
 It is a data pipeline. It does no budgeting, forecasting, categorization or advice.
 
-**Status: pre-implementation.** The requirements are specified and reviewed; no code exists yet.
-See `docs/system-requirements.md` for what is being built and `docs/build-vs-adopt-investigation.md`
-for why it is being built rather than adopted.
+**Status: build step 1 of ten** (`docs/system-requirements.md` §8). The encrypted datastore, its
+two connection roles and the core schema exist and are tested; nothing talks to an aggregator yet,
+so there is no data to read. See `docs/system-requirements.md` for what is being built and
+`docs/build-vs-adopt-investigation.md` for why it is being built rather than adopted.
 
 ## What it is not
 
@@ -40,7 +41,8 @@ If you use this, read that section. It is the deliverable, not a formality.
 | `docs/system-requirements.md` | the engine — provider-agnostic, names no financial institution |
 | `docs/deployment-requirements.template.md` | the shape of one operator's roster, carrying no data |
 | `docs/build-vs-adopt-investigation.md` | why clean-slate, with six candidates read at source level |
-| `scripts/` | the repository leak guard and its self-test |
+| `src/bankmachine/` | the product. `store/` is the only module that opens the datastore |
+| `tests/` | mirrors the source tree; `tests/preferences/` holds the norm tests and the leak guard |
 | `deployment/` | **gitignored** — your roster, your match tokens. Never committed. |
 
 ## Setup for contributors and forks
