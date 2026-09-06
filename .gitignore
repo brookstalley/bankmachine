@@ -21,6 +21,10 @@
 .prawduct/.work-model-index.json
 .prawduct/reflections.md
 __pycache__/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Prawduct plugin version marker (per-repo last-seen)
 .prawduct/.prawduct-version

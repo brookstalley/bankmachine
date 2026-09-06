@@ -28,7 +28,7 @@ independent reasons:
    configuration (engine AC-0.2), and configuration is gitignored.
 
 🔴 **Fill in your copy at a path this repository ignores.** The convention is `deployment/`,
-which `.gitignore` excludes; `scripts/check-no-personal-data.sh` reads the token list described
+which `.gitignore` excludes; `tests/preferences/check-no-personal-data.sh` reads the token list described
 in §8 from there and refuses a push that reintroduces any of it into a tracked file.
 
 ### 0.2 The contract with the system layer
@@ -196,7 +196,7 @@ names it hunts for cannot scan itself, so the one tracked file guaranteed to con
 the one file never checked. And anyone cloning a published copy of this repository would otherwise
 inherit a guard protecting a stranger's identity while protecting none of their own.
 
-`scripts/check-no-personal-data.sh` matches these on word boundaries, case-insensitively, across
+`tests/preferences/check-no-personal-data.sh` matches these on word boundaries, case-insensitively, across
 **every commit being pushed** — not the working tree, because the leak this project actually had was
 documentation in already-pushed history behind a clean tip. A checkout with no `deployment/`
 directory has no tokens, nothing to leak, and passes with a note; that is the ordinary state for

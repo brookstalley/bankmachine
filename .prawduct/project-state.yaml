@@ -302,7 +302,7 @@ technical_decisions:
         "where should the roster live" in favour of moving the roster out of git, and adds what that
         option had left open — the already-pushed history is rewritten rather than accepted, because
         the repository was three pushed commits old and the cost never gets lower.
-        Enforced by scripts/check-no-personal-data.sh on every push.
+        Enforced by tests/preferences/check-no-personal-data.sh on every push.
       alternatives_considered: >
         (a) Keep the repository private forever and extract a clean public repository later —
         rejected: it splits the work and risks a copy-paste leak at extraction time. (b) Accept the
@@ -781,12 +781,13 @@ build_state:
   # value makes it report nothing forever without saying it did not run -- the absent-bad-news
   # shape learnings.md already records for this project.
 
-# No `test_command:` is declared. The suite is `./scripts/check-no-personal-data.selftest.sh`
-# -- shell, until the Python scaffold lands at build step 1 -- and this key's contract
-# requires the value to contain the `{junit_xml}` literal, which a 15-case shell script has
-# no business emitting. Declaring it anyway would pass today (evidence is recorded via
-# --from-counts) and break the first time anything tried to launch it. The command is
-# recorded in the build plan's Build & Test Configuration instead.
+# Declared now that the Python scaffold has landed (build step 1, Chunk 01). Until
+# then the whole suite was `check-no-personal-data.selftest.sh` -- shell, which has no
+# business emitting the `{junit_xml}` literal this key's contract requires, so the key
+# was deliberately left unset rather than declared as something nothing could launch.
+# pytest runs the shell guard too, via `tests/preferences/test_no_personal_data.py`, so
+# this one command is the whole suite.
+test_command: uv run pytest --junit-xml={junit_xml} -q
 
 # =============================================================================
 # ACTIVE BUILD PLAN (optional)
@@ -806,7 +807,8 @@ build_state:
 #
 # active_build_plan: artifacts/build-plan-my-scope.md
 
-active_build_plan: artifacts/build-plan-datastore-v1.md
+# Unset: build-plan-datastore-v1.md declares `branch: feature/datastore-v1` and is the
+# sole claimant, so the claim resolves it. The scalar would only be a tiebreak.
 
 # =============================================================================
 # BASE BRANCH (opt-in, unset by default)

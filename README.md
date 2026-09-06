@@ -58,9 +58,12 @@ operator identity, and a gitflow guard that keeps `main` release-only.
 Verify the leak guard works in your clone:
 
 ```sh
-./scripts/check-no-personal-data.selftest.sh   # 15 cases, all must pass
-./scripts/check-no-personal-data.sh            # scan the working tree
+./tests/preferences/check-no-personal-data.selftest.sh   # 22 cases, all must pass
+./tests/preferences/check-no-personal-data.sh            # scan the working tree
 ```
+
+`uv run pytest tests/preferences` runs both from the test suite, which is the entry point that
+does not need each clone to have configured `core.hooksPath`.
 
 A clone with no `deployment/` directory has no tokens and nothing to leak, so the guard passes with
 a note. That is expected, and it is why the guard is safe to publish. When you fill in your own

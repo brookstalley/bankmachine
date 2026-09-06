@@ -2,11 +2,7 @@
 artifact: build-plan
 version: 2
 scope: datastore-v1
-# branch: feature/datastore-v1
-# Left commented until the branch exists — a plan claiming a branch no repo has is
-# reported as exactly that by the session briefing. This plan was drawn on
-# feature/architecture alongside the artifact it depends on; uncomment when Chunk 01
-# cuts feature/datastore-v1, and drop the active_build_plan scalar at the same time.
+branch: feature/datastore-v1
 depends_on:
   - artifact: system-requirements
     file_path: docs/system-requirements.md
@@ -69,15 +65,25 @@ gate any chunk here.
 
 ## Status
 
-- [ ] Chunk 01: Walking skeleton — config, key, encrypted WAL datastore, and the two connection roles
+- [x] Chunk 01: Walking skeleton — config, key, encrypted WAL datastore, and the two connection roles
 - [ ] Chunk 02: The core schema (FR-6)
 - [ ] Chunk 03: Raw-response layer and rebuild (FR-5)
 - [ ] Chunk 04: `sync shell` (AC-ARCH.6)
 Context: Plan drawn 2026-09-05, directly after `.prawduct/artifacts/architecture.md` resolved
-AC-ARCH.7. Nothing built yet — the repo still holds zero lines of Python. Next: Chunk 01, which is
-also where the two Requirements-Confidence questions above get answered. This plan covers build
-step 1 of `docs/system-requirements.md` §8 and nothing beyond it; step 2 (the aggregator client)
-gets its own plan.
+AC-ARCH.7. **Chunk 01 landed 2026-09-06** on `feature/datastore-v1` — the uv package, config /
+secrets / logging_setup, the two-role connection layer, the migration runner, the SQLAlchemy
+`creator=` engine, `store init|status`, and 90 tests (mypy strict and ruff clean). The four
+architecture norms are now mechanisms rather than prose, each verified red with its norm broken via
+`tests/preferences/verify_norms_go_red.py`; issue #1 is delivered. The leak guard moved to
+`tests/preferences/` with its pre-push wiring intact, and `test_command:` is declared.
+
+Next: Chunk 02, the schema — **the plan's lock-in chunk**. Read its inherited-risk callout first:
+every handle `store/engine.py` wraps is in autocommit, so `engine.begin()` opens no transaction.
+Two things are carried rather than done: the no-fallback norm's measured edge is still unstaged (a
+decision owed at Chunk 04, recorded there), and Chunk 02 is where the enumerated consumer questions
+get re-read against the delivered tables. This plan covers build step 1 of
+`docs/system-requirements.md` §8 and nothing beyond it; step 2 (the aggregator client) gets its own
+plan.
 
 ## Scaffolding
 
@@ -117,8 +123,9 @@ stand-in, and creating it properly is `public-readiness` work, not step-1 work.
 ### Build & Test Configuration
 
 `uv run pytest -q` runs everything. `tests/` mirrors `src/bankmachine/`, with `tests/preferences/`
-for norm tests — including `scripts/check-no-personal-data.sh`, which **moves under
-`tests/preferences/` in Chunk 01**. That migration is an obligation recorded in three places
+for norm tests — including the leak guard, which **moved from `scripts/` to
+`tests/preferences/check-no-personal-data.sh` in Chunk 01**. That migration was an obligation
+recorded in three places
 (`project-preferences.md`, system-requirements §8 step 1, and the handoff notes) precisely because
 it is the kind of thing that gets forgotten: the guard is a shell script only because no Python
 scaffold existed, and a test runner can invoke it without the per-clone `core.hooksPath` config a
@@ -157,6 +164,7 @@ exercise them, because each is a place where a passing test and a working produc
 src/bankmachine/
 ├── config.py          # documented defaults, no hardcoded paths (AC-ARCH.4)
 ├── secrets.py         # keyring seam: datastore key, aggregator creds, tokens
+├── logging_setup.py   # redacting formatter (AC-10.3), environment banner (AC-10.6)
 ├── store/             # the ONLY module that opens the datastore
 │   ├── connection.py  # the writer factory (flock) and the reader opener (mode=ro)
 │   ├── engine.py      # SQLAlchemy engines built with creator= over connection.py
@@ -168,6 +176,13 @@ tests/
 ├── preferences/       # norm tests + the migrated leak guard
 └── store/ …           # mirrors the source tree
 ```
+
+`logging_setup.py` was not in this plan's first draft and is a **recorded addition, not a
+discovery**: Chunk 01's own test list already required a formatter-level redaction test (AC-10.3)
+and a startup environment banner (AC-10.6), and neither has a home in `config.py`, `secrets.py` or
+`store/`. Redaction lives at the formatter because AC-10.3 is a property of *every* log line, and a
+rule enforced at call sites is one every future author has to remember — the same reasoning that
+put connection construction in one module.
 
 The command names above are the architecture artifact's canonical surface table, not a second
 enumeration — `sync shell` is `sync shell` because AC-ARCH.6 names it that. `scheduler.py` is
@@ -202,9 +217,9 @@ data-modeling decision above.
 - **Deliverables:** the uv package; new `src/bankmachine/config.py`, new `src/bankmachine/secrets.py`,
   new `src/bankmachine/store/connection.py`, new `src/bankmachine/store/engine.py`, new
   `src/bankmachine/store/migrations/` with migration 001 creating `schema_version` only, new
-  `src/bankmachine/cli/`, new `src/bankmachine/__main__.py`; `scripts/check-no-personal-data.sh`
-  moved under `tests/preferences/` with
-  its pre-push wiring intact; `test_command:` declared in `project-state.yaml`
+  `src/bankmachine/cli/`, new `src/bankmachine/logging_setup.py`, new
+  `src/bankmachine/__main__.py`; `tests/preferences/check-no-personal-data.sh` (moved there from
+  `scripts/`) with its pre-push wiring intact; `test_command:` declared in `project-state.yaml`
 - **Tests:** unit — config defaults and overrides, with a test that no absolute path is baked in;
   integration — the norm tests from issue **#1**, namely: two writer processes where the second
   refuses; a write through a read-role handle that **still** refuses after `PRAGMA query_only=OFF`
@@ -233,6 +248,10 @@ data-modeling decision above.
   lock-in chunk** — the schema is the format every later consumer depends on, and it is being
   designed before its consumers exist.
 - **Depends on:** Chunk 01
+- 🔴 **Inherited from Chunk 01, and it will bite here:** every handle `store/engine.py` wraps is in
+  autocommit, so `with engine.begin():` opens no transaction and block-exit rollback undoes
+  nothing. Migrations issue `BEGIN IMMEDIATE` / `COMMIT` on the driver. The same applies to
+  Chunk 03's rebuild, which is the other place a multi-statement unit needs to be atomic.
 - **Artifacts consumed:** `docs/system-requirements.md` §4 (FR-5, FR-6, AC-6.1 through AC-6.6),
   §5 (the tool table — these are the consumers)
 - **Deliverables:** migrations 002+ creating `connections`, `institutions`, `accounts`,
@@ -313,6 +332,13 @@ data-modeling decision above.
 - **Acceptance criteria:** an operator can open the shell against a real datastore, run a query, and
   read the result. **Verified by hand, not only by test** — the whole justification for this command
   is being usable by a human under pressure, and no assertion speaks to that
+- 🔴 **Carried from Chunk 01, to be decided here or at Chunk 03:** the no-fallback clause's measured
+  edge — a hot WAL from a killed writer, no `-shm`, in a directory the reader cannot write to — is
+  the one norm case with no staged test. `test_an_unopenable_datastore_raises_and_names_the_state`
+  asserts the contract that edge shares with any unopenable store (a named error, never a widened
+  handle), which is honest but weaker than the rest of the norm suite. This chunk ships the surface
+  that makes the edge reachable in practice, so decide here: stage it, or record why it stays
+  unstaged.
 - **Type:** cumulative-final
 - **Visual change:** yes — REPL output formatting and the redaction behaviour need a human look
 - **Done when:**

@@ -1,0 +1,47 @@
+[project]
+name = "bankmachine"
+version = "0.1.0"
+description = "Read-only local-first personal finance datastore and MCP server. It never moves money."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "keyring>=25",
+    "sqlalchemy>=2.0",
+    "sqlcipher3-wheels>=0.5.7",
+]
+
+# No `authors` field. The published engine carries no operator identity —
+# `tests/preferences/check-no-personal-data.sh` enforces that against every pushed commit,
+# and `uv init` writes the git-config name here by default.
+
+[project.scripts]
+bankmachine = "bankmachine.__main__:main"
+
+[build-system]
+requires = ["uv_build>=0.11.32,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6",
+    "mypy>=1.11",
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["bankmachine"]
+
+[tool.mypy]
+strict = true
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

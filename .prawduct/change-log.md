@@ -34,6 +34,114 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-06: The walking skeleton — an encrypted WAL datastore with its four norms enforced
+
+<!-- prawduct: scope=datastore-v1 -->
+
+**Why:** the repository held zero lines of Python. The architecture's four norms were prose claims
+with an open issue (#1) standing in for their mechanism, and an operator had no way to create or
+look at a datastore. Chunk 01 of the datastore-v1 plan is deliberately the widest chunk in that
+plan because it is the one that proves the topology: config → keychain key → encrypted WAL
+datastore → migration → read back through the reader role → print from the CLI.
+
+**What landed:**
+
+- The `uv` package (`bankmachine`, Python 3.11+), three runtime dependencies and four dev. The
+  smallness is deliberate: a public tool that pulls real bank data on a stranger's machine wants a
+  runtime dependency surface small enough to read.
+- `config.py` — every path is configuration with a documented default (AC-ARCH.4), resolved by
+  precedence from argument, environment, config file, default. Sandbox and production default to
+  **different datastore files and different keychain accounts**, so putting fixture data in the real
+  store needs an explicit override rather than a forgotten flag (AC-10.6).
+- `secrets.py` — the only module importing `keyring` (AC-10.1). The datastore key is a 256-bit raw
+  key, so SQLCipher's KDF is skipped and the value in the keychain *is* the key: no derivation whose
+  parameters could drift between the process that created the store and the one that opens it.
+- `store/connection.py` — the one module that constructs a connection, with exactly two roles.
+  Writers route through a single factory that takes an advisory `flock` before it returns; readers
+  open `mode=ro` and hold no snapshot beyond the statement that needs it. The SQLite open modes are
+  **named constants**, because they are the norms rather than an implementation detail.
+- `store/migrations/` — a ~50-line forward-only runner that owns its own transaction boundary, so a
+  migration's DDL and its version stamp commit together or not at all.
+- `store/engine.py` — SQLAlchemy Core over `create_engine(..., creator=...)`, so SQLAlchemy never
+  opens a connection and every SQLCipher-specific step stays in the module that owns the norms.
+- `logging_setup.py` — redaction at the formatter (AC-10.3) and a loud environment banner at every
+  startup (AC-10.6). Both environments are announced at WARNING: the accident runs in both
+  directions, so neither state is the quiet one.
+- `cli/` and `__main__.py` — `bankmachine store init` (the only creator) and `store status` (which
+  reports a missing or unrecognized datastore rather than crashing or creating one, AC-ARCH.3).
+- 83 tests, mypy strict clean, ruff clean.
+
+**The norms are now mechanisms, and issue #1 is closed by this work.** Each of the four has a test,
+and each test was verified to go **red** with its norm deliberately broken —
+`tests/preferences/verify_norms_go_red.py` keeps that reproducible rather than a sentence in a
+commit message. Two things that came out of running it are worth recording:
+
+- **A norm with two layers needs a test per layer.** Breaking only the `mode=rw` open mode left the
+  no-implicit-creation test green, because the existence check still refused. Behaviour alone could
+  not tell the layers apart, so the modes became named constants with their own assertions; either
+  layer regressing is now caught.
+- **The verification harness lied once, and the reason generalizes.** `"ro"` → `"rw"` is a
+  same-length edit, and CPython validates a `.pyc` on (mtime, size) — two same-size writes inside
+  one mtime second leave stale bytecode valid, so the test imported the *unbroken* module and
+  reported green. Any tooling that mutates source in a loop has this failure mode.
+
+**Also in this bundle:**
+
+- `check-no-personal-data.sh` and its 22-case self-test **moved from `scripts/` to
+  `tests/preferences/`**, discharging an obligation recorded in three places. The pre-push wiring
+  followed the script, so push-time enforcement was kept rather than traded for test-time
+  enforcement. The move initially broke five self-test cases by silently skipping them; the sandbox
+  and the hook path now resolve through `git rev-parse --show-toplevel` rather than counting `..`
+  hops, so a future move fails loudly instead of quietly testing less.
+- `test_no_provider_identity.py` and `test_requirement_ids_unique.py` — both named in the norm index
+  and both marked aspirational until the scaffold existed — are now written.
+- `test_command:` is declared in `project-state.yaml`, deliberately left unset until a runner
+  existed that could emit `{junit_xml}`.
+
+**What the Critic caught, and it was worth the round.** One blocking (the plan's Deliverables line
+still named the guard's pre-move path) and three warnings, all fixed:
+
+- **`store init` minted a key for a datastore it could not decrypt.** On the restored-from-backup
+  path — datastore present, keychain entry gone — it generated *and stored* a fresh key, migration
+  then failed, and every later `store status` reported an authentication failure instead of a
+  missing key. That is a recoverable state being reported as a corrupt one, which routes the
+  operator to the wrong recovery. `store init` now refuses to mint a key for a store that already
+  exists, and says why.
+- **SQLAlchemy's transaction control is inert over these handles**, inherited from the deliberate
+  `isolation_level=None`. Nothing recorded it, and Chunks 02 and 03 are exactly the two that would
+  have assumed otherwise. Now documented at the module, pinned by a test, and flagged in the plan
+  where those chunks will meet it.
+- **`load_config`'s injected `env` seam stopped one step short of `HOME`**, so five config tests
+  read as isolated while resolving against the developer's real home — and that branch is the
+  documented macOS default.
+
+The second review round found one more, and it is the more interesting of the two: **the `HOME`
+seam fix shipped without a test that would catch its own regression.** Every other config test
+either sets the XDG variables or asserts only that a path is absolute, so the fallback branch — the
+documented macOS default — could have reverted to `Path.home()` with the suite still green. The
+test now exists and was verified red against that exact revert. A fix without the check that
+protects it is a fix with a shelf life.
+
+Two smaller things rode that same round. `get_datastore_key`'s "run `bankmachine store init`"
+advice was wrong in **every** path that reaches it: `writer()` and `reader()` both check the
+datastore exists before asking for a key, and `store init` now correctly refuses to mint one for an
+existing store — so the advice sent the operator in a circle. It names the state and both real
+remedies instead. And the read-only reframing had reached `pyproject.toml` and the package
+docstring but not `argparse`'s `description`, which is the one summary an operator actually reads
+(`bankmachine --help`).
+
+**One decision deliberately not taken:** `uv init` pinned `.python-version` to 3.14, so the
+first run of everything above happened on an interpreter no artifact records. The pin was reverted to
+3.12 — the version `project-preferences.md` records as verified — and the whole suite re-run
+there. Moving this product's tested interpreter is the owner's call, not a side effect of
+scaffolding.
+
+**Trade-off accepted:** the redaction patterns over-redact. A filesystem path holding a
+32-character segment is blanked along with the tokens. The alternative — requiring high entropy
+before redacting — trades a little log legibility back for the chance of a real token slipping
+through, and under the documented default paths no ordinary path is long enough in one segment to
+trip it.
+
 ## 2026-09-05: AC-ARCH.7 resolved — the system architecture, measured rather than assumed
 
 <!-- prawduct: scope=architecture -->
