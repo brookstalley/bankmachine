@@ -43,10 +43,31 @@ behaviour and reader isolation under encryption to "the system architecture" —
 not exist. Build step 1 is the encrypted datastore, so step 1 would have been the component that
 "encountered them first", which is precisely what the criterion forbids.
 
-**What landed.** `.prawduct/artifacts/architecture.md`: topology, component responsibilities, the
-three channels (one of which is the datastore file), data ownership, failure modes, deployment and
-version skew, cross-cutting runtime concerns, and a decision log. It is this product's first
-strategy-class artifact and its first `## Direction` section.
+**What landed — two artifacts, not one.**
+
+`.prawduct/artifacts/architecture.md`: topology, component responsibilities, the four channels (one
+of which is the datastore file, and one of which is the import-file surface), data ownership,
+failure modes, deployment and version skew, cross-cutting runtime concerns, and a decision log. It
+is this product's first strategy-class artifact and its first `## Direction` section.
+
+`.prawduct/artifacts/build-plan-datastore-v1.md`: build step 1 of system-requirements §8, in four
+chunks — the walking skeleton (config, keyring, encrypted WAL datastore, the two connection roles),
+the FR-6 core schema, the FR-5 raw-response layer and rebuild, and `sync shell`. Chunk 01 is
+deliberately the widest because it proves the topology; Chunk 02 is the lock-in chunk, so the
+questions its schema must answer are enumerated from the §5 tool table before any field is designed.
+Chunk 01 also carries the `tests/preferences/` guard migration that three separate records have been
+promising, and closes issue #1.
+
+**A dependency decision rides with it.** The store layer uses **SQLAlchemy Core** — typed table
+metadata and the query builder, no ORM, no session or identity map — decided by the owner over a
+builder recommendation of hand-written SQL. It adds `sqlalchemy` as a runtime dependency at Chunk
+01, taking the runtime surface to three packages. The objection behind the recommendation is
+answered by construction rather than dropped: engines are built with `create_engine(..., creator=...)`
+over our own keyed connection, so every SQLCipher-specific step — key first, WAL, `mode=ro`,
+`query_only`, the writer lock — stays inside the module that owns the architecture norms, and
+SQLAlchemy never opens a connection itself. Both that route and the built-in `sqlite+pysqlcipher`
+dialect were verified against SQLCipher before the decision was taken. Risk surfaces were confirmed
+in the same pass and are now recorded in `project-state.yaml`.
 
 **The concurrency answer.** WAL journal mode, set after keying. Writer-role processes serialise on
 a `flock` held for a whole run, above SQLite's own locking. The MCP reader opens `query_only` and

@@ -43,16 +43,19 @@ decision applies — there is nothing to migrate, contain, or grandfather.
   Why: two SQLCipher connections cannot both hold a write transaction — the second fails with
   `database is locked` once `busy_timeout` expires *(measured)*, and a retry that succeeds partway
   through would interleave cursor advances against the data they are supposed to accompany,
-  breaking AC-2.1's transactional-cursor guarantee and AC-2.5's crash-resume guarantee. **Stated as
-  an enumeration this norm decays on contact**: the first draft listed the scheduled sync, `sync
-  run`, `enroll`, `repair` and `import`, and had already omitted `store init` — which creates the
-  file — and `store rebuild`, which rewrites every normalized table. A list is a thing to forget;
-  a factory is a thing to route through.
+  breaking AC-2.1's transactional-cursor guarantee and AC-2.5's crash-resume guarantee. **An enumeration decays on contact**: a
+  list of lock-taking commands has to be remembered every time a command is added, and `store init`
+  creates the datastore while `store rebuild` rewrites every normalized table — both are writers
+  that a list of "sync-ish" commands does not obviously contain. A list is a thing to forget; a
+  factory is a thing to route through.
   Status: steady-state.
 
-- **Every read-role handle is opened read-only at the file (`mode=ro`), holds no read transaction
-  across tool calls, and never falls back to a writable handle.** One snapshot per tool call,
-  released before the call returns. `PRAGMA query_only=ON` is set as well, as a second layer.
+- **Every read-role handle is opened read-only at the file (`mode=ro`), holds no read snapshot
+  beyond the statement that needs it, and never falls back to a writable handle.** A snapshot is
+  opened per unit of work and released before that unit returns — a tool call for the MCP server, a
+  single statement for `sync shell`. **No read snapshot survives an idle moment**, which is the form
+  of the rule that reaches every read-role runtime rather than only the one whose vocabulary it was
+  first written in. `PRAGMA query_only=ON` is set as well, as a second layer.
   Why: three reasons, and the first is the one that changed this norm's mechanism. **`query_only`
   alone is reversible** — on a read-write handle, `PRAGMA query_only=OFF` re-enables writes
   *(measured)*, and `sync shell` exists precisely to run operator-supplied SQL, which is the surface
@@ -213,10 +216,9 @@ exactly why AC-7.3 requires adapters be verified against real exported files rat
 encoding our assumptions, and why `project-state.yaml` records them as a foreign input surface. An
 adapter parses attacker-influenceable structure in the sense that matters here: a malformed or
 hostile file must fail the import loudly, never partially apply, and never reach the normalized
-tables unvalidated. The FR-7 builder at step 10 should read this paragraph as the boundary's
-description, not the earlier draft's claim that no untrusted inbound surface existed.
+tables unvalidated. The FR-7 builder at step 10 owns this boundary.
 
-What *is* true is narrower and still load-bearing: **no channel accepts unsolicited inbound
+The claim that survives is narrower and still load-bearing: **no channel accepts unsolicited inbound
 traffic**. Nothing listens. The stdio channel is same-machine, same-user, and carries no credential.
 That is what makes AC-10.5 (no sockets) affordable, and why it is now a confirmed decision rather
 than an unexamined default.
@@ -301,9 +303,16 @@ response is a loud error naming that state, never a fallback to a read-write han
 would silently reinstate the reversible guarantee at precisely the moment something has already gone
 wrong, which is this project's recurring defect shape.
 
-Each tool call opens its snapshot and releases it before returning. A read transaction spanning
-tool calls would pin the WAL against checkpointing — the measured 0-of-93 starvation above — and
-an MCP session outlives any individual query by hours.
+Each unit of work opens its snapshot and releases it before returning. A read transaction that
+outlives its unit pins the WAL against checkpointing — the measured 0-of-93 starvation above.
+
+**Both read-role runtimes outlive their queries, and `sync shell` is the more dangerous of the
+two.** An MCP session lasts as long as its client; a shell sits open on a desk overnight, which is
+the same night the sync runs. A shell holding a snapshot between statements would starve the
+checkpointer for hours, and because a read-role shell takes no writer lock, nothing else serialises
+the two. So the shell commits or rolls back after every statement — its snapshot lasts exactly as
+long as the statement that opened it. This is why the norm is stated over *units of work* rather
+than over tool calls: a rule phrased in one runtime's vocabulary silently exempts the other.
 
 **WAL size is bounded by `wal_autocheckpoint` (1000 pages at a 4096-byte page size, both defaults
 confirmed *measured*), not by zero.** The file holds its high-water mark and is reused in place
@@ -479,8 +488,7 @@ with one operator — the alternative is an interleaving the norm exists to prev
 edge on the one day it is longest, so it is recorded rather than discovered.
 
 **D3 — `mode=ro` for the reader, with `query_only` as a second layer.** *Chosen:* open the file
-read-only, key it, then set `query_only`. *Alternatives:* `query_only` alone on a read-write handle
-(the first draft of this document); a separate read-only copy of the datastore (doubles storage and
+read-only, key it, then set `query_only`. *Alternatives:* `query_only` alone on a read-write handle; a separate read-only copy of the datastore (doubles storage and
 introduces a staleness window the freshness stamp would have to model). *Why:* `query_only` alone is
 reversible from inside a SQL session *(measured)*, and `sync shell` ships that session to the
 operator. *Trade-off accepted:* one measured failure edge — a hot WAL with no `-shm` under an
@@ -492,10 +500,11 @@ existing `-shm`, and would therefore fail against a hot WAL from a crashed write
 correctly *(measured)* — including after a `SIGKILL` mid-write — **so long as the `-shm` left behind
 by the crashed writer was still present**. Deleting that file and making the directory unwritable
 reproduced the original failure. So the premise was neither right nor wrong as stated: it was
-*unscoped*, and the scope is what decides the design. The version of this document that recorded it
-as simply falsified is superseded by this entry rather than deleted, because the sequence — assume,
-probe, get a partial answer, re-probe the exact edge — is the part worth keeping. **The first probe
-would have justified dropping `mode=ro`; only the second showed which layer belongs where.**
+*unscoped*, and the scope is what decides the design. **The first probe would have justified
+dropping `mode=ro` outright; only the second showed which layer belongs where.** The sequence is
+recorded — assume, probe, get a partial answer, re-probe the exact edge — because a probe that
+confirms what you expected is the one to distrust: the failing case is usually one variable away
+from the one you set up.
 
 **D5 — No IPC between sync and MCP server.** *Chosen:* the datastore file is their only contact.
 *Alternatives:* a Unix socket for the reader to request a sync, or a signal to notify of new data.

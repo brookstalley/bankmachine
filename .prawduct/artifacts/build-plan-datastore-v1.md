@@ -16,7 +16,7 @@ governed_by:
   - artifact: architecture
     dispositions:
       - "every writable handle comes from the one writer factory, which takes the lock before it returns → conforms; Chunk 01 builds the factory and the structural test that no other path yields a writable handle"
-      - "read-role handles open mode=ro, hold no cross-call read transaction, and never fall back to a writable handle → conforms; Chunk 01 builds the reader opener, the after-query_only=OFF refusal test and the checkpoint test. The MCP server itself is build step 7, so this plan holds the norm at the connection layer the server will later use"
+      - "read-role handles open mode=ro, hold no read snapshot beyond the statement that needs it, and never fall back to a writable handle → conforms; Chunk 01 builds the reader opener, the after-query_only=OFF refusal test and the checkpoint test, and Chunk 04 asserts sync shell releases its snapshot per statement. The MCP server itself is build step 7, so this plan holds the norm at the connection layer the server will later use"
       - "no component creates the datastore implicitly → conforms; `store init` is the sole creator, and Chunk 01 tests that every other entry point refuses"
       - "a process that does not recognize the schema version refuses to serve, and a migration's DDL and version stamp commit in one transaction → conforms; Chunk 01 builds the version check and the single-transaction migration runner, with a kill-mid-migration test"
   - artifact: project-preferences
@@ -294,13 +294,22 @@ data-modeling decision above.
 
 - **Description:** An authenticated REPL against the encrypted datastore. Page encryption breaks
   every ad-hoc SQL tool, so without this the operator has no way to look at their own data — which
-  is why AC-ARCH.6 puts it in step 1 rather than step 9, and why it is in this plan at all.
+  is why AC-ARCH.6 puts it in step 1 rather than step 9, and why it is in this plan at all. It is
+  also the chunk that ships the product's only surface running operator-supplied SQL, so it is where
+  both read-role norms are actually load-bearing rather than theoretical.
 - **Depends on:** Chunk 03
 - **Artifacts consumed:** `docs/system-requirements.md` AC-ARCH.6, AC-10.3
-- **Deliverables:** `bankmachine sync shell` in `src/bankmachine/cli/`
+- **Deliverables:** `bankmachine sync shell` in `src/bankmachine/cli/`, read-role by default with
+  per-statement snapshot release; a writer shell, if offered at all, takes the lock through the same
+  writer factory as any other writer
 - **Tests:** integration — a query runs and returns rows; a write is refused when the shell is
-  opened in the reader role; output redacts anything AC-10.3 requires redacted, tested against a row
-  containing a token-shaped string
+  opened in the reader role, **and is still refused after the operator types `PRAGMA
+  query_only=OFF`**; output redacts anything AC-10.3 requires redacted, tested against a row
+  containing a token-shaped string; and **the shell holds no snapshot between statements** —
+  `wal_checkpoint(PASSIVE)` moves all frames while a shell sits idle at its prompt, against a WAL
+  holding real frames. That last one is the test this chunk exists to get right: a REPL left open
+  overnight is open during the nightly sync, a read-role shell takes no writer lock, so nothing else
+  serialises them, and a pinned snapshot would starve the checkpointer for hours
 - **Acceptance criteria:** an operator can open the shell against a real datastore, run a query, and
   read the result. **Verified by hand, not only by test** — the whole justification for this command
   is being usable by a human under pressure, and no assertion speaks to that
