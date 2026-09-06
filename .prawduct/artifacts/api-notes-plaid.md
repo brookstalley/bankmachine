@@ -131,6 +131,41 @@ property; it is now four direct and five transitive. Not a defect, but the sente
 handoff is no longer true as written, and `six` in particular is a Python-2 compatibility
 shim arriving in a Python-3.11+ project.
 
+### 7. The success path, probed at last — and the sandbox serves the *real* catalogue
+
+VRF-002, discharged 2026-09-06 once sandbox credentials existed. `/institutions/get` with
+`count=1, offset=0, country_codes=["US"]` answers 677 bytes, shaped:
+
+```json
+{"institutions": [{"country_codes": ["US"], "institution_id": "ins_130958",
+                   "name": "...", "oauth": false,
+                   "products": ["assets", "auth", "balance", "cra_lend_score", ...],
+                   "routing_numbers": ["..."]}],
+ "request_id": "...", "total": 10085}
+```
+
+- **The top-level keys are `institutions`, `request_id`, `total`.** That set is what
+  `test_sandbox.py` pins, by keys and deliberately not by values — the sandbox's list grows.
+- **`total` is the aggregator's count of matches, not the page size.** `connector check`
+  reports it rather than `len(institutions)`, which is what makes a one-record page read as
+  a page rather than as an alarming answer.
+- 🔴 **Sandbox `/institutions/get` returns the production institution catalogue**, not the
+  fictional test institutions — real names, real routing numbers, 10,085 for `US`. Two
+  consequences. Institution shapes recorded from sandbox *are* production shapes, so the
+  build plan's §4 risk ("sandbox shapes are not production shapes") is narrower than written
+  for this endpoint, while standing exactly as written for accounts and transactions. And
+  what makes a recorded fixture safe to commit is the leak guard, not the word "sandbox":
+  VRF-002 item 7 was written believing the opposite, and its wording is corrected in place.
+- An institution record carries `products` as the aggregator's own vocabulary — 15 values
+  on this one, including four `cra_*` — which is what Chunk 03's capability discovery reads
+  rather than a list of ours.
+
+**A wrong credential and a malformed one are different error codes, which §3b could not
+show.** A *production* secret against the sandbox host returns
+`400 INVALID_API_KEYS: invalid client_id or secret provided`, against §3b's `INVALID_FIELD`
+for a malformed one. Chunk 02's taxonomy gets both from observation: the remedies differ --
+rotate versus fix the call — and the aggregator already separates them.
+
 ---
 
 ## What is deliberately unused
@@ -151,13 +186,8 @@ assumed.
 
 ## Still to verify
 
-- **The success path has not been probed.** The failure path has (§3b), and so has the
-  transport path (§3) — both need no valid credentials. What is still unverified is the
-  shape of a *successful* `/institutions/get`, which is what the derivers in Chunk 04 will
-  be written against. No sandbox credentials exist on this machine, so
-  `tests/connector/fixtures/` is empty and `tests/connector/test_sandbox.py` skips.
-  `BANKMACHINE_RECORD_FIXTURES=1 uv run pytest -m sandbox` closes Done-when 0b, tracked as
-  VRF-002.
+- ~~**The success path has not been probed.**~~ Done 2026-09-06 — see §7. The fixture is
+  recorded and `tests/connector/test_sandbox.py` now compares against it rather than skipping.
 - **`days_requested`'s actual location** in the link-token request — Chunk 03's own
   `verify-api` step, and the highest-stakes parameter in the system (AC-1.2).
 - **What `/item/public_token/exchange` carries**, to make the credential-archive exemption

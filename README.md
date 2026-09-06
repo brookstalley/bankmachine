@@ -10,14 +10,16 @@ independently establish that the underlying data is complete and fresh before it
 
 It is a data pipeline. It does no budgeting, forecasting, categorization or advice.
 
-**Status: build step 1 of ten is complete** (`docs/system-requirements.md` §8). The encrypted
-datastore, its two connection roles, the core schema, the raw-response archive with a rebuild that
-verifies its own output, and `sync shell` — an authenticated SQL prompt, since page encryption
-breaks ordinary SQL tooling — all exist and are tested. Nothing talks to an aggregator yet, so
-there is no data to read: `bankmachine store init` gives you an empty encrypted datastore and
-`bankmachine sync shell` lets you look inside it. See `docs/system-requirements.md` for what is
-being built and `docs/build-vs-adopt-investigation.md` for why it is being built rather than
-adopted.
+**Status: build step 1 of ten is complete, and step 2 has begun** (`docs/system-requirements.md`
+§8). The encrypted datastore, its two connection roles, the core schema, the raw-response archive
+with a rebuild that verifies its own output, and `sync shell` — an authenticated SQL prompt, since
+page encryption breaks ordinary SQL tooling — all exist and are tested. The aggregator client's
+walking skeleton has since landed and been run against the real sandbox: `bankmachine connector
+check` makes one authenticated call and archives the answer verbatim. **There is still no financial
+data to read** — nothing enrolls an account or fetches a transaction yet, so `store init` gives you
+an empty encrypted datastore, `connector check` puts one institution-list response in its archive,
+and `sync shell` lets you look at both. See `docs/system-requirements.md` for what is being built
+and `docs/build-vs-adopt-investigation.md` for why it is being built rather than adopted.
 
 ## What it is not
 
@@ -74,6 +76,27 @@ does not need each clone to have configured `core.hooksPath`.
 A clone with no `deployment/` directory has no tokens and nothing to leak, so the guard passes with
 a note. That is expected, and it is why the guard is safe to publish. When you fill in your own
 roster, `docs/deployment-requirements.template.md` §8 says what the token files look like.
+
+## Aggregator credentials
+
+The client id is configuration. The secret is not, and has no environment variable at all — it goes
+in the OS keychain, per environment, so it reaches neither a shell history nor a process listing.
+
+```sh
+cp .env.example .env               # fill in BANKMACHINE_PLAID_CLIENT_ID
+source .env                        # nothing reads this file for you — see below
+bankmachine connector set-secret   # prompts without echoing; accepts a pipe
+bankmachine store init
+bankmachine connector check        # the smallest authenticated call, archived verbatim
+```
+
+🔴 **`.env` is a file you `source`, not one the product loads.** There is no dotenv dependency:
+a file that is silently read is a file whose contents are silently trusted. The same keys live in
+`~/.config/bankmachine/config.toml` without the `BANKMACHINE_` prefix if you would rather not
+source anything, and `.env.example` lists every one of them with its default.
+
+Sandbox needs nothing but a free dashboard signup, and is the default environment. The secret is
+per environment: setting sandbox's cannot overwrite production's.
 
 ## License
 

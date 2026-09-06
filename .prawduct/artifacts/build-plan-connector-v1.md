@@ -116,21 +116,27 @@ Three positions, since a plan handed over without one reads as endorsed:
 
 ## Status
 
-- [ ] Chunk 01: Walking skeleton — credentials, the contained client, one sandbox response archived
+- [x] Chunk 01: Walking skeleton — credentials, the contained client, one sandbox response archived
 - [ ] Chunk 02: The error taxonomy and the one retry channel
 - [ ] Chunk 03: Enrollment endpoints — link token, exchange, capability discovery
 - [ ] Chunk 04: Institutions and accounts derivers; rebuild on a real archive
 Context: Plan drawn 2026-09-06, directly after `build-plan-datastore-v1.md` closed and merged as
 `4c7a491`.
 
-**Chunk 01 is built but deliberately NOT ticked.** Its offline half is complete and green —
-the `connector/` package with the SDK contained, `connector check` / `set-secret`, aggregator
-credentials on the existing keychain seam, the `Endpoint` vocabulary, and the containment norm with
-its negative controls (suite green, 33 norm breaks all red, mypy strict and ruff clean). What is
-missing is the half no fake can supply: **no sandbox credentials exist on this machine**, so
-`tests/connector/fixtures/` is empty and the two `sandbox`-marked tests skip. Done-when 0b and the
-live acceptance criterion are the gate, tracked as **VRF-002**. Ticking the box would assert a
-criterion this plan's own text says is unmet.
+**Chunk 01 closed 2026-09-06, when credentials arrived.** Its offline half was complete and
+green when the chunk was built — the `connector/` package with the SDK contained, `connector check`
+/ `set-secret`, aggregator credentials on the existing keychain seam, the `Endpoint` vocabulary, and
+the containment norm with its negative controls (suite green, 33 norm breaks all red, mypy strict
+and ruff clean). What it lacked was the half no fake can supply, and **VRF-002** supplied it:
+`connector check` completed against the real sandbox, the response was archived verbatim as
+`raw_response 1`, and `tests/connector/fixtures/institutions_get.json` is recorded. Done-when 0b and
+the live acceptance criterion are met, and the box is ticked on that basis rather than ahead of it.
+
+The gate corrected itself on the way through, which is the finding worth carrying forward: VRF-002
+item 7 asked that the fixture hold sandbox institutions only, and the sandbox's
+`/institutions/get` serves the **production institution catalogue** instead. What that costs Chunk
+04 is recorded in `api-notes-plaid.md` §7 — the §4 risk below is narrower than written for this one
+endpoint, and unchanged for every other.
 
 `verify-api` paid for itself three times before any client code was written: the SDK deserializes by
 default and would have put a model round-trip in the archive instead of the response (AC-5.1); it
@@ -221,7 +227,7 @@ relationship (who may import what), not a naming convention.
   environment + `client_id` added to `src/bankmachine/config.py`, the secret added to
   `src/bankmachine/secrets.py`, new `tests/preferences/test_connector_is_contained.py` with its
   negative control in `tests/preferences/verify_norms_go_red.py`, first fixtures under new
-  `tests/connector/fixtures/` **(deferred — see Done-when 0b)**
+  `tests/connector/fixtures/` **(recorded 2026-09-06 — see Done-when 0b)**
 - **Tests:** contract — no module outside `src/bankmachine/connector/plaid/` imports the aggregator
   SDK, and `src/bankmachine/connector/` imports no datastore handle; unit — response bytes reach
   `record_response` unaltered, digest matches; unit — a rejected call names its cause rather than its
@@ -233,10 +239,10 @@ relationship (who may import what), not a naming convention.
   - **Offline:** the suite passes with sandbox tests deselected; the containment test goes red when
     its norm is broken; a failed call names its cause; `connector check` refuses a missing datastore
     without reaching the aggregator.
-  - **Live, gated on VRF-002:** `bankmachine connector check` completes against sandbox, archives the
-    response, and prints what it found. 🔴 **Chunk 01 is not `[x]` until this passes** — the offline
-    half proves the bytes survive a *fake*, and `project-state.yaml`'s `infrastructure_dependencies`
-    is explicit that the aggregator is verified against, never mocked at the layer under test.
+  - **Live, gated on VRF-002 — met 2026-09-06:** `bankmachine connector check` completed against
+    sandbox, archived the response, and printed what it found. The offline half proves the bytes
+    survive a *fake*; this is the half `project-state.yaml`'s `infrastructure_dependencies` is
+    explicit about — the aggregator is verified against, never mocked at the layer under test.
 - **Foreign API:** plaid-python
 - **Visual change:** yes — `connector check`'s output is the operator's first sight of the aggregator
   layer, and the errors it prints are the ones they will meet when credentials are wrong
@@ -246,10 +252,11 @@ relationship (who may import what), not a naming convention.
      failure shape (which needs no valid credentials: invalid ones return a real error body). Recorded
      in new `.prawduct/artifacts/api-notes-plaid.md`, including the two findings that changed the
      design — responses must be taken undecoded, and the SDK leaves transport failures unwrapped.
-  0b. verify-api, success path — **blocked on credentials.** Probe `/institutions/get` for real and
-     record the fixture: `BANKMACHINE_RECORD_FIXTURES=1 uv run pytest -m sandbox`. Queued as VRF-002
-     in `.prawduct/operator-verification.md`, which also asks the operator to break it three ways and
-     read each message.
+  0b. verify-api, success path — **done 2026-09-06, once credentials existed.** Probed
+     `/institutions/get` for real and recorded the fixture with
+     `BANKMACHINE_RECORD_FIXTURES=1 uv run pytest -m sandbox`. VRF-002 in
+     `.prawduct/operator-verification.md` carries the transcripts, including the failure messages it
+     asked to be read one at a time, and the correction to its own item 7.
   1. Acceptance criteria met and tests pass
   2. `/prawduct:critic` run and blocking findings resolved
   3. Committed and chunk marked `[x]` in Status
