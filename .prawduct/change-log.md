@@ -91,7 +91,36 @@ know when a statement is complete and how to catch a failed one; both now come f
 on the first full run — worth recording, because the norm it protects is exactly the kind that
 degrades into a convention the moment a second module imports a DBAPI.
 
-Suite green, mypy strict and ruff clean. The norm-break harness runs 27 cases, three of them new and
+**The cumulative review returned 0 blocking, and six of its findings were worth fixing anyway.**
+Two were real defects rather than polish. The **datastore key validator** tested hex with
+`int(key, 16)`, which is a parser and not a predicate: it accepts an `0x` prefix, `_` separators, a
+sign and surrounding whitespace, so `"0x" + "a" * 62` is 64 characters and passed both checks —
+and SQLCipher treats anything that is not exact hex as a *passphrase*, runs its KDF over it, and
+gives a store that works until those defaults change. That is the precise silent substitution the
+validator exists to prevent. It is now a full match on the hex alphabet, with the four accepted-by-
+`int` shapes as cases. And **filesystem `OSError` had no mapping into `StoreError`**, so a lock file
+the process cannot open escaped as a traceback — including out of `inspect()`, whose entire contract
+is to report a state rather than raise on one.
+
+The third was in this chunk's own output: **the log-tuned redaction rule was applied to schema
+text**, where it is wrong. `_OPAQUE` blanks any 32-plus character run, and
+`source_investment_transaction_id` is exactly 32, so `.schema` printed `[REDACTED]` where column and
+index names belong — eight unreadable lines of the real schema. Schema text is now not a redaction
+surface at all, and that is a property rather than an exemption: everything in `sqlite_master` here
+is authored by this repo's migrations, and AC-6.6 with
+`tests/preferences/test_no_provider_identity.py` is what makes it carry no operator data. Row values
+keep the full rule, bare-length matching included, and the cost is recorded — a 64-hex digest is
+blanked, and the join back to the archive is the integer `raw_response_id`, which is not.
+`.schema` also matches `tbl_name` now, so a table's indexes come with it.
+
+The rest: `architecture.md`'s canonical command table still advertised the writer shell this chunk
+declined, which would have had a step-7 builder implement the refused flag; the README's status
+stopped at Chunk 02; and `reader()`'s connect-time branch still stated the hot-WAL cause that Chunk
+04 measured false, so two operator-facing texts described one failure and the less-reached one made
+the disproved claim. Log rotation, unlogged run failures and archive retention are filed as #3, #4
+and #5 rather than fixed here.
+
+Suite green, mypy strict and ruff clean. The norm-break harness runs 28 cases, four of them new and
 all verified red. The by-hand check AC-ARCH.6 asks for is recorded as VRF-001 in
 `.prawduct/operator-verification.md` with its session transcript, and is the one item still awaiting
 the owner's own eyes.

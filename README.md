@@ -10,10 +10,14 @@ independently establish that the underlying data is complete and fresh before it
 
 It is a data pipeline. It does no budgeting, forecasting, categorization or advice.
 
-**Status: build step 1 of ten** (`docs/system-requirements.md` §8). The encrypted datastore, its
-two connection roles and the core schema exist and are tested; nothing talks to an aggregator yet,
-so there is no data to read. See `docs/system-requirements.md` for what is being built and
-`docs/build-vs-adopt-investigation.md` for why it is being built rather than adopted.
+**Status: build step 1 of ten is complete** (`docs/system-requirements.md` §8). The encrypted
+datastore, its two connection roles, the core schema, the raw-response archive with a rebuild that
+verifies its own output, and `sync shell` — an authenticated SQL prompt, since page encryption
+breaks ordinary SQL tooling — all exist and are tested. Nothing talks to an aggregator yet, so
+there is no data to read: `bankmachine store init` gives you an empty encrypted datastore and
+`bankmachine sync shell` lets you look inside it. See `docs/system-requirements.md` for what is
+being built and `docs/build-vs-adopt-investigation.md` for why it is being built rather than
+adopted.
 
 ## What it is not
 

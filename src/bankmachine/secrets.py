@@ -10,6 +10,7 @@ a `repr`. A `KeyError` naming the account is fine; the value never is.
 
 from __future__ import annotations
 
+import re
 from secrets import token_hex
 
 import keyring
@@ -23,6 +24,9 @@ from bankmachine.config import Config
 #: between the process that created the datastore and the one that opens it.
 KEY_BYTES = 32
 KEY_HEX_LENGTH = KEY_BYTES * 2
+
+#: The key alphabet, matched in full. See `_validate` for why this is not `int`.
+_HEX_KEY = re.compile(f"[0-9a-fA-F]{{{KEY_HEX_LENGTH}}}")
 
 
 class SecretsError(Exception):
@@ -49,10 +53,16 @@ def _validate(key: str, *, service: str, account: str) -> str:
             f"datastore key in {service}/{account} is {len(key)} characters, "
             f"expected {KEY_HEX_LENGTH} hex characters"
         )
-    try:
-        int(key, 16)
-    except ValueError as exc:
-        raise SecretsError(f"datastore key in {service}/{account} is not hexadecimal") from exc
+    # A full match on the hex alphabet, not `int(key, 16)`. `int` is a parser
+    # rather than a predicate: it accepts an `0x` prefix, `_` separators, a sign
+    # and surrounding whitespace, so `"0x" + "a" * 62` is 64 characters and
+    # passes both checks. SQLCipher uses the quoted value as a raw key only when
+    # it is exactly the right number of hex digits and otherwise treats it as a
+    # passphrase to run through its KDF -- which is the one class of value this
+    # function exists to reject, because the store then works until the KDF's
+    # default parameters change under it.
+    if not _HEX_KEY.fullmatch(key):
+        raise SecretsError(f"datastore key in {service}/{account} is not hexadecimal")
     return key.lower()
 
 

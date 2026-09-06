@@ -32,14 +32,18 @@ bankmachine sync shell
    masked: `48750000` is $487,500.00, not `****0000`.
 4. An account `mask` (four digits) survives; a long digit run does not.
 5. A `credential_ref` or any 32-plus character opaque string reads `[REDACTED]`.
+   `.schema`, by contrast, is **not** redacted — it is structure, not values, so
+   `connections_one_live_per_institution` must appear in full. If you see
+   `CREATE UNIQUE INDEX [REDACTED]`, the split described in `boundary-patterns.md`
+   has regressed.
 6. `PRAGMA query_only = OFF;` reports `0` — the flag really does flip — and the
    next `UPDATE` still fails with `attempt to write a readonly database`.
 7. `BEGIN;` prints the rolled-back note, and the prompt comes back.
 8. A bad column name prints one line and leaves the session open.
 9. Ctrl-D leaves. Ctrl-C abandons a half-typed statement without leaving.
 
-**Recorded session** (run 2026-09-06 against a scratch datastore seeded with two
-accounts; the datastore path is elided):
+**Recorded session** (re-run 2026-09-06 after the review fixes, against a scratch datastore seeded
+with two accounts; the datastore path is elided):
 
 ```
 bankmachine sync shell -- environment SANDBOX
@@ -60,8 +64,18 @@ source_connection_id  credential_ref              granted_history_days
 --------------------  --------------------------  --------------------
 conn-abc              datastore:token:[REDACTED]  365
 (1 row)
+bankmachine> .schema connections
+CREATE TABLE connections (
+        connection_id          INTEGER PRIMARY KEY,
+        institution_id         INTEGER NOT NULL REFERENCES institutions(institution_id),
+        ...
+        CHECK ((status = 'retired') = (retired_at IS NOT NULL)),
+        CHECK ((status = 'degraded') <= (last_error_code IS NOT NULL))
+    );
+CREATE UNIQUE INDEX connections_one_live_per_institution
+        ON connections (institution_id) WHERE retired_at IS NULL;
 bankmachine> PRAGMA query_only = OFF;
-(no rows)
+(no result set)
 bankmachine> PRAGMA query_only;
 query_only
 ----------
@@ -70,7 +84,7 @@ query_only
 bankmachine> UPDATE accounts SET name = 'tampered' WHERE account_id = 1;
 error: attempt to write a readonly database
 bankmachine> BEGIN;
-(no rows)
+(no result set)
 note: that statement left a transaction open; it was rolled back so the prompt holds no snapshot. Nothing was lost -- this handle cannot write.
 bankmachine> SELECT COUNT(*) AS accounts FROM accounts;
 accounts

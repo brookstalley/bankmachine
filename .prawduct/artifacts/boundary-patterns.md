@@ -112,10 +112,26 @@ SQL reaches the datastore (AC-ARCH.6).
 adds nothing of its own to the refusal — `mode=ro` at the file is what makes
 `PRAGMA query_only = OFF` typed at this prompt harmless. Everything it writes,
 including the statement it echoes back in a piped session, goes through
-`logging_setup.redact`, so AC-10.3 has one rule rather than one per surface.
-Redaction runs over text and not over numbers, because money here is an INTEGER
-of minor units while an account number is TEXT (`accounts.mask`); redacting
-integers would blank a six-figure balance and protect nothing.
+`logging_setup.redact`, so AC-10.3 has one rule for values rather than one per
+surface. Two boundaries make that rule precise:
+
+- **Values, not numbers.** Money here is an INTEGER of minor units while an
+  account number is TEXT (`accounts.mask`), so redacting integers would blank a
+  six-figure balance and protect nothing.
+- **Values, not structure.** Schema text is not a redaction surface at all.
+  Everything in `sqlite_master` was authored by this repo's migrations, and
+  AC-6.6 — enforced by `tests/preferences/test_no_provider_identity.py` — is
+  that no institution, account or product identity is encoded in the schema, so
+  there is nothing there for AC-10.3 to protect. Running the value rule over it
+  destroys it instead: `_OPAQUE` blanks any 32-plus character run, and
+  `source_investment_transaction_id` is exactly 32, so the column name came out
+  `[REDACTED]` until this split.
+
+Row values keep bare-length matching, cost included: `raw_responses.body_sha256`
+is 64 hex characters and is blanked. That is the direction to be wrong in while
+"no credential is persisted verbatim" is still a recorded decision rather than a
+mechanism, and it costs little — the join back to the archive is the integer
+`raw_response_id`, which is not redacted.
 
 **No writer shell.** The plan left one optional. It is declined: the product is
 read-only, a writer shell would hold the exclusive `flock` for the whole

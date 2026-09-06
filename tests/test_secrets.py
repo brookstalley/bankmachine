@@ -62,6 +62,29 @@ def test_a_malformed_key_is_rejected_without_echoing_it(config: Config) -> None:
     assert "not-a-key" not in str(excinfo.value)
 
 
+@pytest.mark.parametrize(
+    "key",
+    [
+        "0x" + "a" * 62,  # int() accepts the prefix; SQLCipher does not
+        "a" * 62 + "_a",  # int() accepts digit separators
+        " " + "a" * 63,  # int() strips surrounding whitespace
+        "+" + "a" * 63,  # int() accepts a sign
+    ],
+)
+def test_a_key_of_the_right_length_that_is_not_hex_is_rejected(config: Config, key: str) -> None:
+    """The class `int(key, 16)` let through.
+
+    Each of these is 64 characters and parses as an integer, so a length check
+    and `int()` both pass -- and SQLCipher then treats the value as a passphrase
+    and runs its KDF over it, which is precisely the silent substitution this
+    validator exists to prevent. The store works until the KDF's defaults change
+    underneath it, and then decrypts nothing.
+    """
+    assert len(key) == 64
+    with pytest.raises(SecretsError, match="hexadecimal"):
+        set_datastore_key(config, key)
+
+
 def test_deleting_an_absent_key_is_not_an_error(config: Config) -> None:
     delete_datastore_key(config)
     delete_datastore_key(config)

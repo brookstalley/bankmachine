@@ -105,6 +105,32 @@ class AnotherWriterRunningError(StoreError):
     """Another writer holds the advisory lock. This process does not wait."""
 
 
+class DatastorePathUnusableError(StoreError):
+    """The filesystem refused a path this operation needs.
+
+    An unwritable data directory, a lock file owned by another user, a path
+    unlinked between the check and the open. These arrive as `OSError` from the
+    syscall rather than from the driver, so without this they escape every
+    handler that catches `StoreError` -- including `inspect`, whose whole
+    contract is to report a state rather than raise on it.
+    """
+
+
+@contextmanager
+def _filesystem(what: str) -> Iterator[None]:
+    """Turn an `OSError` from a syscall into a named `StoreError`.
+
+    The store layer's callers are promised `StoreError` for anything that can
+    go wrong with the datastore, and `inspect` is promised not to raise at all.
+    A bare `PermissionError` out of a lock-file probe breaks both, and does it
+    on the most ordinary environmental failure there is.
+    """
+    try:
+        yield
+    except OSError as exc:
+        raise DatastorePathUnusableError(f"{what}: {exc}") from exc
+
+
 class SchemaVersionUnsupportedError(StoreError):
     """The datastore's schema version is not one this build understands."""
 
@@ -207,7 +233,8 @@ def _writer(config: Config, *, create: bool) -> Iterator[Connection]:
     key = get_datastore_key(config)
     with _exclusive_lock(config):
         if create:
-            config.datastore_path.parent.mkdir(parents=True, exist_ok=True)
+            with _filesystem(f"could not create the directory for {config.datastore_path}"):
+                config.datastore_path.parent.mkdir(parents=True, exist_ok=True)
         conn = dbapi2.connect(
             _uri(config.datastore_path, CREATING_WRITER_MODE if create else WRITER_MODE),
             uri=True,
@@ -230,8 +257,9 @@ def _exclusive_lock(config: Config) -> Iterator[None]:
     killed mid-pagination to be recoverable, and a database lease would survive
     the kill and strand the next run behind a holder that no longer exists.
     """
-    config.lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(config.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    with _filesystem(f"could not open the writer lock at {config.lock_path}"):
+        config.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(config.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -306,10 +334,13 @@ def reader(config: Config, *, require_supported_schema: bool = True) -> Iterator
             check_same_thread=True,
         )
     except dbapi2.OperationalError as exc:
+        # No cause is named here. SQLite opens lazily, so the hot-WAL edge this
+        # branch used to claim actually surfaces at the first read, where
+        # `_diagnose_first_read` owns it -- and two operator-facing texts
+        # describing one failure is how the wrong one gets believed.
         raise DatastoreUnreadableError(
-            f"{config.datastore_path} could not be opened read-only ({exc}). A hot WAL from a "
-            f"killed writer in a directory this process cannot write to produces this. Not "
-            f"retried read-write: that would restore the writes this handle exists to refuse"
+            f"{config.datastore_path} could not be opened read-only ({exc}). Not retried "
+            f"read-write: that would restore the writes this handle exists to refuse"
         ) from exc
     try:
         _key_and_prepare(conn, config, key)
@@ -355,7 +386,10 @@ def writer_lock_held(config: Config) -> bool:
     """
     if not config.lock_path.exists():
         return False
-    fd = os.open(config.lock_path, os.O_RDWR)
+    # The file can vanish between that probe and this open, and it can belong to
+    # another user; both are OSError, and this is called from `inspect`.
+    with _filesystem(f"could not probe the writer lock at {config.lock_path}"):
+        fd = os.open(config.lock_path, os.O_RDWR)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -379,7 +413,19 @@ def inspect(config: Config) -> DatastoreStatus:
         return DatastoreStatus(
             path=path, exists=False, environment=config.environment, problem="datastore missing"
         )
-    lock_held = writer_lock_held(config)
+    try:
+        lock_held = writer_lock_held(config)
+    except StoreError as exc:
+        # Inside the report, not around it: a lock file this process cannot open
+        # is a state to describe, and it is the state a datastore restored from
+        # a backup under another user arrives in.
+        return DatastoreStatus(
+            path=path,
+            exists=True,
+            environment=config.environment,
+            readable=False,
+            problem=str(exc),
+        )
     try:
         with reader(config, require_supported_schema=False) as conn:
             journal = conn.execute("PRAGMA journal_mode").fetchone()

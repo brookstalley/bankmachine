@@ -162,15 +162,21 @@ contact.
   | `store init` | writer | step 1 — the sole creator of the datastore |
   | `store status` | reader | step 1 |
   | `store rebuild` | writer | step 1 — rebuilds normalized tables from raw (AC-5.2) |
-  | `sync shell` | reader by default; writer only when explicitly asked for | step 1 (AC-ARCH.6) |
+  | `sync shell` | reader — no writer shell (see `boundary-patterns.md`, Operator SQL Surface) | step 1 (AC-ARCH.6) |
   | `enroll` | writer | step 3 |
   | `repair` | writer | step 6 |
   | `sync run` | writer | step 4 |
   | `import` | writer | step 10 |
 
-  `sync shell` is the one command whose role is a choice rather than a property of the command, so
-  it is the one that has to say which it opened — it defaults to the read role, and a writer shell
-  is an explicit flag that takes the lock like any other writer.
+  `sync shell` was planned as the one command whose role is a choice rather than a property of the
+  command. **Chunk 04 built it read-only and declined the writer half**, so every row above is now a
+  property of the command: a writer shell would hold the exclusive lock for its whole session, and a
+  prompt left open overnight is open during the nightly sync — it would block the sync outright
+  rather than merely starve its checkpointer, which is the failure the read-role snapshot rule
+  exists to prevent. Hand-typed rows also have no raw response behind them, which is what `store
+  rebuild`'s content digest exists to catch. The reasoning is recorded in `boundary-patterns.md`
+  under Operator SQL Surface. If a writer shell is ever added it comes from the writer factory like
+  any other writer; there is no other way to obtain a handle that can write.
 - **Owned state:** none of its own; its writer-role subcommands act *as* the writer and take the
   same lock.
 - **Never:** a second, parallel implementation of sync logic. `sync run` invokes the same code path
@@ -482,7 +488,7 @@ unit that must be serialized is the *run*, not the transaction. *Trade-off accep
 deliberate. The lock is **advisory** — it coordinates cooperating processes and nothing else, which
 is sufficient because every writer is our own code and every writable handle comes from one factory.
 And **every writer-role command refuses for the duration of a run, including the multi-hour first
-backfill**: an operator who tries `store rebuild` or a writer shell that evening is told a sync is
+backfill**: an operator who tries `store rebuild` or any other writer that evening is told a sync is
 running and gets a non-zero exit rather than a wait. That is the correct answer for a daily batch
 with one operator — the alternative is an interleaving the norm exists to prevent — but it is a real
 edge on the one day it is longest, so it is recorded rather than discovered.

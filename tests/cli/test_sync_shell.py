@@ -83,6 +83,41 @@ def test_dot_schema_prints_ddl_for_one_table(initialized_config: Config) -> None
     assert "balance_class" in out
 
 
+def test_dot_schema_shows_identifiers_the_value_rule_would_blank(
+    initialized_config: Config,
+) -> None:
+    """Schema text is structure, so the redactor does not run over it.
+
+    These names are all longer than the 32-character run `_OPAQUE` blanks, and
+    a short-name assertion cannot see the difference -- which is why the first
+    version of this test passed while `.schema` was printing
+    `CREATE UNIQUE INDEX [REDACTED]`.
+    """
+    out = _run(initialized_config, [".schema connections", ".schema investment_transactions"])
+
+    assert "[REDACTED]" not in out
+    assert "connections_one_live_per_institution" in out  # 36 characters
+    assert "source_investment_transaction_id" in out  # exactly 32
+
+
+def test_a_long_opaque_value_in_a_row_is_still_redacted(initialized_config: Config) -> None:
+    """The other half of the split: values keep the full rule, cost included.
+
+    A 64-hex digest is blanked. That is the chosen direction -- an unlabelled
+    token in a row would otherwise reach the terminal -- and this pins it so a
+    later reader sees a decision rather than an oversight.
+    """
+    digest = "9f" * 32
+    with writer(initialized_config) as w:
+        w.execute("CREATE TABLE probe (body_sha256 TEXT)")
+        w.execute("INSERT INTO probe VALUES (?)", (digest,))
+
+    out = _run(initialized_config, ["SELECT body_sha256 FROM probe;"])
+
+    assert digest not in out
+    assert "[REDACTED]" in out
+
+
 def test_an_unknown_dot_command_is_reported_rather_than_ignored(
     initialized_config: Config,
 ) -> None:

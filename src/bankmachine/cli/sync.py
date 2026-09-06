@@ -45,15 +45,13 @@ import sys
 from typing import Final, Protocol
 
 from bankmachine.config import Config
-from bankmachine.logging_setup import get_logger, redact
+from bankmachine.logging_setup import redact
 from bankmachine.store import connection
 
 with contextlib.suppress(ImportError):  # readline is absent on some platforms
     # Imported for the side effect: it backs `input()` with line editing and
     # history, which is most of what makes the prompt usable by hand.
     import readline  # noqa: F401
-
-logger = get_logger("cli.sync")
 
 
 class InputStream(Protocol):
@@ -239,15 +237,34 @@ def _meta_command(conn: connection.Connection, line: str, out: OutputStream) -> 
 
 
 def _print_schema(conn: connection.Connection, table: str | None, out: OutputStream) -> None:
-    """The stored DDL, printed as DDL rather than squeezed into a table cell."""
+    """The stored DDL, printed as DDL rather than squeezed into a table cell.
+
+    Schema text is **not** a redaction surface, and that is a property rather
+    than an exemption: everything in `sqlite_master` here was authored by this
+    repo's migrations, and AC-6.6 -- enforced by
+    `tests/preferences/test_no_provider_identity.py` -- is that no institution,
+    account or product identity is encoded in the schema. There is nothing in a
+    CREATE statement for AC-10.3 to protect.
+
+    Running the value rule over it destroys it instead. `_OPAQUE` blanks any
+    32-plus character run, and this schema's identifiers are longer than that:
+    `source_investment_transaction_id` is exactly 32, so the column name comes
+    out as `[REDACTED]`, and index names like
+    `connections_one_live_per_institution` go the same way. Eight lines of the
+    real schema were unreadable before this split.
+    """
     try:
         if table is None:
             rows = conn.execute(
                 "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name"
             ).fetchall()
         else:
+            # `tbl_name`, not `name`: an index has its own name, and the
+            # indexes are half of what makes a table's shape legible -- the
+            # partial unique index on `connections` is where AC-1.4 lives.
             rows = conn.execute(
-                "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL AND name = ? ORDER BY name",
+                "SELECT sql FROM sqlite_master "
+                "WHERE sql IS NOT NULL AND tbl_name = ? ORDER BY name",
                 (table,),
             ).fetchall()
     except connection.DriverError as exc:
@@ -260,7 +277,10 @@ def _print_schema(conn: connection.Connection, table: str | None, out: OutputStr
         print(f"no such table: {table}" if table else "(this datastore has no schema)", file=out)
         return
     for (sql,) in rows:
-        print(f"{redact(sql)};", file=out)
+        # `sqlite_master` stores the statement as written, indentation and
+        # trailing newline included, so the terminator needs the strip to land
+        # on the last line rather than a line of its own.
+        print(f"{sql.strip()};", file=out)
 
 
 def _execute(conn: connection.Connection, statement: str, out: OutputStream) -> None:
@@ -274,7 +294,9 @@ def _execute(conn: connection.Connection, statement: str, out: OutputStream) -> 
     try:
         cursor = conn.execute(statement)
         if cursor.description is None:
-            print("(no rows)", file=out)
+            # Not the same thing as a result set that came back empty, and the
+            # difference is the whole answer when a PRAGMA is what was typed.
+            print("(no result set)", file=out)
         else:
             _print_table([str(column[0]) for column in cursor.description], cursor.fetchall(), out)
     except connection.DriverError as exc:
@@ -346,6 +368,17 @@ def _render(value: object) -> str:
     A blob is summarised rather than printed. `raw_responses.body_gzip` is the
     one that comes up, and a terminal full of gzip is not a debugging
     affordance.
+
+    Row values keep the full rule, bare-length matching included, and that is a
+    deliberate choice with a real cost: `raw_responses.body_sha256` is 64 hex
+    characters and comes out `[REDACTED]`. Dropping bare-length matching would
+    read better and would let an unlabelled token through, and the archive's
+    "no credential is persisted verbatim" clause is a recorded decision rather
+    than a mechanism yet -- so over-redaction is the direction to be wrong in
+    here. Correlating a row with its response does not need the digest: the
+    integer `raw_response_id` foreign key is the join, and it is not redacted.
+    Schema text is the surface where this rule is wrong, and `_print_schema`
+    is where that is handled.
     """
     if value is None:
         return NULL_DISPLAY

@@ -38,12 +38,14 @@ MIGRATIONS = pathlib.Path("src/bankmachine/store/migrations/__init__.py")
 DDL = pathlib.Path("src/bankmachine/store/migrations/core_schema.py")
 METADATA = pathlib.Path("src/bankmachine/store/schema.py")
 SHELL = pathlib.Path("src/bankmachine/cli/sync.py")
+SECRETS = pathlib.Path("src/bankmachine/secrets.py")
 NORMS = "tests/store/test_connection_norms.py"
 SCHEMA = "tests/store/test_schema.py"
 SOLE_CONSTRUCTOR = "tests/preferences/test_connection_is_the_sole_constructor.py"
 RAW_TESTS = "tests/store/test_raw.py"
 REBUILD_TESTS = "tests/store/test_rebuild.py"
 SHELL_TESTS = "tests/cli/test_sync_shell.py"
+SECRETS_TESTS = "tests/test_secrets.py"
 
 #: (description, file, text to replace, replacement, the test that must go red)
 CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
@@ -221,6 +223,13 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "            if report.content_changed and not report.change_was_expected:",
         "            if False:",
         f"{REBUILD_TESTS}::test_a_rebuild_that_cannot_reproduce_its_input_is_rolled_back",
+    ),
+    (
+        "AC-10.1: a key SQLCipher would treat as a passphrase is refused",
+        SECRETS,
+        "if not _HEX_KEY.fullmatch(key):",
+        "if False:",
+        f"{SECRETS_TESTS}::test_a_key_of_the_right_length_that_is_not_hex_is_rejected",
     ),
     (
         "no-fallback: an unreadable datastore is not reported as a rejected key",
