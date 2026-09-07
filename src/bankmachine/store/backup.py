@@ -155,6 +155,9 @@ def back_up(config: Config, destination: Path) -> BackupReport:
             # until the day it is needed, so the guarantee has to be enforced by
             # this module rather than inherited from the driver's good behaviour.
             leftover = _discard(destination)
+            # An unattended run would otherwise leave a "backup starting" line and
+            # then silence, which reads exactly like a run still in progress.
+            logger.error("backup failed: %s -- %s", destination, leftover)
             raise BackupNotWrittenError(
                 f"could not write the copy to {destination} ({exc}). "
                 f"{leftover} The datastore itself is untouched"
@@ -178,13 +181,20 @@ def _verify(config: Config, destination: Path) -> BackupReport:
             version = connection.read_schema_version(conn)
             integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
     except StoreError as exc:
+        logger.error(
+            "backup NOT verified: %s could not be read back as a datastore (%s)", destination, exc
+        )
         raise BackupUnverifiedError(
             f"the copy at {destination} could not be read back as a datastore ({exc}). "
             f"It is still on disk and is NOT a usable backup -- remove it rather than "
             f"leaving a file that looks like one"
         ) from exc
 
-    if integrity != "ok":
+    if integrity != "ok":  # pragma: no cover - needs a copy corrupt in a way SQLCipher
+        # still decrypts and opens, which no test here induces cheaply. Marked rather
+        # than left looking covered: an unexercised branch that reads as tested is the
+        # same defect as an unasserted guarantee, one layer down.
+        logger.error("backup NOT verified: %s failed integrity_check (%s)", destination, integrity)
         raise BackupUnverifiedError(
             f"the copy at {destination} failed integrity_check ({integrity}). "
             f"It is still on disk and is NOT a usable backup"

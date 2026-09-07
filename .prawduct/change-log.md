@@ -158,6 +158,23 @@ commands it was missing.
 Also added: the `store backup` CLI surface had no test at all (four now), and the backup
 path wrote no log record, so an unattended failure left only an exit code.
 
+**The verify pass then caught what the first round of fixes had left.** Three residuals,
+all of the same shape — a claim with nothing behind it. `operational-spec.md` now states
+as a *guarantee* that the failure message says which happened, so the message and the log
+records are asserted (`match=` on the raise, `caplog` on both paths) rather than left as
+prose a refactor can drop while staying green. The failure paths themselves were silent:
+an unattended run left a "backup starting" line and then nothing, which reads exactly like
+a run still in progress. And `README.md`'s "what exists today" paragraph still omitted
+`store backup`, so the three command lists the canonical table exists to keep in agreement
+were still disagreeing — the point of that table is that a command set restated in four
+places is four places to disagree.
+
+**One reviewer observation was wrong and is recorded as such rather than acted on.** It
+reported that the R-13 disposition claimed here does not exist; running the command again
+returned `supersedes disp:...:R-13:1`, so version 1 was on record all along. The manifest's
+`prior_dispositions` evidently does not carry the full set. Checked rather than believed,
+because a fix applied to a defect that is not there is a change with no reason.
+
 **Accepted rather than fixed**, recorded as dispositions: the fourth copy of the AST import
 scanner (extraction would edit three tests this bundle does not touch), the absent parent
 requirement for `store backup`, and `data-model.md` being a third uncompared description of

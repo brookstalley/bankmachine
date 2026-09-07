@@ -99,6 +99,27 @@ def test_the_copy_carries_rows_that_are_still_in_an_uncheckpointed_wal(
     )
 
 
+def test_a_successful_backup_records_what_it_took_and_where(
+    initialized_config: Config, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The log directory must be able to answer "was a backup taken, of what, to where".
+
+    `operational-spec.md` § Monitoring points an operator at the log directory for
+    exactly this question, so the records are part of the contract rather than
+    debugging residue.
+    """
+    _fill(initialized_config, 5)
+    destination = tmp_path / "backup.db"
+    with caplog.at_level("INFO", logger="bankmachine"):
+        report = back_up(initialized_config, destination)
+
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert str(initialized_config.datastore_path) in logged
+    assert str(destination) in logged
+    assert "backup verified" in logged
+    assert str(report.bytes_written) in logged
+
+
 def test_the_copy_is_ciphertext(initialized_config: Config, tmp_path: Path) -> None:
     _fill(initialized_config, 5)
     destination = tmp_path / "backup.db"
@@ -150,7 +171,10 @@ def test_a_missing_destination_directory_is_reported_as_unusable_not_as_existing
 
 
 def test_it_removes_the_zero_byte_file_a_failed_vacuum_leaves_behind(
-    initialized_config: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    initialized_config: Config,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The measured hazard, reproduced in a directory that CAN be written to.
 
@@ -168,11 +192,24 @@ def test_it_removes_the_zero_byte_file_a_failed_vacuum_leaves_behind(
     monkeypatch.setattr(connection, "writer", connection.reader)
     destination = tmp_path / "backup.db"
 
-    with pytest.raises(StoreError):
+    # `match=` rather than a bare raises: operational-spec.md item 5 states as a
+    # GUARANTEE that the message says which happened -- "no partial file was left"
+    # and "a partial file was removed" are different facts about the run, and an
+    # unasserted sentence is a guarantee a refactor can drop while staying green.
+    with (
+        caplog.at_level("ERROR", logger="bankmachine"),
+        pytest.raises(
+            StoreError, match="partial file of .* bytes was written and has been removed"
+        ),
+    ):
         back_up(initialized_config, destination)
 
     assert not destination.exists(), (
         "a failed backup left a file behind -- it is zero bytes and looks like a backup"
+    )
+    errors = "\n".join(r.getMessage() for r in caplog.records if r.levelname == "ERROR")
+    assert "backup failed" in errors and str(destination) in errors, (
+        "an unattended failure left a 'backup starting' line and then silence"
     )
 
 
@@ -219,7 +256,10 @@ def test_a_backup_is_itself_backup_able(initialized_config: Config, tmp_path: Pa
 
 
 def test_verification_rejects_a_copy_that_is_not_a_datastore(
-    initialized_config: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    initialized_config: Config,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The verification step must actually be able to fail.
 
@@ -236,5 +276,15 @@ def test_verification_rejects_a_copy_that_is_not_a_datastore(
         return real_verify(config, destination)
 
     monkeypatch.setattr(backup_module, "_verify", corrupt_then_verify)
-    with pytest.raises(BackupUnverifiedError):
-        back_up(initialized_config, tmp_path / "backup.db")
+    destination = tmp_path / "backup.db"
+    with (
+        caplog.at_level("ERROR", logger="bankmachine"),
+        pytest.raises(BackupUnverifiedError),
+    ):
+        back_up(initialized_config, destination)
+
+    # The record, not just the raise. An unattended failure is diagnosed from the
+    # log directory (operational-spec.md § Monitoring), so the record is part of
+    # the contract -- and this test already executes the line that writes it.
+    errors = "\n".join(r.getMessage() for r in caplog.records if r.levelname == "ERROR")
+    assert "backup NOT verified" in errors and str(destination) in errors
