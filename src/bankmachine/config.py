@@ -25,6 +25,22 @@ ENVIRONMENTS: Final[tuple[str, ...]] = get_args(Environment)
 
 ENV_PREFIX: Final = "BANKMACHINE_"
 
+#: 🔴 The largest history window the aggregator will grant, and the one this
+#: product asks for unless told otherwise.
+#:
+#: 730 days is the aggregator's own inclusive maximum *(read off the SDK's
+#: request model rather than recalled: `plaid/model/link_token_transactions.py`
+#: declares `inclusive_maximum: 730, inclusive_minimum: 1`)*.
+#:
+#: **The default is the maximum on purpose.** AC-1.2 makes this immutable after
+#: enrollment: getting it wrong means re-linking every institution, and the
+#: requirements call a vendor-default build a failed build. The two ways to be
+#: wrong are not symmetric -- asking for more history than needed costs nothing
+#: and can be ignored, while asking for less costs history that cannot be
+#: recovered at any price. So the default errs in the direction that is
+#: reversible.
+MAX_HISTORY_DAYS: Final = 730
+
 #: SQLite waits this long for a competing writer before raising `database is
 #: locked`. It is the second layer only; writer processes serialize on the
 #: advisory lock in `store.connection` before they open anything.
@@ -47,6 +63,14 @@ class Config:
     plaid_client_id: str | None
     """The aggregator client identifier. Public in the sense that it is not the secret,
     but still an operator's own value, so it is configuration rather than a literal."""
+    history_days: int
+    """How much transaction history enrollment asks the aggregator to grant.
+
+    🔴 Immutable per connection once that connection is enrolled (AC-1.2). This
+    value is read at enrollment and never again, so changing it later moves
+    nothing that already exists -- it only changes what the *next* enrollment
+    asks for.
+    """
     config_path: Path | None
     """The file the values came from, or None when nothing but defaults and env applied."""
 
@@ -199,6 +223,21 @@ def load_config(
 
     plaid_client_id = _resolve("plaid_client_id", env, file_values)
 
+    history_raw = _resolve("history_days", env, file_values)
+    try:
+        history_days = int(history_raw) if history_raw else MAX_HISTORY_DAYS
+    except ValueError as exc:
+        raise ConfigError(f"history_days must be an integer, got {history_raw!r}") from exc
+    if not 1 <= history_days <= MAX_HISTORY_DAYS:
+        # Refused rather than clamped. A clamp would enroll a connection at a
+        # window the operator did not choose and never told them -- and the
+        # window is immutable afterwards, so the correction costs a re-link of
+        # every institution.
+        raise ConfigError(
+            f"history_days must be between 1 and {MAX_HISTORY_DAYS} (the aggregator's own "
+            f"maximum), got {history_days}"
+        )
+
     timeout_raw = _resolve("busy_timeout_ms", env, file_values)
     try:
         busy_timeout_ms = int(timeout_raw) if timeout_raw else DEFAULT_BUSY_TIMEOUT_MS
@@ -214,5 +253,6 @@ def load_config(
         keychain_service=keychain_service,
         busy_timeout_ms=busy_timeout_ms,
         plaid_client_id=plaid_client_id,
+        history_days=history_days,
         config_path=config_path if explicit_config else None,
     )

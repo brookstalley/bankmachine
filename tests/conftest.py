@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from bankmachine.config import Config, Environment
+from bankmachine.config import MAX_HISTORY_DAYS, Config, Environment
 from bankmachine.secrets import delete_datastore_key, set_datastore_key
 
 
@@ -43,6 +43,7 @@ def make_config(
     environment: Environment = "sandbox",
     datastore_name: str = "store.db",
     plaid_client_id: str | None = None,
+    history_days: int = MAX_HISTORY_DAYS,
 ) -> Config:
     return Config(
         environment=environment,
@@ -51,6 +52,7 @@ def make_config(
         keychain_service=keychain_service,
         busy_timeout_ms=200,
         plaid_client_id=plaid_client_id,
+        history_days=history_days,
         config_path=None,
     )
 

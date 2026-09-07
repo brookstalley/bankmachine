@@ -30,7 +30,7 @@ from sqlalchemy import Connection as SAConnection
 from sqlalchemy import insert, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from bankmachine.config import Config
+from bankmachine.config import MAX_HISTORY_DAYS, Config
 from bankmachine.secrets import delete_datastore_key, generate_datastore_key, set_datastore_key
 from bankmachine.store import derivation
 from bankmachine.store.derivation import (
@@ -353,6 +353,7 @@ def temporary_store(base: Path) -> Iterator[Config]:
         log_dir=base / "logs",
         keychain_service=f"bankmachine-test-{uuid.uuid4()}",
         busy_timeout_ms=200,
+        history_days=MAX_HISTORY_DAYS,
         plaid_client_id=None,
         config_path=None,
     )

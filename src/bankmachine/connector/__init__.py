@@ -173,6 +173,18 @@ class TransportError(ConnectorError):
     retryable = True
 
 
+class CredentialBearingResponseError(ConnectorError):
+    """A credential-bearing response was about to be turned into an archivable one.
+
+    Raised at construction rather than at the archive, because the archive is
+    append-only: by the time a token reaches `raw_responses` the damage is
+    permanent and travels with every backup. This is a bug in the caller, not a
+    condition -- there is nothing to retry and nothing to degrade.
+    """
+
+    retryable = False
+
+
 class MalformedResponseError(ConnectorError):
     """The aggregator answered, and this build cannot use what it said.
 
@@ -315,6 +327,22 @@ class Endpoint:
     from now has to be able to tell what a stored response was.
     """
 
+    issues_credential: bool = False
+    """Whether this endpoint's response body carries a credential.
+
+    🔴 **This is what makes the archive exemption a relationship rather than a
+    skip-list.** `store/raw.py` is append-only and a datastore backup travels, so
+    archiving a body that carries an access token would satisfy AC-5.1 by
+    breaking AC-10.1 *permanently*. A list of exempt paths kept beside the
+    archive would be an enumeration standing in for that property: correct on the
+    day it was written, and silently wrong the first time an endpoint is added by
+    someone who did not think to open that file.
+
+    Declared here, on the endpoint itself, the property travels with the thing it
+    is about -- and `FetchedResponse` refuses to exist for an endpoint that has
+    it, so there is no object for the archive to be handed.
+    """
+
     def __str__(self) -> str:
         return self.path
 
@@ -322,6 +350,24 @@ class Endpoint:
 #: The supported-institution list. Needs client credentials and nothing else --
 #: no enrolled connection, no access token, no operator data.
 INSTITUTIONS_GET = Endpoint("/institutions/get")
+
+#: Opens a Link session. Its response carries a `link_token`, which authorizes
+#: enrollment against this product's account -- short-lived, and still a
+#: credential.
+LINK_TOKEN_CREATE = Endpoint("/link/token/create", issues_credential=True)
+
+#: Trades a public token for the access token a connection is thereafter read
+#: with. 🔴 The single most sensitive response this product ever receives:
+#: *(verified live)* its body is exactly `access_token`, `item_id`, `request_id`.
+ITEM_PUBLIC_TOKEN_EXCHANGE = Endpoint("/item/public_token/exchange", issues_credential=True)
+
+#: One connection's own record of itself -- which products it was enrolled with,
+#: and which it could support. Carries no credential: the access token goes up in
+#: the request, and nothing comes back down.
+ITEM_GET = Endpoint("/item/get")
+
+#: The accounts behind one connection.
+ACCOUNTS_GET = Endpoint("/accounts/get")
 
 
 @dataclass(frozen=True, slots=True)
@@ -339,6 +385,30 @@ class FetchedResponse:
     body: bytes
     received_at: UtcInstant
     request_context: str | None
+
+    def __post_init__(self) -> None:
+        """Refuse to exist for an endpoint whose body carries a credential.
+
+        🔴 **The archive exemption, held by construction.** `store.raw` derives
+        everything it persists from one of these, so an endpoint that cannot
+        produce one cannot be archived -- by any caller, including one written
+        years from now by someone who never read `store/raw.py`'s docstring.
+
+        The alternative was a list of exempt paths consulted at the archive
+        site. That is an enumeration standing in for a property, and this
+        project has already been burned once by a rule that matched on a name
+        where it meant a relationship. Here the relationship is "this response
+        carries a credential", it is declared on the endpoint, and the type that
+        feeds the archive checks it.
+        """
+        if self.endpoint.issues_credential:
+            raise CredentialBearingResponseError(
+                f"{self.endpoint} issues a credential, so its body must never reach the "
+                f"archive: `raw_responses` is append-only and a datastore backup travels, "
+                f"so a token written there is written permanently. Read what is needed out "
+                f"of the body and let the body go"
+            )
+
     """What was asked for, when that is not recoverable from the response.
 
     A paginated fetch returns page three with nothing in it saying so.

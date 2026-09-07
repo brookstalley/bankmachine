@@ -27,19 +27,32 @@ from the aggregator.
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Final
 
 import plaid
 import urllib3.exceptions
 from plaid.api import plaid_api
+from plaid.model.accounts_get_request import AccountsGetRequest
 from plaid.model.country_code import CountryCode
 from plaid.model.institutions_get_request import InstitutionsGetRequest
+from plaid.model.item_get_request import ItemGetRequest
+from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
+from plaid.model.link_token_create_request import LinkTokenCreateRequest
+from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
+from plaid.model.link_token_transactions import LinkTokenTransactions
+from plaid.model.products import Products
 
-from bankmachine.config import Config
+from bankmachine.config import MAX_HISTORY_DAYS, Config
 from bankmachine.connector import (
+    ACCOUNTS_GET,
     INSTITUTIONS_GET,
+    ITEM_GET,
+    ITEM_PUBLIC_TOKEN_EXCHANGE,
+    LINK_TOKEN_CREATE,
     AggregatorNotConfiguredError,
     ConnectorError,
     Endpoint,
@@ -84,6 +97,91 @@ def _host_for(environment: str) -> str:
         raise AggregatorNotConfiguredError(
             f"no aggregator host is defined for environment {environment!r}"
         ) from None
+
+
+#: What Link is told to call this application, and in what language. Fixed rather
+#: than configured: they are this product's own identity in someone else's UI,
+#: not an operator preference, and `client_name` is what the operator will see at
+#: the top of the enrollment flow.
+LINK_CLIENT_NAME: Final = "bankmachine"
+LINK_LANGUAGE: Final = "en"
+
+
+@dataclass(frozen=True, slots=True)
+class LinkToken:
+    """A Link session, and the window it was opened asking for.
+
+    `requested_history_days` is carried because the response does not contain it
+    *(verified live: the reply is `expiration`, `link_token`, `request_id` and
+    nothing else)*. Without it the caller would have no record of what was asked
+    for, and AC-11.8's shortfall -- requested minus granted -- would have no
+    left-hand side.
+    """
+
+    token: str
+    expires_at: str
+    requested_history_days: int
+
+
+@dataclass(frozen=True, slots=True)
+class AccessGrant:
+    """What an exchange yields: a credential, and the aggregator's id for the connection.
+
+    Deliberately not a `FetchedResponse`. There is no path from this type into
+    `store.raw`, which is what keeps the archive exemption structural rather than
+    remembered.
+    """
+
+    access_token: str
+    source_connection_id: str
+
+
+def _payload(endpoint: Endpoint, body: bytes) -> dict[str, Any]:
+    """Read a response body this client has to look inside.
+
+    Used only where the client itself needs a value -- a link token, an access
+    token. Archivable responses are never parsed here: AC-5.1 puts the archive
+    before any normalization, and a client that parsed on the way through would
+    make itself the first normalization step.
+    """
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise MalformedResponseError(
+            f"{endpoint} answered with something that is not JSON", endpoint=endpoint
+        ) from exc
+    if not isinstance(payload, dict):
+        raise MalformedResponseError(
+            f"{endpoint} answered with {type(payload).__name__}, expected an object",
+            endpoint=endpoint,
+        )
+    return payload
+
+
+def capabilities_of(item_body: bytes) -> frozenset[str]:
+    """What a connection can do, read from its own record.
+
+    🔴 **`available_products`, not `products`.** AC-3.2 requires investments to be
+    pulled for any connection whose capabilities include investments and **never
+    for a named institution** -- so this must answer "what could this connection
+    do", and `products` answers "what did we already ask for". A discovery reading
+    `products` would report back exactly what this product requested and never
+    discover anything *(measured: a sandbox item enrolled with `transactions`
+    returns `products: ['transactions']` and 14 entries in `available_products`)*.
+
+    Nothing here branches on `institution_id`, and nothing may: the whole point
+    of discovery is that the roster stays out of the code.
+    """
+    payload = _payload(ITEM_GET, item_body)
+    item = payload.get("item")
+    if not isinstance(item, dict):
+        raise MalformedResponseError(f"{ITEM_GET} answered without an item", endpoint=ITEM_GET)
+    available = item.get("available_products")
+    if not isinstance(available, list):
+        raise MalformedResponseError(
+            f"{ITEM_GET} answered without an available_products list", endpoint=ITEM_GET
+        )
+    return frozenset(product for product in available if isinstance(product, str))
 
 
 class PlaidClient:
@@ -152,7 +250,7 @@ class PlaidClient:
         request_context: str | None = None,
         connection_id: int | None = None,
     ) -> FetchedResponse:
-        """Make one call and return what came back, undecoded.
+        """Make one call and return what came back, undecoded and archivable.
 
         `received_at` is stamped from the clock here because this is the moment
         the system learned the thing, and it is the value every deriver is
@@ -162,15 +260,35 @@ class PlaidClient:
         "one broken connection never aborts another" is a property of the
         caller's loop, and a loop can only honour it if the error it catches
         says which connection it belongs to.
+
+        Refuses a credential-issuing endpoint, by way of `FetchedResponse`
+        itself: those go through `_fetch_bytes`, which hands the body to a
+        wrapper that reads what it needs and lets the rest go.
+        """
+        return FetchedResponse(
+            endpoint=endpoint,
+            body=self._fetch_bytes(endpoint, invoke, request, connection_id=connection_id),
+            received_at=self._now(),
+            request_context=request_context,
+        )
+
+    def _fetch_bytes(
+        self,
+        endpoint: Endpoint,
+        invoke: Callable[..., Any],
+        request: Any,
+        *,
+        connection_id: int | None = None,
+    ) -> bytes:
+        """The body, with retries, and nothing built around it.
+
+        The only route a credential-issuing response takes. Its caller parses out
+        the fields it needs and returns those; the body itself is never handed to
+        anything that could persist it, because nothing here builds the type
+        `store.raw` consumes.
         """
         return call_with_retry(
-            lambda: self._attempt(
-                endpoint,
-                invoke,
-                request,
-                request_context=request_context,
-                connection_id=connection_id,
-            ),
+            lambda: self._attempt(endpoint, invoke, request, connection_id=connection_id),
             policy=self._retry_policy,
             sleep=self._sleep,
             now=self._now,
@@ -182,10 +300,15 @@ class PlaidClient:
         invoke: Callable[..., Any],
         request: Any,
         *,
-        request_context: str | None,
         connection_id: int | None,
-    ) -> FetchedResponse:
-        """One call, with every way it can fail turned into a local type."""
+    ) -> bytes:
+        """One call, with every way it can fail turned into a local type.
+
+        Returns bytes rather than a `FetchedResponse` because a
+        credential-issuing endpoint must never have one built for it, and the
+        thing that must not exist should not be constructed here and discarded
+        upstream.
+        """
         raw = None
         try:
             raw = invoke(
@@ -255,12 +378,7 @@ class PlaidClient:
                 connection_id=connection_id,
                 failed_at=self._now(),
             )
-        return FetchedResponse(
-            endpoint=endpoint,
-            body=body,
-            received_at=self._now(),
-            request_context=request_context,
-        )
+        return body
 
     def _refusal(
         self,
@@ -308,4 +426,97 @@ class PlaidClient:
             request_context=(
                 f"count={count} offset={offset} country_codes={','.join(country_codes)}"
             ),
+        )
+
+    def link_token_create(
+        self,
+        *,
+        history_days: int,
+        client_user_id: str,
+        country_codes: list[str],
+        products: list[str],
+    ) -> LinkToken:
+        """Open a Link session that will request `history_days` of history.
+
+        🔴 **`history_days` is required and has no default, and that is the whole
+        point of this signature.** AC-1.2 makes the granted window immutable
+        after enrollment, and the requirements call a vendor-default build a
+        failed build -- so a caller that forgets the window must fail to
+        typecheck rather than silently enroll at whatever the aggregator would
+        have chosen. A default value here is precisely how that failure happens,
+        and it would not be visible until someone asked for three-year-old
+        transactions and found they had never been fetched.
+
+        The response carries a `link_token` and nothing else this product keeps;
+        it is a credential, so it never becomes an archivable response.
+        """
+        if not 1 <= history_days <= MAX_HISTORY_DAYS:
+            raise AggregatorNotConfiguredError(
+                f"history_days must be between 1 and {MAX_HISTORY_DAYS}, got {history_days}. "
+                f"The aggregator would reject it, and the window cannot be changed after "
+                f"enrollment"
+            )
+        request = LinkTokenCreateRequest(
+            client_name=LINK_CLIENT_NAME,
+            language=LINK_LANGUAGE,
+            country_codes=[CountryCode(code) for code in country_codes],
+            user=LinkTokenCreateRequestUser(client_user_id=client_user_id),
+            products=[Products(product) for product in products],
+            transactions=LinkTokenTransactions(days_requested=history_days),
+        )
+        body = self._fetch_bytes(LINK_TOKEN_CREATE, self._api.link_token_create, request)
+        payload = _payload(LINK_TOKEN_CREATE, body)
+        token = payload.get("link_token")
+        expiration = payload.get("expiration")
+        if not isinstance(token, str) or not isinstance(expiration, str):
+            raise MalformedResponseError(
+                f"{LINK_TOKEN_CREATE} answered without a link_token and expiration",
+                endpoint=LINK_TOKEN_CREATE,
+                failed_at=self._now(),
+            )
+        return LinkToken(token=token, expires_at=expiration, requested_history_days=history_days)
+
+    def exchange_public_token(self, public_token: str) -> AccessGrant:
+        """Trade a public token for the access token a connection is read with.
+
+        🔴 The most sensitive response this product ever receives. Its body is
+        `access_token`, `item_id`, `request_id` *(verified live)*, and it is
+        never archived -- not by a rule anyone follows, but because
+        `ITEM_PUBLIC_TOKEN_EXCHANGE` is declared credential-issuing and
+        `FetchedResponse` refuses to exist for such an endpoint. The body is read
+        here and let go.
+        """
+        request = ItemPublicTokenExchangeRequest(public_token=public_token)
+        body = self._fetch_bytes(
+            ITEM_PUBLIC_TOKEN_EXCHANGE, self._api.item_public_token_exchange, request
+        )
+        payload = _payload(ITEM_PUBLIC_TOKEN_EXCHANGE, body)
+        access_token = payload.get("access_token")
+        item_id = payload.get("item_id")
+        if not isinstance(access_token, str) or not isinstance(item_id, str):
+            raise MalformedResponseError(
+                f"{ITEM_PUBLIC_TOKEN_EXCHANGE} answered without an access_token and item_id",
+                endpoint=ITEM_PUBLIC_TOKEN_EXCHANGE,
+                failed_at=self._now(),
+            )
+        return AccessGrant(access_token=access_token, source_connection_id=item_id)
+
+    def item_get(self, access_token: str, *, connection_id: int | None = None) -> FetchedResponse:
+        """One connection's own record of itself. Archivable: nothing comes back down."""
+        return self._fetch(
+            ITEM_GET,
+            self._api.item_get,
+            ItemGetRequest(access_token=access_token),
+            connection_id=connection_id,
+        )
+
+    def accounts_get(
+        self, access_token: str, *, connection_id: int | None = None
+    ) -> FetchedResponse:
+        """The accounts behind one connection."""
+        return self._fetch(
+            ACCOUNTS_GET,
+            self._api.accounts_get,
+            AccountsGetRequest(access_token=access_token),
+            connection_id=connection_id,
         )

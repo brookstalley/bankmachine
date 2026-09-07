@@ -132,7 +132,7 @@ Three positions, since a plan handed over without one reads as endorsed:
 ## Status
 
 - [x] Chunk 01: Walking skeleton — credentials, the contained client, one sandbox response archived
-- [ ] Chunk 02: The error taxonomy and the one retry channel
+- [x] Chunk 02: The error taxonomy and the one retry channel
 - [ ] Chunk 03: Enrollment endpoints — link token, exchange, capability discovery
 - [ ] Chunk 04: Institutions and accounts derivers; rebuild on a real archive
 Context: Plan drawn 2026-09-06, directly after `build-plan-datastore-v1.md` closed and merged as
@@ -153,6 +153,20 @@ item 7 asked that the fixture hold sandbox institutions only, and the sandbox's
 04 is recorded in `api-notes-plaid.md` §7 — the §4 risk below is narrower than written for this one
 endpoint, and unchanged for every other.
 
+**Chunk 02 closed 2026-09-07.** FR-4's four connection-health states are four distinct local
+types organized by what the caller must do next, every failure carries the connection it belongs
+to plus the code and instant a degraded record needs, and backoff-and-retry runs on the one channel
+`architecture.md` permits it on. Whether a failure retries is a property of its own type, refused at
+class creation if undeclared — the `[DECISION:]` above records the plain-list alternative that was
+rejected and what rejecting it costs. Two amendments are stated in the chunk entries below rather
+than absorbed, both because the aggregator would not support the test as drawn.
+
+The review cost two rounds and the first one was worth it: `Retry-After` is a header, and it reached
+`time.sleep` with no ceiling and no finiteness check, so the aggregator could have asked this product
+to hang for an hour inside one nightly sync. The docstring one line above already promised a bound
+the code did not enforce — **the prose was right and the mechanism was weaker, so the mechanism was
+raised.**
+
 `verify-api` paid for itself three times before any client code was written: the SDK deserializes by
 default and would have put a model round-trip in the archive instead of the response (AC-5.1); it
 ships no `py.typed`, which is the strongest argument the containment decision got; and it leaves
@@ -162,7 +176,7 @@ of the Critic — `ApiException.reason` is the HTTP reason phrase, so every reje
 
 The datastore layer this plan archives through is complete and green; the `DERIVERS` registry it
 registers into is deliberately empty, and `store rebuild` refuses a real archive until Chunk 04
-fills it. **Next: close VRF-002 when credentials exist, then Chunk 02.**
+fills it. **Next: Chunk 03 — the enrollment endpoints.**
 
 ## Scaffolding
 
@@ -344,9 +358,12 @@ relationship (who may import what), not a naming convention.
   connection**, which is already the step where AC-1.2 becomes irreversible — and AC-11.8's
   shortfall cannot be computed before it. No chunk in this plan should be read as having
   verified the window the aggregator actually grants
-- **Acceptance criteria:** a link token opens in Plaid Link and reports the requested window; the
-  access token returned by an exchange reaches the caller and appears in neither the archive nor any
-  log line
+- **Acceptance criteria:** a link token is created live carrying the configured window, and the
+  window it was asked for travels back to the caller *(amended with the Tests line above and for the
+  same reason — the create response does not report the window, so "reports the requested window"
+  described something the endpoint cannot do; what the aggregator actually grants is not observable
+  until build step 3's first real connection)*; the access token returned by an exchange reaches the
+  caller and appears in neither the archive nor any log line
 - **Foreign API:** plaid-python
 - **Visual change:** yes — the link URL is what the operator pastes into a browser at enrollment
 - **Done when:**
