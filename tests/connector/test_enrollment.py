@@ -244,6 +244,46 @@ def test_the_configured_window_travels_from_config_not_from_a_literal(
     assert issued.requested_history_days == configured.history_days
 
 
+def test_the_request_asks_for_a_hosted_session_not_just_reads_one_back(
+    client_config: Config,
+) -> None:
+    """🔴 Asserted on the REQUEST, because the response cannot testify to it.
+
+    Every fake here answers with `hosted_link_url` whatever it is sent, so a test
+    that only reads the response stays green with `hosted_link=` deleted from the
+    request -- and the aggregator would then return no URL at all, leaving AC-1.1
+    with nothing to print. Only the live sandbox call would have caught it, and it
+    is deselected by default.
+
+    This is `two-descriptions-compared` from `learnings.md`: the request and the
+    response are two accounts of the same intent, and asserting only the one the
+    fake authors is asserting the fake.
+    """
+    invoke = _answering(
+        {
+            "link_token": "link-sandbox-x",
+            "expiration": "2026-09-08T00:00:00Z",
+            "hosted_link_url": "https://secure.example/hl/session",
+        }
+    )
+
+    with _client(client_config) as client:
+        client._api.link_token_create = invoke
+        client.link_token_create(
+            history_days=730,
+            client_user_id="operator",
+            country_codes=["US"],
+            products=["transactions"],
+        )
+
+    request = invoke.captured["request"]
+    assert request.hosted_link is not None, (
+        "without hosted_link the aggregator returns no hosted_link_url, and AC-1.1 "
+        "has no URL to print"
+    )
+    assert request.hosted_link.url_lifetime_seconds > 0
+
+
 def test_a_hosted_session_that_returns_no_url_is_refused_not_returned_empty(
     client_config: Config,
 ) -> None:
@@ -665,6 +705,78 @@ def test_an_unfinished_session_is_reported_by_the_absence_of_a_key(
 
     assert not session.finished
     assert session.public_token is None
+
+
+def test_a_mistyped_link_sessions_is_refused_not_read_as_waiting(
+    client_config: Config,
+) -> None:
+    """Absent means "not yet"; the wrong type does not mean anything.
+
+    Collapsing the two would poll a malformed response until the enrollment timed
+    out -- and the operator would have completed a Link session by then, so the
+    Item exists at the far end while this side reports nothing happened. Every
+    other parse site in the client raises on a wrong-typed key; this one used to
+    be the exception.
+    """
+    invoke = _answering({"link_token": "link-sandbox-x", "link_sessions": {"not": "a list"}})
+
+    with _client(client_config) as client:
+        client._api.link_token_get = invoke
+        with pytest.raises(MalformedResponseError) as raised:
+            client.link_token_get("link-sandbox-x")
+
+    assert "not a list" in str(raised.value)
+
+
+def test_the_token_and_the_institution_come_from_the_same_item(
+    client_config: Config,
+) -> None:
+    """🔴 One entry is selected, then read for everything.
+
+    Reading each field with its own walk lets the token come from one item and the
+    institution from another -- a connection labelled with an institution it does
+    not belong to. Both values would be individually well-formed, so nothing
+    downstream could notice: the institution is a real institution and the token
+    is a real token, they simply do not describe each other.
+    """
+    invoke = _answering(
+        {
+            "link_token": "link-sandbox-x",
+            "link_sessions": [
+                {
+                    "link_session_id": "session-earlier",
+                    "results": {
+                        "item_add_results": [
+                            {
+                                "public_token": "public-token-earlier",
+                                "institution": {"institution_id": "ins_earlier"},
+                            }
+                        ]
+                    },
+                },
+                {
+                    "link_session_id": "session-current",
+                    "results": {
+                        "item_add_results": [
+                            {
+                                "public_token": "public-token-current",
+                                "institution": {"institution_id": "ins_current"},
+                            }
+                        ]
+                    },
+                },
+            ],
+        }
+    )
+
+    with _client(client_config) as client:
+        client._api.link_token_get = invoke
+        session = client.link_token_get("link-sandbox-x")
+
+    # Both from session-current, or neither. A token paired with the other
+    # session's institution is the failure this asserts against.
+    assert session.public_token == "public-token-current"
+    assert session.institution_id == "ins_current"
 
 
 def test_a_finished_session_yields_the_public_token(client_config: Config) -> None:

@@ -393,8 +393,10 @@ ITEM_PUBLIC_TOKEN_EXCHANGE = Endpoint(
 #: durable Item, so archiving this response would put a credential in the
 #: append-only store exactly as archiving the exchange would. `retry_safe`
 #: because polling is a pure read that the far end can absorb any number of
-#: times; the two properties are independent and both are declared.
-LINK_TOKEN_GET = Endpoint("/link/token/get", issues_credential=True)
+#: times; the two properties are independent and both are declared -- `retry_safe`
+#: explicitly rather than by inheriting the default, because the sentence above
+#: claims it is declared and a claim resting on a default is one edit from false.
+LINK_TOKEN_GET = Endpoint("/link/token/get", retry_safe=True, issues_credential=True)
 
 #: One connection's own record of itself -- which products it was enrolled with,
 #: and which it could support. Carries no credential: the access token goes up in

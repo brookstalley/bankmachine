@@ -92,13 +92,24 @@ fallback is the loopback callback server, and that fallback requires amending AC
   correct]` A resumable enrollment would need a `link_sessions` table; nothing in FR-1 asks for one,
   and a re-run simply starts a new session. Chunk 02 prints the session id so an abandoned run is
   identifiable rather than mysterious.
-- `[ASSUMPTION: the connection cap defaults to 10, matching the plan tier recorded in
-  `nonfunctional-requirements.md` | LOW impact | user can override in config]`
-- `[ASSUMPTION: `products` at enrollment stays `["transactions"]`, with investments discovered from
-  `available_products` rather than requested up front | MED impact | user can correct]` AC-3.2 makes
-  capability discovery drive investment pulls, and `/item/get` already reports `available_products`
-  (`api-notes-plaid.md` §13). Requesting `investments` at enrollment would bill a product the
-  operator may not have.
+Both assumptions below were put to the owner on 2026-09-07 and are now decisions, kept here in
+their original form so a reader can see what was assumed and what came back.
+
+- ~~`[ASSUMPTION: the connection cap defaults to 10 …]`~~ → `[DECISION: the connection cap defaults
+  to 10 | taken by the owner 2026-09-07, matching the plan tier in `nonfunctional-requirements.md` |
+  user can override in config]` Confirmed as proposed.
+- ~~`[ASSUMPTION: `products` at enrollment stays `["transactions"]` …]`~~ → 🔴 `[DECISION:
+  enrollment requests BOTH `transactions` and `investments` | taken by the owner 2026-09-07,
+  against the recommendation | user can revisit, but not per existing connection]`
+  **The recommendation was transactions-only** — AC-3.2 makes capability discovery drive investment
+  pulls, `/item/get` already reports `available_products` (`api-notes-plaid.md` §13, measured: a
+  sandbox item created with `transactions` lists 14 available including `investments`), and
+  requesting a product bills it. The owner chose to request both, accepting that the investments
+  product is billed on every connection including deposit-only institutions.
+  **What this does not change:** capability discovery still runs, because `available_products` is
+  what AC-3.2 reads and `products` is not the useful list. What it does change is the bill, and
+  that a connection enrolled without `investments` cannot gain it without re-linking — which is why
+  it is recorded as a decision rather than a default.
 
 ## What I Would Do Differently
 
@@ -153,7 +164,10 @@ no call site passes `config.history_days`.
    `POST /link/token/get` to
    capture the shape before completion. Record findings in `api-notes-plaid.md` §15. 🔴 If Hosted
    Link is unavailable on this account, stop and report — Chunk 02's design depends on the answer.
-1. `hosted_link_url` is on `LinkToken` and asserted from a recorded fixture.
+1. `hosted_link_url` is on `LinkToken`, and both halves are asserted: the **request** carries
+   `hosted_link` (on the captured request object, so removing it goes red offline), and the
+   **response** field is read. Not from a recorded fixture — a create body carries a
+   `link_token`, so the endpoint is credential-issuing and nothing may archive or record it.
 2. `LINK_TOKEN_GET` is declared credential-issuing, and a test proves `FetchedResponse` refuses to
    exist for it — the same assertion shape that guards the exchange endpoint.
 3. A test drives `link_token_create` through a config whose `history_days` differs from the default

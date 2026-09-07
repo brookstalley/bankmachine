@@ -90,7 +90,28 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS: Final = 30.0
 DEFAULT_HOSTED_URL_LIFETIME_SECONDS: Final = 900
 
 
-def _session_public_token(session: dict[str, Any]) -> str | None:
+def _first_item_add_result(session: dict[str, Any]) -> dict[str, Any] | None:
+    """The one item this session added, or None if it has added none yet.
+
+    Selected once and then read for every field that comes from it. The
+    alternative -- each field walking the entries for itself -- lets the public
+    token come from one item and the institution from another, producing a
+    connection labelled with an institution it does not belong to. Both values
+    would be individually well-formed, so nothing downstream could notice.
+    """
+    results = session.get("results")
+    if not isinstance(results, dict):
+        return None
+    added = results.get("item_add_results")
+    if not isinstance(added, list):
+        return None
+    for entry in added:
+        if isinstance(entry, dict):
+            return entry
+    return None
+
+
+def _public_token_of(session: dict[str, Any], added: dict[str, Any] | None) -> str | None:
     """The public token a finished Link session yields, or None while it runs.
 
     🔴 **Two places, read in order, because the aggregator's own models offer
@@ -105,16 +126,10 @@ def _session_public_token(session: dict[str, Any]) -> str | None:
     from the moment the operator opens the URL, and carries no token until they
     finish.
     """
-    results = session.get("results")
-    if isinstance(results, dict):
-        added = results.get("item_add_results")
-        if isinstance(added, list):
-            for entry in added:
-                if not isinstance(entry, dict):
-                    continue
-                token = entry.get("public_token")
-                if isinstance(token, str):
-                    return token
+    if added is not None:
+        token = added.get("public_token")
+        if isinstance(token, str):
+            return token
     on_success = session.get("on_success")
     if isinstance(on_success, dict):
         token = on_success.get("public_token")
@@ -123,26 +138,31 @@ def _session_public_token(session: dict[str, Any]) -> str | None:
     return None
 
 
-def _session_institution_id(session: dict[str, Any]) -> str | None:
+def _session_public_token(session: dict[str, Any]) -> str | None:
+    """Whether a session carries a token, asked while choosing among several.
+
+    The chosen session is then read once, through `_public_token_of`, so the
+    selection pass and the read cannot disagree about which item they mean.
+    """
+    return _public_token_of(session, _first_item_add_result(session))
+
+
+def _institution_id_of(added: dict[str, Any] | None) -> str | None:
     """Which institution the operator picked, for the log line that says so.
 
     Not the source of truth for the connection's institution -- that comes from
-    `/item/get`, which reports the one the Item actually belongs to.
+    `/item/get`, which reports the one the Item actually belongs to. Takes the
+    already-selected item rather than searching for one, so it cannot disagree
+    with the token about which item it is describing.
     """
-    results = session.get("results")
-    if isinstance(results, dict):
-        added = results.get("item_add_results")
-        if isinstance(added, list):
-            for entry in added:
-                if not isinstance(entry, dict):
-                    continue
-                institution = entry.get("institution")
-                if not isinstance(institution, dict):
-                    continue
-                institution_id = institution.get("institution_id")
-                if isinstance(institution_id, str):
-                    return institution_id
-    return None
+    if added is None:
+        return None
+    institution = added.get("institution")
+    if not isinstance(institution, dict):
+        return None
+    institution_id = institution.get("institution_id")
+    return institution_id if isinstance(institution_id, str) else None
+
 
 _HOSTS: Final[dict[str, str]] = {
     "sandbox": plaid.Environment.Sandbox,
@@ -564,7 +584,20 @@ class PlaidClient:
         )
         payload = _payload(LINK_TOKEN_GET, body)
         sessions = payload.get("link_sessions")
-        if not isinstance(sessions, list) or not sessions:
+        if sessions is None:
+            # Absent is the live unfinished shape, and the only one that means
+            # "not yet". Kept distinct from a wrong type below: collapsing them
+            # would poll a malformed response until the enrollment timed out,
+            # which is the failure every comment in this method exists to avoid.
+            return LinkSession(public_token=None, session_id=None, institution_id=None)
+        if not isinstance(sessions, list):
+            raise MalformedResponseError(
+                f"{LINK_TOKEN_GET} answered with link_sessions as "
+                f"{type(sessions).__name__}, not a list",
+                endpoint=LINK_TOKEN_GET,
+                failed_at=self._now(),
+            )
+        if not sessions:
             return LinkSession(public_token=None, session_id=None, institution_id=None)
         # An entry that is not an object is skipped rather than raised on. One
         # unreadable entry must not abort the poll: the readable ones may hold a
@@ -598,10 +631,12 @@ class PlaidClient:
             (s for s in reversed(readable) if _session_public_token(s) is not None), None
         )
         session = finished if finished is not None else readable[-1]
+        added = _first_item_add_result(session)
+        session_id = session.get("link_session_id")
         return LinkSession(
-            public_token=_session_public_token(session),
-            session_id=session.get("link_session_id"),
-            institution_id=_session_institution_id(session),
+            public_token=_public_token_of(session, added),
+            session_id=session_id if isinstance(session_id, str) else None,
+            institution_id=_institution_id_of(added),
         )
 
     def exchange_public_token(self, public_token: str) -> AccessGrant:

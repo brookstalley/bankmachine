@@ -425,15 +425,15 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-10.1: a polled Link session carries a public token and is never archived",
         CONNECTOR_PACKAGE,
-        'LINK_TOKEN_GET = Endpoint("/link/token/get", issues_credential=True)',
-        'LINK_TOKEN_GET = Endpoint("/link/token/get")',
+        'LINK_TOKEN_GET = Endpoint("/link/token/get", retry_safe=True, issues_credential=True)',
+        'LINK_TOKEN_GET = Endpoint("/link/token/get", retry_safe=True)',
         f"{ENROLLMENT_TESTS}::test_a_polled_session_can_never_become_an_archivable_response",
     ),
     (
         "AC-1.1: an unfinished session is the absence of a key, not an empty list",
         CONNECTOR_CLIENT,
-        "        if not isinstance(sessions, list) or not sessions:",
-        "        if len(sessions) == 0:",
+        "        if sessions is None:",
+        "        if False:",
         f"{ENROLLMENT_TESTS}::test_an_unfinished_session_is_reported_by_the_absence_of_a_key",
     ),
     (
@@ -457,6 +457,20 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "        session = finished if finished is not None else readable[-1]",
         "        session = readable[-1]",
         f"{ENROLLMENT_TESTS}::test_a_completed_session_is_found_behind_a_newer_empty_one",
+    ),
+    (
+        "AC-1.1: a mistyped link_sessions is refused, not polled to timeout",
+        CONNECTOR_CLIENT,
+        "        if not isinstance(sessions, list):",
+        "        if False:",
+        f"{ENROLLMENT_TESTS}::test_a_mistyped_link_sessions_is_refused_not_read_as_waiting",
+    ),
+    (
+        "AC-1.3: the token and the institution describe the same added item",
+        CONNECTOR_CLIENT,
+        "        added = _first_item_add_result(session)",
+        "        added = _first_item_add_result(readable[0])",
+        f"{ENROLLMENT_TESTS}::test_the_token_and_the_institution_come_from_the_same_item",
     ),
     (
         "AC-1.1: one unreadable session entry does not abort the poll",
