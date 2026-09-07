@@ -598,7 +598,7 @@ def test_local_account_ids_survive_a_rebuild(initialized_config: Config) -> None
 def test_rebuilding_an_untouched_datastore_changes_nothing(initialized_config: Config) -> None:
     # The shipped path today: no derivers are registered, and an empty archive
     # gives them nothing to do.
-    report = rebuild(initialized_config)
+    report = rebuild(initialized_config, derivers=DERIVERS)
 
     assert report.responses_replayed == 0
     assert not report.content_changed

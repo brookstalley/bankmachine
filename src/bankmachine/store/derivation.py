@@ -37,7 +37,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from types import MappingProxyType
 
 from sqlalchemy import Connection as SAConnection
 from sqlalchemy import insert, select
@@ -106,24 +105,6 @@ class DerivationContext:
 #: rows must carry, write the normalized rows that response implies.
 Deriver = Callable[[SAConnection, RawResponse, DerivationContext], None]
 
-#: Endpoint -> deriver. **Empty here on purpose, and not because none exist.**
-#:
-#: The derivers live in `bankmachine.connector.plaid.derivers` and are composed
-#: into a registry by `bankmachine.derivers`, which sits above both layers.
-#: Populating this mapping instead would mean `store` importing `connector` --
-#: pulling the aggregator SDK into every process that opens the datastore,
-#: including the read-only query surface, which must never load the network
-#: layer at all.
-#:
-#: It stays a mapping rather than a mutable dict so nothing registers a deriver
-#: as a side effect of being imported: what a rebuild replays is a property of
-#: the build, not of which modules happened to be loaded first.
-#:
-#: Falling through to this default is loud, not silent -- `deriver_for` refuses
-#: and names the endpoint, so a caller that forgot to pass a registry finds out
-#: on the first response rather than by producing an empty dataset.
-DERIVERS: Mapping[str, Deriver] = MappingProxyType({})
-
 
 def ensure_derivation_version(
     conn: SAConnection,
@@ -164,9 +145,19 @@ def ensure_derivation_version(
     return int(primary_key[0])
 
 
-def deriver_for(endpoint: str, derivers: Mapping[str, Deriver] | None = None) -> Deriver:
-    """The deriver registered for an endpoint, or a refusal naming it."""
-    registry = DERIVERS if derivers is None else derivers
+def deriver_for(endpoint: str, derivers: Mapping[str, Deriver]) -> Deriver:
+    """The deriver registered for an endpoint, or a refusal naming it.
+
+    🔴 **`derivers` is required, and has no default.** It briefly had one -- an
+    empty module-level registry, left over from when this seam expected build
+    step 2 to populate it in place. Once the registry moved a layer up, that
+    default had exactly one reachable outcome: `UnknownEndpointError` on the
+    first response. A caller could omit the argument, pass mypy strict and the
+    whole suite, and fail at runtime on the first response of an unattended
+    nightly sync. The same reasoning as `link_token_create`'s history window: a
+    forgetful caller should fail to typecheck.
+    """
+    registry = derivers
     try:
         return registry[endpoint]
     except KeyError:
@@ -183,7 +174,7 @@ def derive(
     response: RawResponse,
     context: DerivationContext,
     *,
-    derivers: Mapping[str, Deriver] | None = None,
+    derivers: Mapping[str, Deriver],
 ) -> None:
     """Write the normalized rows one already-persisted response implies.
 
@@ -200,8 +191,8 @@ def apply_response(
     endpoint: str,
     body: bytes,
     received_at: UtcInstant,
+    derivers: Mapping[str, Deriver],
     request_context: str | None = None,
-    derivers: Mapping[str, Deriver] | None = None,
 ) -> RawResponse:
     """Persist a response, commit it, then derive from it. The sync path's one entry point.
 

@@ -34,6 +34,62 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-07: What the cumulative review changed about the derivers
+
+<!-- prawduct: scope=connector-v1 -->
+
+**Why:** the bundle review of build step 2 found one blocking defect and two design errors, and
+all three were mine to have caught.
+
+🔴 **A day's balance was being overwritten, and three ratified records say it is rejected.**
+AC-3.1, `data-model.md` and the DDL comment above `balances_daily` all say the same thing: a
+second capture on a day already recorded is *rejected*, so the series does not depend on what time
+of day anyone happened to look. My deriver upserted, and the reinterpretation that justified it —
+"AC-3.1 is about the series" — lived only in a comment in the deriver itself. **That is a
+normative change, and a comment is not where one gets made.** The rule now conforms: the first
+capture for a day wins, decided by comparing captures rather than by arriving first, so a replay
+in any order lands on the same row. AC-2.4 was measurably breached too — re-deriving rewrote
+`raw_response_id` and `captured_at`, and the idempotence test compared only the two tables where
+it held. The sharpest case had no test at all: a manual-import row was overwritten into an
+aggregator row, which the *next* rebuild deletes, so an operator's hand-entered balance would
+vanish one rebuild later with nothing connecting the loss to the sync that caused it.
+
+🔴 **The institutions deriver was writing a catalogue page into the roster.** `/institutions/get`
+serves the aggregator's *production* catalogue — 10,083 US institutions with real names and
+routing numbers — and `institutions` is the table `connections` hangs off. After a
+`connector check` and a rebuild, the roster would hold banks the operator never linked, with
+nothing to tell them apart and nothing that removes them, because a rebuild never empties that
+table. The institution now comes from `/item/get`, which carries exactly the one this connection
+belongs to. `/institutions/get` is registered as deriving **nothing**, by name: "archived and
+implies no rows" is a real answer, and left unregistered it is indistinguishable from the endpoint
+nobody got round to.
+
+**`/item/get` was archivable with no deriver**, which would have made every later rebuild refuse
+the whole archive — on a row that cannot be removed. The test named for that check asserted a
+hand-written pair, which is why adding the endpoint did not turn it red; it now derives the
+expected set from the endpoints that can produce a `FetchedResponse`, so the next one fails in the
+commit that adds it.
+
+**Two more where a shape held for a reason narrower than the claim above it.** The retry channel's
+safety argument — nothing inside it writes — is about the *local* side, and an exchange spends a
+single-use token at the far end; `Endpoint.retry_safe` now carries that. "The connector persists
+nothing" stopped being true when the derivers landed: a deriver writes rows through a handle the
+caller owns. The property that actually holds, and the one AC-5.1 rests on, is that nothing under
+`connector/` can *obtain* a handle — narrower, and true.
+
+**Smaller, and each one a thing that would have read as fine:** `_upsert_account` applied one
+values dict to insert and update, so derivation permanently owned `balance_class`, which
+`data-model.md` declares operator-correctable; the registry argument was optional everywhere with
+a default that could only fail; `get_logger` doubled its own prefix, so every new log line read
+`bankmachine.bankmachine.…`; the terminal failure — the one that ends a sync — was the one going
+unlogged; and the credential guard's exemption read one line at a time, so a secret inside a
+multi-line string was exempt on every line but the first. That last one is now answered with
+`ast` rather than quote-counting, after the counting version started reporting its own tests.
+
+**Three obligations this plan cannot discharge are written into it** rather than left to be
+noticed: wiring `config.history_days` into enrollment, the granted window that is unobservable
+until step 3's first real connection, and account retirement.
+
 ## 2026-09-07: Enrollment, the derivers, and the archive exemption made structural
 
 <!-- prawduct: scope=connector-v1 -->

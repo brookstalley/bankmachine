@@ -300,8 +300,16 @@ rebuilds outright.
 returned before anything normalizes it. Today: `cli/connector.py`.
 
 **Contract:** the connector returns `FetchedResponse` — an `Endpoint`, undecoded
-`body` bytes, and when they arrived — and **persists nothing**. Archiving is the
-caller's act, through `store.raw.record_response`.
+`body` bytes, and when they arrived. Archiving is the caller's act, through
+`store.raw.record_response`.
+
+🔴 **The property is that nothing under `connector/` can *obtain* a datastore
+handle** — not that nothing under it writes. The distinction became real when the
+derivers landed: a deriver writes rows, through a connection the caller already
+opened and owns. It cannot open one, cannot decide when the transaction commits,
+and cannot reach the archive except through the response it was handed. That is
+what makes AC-5.1's "archive before normalize" structural, and it is narrower and
+truer than "the connector persists nothing".
 
 `system-requirements.md` §9.2 is answered (2026-09-06): one aggregator in v1,
 contained so a second is a new module rather than a rewrite. The boundary is
@@ -363,9 +371,13 @@ the error path.
 
 **The retry channel wraps the HTTP call and nothing else.** `architecture.md`
 permits backoff on exactly this boundary because it is the only one that can
-fail transiently. The connector persists nothing, so there is no write inside
-the retried boundary to interleave a second attempt against — which is what
-makes retrying safe here and would not make it safe anywhere downstream.
+fail transiently. Nothing inside the retried boundary writes, so there is no
+partial effect for a second attempt to interleave against — which is what makes
+retrying safe here and would not make it safe anywhere downstream.
+
+🔴 **That argument is about the local side only.** An endpoint the *far* end
+cannot absorb twice — an exchange spends a single-use token and mints a durable
+Item — is excluded by `Endpoint.retry_safe`, not by this reasoning.
 
 **Built as of build step 2:** the endpoints `/institutions/get`,
 `/link/token/create`, `/item/public_token/exchange`, `/item/get` and

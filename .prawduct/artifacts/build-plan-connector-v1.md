@@ -98,7 +98,7 @@ mid-plan.
 Three positions, since a plan handed over without one reads as endorsed:
 
 1. **I would cut the transactions deriver from this plan, and I have.** The obvious reading of "step 2
-   registers into `DERIVERS`" is that step 2 derives everything it can fetch. I think that is wrong:
+   registers the derivers" is that step 2 derives everything it can fetch. I think that is wrong:
    deriving a `/transactions/sync` response is inseparable from the cursor loop, the soft-delete rule
    (AC-2.2) and the pending→posted match (AC-2.3), all of which are FR-2 and build step 4. Splitting
    the deriver from the loop that feeds it means writing the hard half twice. So Chunk 04 registers
@@ -175,7 +175,7 @@ of the Critic — `ApiException.reason` is the HTTP reason phrase, so every reje
 `400: Bad Request` until the error body was parsed for the cause.
 
 The datastore layer this plan archives through is complete and green; the `DERIVERS` registry it
-registers into is deliberately empty, and `store rebuild` refuses a real archive until Chunk 04
+registers into was deliberately empty, and `store rebuild` refused a real archive until Chunk 04
 fills it. **Build step 2 is complete.** Next is build step 3, the enrollment flow — and 🔴 its first real connection is where AC-1.2 becomes irreversible and where the granted history window becomes observable for the first time.
 
 ## Scaffolding
@@ -376,7 +376,7 @@ relationship (who may import what), not a naming convention.
 
 ### Chunk 04: Institutions and accounts derivers; rebuild on a real archive
 
-- **Description:** Register the first derivers into `DERIVERS`, so `store rebuild` works end-to-end
+- **Description:** Build the first derivers and compose them into a registry, so `store rebuild` works end-to-end
   over an archive of real responses instead of refusing for want of one. Institutions and accounts are
   the entities transactions will reference, which is what build step 4 needs from this plan. The
   derivers obey the seam's one rule with teeth: no clock, ever.
@@ -403,6 +403,31 @@ relationship (who may import what), not a naming convention.
   3. Committed, then `/prawduct:critic cumulative` run and blocking findings resolved
   4. Chunk marked `[x]` in Status, and `system-requirements.md` §9.2 closed with this plan's
      answer — done 2026-09-07, with what enforces each half of the containment recorded there
+
+## What Build Step 3 Inherits
+
+Three obligations that this plan created and cannot discharge. They are written here rather than
+left to be noticed, because each is invisible from the code that will need it.
+
+1. 🔴 **Wire `config.history_days` into `link_token_create`.** The window is resolved,
+   range-checked and documented as an operator knob, and **no call site passes it** — the tests
+   pass literals. The mypy-enforced required argument stops a caller *forgetting* a window; it
+   cannot stop one passing the wrong one. So an enrollment written without this reads as correct,
+   satisfies the guard, silently ignores the operator's configured value, and AC-1.2 makes the
+   result immutable per connection. This plan calls that the most expensive mistake in the system,
+   and this is the one path to it the guard does not close.
+2. 🔴 **The granted history window is observable for the first time at step 3's first real
+   connection.** `/link/token/create` does not report it (`api-notes-plaid.md` §11), so
+   AC-11.8's shortfall — `requested_history_days` minus `granted_history_days` — cannot be
+   computed before then, and nothing in build step 2 verified it.
+3. **Account retirement is not implemented.** `_upsert_account` never sets `lifecycle_status` to
+   `inactive` or writes `closed_date`, so an account that stops appearing in `/accounts/get` stays
+   active with a frozen balance. `data-model.md` § Account lifecycle notes that the coverage report
+   reads exactly those two columns to tell a closure from a hole, so until this lands a closed
+   account will report as a permanent gap. The removal case *is* derivable where the accounts
+   deriver already stands — `/accounts/get` returns the full list per connection — but making it
+   order-independent under replay needs the care `first_seen_at` got, which is why it is recorded
+   as deferred rather than half-built.
 
 ## Early Feedback Milestone
 

@@ -326,9 +326,10 @@ def call_with_retry(
 
     **This wraps the HTTP call and nothing else, which is what makes it safe.**
     A retry that spans a write can interleave a second attempt's data with the
-    first's partial effects; the connector persists nothing, so there is no
-    write inside this boundary to interleave. The caller archives once, after
-    this returns.
+    first's partial effects. Nothing inside this boundary writes: the client
+    returns bytes and the caller archives once, after this returns. **That is an
+    argument about the local side only** -- an endpoint the far end cannot absorb
+    twice is excluded by `Endpoint.retry_safe`, not by this reasoning.
 
     `now` is passed rather than read so the failure that finally escapes carries
     a `failed_at` from the same clock the caller stamps everything else with.
@@ -342,6 +343,18 @@ def call_with_retry(
             return call()
         except ConnectorError as exc:
             if not type(exc).retryable:
+                # 🔴 The terminal failure is the one worth recording, and it was
+                # the one going unrecorded: the retryable path logged and the
+                # path that actually ends a sync re-raised in silence. A caller
+                # may well log it too, but "someone upstream will" is how a
+                # nightly job comes to have no trace of why it stopped.
+                _log.error(
+                    "%s on %s for connection %s: not retryable (%s)",
+                    type(exc).__name__,
+                    exc.endpoint or "the aggregator",
+                    exc.connection_id if exc.connection_id is not None else "-",
+                    exc.error_code or "no code",
+                )
                 raise
             last = exc
             # Logged at every retry, because a call that succeeds on attempt 3
@@ -350,9 +363,10 @@ def call_with_retry(
             # one subsystem whose named primary failure mode is silent
             # staleness, a wait nobody can see is the failure in miniature.
             _log.warning(
-                "%s on %s: retrying (attempt %d of %d)",
+                "%s on %s for connection %s: retrying (attempt %d of %d)",
                 type(exc).__name__,
                 exc.endpoint or "the aggregator",
+                exc.connection_id if exc.connection_id is not None else "-",
                 attempt,
                 policy.attempts,
             )
@@ -381,9 +395,10 @@ def call_with_retry(
     last.args = (f"{last} -- gave up after {policy.attempts} attempts",)
     last.failed_at = now()
     _log.error(
-        "%s on %s: giving up after %d attempts",
+        "%s on %s for connection %s: giving up after %d attempts",
         type(last).__name__,
         last.endpoint or "the aggregator",
+        last.connection_id if last.connection_id is not None else "-",
         policy.attempts,
     )
     raise last

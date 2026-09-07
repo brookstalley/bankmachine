@@ -281,11 +281,12 @@ cannot be computed until then, and no earlier chunk should imply otherwise.
 `/item/public_token/exchange` answers with exactly `access_token`, `item_id`,
 `request_id` — confirmed both in the SDK's model and against the live sandbox.
 
-This is what turns the archive exemption from a decision into an obligation:
+This is what turned the archive exemption from a decision into an obligation:
 `store/raw.py` is append-only and a datastore backup travels, so archiving this
-body verbatim would satisfy AC-5.1 by breaking AC-10.1 permanently. The exemption
-is Chunk 03's mechanism to build, and it must key on the endpoint rather than on
-a rule anyone has to remember.
+body verbatim would satisfy AC-5.1 by breaking AC-10.1 permanently. **Built in
+Chunk 03**, and keyed on the endpoint rather than on a rule anyone has to
+remember: `Endpoint.issues_credential` marks it, and `FetchedResponse` refuses to
+exist for such an endpoint, so there is no object for the archive to be given.
 
 ### 13. Capabilities are four separate product lists, and `products` is not the useful one
 

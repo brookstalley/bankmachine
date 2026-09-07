@@ -1,8 +1,10 @@
 """Institutions and accounts, derived from what the aggregator actually said.
 
-The first entries in `store.derivation.DERIVERS`, and the ones that make
-`store rebuild` exercisable end-to-end: until now the registry was empty and a
-rebuild refused any real archive for want of a deriver.
+The first derivers this product has, and the ones that make `store rebuild`
+exercisable end-to-end: until they existed a rebuild refused any real archive for
+want of one. They are composed into a registry by `bankmachine.derivers`, above
+both layers, and passed to whoever runs a derivation -- not registered into
+`store.derivation`, which would mean `store` importing `connector`.
 
 🔴 **No clock, ever.** A deriver is a pure function of its response. Every
 timestamp here comes from `response.received_at` -- when this system actually
@@ -39,9 +41,9 @@ from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any, Final
 
 from sqlalchemy import Connection as SAConnection
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, select, update
 
-from bankmachine.connector import ACCOUNTS_GET, INSTITUTIONS_GET
+from bankmachine.connector import ACCOUNTS_GET, INSTITUTIONS_GET, ITEM_GET
 from bankmachine.logging_setup import get_logger
 from bankmachine.store.derivation import DerivationContext, DerivationError, Deriver
 from bankmachine.store.raw import RawResponse
@@ -53,38 +55,30 @@ from bankmachine.store.types import (
     UtcInstant,
     calendar_date,
     from_decimal_string,
+    minor_digits,
     negate,
 )
 
 _log = get_logger(__name__)
 
-#: Currencies whose minor unit is not 1/100.
+#: Columns an account row keeps once it has one, because something other than
+#: this deriver owns them afterwards.
 #:
-#: ISO 4217's exponent is 2 for almost everything, and the exceptions are a short
-#: closed list. Enumerating them and defaulting the rest to 2 is safer than the
-#: reverse: a missing 2-decimal currency would refuse an ordinary account, while
-#: a missing *exception* would store a JPY balance 100x too large, silently and
-#: plausibly. The list is what keeps the default honest.
-_MINOR_DIGITS: Final[Mapping[str, int]] = {
-    # Zero-decimal
-    "BIF": 0, "CLP": 0, "DJF": 0, "GNF": 0, "ISK": 0, "JPY": 0, "KMF": 0,
-    "KRW": 0, "PYG": 0, "RWF": 0, "UGX": 0, "UYI": 0, "VND": 0, "VUV": 0,
-    "XAF": 0, "XOF": 0, "XPF": 0,
-    # Three-decimal
-    "BHD": 3, "IQD": 3, "JOD": 3, "KWD": 3, "LYD": 3, "OMR": 3, "TND": 3,
-    # Four-decimal
-    "CLF": 4, "UYW": 4,
-}  # fmt: skip
-
-DEFAULT_MINOR_DIGITS: Final = 2
-
-#: Aggregator account types whose balance is money the operator *owes*.
+#: `balance_class` is declared operator-correctable in `data-model.md` -- it
+#: partitions a report rather than deciding an arithmetic sign, so the operator
+#: gets the last word. `lifecycle_status` belongs to whatever retires an account.
 #:
-#: Read from the account's own type rather than from anything naming an
-#: institution, per AC-3.2's rule that nothing branches on a roster identity. A
-#: type this build has never seen is refused rather than assumed to be an asset:
-#: guessing "asset" on an unrecognized liability reports a debt as savings, which
-#: is wrong by twice the balance and looks entirely reasonable.
+#: 🔴 **Nothing retires one yet, and that is a real gap rather than an oversight
+#: this list closes.** An account that stops appearing in `/accounts/get` stays
+#: `active` with a frozen balance, and `data-model.md` § Account lifecycle notes
+#: that the coverage report reads exactly `lifecycle_status` and `closed_date` to
+#: tell a closure from a hole. Until the transition exists, a closed account will
+#: report as a permanent gap. The removal case *is* derivable here --
+#: `/accounts/get` returns the full list per connection -- but making it
+#: order-independent under replay needs the care `first_seen_at` got, so it is
+#: recorded as deferred in the build plan rather than half-built.
+_OPERATOR_OWNED: Final[frozenset[str]] = frozenset({"balance_class", "lifecycle_status"})
+
 _LIABILITY_TYPES: Final[frozenset[str]] = frozenset({"credit", "loan"})
 _ASSET_TYPES: Final[frozenset[str]] = frozenset({"depository", "investment", "brokerage", "other"})
 
@@ -126,11 +120,6 @@ def _required(value: object, what: str, response: RawResponse) -> str:
 def _optional(value: object) -> str | None:
     """A nullable string. An absent field and an empty one are both nothing."""
     return value if isinstance(value, str) and value else None
-
-
-def minor_digits(currency: str) -> int:
-    """How many minor digits a currency has."""
-    return _MINOR_DIGITS.get(currency.upper(), DEFAULT_MINOR_DIGITS)
 
 
 def to_minor(amount: object, currency: str, what: str, response: RawResponse) -> MinorUnits:
@@ -213,36 +202,56 @@ def _as_of(received_at: UtcInstant) -> CalendarDate:
     return calendar_date(received_at.date())
 
 
-def derive_institutions(
-    conn: SAConnection, response: RawResponse, context: DerivationContext
-) -> None:
-    """`/institutions/get` -> the `institutions` table.
+def derive_nothing(conn: SAConnection, response: RawResponse, context: DerivationContext) -> None:
+    """`/institutions/get` -> no rows, deliberately and by name.
+
+    🔴 **A catalogue page is reference data about the aggregator's coverage, not
+    a fact about this operator.** `/institutions/get` serves the *production*
+    catalogue -- 10,083 US institutions *(measured; `api-notes-plaid.md` §7)* --
+    and `institutions` is the roster: the table `connections` hangs off, holding
+    the institutions the operator actually enrolled. Deriving a page into it
+    would put banks the operator never linked beside the ones they did, with
+    nothing to tell them apart and nothing that removes them, since a rebuild
+    never empties this table.
+
+    **Registered rather than omitted.** `deriver_for` refuses an endpoint it has
+    no deriver for, which is right -- a rebuild that stepped over a response it
+    could not interpret would report success on an incomplete dataset. But
+    "archived and implies no rows" is a real answer, and it has to be *stated*,
+    or it is indistinguishable from the endpoint nobody got round to.
+
+    The response is still archived: it is what `connector check` proves the whole
+    path with, and the archive is the record of what this system was told.
+    """
+
+
+def derive_item(conn: SAConnection, response: RawResponse, context: DerivationContext) -> None:
+    """`/item/get` -> the one institution this connection belongs to.
+
+    The roster grows a row per *connection*, not per catalogue page, and this
+    body carries exactly that: `item.institution_id` and `item.institution_name`
+    are the institution behind the connection whose access token fetched it.
 
     Upserts on `source_institution_id`, because a rebuild does not empty this
     table -- accounts reference `institution_id`, and reassigning it would orphan
     them.
+
+    The item's `available_products` is what `connections.capabilities` will be
+    built from at enrollment (AC-3.2); `capabilities_of` in the client reads it,
+    and writing that column is build step 3's job rather than a deriver's.
     """
     payload = _payload(response)
-    listed = payload.get("institutions")
-    if not isinstance(listed, list):
+    item = payload.get("item")
+    if not isinstance(item, dict):
         raise DerivationError(
-            f"raw response {response.raw_response_id} ({INSTITUTIONS_GET}) has no institutions "
-            f"list; deriving nothing from it would silently under-populate the table it feeds"
+            f"raw response {response.raw_response_id} ({ITEM_GET}) has no item object"
         )
-    for entry in listed:
-        if not isinstance(entry, dict):
-            raise DerivationError(
-                f"raw response {response.raw_response_id} lists a "
-                f"{type(entry).__name__} among its institutions"
-            )
-        _upsert_institution(
-            conn,
-            source_institution_id=_required(
-                entry.get("institution_id"), "institution_id", response
-            ),
-            name=_required(entry.get("name"), "institution name", response),
-            seen_at=response.received_at,
-        )
+    _upsert_institution(
+        conn,
+        source_institution_id=_required(item.get("institution_id"), "institution_id", response),
+        name=_required(item.get("institution_name"), "institution name", response),
+        seen_at=response.received_at,
+    )
 
 
 def _upsert_institution(
@@ -436,12 +445,22 @@ def _upsert_account(
         return int(primary_key[0])
 
     account_id, first_seen_date = existing
+    # 🔴 **An update owns fewer columns than an insert, and the difference is the
+    # point.** Applying one `values` dict to both would make derivation the
+    # permanent owner of every column it names -- so an operator's correction to
+    # `balance_class`, which `data-model.md` declares operator-correctable, would
+    # be silently reverted on the next sync, and `lifecycle_status` would be
+    # pinned to "active" by the code that is supposed to be able to retire it.
+    #
+    # `first_seen_date` takes the earliest mention rather than the latest, so a
+    # replay in any order converges on the same row.
     conn.execute(
         update(accounts)
         .where(accounts.c.account_id == account_id)
-        # `first_seen_date` takes the earliest mention rather than the latest, so
-        # a replay in any order converges on the same row.
-        .values(**values, first_seen_date=min(first_seen_date, seen_date))
+        .values(
+            **{k: v for k, v in values.items() if k not in _OPERATOR_OWNED},
+            first_seen_date=min(first_seen_date, seen_date),
+        )
     )
     return int(account_id)
 
@@ -498,44 +517,56 @@ def _write_balance(
         "derivation_version_id": context.derivation_version_id,
     }
 
-    # 🔴 One row per account per day, so a second capture on the same date
-    # refines that day's point rather than appending beside it -- the primary key
-    # says so, and AC-3.1's "never overwrite; append" is about the *series*, which
-    # still grows a point a day.
+    # 🔴 **One capture per account per day, and the first one wins.**
     #
-    # **The later capture wins, decided by comparing captures rather than by
-    # arriving second.** Replay order would give the same answer today, and would
-    # stop doing so the moment two responses shared a `received_at` -- which the
-    # archive explicitly allows, and which is the case nobody would think to test.
+    # `docs/system-requirements.md` AC-3.1, `data-model.md` and the DDL comment
+    # above this table all say the same thing: a second capture on a day already
+    # recorded is *rejected* rather than allowed to overwrite, so the series does
+    # not depend on what time of day anyone happened to look, and a re-run
+    # changes nothing (AC-2.4). No aggregator backfills a balance series, so a
+    # day not captured is a day gone for good -- which is why the rule leans
+    # toward keeping what is already there.
+    #
+    # Skipped rather than raised, because rejecting loudly would make a rebuild
+    # fail on an archive that is perfectly legitimate: two `/accounts/get`
+    # responses on one day is an ordinary thing for a sync to have recorded.
+    #
+    # **"First" is decided by comparing captures, not by arriving first.** Replay
+    # order would give the same answer today and would stop doing so the moment
+    # two responses shared a `received_at`, which the archive explicitly allows.
+    #
+    # This also protects a row the manual-import path wrote: overwriting one
+    # would turn it into an aggregator row that the next rebuild deletes, since
+    # a rebuild empties exactly the rows carrying a `raw_response_id`.
     existing = conn.execute(
         select(balances_daily.c.captured_at, balances_daily.c.raw_response_id).where(
             balances_daily.c.account_id == account_id,
             balances_daily.c.as_of_date == as_of,
         )
     ).one_or_none()
-    if existing is None:
+    if existing is not None:
+        captured_at, raw_response_id = existing
+        incoming = (response.received_at, response.raw_response_id)
+        if (captured_at, raw_response_id or 0) <= incoming:
+            return
+        # The archive holds an earlier capture for this day than the row that is
+        # here. Replaying it must still land on the earliest, or a rebuild would
+        # depend on the order rows happened to be written in the first place.
         conn.execute(
-            insert(balances_daily).values(account_id=account_id, as_of_date=as_of, **values)
+            delete(balances_daily).where(
+                balances_daily.c.account_id == account_id,
+                balances_daily.c.as_of_date == as_of,
+            )
         )
-        return
-    captured_at, raw_response_id = existing
-    if (response.received_at, response.raw_response_id) < (captured_at, raw_response_id or 0):
-        return
-    conn.execute(
-        update(balances_daily)
-        .where(
-            balances_daily.c.account_id == account_id,
-            balances_daily.c.as_of_date == as_of,
-        )
-        .values(**values)
-    )
+    conn.execute(insert(balances_daily).values(account_id=account_id, as_of_date=as_of, **values))
 
 
-#: What this module registers into `store.derivation.DERIVERS`.
+#: What `bankmachine.derivers` composes into this build's registry.
 #:
 #: Keyed by the endpoint's own path, which is also what `store.raw` records, so a
 #: rebuild years from now can still tell what a stored response was.
 PLAID_DERIVERS: Final[Mapping[str, Deriver]] = {
-    str(INSTITUTIONS_GET): derive_institutions,
+    str(INSTITUTIONS_GET): derive_nothing,
+    str(ITEM_GET): derive_item,
     str(ACCOUNTS_GET): derive_accounts,
 }

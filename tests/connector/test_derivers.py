@@ -24,15 +24,13 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import Connection as SAConnection
-from sqlalchemy import insert, select
+from sqlalchemy import delete, insert, select
 
 from bankmachine.config import Config
-from bankmachine.connector import ACCOUNTS_GET, INSTITUTIONS_GET
+from bankmachine.connector import ACCOUNTS_GET, INSTITUTIONS_GET, ITEM_GET, Endpoint
 from bankmachine.connector.plaid.derivers import (
-    DEFAULT_MINOR_DIGITS,
     PLAID_DERIVERS,
     balance_class_of,
-    minor_digits,
     to_minor,
 )
 from bankmachine.store.derivation import (
@@ -44,8 +42,19 @@ from bankmachine.store.derivation import (
 from bankmachine.store.engine import transaction, writer_connection
 from bankmachine.store.raw import RawResponse
 from bankmachine.store.rebuild import content_digest, rebuild
-from bankmachine.store.schema import accounts, balances_daily, connections, institutions
-from bankmachine.store.types import UtcInstant, utc_instant
+from bankmachine.store.schema import (
+    accounts,
+    balances_daily,
+    connections,
+    institutions,
+    manual_imports,
+)
+from bankmachine.store.types import (
+    DEFAULT_MINOR_DIGITS,
+    UtcInstant,
+    minor_digits,
+    utc_instant,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -339,6 +348,132 @@ def test_a_balance_in_no_stated_currency_is_refused(store: Config) -> None:
         derive(store, str(ACCOUNTS_GET), body)
 
 
+def test_a_second_capture_on_a_recorded_day_is_rejected_not_merged(store: Config) -> None:
+    """🔴 AC-3.1: never overwrite; append. Three records say a second capture is rejected.
+
+    The series must not depend on what time of day anyone happened to look, and
+    no aggregator backfills a balance series — so a day already recorded is a day
+    already answered. This was an upsert before the Critic caught it, and the
+    reinterpretation that justified it ("AC-3.1 is about the series") lived only
+    in the deriver's own comment, which is not where a norm gets amended.
+    """
+    first = derive(
+        store,
+        str(ACCOUNTS_GET),
+        _one_account_body("acct-1", current=100.00),
+        received_at=utc_instant(datetime(2026, 9, 7, 9, 0, tzinfo=UTC)),
+    )
+    derive(
+        store,
+        str(ACCOUNTS_GET),
+        _one_account_body("acct-1", current=999.99),
+        received_at=utc_instant(datetime(2026, 9, 7, 21, 0, tzinfo=UTC)),
+    )
+
+    balances = rows(store, balances_daily)
+    assert len(balances) == 1, "a second capture on the same day added a row"
+    assert balances[0]["current_minor"] == 10000, "the evening capture overwrote the morning's"
+    assert balances[0]["raw_response_id"] == first.raw_response_id
+
+
+def test_an_earlier_capture_replayed_later_still_wins(store: Config) -> None:
+    """ "First" is decided by comparing captures, not by arriving first.
+
+    Replay order gives the same answer today and stops doing so the moment two
+    responses share a `received_at`, which the archive explicitly allows. Without
+    this, a rebuild's result would depend on the order rows happened to be
+    written in originally.
+    """
+    derive(
+        store,
+        str(ACCOUNTS_GET),
+        _one_account_body("acct-1", current=999.99),
+        received_at=utc_instant(datetime(2026, 9, 7, 21, 0, tzinfo=UTC)),
+    )
+    derive(
+        store,
+        str(ACCOUNTS_GET),
+        _one_account_body("acct-1", current=100.00),
+        received_at=utc_instant(datetime(2026, 9, 7, 9, 0, tzinfo=UTC)),
+    )
+
+    balances = rows(store, balances_daily)
+    assert len(balances) == 1
+    assert balances[0]["current_minor"] == 10000, "the earlier capture did not win on replay"
+
+
+def test_re_deriving_one_response_changes_no_balance_column(store: Config) -> None:
+    """AC-2.4: a re-run changes nothing — including the columns nobody looks at.
+
+    The idempotence test that existed compared `accounts` and `institutions`, so
+    it could not see the one table where it failed: an upsert rewrote
+    `raw_response_id` and `captured_at` on every derivation.
+    """
+    body = _one_account_body("acct-1", current=100.00)
+    derive(store, str(ACCOUNTS_GET), body)
+    once = rows(store, balances_daily)
+    derive(store, str(ACCOUNTS_GET), body)
+
+    assert rows(store, balances_daily) == once
+
+
+def test_a_manual_import_row_is_not_turned_into_an_aggregator_row(store: Config) -> None:
+    """🔴 The sharpest case, and the one an upsert got wrong silently.
+
+    A manual-import row carries `manual_import_id` and no `raw_response_id`.
+    Overwritten into an aggregator row it becomes something the *next* rebuild
+    deletes — because a rebuild empties exactly the rows carrying a
+    `raw_response_id` — so the operator's hand-entered balance disappears one
+    rebuild later, with nothing connecting the loss to the sync that caused it.
+    """
+    derive(store, str(ACCOUNTS_GET), _one_account_body("acct-1", current=100.00))
+    account_id = rows(store, accounts)[0]["account_id"]
+    with writing(store) as conn, transaction(conn):
+        conn.execute(delete(balances_daily))
+        import_id = conn.execute(
+            insert(manual_imports).values(
+                account_id=account_id,
+                adapter="csv",
+                source_name="a statement the operator typed in",
+                file_sha256="0" * 64,
+                file_bytes=1,
+                imported_at=RECEIVED,
+                rows_seen=1,
+                rows_applied=1,
+            )
+        ).inserted_primary_key
+        assert import_id is not None
+        conn.execute(
+            insert(balances_daily).values(
+                account_id=account_id,
+                as_of_date=RECEIVED.date(),
+                current_minor=777,
+                currency="USD",
+                captured_at=RECEIVED,
+                source="manual",
+                raw_response_id=None,
+                manual_import_id=import_id[0],
+                derivation_version_id=1,
+            )
+        )
+
+    derive(store, str(ACCOUNTS_GET), _one_account_body("acct-1", current=100.00))
+
+    balance = rows(store, balances_daily)[0]
+    assert balance["current_minor"] == 777, "the operator's own row was overwritten"
+    assert balance["source"] == "manual"
+    assert balance["raw_response_id"] is None, (
+        "the row now carries a raw_response_id, so the next rebuild will delete it"
+    )
+
+
+def _one_account_body(account_id: str, *, current: float) -> bytes:
+    """One account, in the shape `/accounts/get` sends."""
+    account = _account(current=current)
+    account["account_id"] = account_id
+    return json.dumps({"accounts": [account], "item": {}, "request_id": "r"}).encode()
+
+
 # --------------------------------------------------------------------------
 # The sign convention (data-model.md Direction; backlog #9)
 # --------------------------------------------------------------------------
@@ -512,15 +647,11 @@ def test_replaying_in_any_order_converges_on_the_same_identity_rows(
     that would break it are the ones nobody thinks to write down -- and a rebuild
     replays by `received_at`, which two responses can share.
     """
-    # The fixture's own institution is referenced by its connection, so it stays.
-    # Excluded by name rather than by a snapshot taken here: hypothesis reuses a
-    # function-scoped fixture across examples, so a snapshot would grow to
-    # include the previous example's rows and leave nothing to assert on.
     for received_at in order:
-        derive(store, str(INSTITUTIONS_GET), fixture("institutions_get"), received_at=received_at)
+        derive(store, str(ITEM_GET), fixture("item_get"), received_at=received_at)
 
     derived = [
-        r for r in rows(store, institutions) if r["source_institution_id"] != SEEDED_INSTITUTION
+        r for r in rows(store, institutions) if r["source_institution_id"] == SEEDED_INSTITUTION
     ]
     assert derived, "the fixture derived no institution, so this proves nothing"
     for row in derived:
@@ -621,18 +752,58 @@ def test_a_missing_required_field_fails_loudly_rather_than_writing_a_partial_row
     assert not rows(store, accounts), f"a partial row survived the {what} case"
 
 
-def test_an_institution_with_no_logo_derives_because_nothing_reads_a_logo(
+def test_an_item_missing_its_institution_is_refused_rather_than_left_unlinked(
     store: Config,
 ) -> None:
-    """The columns this build stores are the ones it can promise something about."""
+    """`accounts.institution_id` is NOT NULL, so there is no half-derived answer.
+
+    A placeholder institution would be this system inventing a fact and recording
+    it as one the aggregator supplied -- and it would sit in the roster beside the
+    operator's real institutions with nothing to tell them apart.
+    """
+    for mutate in (
+        lambda p: p["item"].update({"institution_id": None}),
+        lambda p: p["item"].update({"institution_name": None}),
+        lambda p: p.update({"item": None}),
+    ):
+        with pytest.raises(DerivationError):
+            derive(store, str(ITEM_GET), _with(fixture("item_get"), mutate))
+
+
+def test_fields_this_build_does_not_read_do_not_stop_it_deriving(store: Config) -> None:
+    """The aggregator adds fields; a deriver that read them all would break on each one.
+
+    The archive keeps the whole body, so a field this build ignores today is
+    still there for a rebuild that learns to read it.
+    """
     body = _with(
-        fixture("institutions_get"),
-        lambda p: [
-            entry.pop("logo", None) or entry.update({"logo": None}) for entry in p["institutions"]
-        ],
+        fixture("item_get"),
+        lambda p: p["item"].update({"a_field_invented_after_this_build": {"nested": [1, 2]}}),
     )
-    derive(store, str(INSTITUTIONS_GET), body)
-    assert len(rows(store, institutions)) > 1
+    derive(store, str(ITEM_GET), body)
+    assert any(r["source_institution_id"] == SEEDED_INSTITUTION for r in rows(store, institutions))
+
+
+def test_a_catalogue_page_derives_no_rows_at_all(store: Config) -> None:
+    """🔴 `/institutions/get` serves the aggregator's *production* catalogue.
+
+    10,083 US institutions, with real names and routing numbers. `institutions`
+    is the roster -- the table `connections` hangs off -- so deriving a page into
+    it would put banks the operator never linked beside the ones they did, with
+    nothing to tell them apart and nothing that removes them, because a rebuild
+    never empties this table.
+
+    Registered as deriving nothing rather than left unregistered: "archived and
+    implies no rows" is a real answer and has to be stated, or it is
+    indistinguishable from the endpoint nobody got round to.
+    """
+    before = rows(store, institutions)
+    derive(store, str(INSTITUTIONS_GET), fixture("institutions_get"), connection_id=None)
+
+    assert rows(store, institutions) == before
+    # Positive control: the page really does carry institutions, so the empty
+    # result is a decision rather than an empty page.
+    assert len(json.loads(fixture("institutions_get"))["institutions"]) >= 1
 
 
 def test_an_accounts_response_archived_against_no_connection_is_refused(
@@ -708,16 +879,33 @@ def test_a_rebuild_over_a_real_archive_reproduces_the_tables(store: Config) -> N
         assert content_digest(conn) == before
 
 
-def test_the_registry_covers_the_endpoints_that_are_archived(
-    initialized_config: Config,
-) -> None:
-    """A rebuild refuses an endpoint it has no deriver for, rather than skipping it.
+def test_every_archivable_endpoint_has_a_deriver() -> None:
+    """🔴 Derived from what can be archived, never written out by hand.
 
-    Asserted here because the pairing is easy to break from either side: an
-    endpoint added to the client with no deriver makes every later rebuild fail,
-    and it fails on the archive rather than at the call that introduced it.
+    A rebuild refuses an endpoint it has no deriver for -- correctly, since
+    stepping over a response it cannot interpret would report success on an
+    incomplete dataset. But that refusal lands on the *archive*, months later and
+    on a row that cannot be removed, rather than at the call that introduced the
+    endpoint.
+
+    The first version of this test asserted a hand-written pair, which is why
+    adding `item_get` to the client did not turn it red. The expected set is now
+    every endpoint that can produce a `FetchedResponse` -- the ones declared
+    without `issues_credential` -- so the next archivable endpoint fails here, in
+    the commit that adds it.
     """
-    assert set(PLAID_DERIVERS) == {str(INSTITUTIONS_GET), str(ACCOUNTS_GET)}
+    import bankmachine.connector as boundary
+
+    archivable = {
+        str(value)
+        for value in vars(boundary).values()
+        if isinstance(value, Endpoint) and not value.issues_credential
+    }
+    assert archivable, "no endpoints were found, so this test is proving nothing"
+    assert set(PLAID_DERIVERS) == archivable, (
+        "an endpoint can be archived with no deriver registered for it; the first caller to "
+        "archive one makes every later `store rebuild` refuse the whole archive"
+    )
 
 
 def test_the_composed_registry_is_what_the_rebuild_command_uses() -> None:
@@ -728,7 +916,5 @@ def test_the_composed_registry_is_what_the_rebuild_command_uses() -> None:
     included, which must never load the network layer at all.
     """
     from bankmachine.derivers import ALL_DERIVERS
-    from bankmachine.store.derivation import DERIVERS
 
     assert dict(ALL_DERIVERS) == dict(PLAID_DERIVERS)
-    assert not DERIVERS, "the seam's default registry should stay empty; see its docstring"

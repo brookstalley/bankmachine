@@ -31,9 +31,11 @@ travels. So a credential-bearing exchange is not persisted here; the archive is
 for the responses that carry *data*. The same applies to `request_context`, which
 records what was asked rather than what it was asked with: no `Authorization`
 header, no token in a query string. The endpoint vocabulary that can enforce this
-lives in the aggregator client (`connector.Endpoint`); the enforcing test arrives
-with the endpoints that carry credentials, which is where the rule first has
-something to bite on.
+lives in the aggregator client (`connector.Endpoint`), and **it is built**:
+`issues_credential` marks the endpoints whose body carries one, and
+`FetchedResponse` -- the only thing a caller derives an archive write from --
+refuses to exist for them. So the rule is not something a caller has to follow;
+there is no credential-bearing object for one to be handed.
 
 Compression is pinned to a fixed level with a zeroed mtime, so the same body
 always produces the same blob. Nothing depends on that today; it costs one

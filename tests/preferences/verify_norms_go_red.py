@@ -401,6 +401,20 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         '        "updated_at": __import__("bankmachine.store.types", fromlist=["x"]).now_utc(),',
         f"{DERIVER_TESTS}::test_no_deriver_reads_the_clock",
     ),
+    (
+        "AC-3.1: a day already recorded is not overwritten by a later capture",
+        CONNECTOR_DERIVERS,
+        "        if (captured_at, raw_response_id or 0) <= incoming:",
+        "        if False:",
+        f"{DERIVER_TESTS}::test_a_second_capture_on_a_recorded_day_is_rejected_not_merged",
+    ),
+    (
+        "the roster holds the operator's institutions, not the aggregator's catalogue",
+        CONNECTOR_DERIVERS,
+        "    str(INSTITUTIONS_GET): derive_nothing,",
+        "    str(INSTITUTIONS_GET): derive_item,",
+        f"{DERIVER_TESTS}::test_a_catalogue_page_derives_no_rows_at_all",
+    ),
 ]
 
 

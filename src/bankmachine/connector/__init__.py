@@ -15,11 +15,18 @@ So the boundary is containment, checked by
 `connector/plaid/` imports `plaid`, and nothing in `connector/` opens a
 datastore.
 
-**The connector persists nothing.** It returns bytes; the caller archives them
-through `store.raw`. That is what keeps AC-5.1's "before any normalization"
-true by construction rather than by everyone remembering to archive first --
-there is no path through this package that could write a normalized row, because
-this package cannot reach the datastore at all.
+🔴 **The connector cannot *obtain* a datastore handle**, which is the property
+the norm test actually enforces and the one AC-5.1 rests on. The client returns
+bytes and its caller archives them, so there is no path by which a response is
+normalized before it is archived.
+
+That is narrower than "the connector persists nothing", and the difference
+became real when `connector/plaid/derivers.py` landed: a deriver *does* write
+rows, through a connection handed to it by the caller that already opened one.
+It cannot open one, cannot choose when the transaction commits, and cannot reach
+the archive except through the response it was given. Saying "persists nothing"
+would now be a guarantee this package does not make, which is worse than a
+narrower one it does.
 """
 
 from __future__ import annotations
