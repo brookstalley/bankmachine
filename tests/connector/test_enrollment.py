@@ -796,8 +796,7 @@ def test_an_unreadable_entry_does_not_strand_a_completed_session(
     🔴 **Unreadable entries sit on BOTH sides of the completed one deliberately.**
     Search runs newest-first, so a fixture with the bad entry only before the good
     one never reaches the skip — the token is found and the guard is never asked a
-    question. That version of this test passed against code with the guard removed,
-    which is how it was caught: the harness reported the norm break as unnoticed.
+    question. Do not simplify this fixture to one side.
     """
     invoke = _answering(
         {

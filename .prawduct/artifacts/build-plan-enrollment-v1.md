@@ -37,6 +37,11 @@ governed_by:
       - "every stored amount is signed from the operator's point of view → inapplicable because this plan stores no amounts. Enrollment writes `institutions` and `connections`, neither of which holds money"
       - "all monetary values are stored as integer minor units → inapplicable, same reason"
       - "calendar dates and UTC instants are distinct types and never mix → conforms; `enrolled_at` and `retired_at` are UTC instants through `UtcInstantColumn`, and this plan introduces no calendar date"
+      - "every silver row is either aggregator-sourced or manually imported, and carries the evidence for which → 🔴 conforms, and enrollment is where the evidence begins: the `connections` row is written from an archived `/item/get` response and carries its `raw_response_id`. A connection inserted with no response behind it would be a manual row claiming aggregator provenance"
+      - "the daily balance and holdings series are append-only; a day already recorded is never overwritten → inapplicable because this plan writes neither series. It writes `institutions` and `connections` only — the series begin at the first sync"
+      - "a source value is never overwritten in place; local interpretation lives in its own column → conforms; `requested_history_days` is what this product asked for and `granted_history_days` is what the source gave, in two columns, which is this norm's shape applied to the window. AC-1.3a turns on exactly that separation"
+      - "a transaction is never hard-deleted → inapplicable because this plan writes no transactions. Its sibling for connections IS engaged, though: AC-1.6 retirement sets `retired_at` and never deletes, so history survives the connection that produced it"
+      - "a migration's DDL is frozen once written, and the Core metadata and that DDL are written independently → conforms by not participating; this plan adds no migration and no column. `connections` already has every field enrollment writes"
   - artifact: operational-spec
     dispositions:
       - "no filesystem path is hardcoded → conforms; the connection cap joins `history_days` as configuration with a documented default, and this plan adds no path of any kind"
@@ -243,7 +248,7 @@ having confirmed what the aggregator actually grants.
 
 ## Status
 
-- [ ] Chunk 01 — Hosted Link, and the window that must not be guessed
+- [x] Chunk 01 — Hosted Link, and the window that must not be guessed
 - [ ] Chunk 02 — `bankmachine enroll`, end to end
 - [ ] Chunk 03 — The cap, the roster, and retirement
 
