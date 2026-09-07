@@ -43,7 +43,7 @@ from typing import Any, Final
 from sqlalchemy import Connection as SAConnection
 from sqlalchemy import delete, insert, select, update
 
-from bankmachine.connector import ACCOUNTS_GET, INSTITUTIONS_GET, ITEM_GET
+from bankmachine.connector import ACCOUNTS_GET, INSTITUTIONS_GET, ITEM_GET, ITEM_REMOVE
 from bankmachine.logging_setup import get_logger
 from bankmachine.store.derivation import DerivationContext, DerivationError, Deriver
 from bankmachine.store.raw import RawResponse
@@ -585,6 +585,13 @@ def _write_balance(
 #: rebuild years from now can still tell what a stored response was.
 PLAID_DERIVERS: Final[Mapping[str, Deriver]] = {
     str(INSTITUTIONS_GET): derive_nothing,
+    # Registered by name as deriving nothing, like the catalogue above and for the
+    # same reason: its reply is `request_id` alone, so there is nothing in it to
+    # normalize. Leaving it unregistered would be indistinguishable from the
+    # endpoint nobody got round to. What a removal *means* -- the connection is
+    # retired -- is a local decision recorded by the command that made it, not a
+    # fact this response carries.
+    str(ITEM_REMOVE): derive_nothing,
     str(ITEM_GET): derive_item,
     str(ACCOUNTS_GET): derive_accounts,
 }

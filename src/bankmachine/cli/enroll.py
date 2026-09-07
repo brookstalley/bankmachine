@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from sqlalchemy import func, insert, select, update
 from sqlalchemy.engine import Connection as SAConnection
 
+from bankmachine.cli.connections import connection_rows, explain_cap, release_at_aggregator
 from bankmachine.cli.exit_codes import EXIT_OK, EXIT_UNHEALTHY
 from bankmachine.config import Config
 from bankmachine.connector import LinkSession, LinkToken
@@ -65,7 +66,37 @@ POLL_INTERVAL_SECONDS = 3.0
 
 
 class EnrollmentError(Exception):
-    """Enrollment could not be completed. Never raised after a token is spent."""
+    """Enrollment could not be completed.
+
+    🔴 **It can be raised after the public token is spent, and that is the state
+    worth understanding.** An earlier version of this docstring claimed otherwise;
+    the claim was false and `_record_connection` was already raising past that
+    point. What makes the post-exchange window survivable is not that nothing
+    fails in it, but that every failure in it leaves the operator a way back:
+    the access token is in the keychain before the first write, so
+    `EnrollmentIncompleteError` can name the credential and the item, and a
+    re-run converges rather than duplicating.
+    """
+
+
+class EnrollmentIncompleteError(EnrollmentError):
+    """The aggregator minted an Item and this side could not finish recording it.
+
+    🔴 The one state the operator must never be left to discover later: they are
+    being billed for a connection this product does not know about. Carries the
+    aggregator's item id and the keychain handle, because those two are what any
+    recovery needs and neither is recoverable from a generic message.
+    """
+
+    def __init__(self, *, source_connection_id: str, credential_ref: str, cause: str) -> None:
+        self.source_connection_id = source_connection_id
+        self.credential_ref = credential_ref
+        super().__init__(
+            f"the connection was created at the aggregator but could not be recorded here: "
+            f"{cause}. The item is {source_connection_id} and its access token is in the "
+            f"keychain at {credential_ref}. Re-run `bankmachine enroll` for this institution "
+            f"to converge, or `bankmachine connections list` to check whether it landed"
+        )
 
 
 class ConnectionCapReachedError(EnrollmentError):
@@ -106,65 +137,13 @@ class EnrolledConnection:
     capabilities: frozenset[str]
     requested_history_days: int
     updated_existing: bool
+    superseded_credential_ref: str | None
+    """The credential this enrollment replaced, if it replaced one.
 
-
-@dataclass(frozen=True, slots=True)
-class LiveConnection:
-    """One live connection, as the cap refusal and `connections list` report it."""
-
-    connection_id: int
-    institution_name: str
-    enrolled_at: UtcInstant
-    status: str
-
-
-def live_connections(conn: SAConnection) -> list[LiveConnection]:
-    """Every connection that has not been retired, oldest first.
-
-    Retired connections are excluded because they cost nothing at the aggregator
-    and hold history the operator chose to keep -- counting them toward the cap
-    would make AC-1.6's retirement useless, since retiring would not free a slot.
+    Set only when a re-enrollment pointed an existing row at a NEW aggregator
+    item. The old item does not stop existing when its row stops naming it, so
+    something has to carry the handle out of the transaction that orphaned it.
     """
-    rows = conn.execute(
-        select(
-            connections.c.connection_id,
-            institutions.c.name,
-            connections.c.enrolled_at,
-            connections.c.status,
-        )
-        .select_from(connections.join(institutions))
-        .where(connections.c.retired_at.is_(None))
-        .order_by(connections.c.enrolled_at)
-    ).all()
-    return [
-        LiveConnection(
-            connection_id=int(row[0]),
-            institution_name=str(row[1]),
-            enrolled_at=row[2],
-            status=str(row[3]),
-        )
-        for row in rows
-    ]
-
-
-def _explain_cap(live: list[LiveConnection], cap: int) -> str:
-    """AC-1.5 asks for the limit explained AND the connections listed.
-
-    A bare "cap reached" leaves the operator with no way to act on it: the whole
-    point of the requirement is that they can see which connection to retire.
-    """
-    lines = [
-        f"the configured connection cap is {cap} and {len(live)} are already live.",
-        "Retire one to make room:",
-        "",
-    ]
-    lines.extend(
-        f"    {c.connection_id:>4}  {c.institution_name}  ({c.status}, "
-        f"enrolled {c.enrolled_at.isoformat()[:10]})"
-        for c in live
-    )
-    lines.extend(["", "    bankmachine connections retire <id>"])
-    return "\n".join(lines)
 
 
 def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -216,9 +195,18 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
     # one closes the race between two enrollments, this one protects the
     # operator's time and the far end's state.
     with reader_connection(config) as reader:
-        live = live_connections(reader)
+        live = connection_rows(reader, include_retired=False)
     if len(live) >= config.connection_cap:
-        print(f"bankmachine: {_explain_cap(live, config.connection_cap)}", file=sys.stderr)
+        # Logged as well as printed. stderr reaches whoever is watching; the log
+        # file is what anyone reconstructing an unattended run has, and an
+        # enrollment that refused and logged nothing is indistinguishable
+        # afterwards from one nobody ran.
+        logger.warning(
+            "enrollment refused: %d live connections against a cap of %d",
+            len(live),
+            config.connection_cap,
+        )
+        print(f"bankmachine: {explain_cap(live, config.connection_cap)}", file=sys.stderr)
         return EXIT_UNHEALTHY
 
     secret = get_plaid_secret(config)
@@ -230,6 +218,7 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
             products=list(ENROLLMENT_PRODUCTS),
         )
         if not _confirm_window(config, issued, assume_yes=args.yes):
+            logger.info("enrollment cancelled at the window confirmation; nothing was linked")
             print("enrollment cancelled; nothing was linked", file=sys.stderr)
             return EXIT_UNHEALTHY
 
@@ -237,6 +226,7 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
         try:
             session = _await_completion(client, issued, timeout_seconds=args.timeout)
         except EnrollmentAbandonedError as exc:
+            logger.warning("enrollment abandoned: %s", exc)
             print(f"bankmachine: {exc}", file=sys.stderr)
             return EXIT_UNHEALTHY
 
@@ -251,32 +241,61 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
     credential_ref = config.connection_keychain_account(grant.source_connection_id)
     set_access_token(config, credential_ref, grant.access_token)
 
-    with writer_connection(config) as conn:
-        # `apply_response` rather than a bare record: it archives and derives as
-        # the sync path does, in the two commits that keep the archive when a
-        # deriver raises. The institution row this connection hangs from is the
-        # derivation's output, so the connection cannot be written first.
-        apply_response(
-            conn,
-            connection_id=None,
-            endpoint=item.endpoint.path,
-            body=item.body,
-            received_at=item.received_at,
-            derivers=ALL_DERIVERS,
-            request_context=item.request_context,
-        )
-        source_institution_id, _ = institution_ref_of(item.body)
-        with transaction(conn):
-            enrolled = _record_connection(
+    try:
+        with writer_connection(config) as conn:
+            # `apply_response` rather than a bare record: it archives and derives
+            # as the sync path does, in the two commits that keep the archive when
+            # a deriver raises. The institution this connection hangs from is that
+            # derivation's output, so the connection cannot be written first.
+            apply_response(
                 conn,
-                source_institution_id=source_institution_id,
-                source_connection_id=grant.source_connection_id,
-                credential_ref=credential_ref,
-                capabilities=capabilities_of(item.body),
-                requested_history_days=issued.requested_history_days,
-                connection_cap=config.connection_cap,
-                now=now_utc(),
+                connection_id=None,
+                endpoint=item.endpoint.path,
+                body=item.body,
+                received_at=item.received_at,
+                derivers=ALL_DERIVERS,
+                request_context=item.request_context,
             )
+            source_institution_id, _ = institution_ref_of(item.body)
+            with transaction(conn):
+                enrolled = _record_connection(
+                    conn,
+                    source_institution_id=source_institution_id,
+                    source_connection_id=grant.source_connection_id,
+                    credential_ref=credential_ref,
+                    capabilities=capabilities_of(item.body),
+                    requested_history_days=issued.requested_history_days,
+                    connection_cap=config.connection_cap,
+                    now=now_utc(),
+                )
+    except ConnectionCapReachedError:
+        raise
+    except Exception as exc:  # prawduct:allow prawduct/broad-except -- see below
+        # 🔴 Broad on purpose, and narrow in what it does. Past the exchange the
+        # aggregator holds an Item this operator is billed for, and ANY local
+        # failure -- a deriver, the schema, the disk -- leaves them paying for a
+        # connection nothing here records. Re-raising the original type would be
+        # honest about the cause and silent about the consequence, which is the
+        # one outcome this project disallows. The cause is preserved in the
+        # message and in `__cause__`.
+        logger.error(
+            "enrollment failed after the item was created at the aggregator: %s", exc
+        )
+        raise EnrollmentIncompleteError(
+            source_connection_id=grant.source_connection_id,
+            credential_ref=credential_ref,
+            cause=str(exc),
+        ) from exc
+
+    # R-8/R-20: a re-enrollment went through Link again, so the aggregator minted
+    # a NEW item and the row above now points at it. The one it replaced is still
+    # live at the far end, still counting against the plan cap and still billing,
+    # with nothing here referencing it. Released after the replacement is
+    # committed, never before -- two live items is a bill, none is a lost
+    # connection.
+    superseded_released = True
+    if enrolled.superseded_credential_ref is not None:
+        superseded_released = release_at_aggregator(config, enrolled.superseded_credential_ref)
 
     logger.info(
         "enrolled %s as connection %d (%s), requested %d days of history",
@@ -286,6 +305,17 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
         enrolled.requested_history_days,
     )
     _print_result(enrolled)
+    if not superseded_released:
+        # Reported rather than raised: the enrollment succeeded and the operator
+        # has a working connection. But the item it replaced is still billing,
+        # and a success message that did not say so would be the silent outcome
+        # this project disallows.
+        print(
+            "  the connection this replaced could not be removed at the aggregator, so it "
+            "may still be billing. `bankmachine connections list` shows what is enrolled",
+            file=sys.stderr,
+        )
+        return EXIT_UNHEALTHY
     return EXIT_OK
 
 
@@ -388,7 +418,12 @@ def _record_connection(
     institution_id, institution_name = int(institution[0]), str(institution[1])
 
     existing = conn.execute(
-        select(connections.c.connection_id, connections.c.enrolled_at).where(
+        select(
+            connections.c.connection_id,
+            connections.c.enrolled_at,
+            connections.c.credential_ref,
+            connections.c.source_connection_id,
+        ).where(
             connections.c.institution_id == institution_id,
             connections.c.retired_at.is_(None),
         )
@@ -397,6 +432,8 @@ def _record_connection(
     capability_json = json.dumps(sorted(capabilities))
     if existing is not None:
         connection_id = int(existing[0])
+        previous_credential_ref = str(existing[2])
+        replaced_the_item = str(existing[3]) != source_connection_id
         conn.execute(
             update(connections)
             .where(connections.c.connection_id == connection_id)
@@ -419,6 +456,12 @@ def _record_connection(
             capabilities=capabilities,
             requested_history_days=requested_history_days,
             updated_existing=True,
+            # Only when the item actually changed. Re-running against the same
+            # item -- which a converging re-run does -- must not remove the very
+            # connection it just recorded.
+            superseded_credential_ref=(
+                previous_credential_ref if replaced_the_item else None
+            ),
         )
 
     live = conn.execute(
@@ -453,6 +496,7 @@ def _record_connection(
         capabilities=capabilities,
         requested_history_days=requested_history_days,
         updated_existing=False,
+        superseded_credential_ref=None,
     )
 
 

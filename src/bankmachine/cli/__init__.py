@@ -8,11 +8,16 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from bankmachine.cli import connections as connections_commands
 from bankmachine.cli import connector as connector_commands
 from bankmachine.cli import enroll as enroll_commands
 from bankmachine.cli import store as store_commands
 from bankmachine.cli import sync as sync_commands
-from bankmachine.cli.enroll import EnrollmentAbandonedError, EnrollmentError
+from bankmachine.cli.enroll import (
+    ConnectionCapReachedError,
+    EnrollmentAbandonedError,
+    EnrollmentError,
+)
 from bankmachine.cli.exit_codes import EXIT_ERROR, EXIT_OK, EXIT_UNHEALTHY
 from bankmachine.config import Config, ConfigError, load_config
 from bankmachine.connector import ConnectorError
@@ -40,6 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     store_commands.add_arguments(subparsers)
     connector_commands.add_arguments(subparsers)
     enroll_commands.add_arguments(subparsers)
+    connections_commands.add_arguments(subparsers)
     sync_commands.add_arguments(subparsers)
     return parser
 
@@ -58,11 +64,17 @@ def run(argv: Sequence[str] | None = None) -> int:
 
     try:
         return int(args.handler(config, args))
-    except EnrollmentAbandonedError as exc:
+    except (EnrollmentAbandonedError, ConnectionCapReachedError) as exc:
         # 🔴 `1`, not `2`: the command ran fine and found a problem in the world.
         # The api-contract norm calls the 1/2 split non-collapsible because a
         # scheduled job reads these -- and `2` here would make an operator who
         # walked away from a browser tab indistinguishable from a broken install.
+        #
+        # The cap belongs here for the same reason AND for a sharper one: it is
+        # refused from two places -- before the link token, and again inside the
+        # write transaction that closes the race between two enrollments. One
+        # condition reported with two different exit codes depending on which
+        # check caught it is worse than either code alone.
         print(f"bankmachine: {exc}", file=sys.stderr)
         return EXIT_UNHEALTHY
     except (StoreError, SecretsError, ConnectorError, EnrollmentError) as exc:

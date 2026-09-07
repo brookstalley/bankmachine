@@ -40,6 +40,7 @@ from plaid.model.country_code import CountryCode
 from plaid.model.institutions_get_request import InstitutionsGetRequest
 from plaid.model.item_get_request import ItemGetRequest
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
+from plaid.model.item_remove_request import ItemRemoveRequest
 from plaid.model.link_token_create_hosted_link import LinkTokenCreateHostedLink
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
 from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
@@ -53,6 +54,7 @@ from bankmachine.connector import (
     INSTITUTIONS_GET,
     ITEM_GET,
     ITEM_PUBLIC_TOKEN_EXCHANGE,
+    ITEM_REMOVE,
     LINK_TOKEN_CREATE,
     LINK_TOKEN_GET,
     AccessGrant,
@@ -700,6 +702,22 @@ class PlaidClient:
             ITEM_GET,
             self._api.item_get,
             ItemGetRequest(access_token=access_token),
+            connection_id=connection_id,
+        )
+
+    def item_remove(
+        self, access_token: str, *, connection_id: int | None = None
+    ) -> FetchedResponse:
+        """End a connection at the aggregator. Archivable: nothing comes back down.
+
+        The counterpart to enrollment, and the half that keeps a re-link from
+        leaving a paid-for Item behind. `connections.retired_at` records the local
+        decision; this is what makes the far end agree with it.
+        """
+        return self._fetch(
+            ITEM_REMOVE,
+            self._api.item_remove,
+            ItemRemoveRequest(access_token=access_token),
             connection_id=connection_id,
         )
 

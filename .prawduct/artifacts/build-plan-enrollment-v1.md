@@ -186,27 +186,42 @@ The command AC-1.1 names, through to a persisted connection.
 
 - `enroll` prints the hosted URL and the **requested window**, then waits. 🔴 It confirms the window
   before exchanging, because that is the last moment AC-1.2 is reversible.
-- Polls `/link/token/get` with a bounded timeout, then exchanges the public token.
+- Polls `POST /link/token/get` with a bounded timeout, then exchanges the public token.
 - Stores the access token in the keychain under a per-connection account name; `credential_ref`
   holds that name. New accessors in `secrets.py` — it has none for access tokens today.
-- Derives the institution from `/item/get` (**not** `/institutions/get`, which is the aggregator's
-  production catalogue) and writes `institutions` + `connections` in one writer transaction.
+- Derives the institution from `POST /item/get` (**not** `POST /institutions/get`, which is the
+  aggregator's production catalogue) and writes `institutions` + `connections`. **Three
+  transactions, not one** — the archive commits, the derivation commits, then the connection row
+  commits. `apply_response` splits the first two deliberately so the archive survives a deriver that
+  raises, and forcing one transaction would undo that. The intermediate states are benign and
+  converge on a re-run: an archived response with no institution, or an institution with no
+  connection. An earlier draft of this line claimed one transaction; the claim was wrong, not the
+  code.
 - `requested_history_days` is set; `granted_history_days` stays null per AC-1.3a.
 - Re-enrolling an institution that already has a live connection updates it rather than inserting
   (AC-1.4), which the partial unique index already enforces structurally.
 
 **Done-when:**
 
-1. An end-to-end sandbox enrollment produces one `connections` row with a non-null
-   `requested_history_days`, a null `granted_history_days`, and a `credential_ref` that resolves in
-   the keychain.
+1. ~~An end-to-end *sandbox* enrollment produces...~~ **Amended 2026-09-07.** Chunk 01's probe
+   established that a Hosted Link session cannot be completed programmatically —
+   `POST /sandbox/public_token/create` bypasses Link entirely, so it mints a public token without
+   ever creating a session `POST /link/token/get` would report. There is no automated live path
+   through this command. What stands in its place: the full flow is driven end to end against a
+   fake aggregator (one `connections` row, non-null `requested_history_days`, null
+   `granted_history_days`, a `credential_ref` that resolves in the keychain), the *live* halves are
+   asserted in `tests/connector/test_sandbox.py`, and the human-only half is VRF-003.
 2. A test asserts the access token appears in **no** column of the datastore and in no log record
    emitted during enrollment — asserted over a real enrollment's captured log, not over the
    formatter in isolation.
 3. Re-running enrollment for the same institution leaves exactly one live connection, with
    `enrolled_at` preserved and `updated_at` moved (AC-1.4).
 4. An abandoned session exits `1` with a message naming the session id, not a traceback.
-5. Fixtures recorded from this chunk carry no live token; the redaction happens at record time.
+5. ~~Fixtures recorded from this chunk carry no live token...~~ **Amended 2026-09-07: no fixtures
+   are recorded by this chunk**, because no live call is made through it (see 1). The obligation
+   that replaces it is stronger and is met: the test constants carry the aggregator's real token
+   *shapes*, declared per line with `credential-shape: test vector`, and a test sweeps every table
+   in `sqlite_master` asserting neither the access token nor the public token reached any column.
 6. An entry is appended to `.prawduct/operator-verification.md` for the hosted-URL flow — a human
    must confirm the printed URL opens a working Link session and that the window confirmation reads
    unambiguously.
@@ -222,14 +237,14 @@ The command AC-1.1 names, through to a persisted connection.
 - Enrollment refuses past the cap, explains the limit, and lists current connections (AC-1.5).
 - `connections list` and `connections retire <id>` — retirement sets `retired_at` and `status`
   without deleting history (AC-1.6, AC-6.5).
-- 🔴 **`/item/remove`, and the orphan Chunk 02 leaves behind.** Found by scrubbing Chunk 02's own
+- 🔴 **`POST /item/remove`, and the orphan Chunk 02 leaves behind.** Found by scrubbing Chunk 02's own
   diff rather than by a test: a re-enrollment goes through Link again and the aggregator mints a
   **new** Item, so `_record_connection` overwrites `source_connection_id` and the previous Item is
   no longer referenced from anywhere. It does not stop existing. It keeps counting against the plan
   cap at the aggregator and keeps billing, while this side shows one tidy connection and reports
   success. AC-1.4 says re-enrolling "updates rather than duplicating the connection" and locally it
   does — the duplication moved to the far end, where nothing here can see it.
-  Retirement needs the same call, so the two land together: `/item/remove` is `retry_safe=False`
+  Retirement needs the same call, so the two land together: `POST /item/remove` is `retry_safe=False`
   (it spends state at the far end) and carries no credential in its reply. Removing the superseded
   Item happens **after** the new connection row is committed, never before — an operator who ends
   up with two live Items has a bill; one who ends up with none has lost the connection.
@@ -276,8 +291,10 @@ having confirmed what the aggregator actually grants.
 ## Status
 
 - [x] Chunk 01 — Hosted Link, and the window that must not be guessed
-- [ ] Chunk 02 — `bankmachine enroll`, end to end
-- [ ] Chunk 03 — The cap, the roster, and retirement
+- [x] Chunk 02 — `bankmachine enroll`, end to end
+- [x] Chunk 03 — The cap, the roster, and retirement *(pulled forward into Chunk 02's
+      review resolution: the cap refusal named `connections retire`, which did not exist, so
+      AC-1.5's actionability required Chunk 03's command to ship with it)*
 
 ## Context
 

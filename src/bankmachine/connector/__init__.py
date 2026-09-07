@@ -403,6 +403,18 @@ LINK_TOKEN_GET = Endpoint("/link/token/get", retry_safe=True, issues_credential=
 #: the request, and nothing comes back down.
 ITEM_GET = Endpoint("/item/get")
 
+#: Ends a connection at the aggregator, so it stops counting against the plan cap
+#: and stops billing. Carries no credential back -- the reply is `request_id`
+#: alone *(read from the SDK's response model)*.
+#:
+#: 🔴 `retry_safe=False`, and for a different reason than the exchange's. A retry
+#: here cannot remove two things; what it can do is turn a success into a
+#: spurious `ITEM_NOT_FOUND` when the first call landed and its reply did not,
+#: and this call is made on a path where the operator is simultaneously being
+#: told that something worked. A removal that reports failure after succeeding
+#: sends someone to the aggregator's dashboard to fix what is already fixed.
+ITEM_REMOVE = Endpoint("/item/remove", retry_safe=False)
+
 #: The accounts behind one connection.
 ACCOUNTS_GET = Endpoint("/accounts/get")
 

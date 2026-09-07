@@ -41,6 +41,7 @@ SHELL = pathlib.Path("src/bankmachine/cli/sync.py")
 SECRETS = pathlib.Path("src/bankmachine/secrets.py")
 CLI_CONNECTOR = pathlib.Path("src/bankmachine/cli/connector.py")
 CLI_ENROLL = pathlib.Path("src/bankmachine/cli/enroll.py")
+CLI_CONNECTIONS = pathlib.Path("src/bankmachine/cli/connections.py")
 CONNECTOR_CLIENT = pathlib.Path("src/bankmachine/connector/plaid/client.py")
 CONNECTOR_PACKAGE = pathlib.Path("src/bankmachine/connector/__init__.py")
 CONNECTOR_ERRORS = pathlib.Path("src/bankmachine/connector/plaid/errors.py")
@@ -530,6 +531,48 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "        if not _confirm_window(config, issued, assume_yes=args.yes):",
         "        if False:",
         f"{ENROLL_CLI_TESTS}::test_nothing_is_linked_when_the_window_is_not_confirmed",
+    ),
+    (
+        "AC-1.4: a re-enrollment removes the item it superseded",
+        CLI_ENROLL,
+        "    if enrolled.superseded_credential_ref is not None:",
+        "    if False:",
+        f"{ENROLL_CLI_TESTS}::test_re_enrolling_removes_the_item_it_superseded",
+    ),
+    (
+        "AC-1.4: a converging re-run against the same item removes nothing",
+        CLI_ENROLL,
+        "                previous_credential_ref if replaced_the_item else None",
+        "                previous_credential_ref",
+        f"{ENROLL_CLI_TESTS}::test_a_converging_re_run_against_the_same_item_removes_nothing",
+    ),
+    (
+        "FR-1: a failure after the exchange names the item and the credential",
+        CLI_ENROLL,
+        "        raise EnrollmentIncompleteError(",
+        "        raise EnrollmentError(  # noqa\n        _unused = EnrollmentIncompleteError(",
+        f"{ENROLL_CLI_TESTS}::test_a_failure_after_the_exchange_names_the_item_and_the_credential",
+    ),
+    (
+        "AC-1.6: retirement removes the item at the aggregator, not just locally",
+        CLI_CONNECTIONS,
+        "    removed = release_at_aggregator(config, credential_ref, connection_id=connection_id)",
+        "    removed = True",
+        f"{ENROLL_CLI_TESTS}::test_retiring_removes_the_item_at_the_aggregator",
+    ),
+    (
+        "AC-1.6: retiring keeps the connection row and its history",
+        CLI_CONNECTIONS,
+        '        .values(status="retired", retired_at=now, updated_at=now)',
+        '        .values(status="retired", updated_at=now)',
+        f"{ENROLL_CLI_TESTS}::test_retiring_keeps_every_row_the_connection_produced",
+    ),
+    (
+        "AC-10.1: the credential outlives a failed removal, being the only handle left",
+        CLI_CONNECTIONS,
+        "    delete_access_token(config, credential_ref)\n    logger.info",
+        "    logger.info",
+        f"{ENROLL_CLI_TESTS}::test_retiring_removes_the_item_at_the_aggregator",
     ),
     (
         "AC-10.1: a public token never reaches a repr",
