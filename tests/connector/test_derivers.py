@@ -467,6 +467,66 @@ def test_a_manual_import_row_is_not_turned_into_an_aggregator_row(store: Config)
     )
 
 
+def test_a_manual_row_survives_an_older_response_replayed_over_it(store: Config) -> None:
+    """🔴 The branch the neighbouring test cannot reach, and the case it exists for.
+
+    That test seeds the manual row at the same instant it replays, so the
+    capture comparison returns first and the guard below it never runs. This one
+    replays an *older* archived response over a later manual row -- which is
+    exactly the path that used to delete the operator's hand-entered balance and
+    reinsert it as an aggregator row, for the next rebuild to remove.
+
+    Written because the guard was added with nothing asserting it: reverting it
+    turned no test red, which is the same silence the finding it came from named.
+    """
+    derive(store, str(ACCOUNTS_GET), _one_account_body("acct-1", current=100.00))
+    account_id = rows(store, accounts)[0]["account_id"]
+    with writing(store) as conn, transaction(conn):
+        conn.execute(delete(balances_daily))
+        import_id = conn.execute(
+            insert(manual_imports).values(
+                account_id=account_id,
+                adapter="csv",
+                source_name="a statement the operator typed in",
+                file_sha256="0" * 64,
+                file_bytes=1,
+                imported_at=LATER,
+                rows_seen=1,
+                rows_applied=1,
+            )
+        ).inserted_primary_key
+        assert import_id is not None
+        conn.execute(
+            insert(balances_daily).values(
+                account_id=account_id,
+                as_of_date=EARLIER.date(),
+                current_minor=777,
+                currency="USD",
+                # Later than the response replayed below, so the capture
+                # comparison falls through and the guard is what has to hold.
+                captured_at=LATER,
+                source="manual",
+                raw_response_id=None,
+                manual_import_id=import_id[0],
+                derivation_version_id=1,
+            )
+        )
+
+    derive(
+        store,
+        str(ACCOUNTS_GET),
+        _one_account_body("acct-1", current=100.00),
+        received_at=EARLIER,
+    )
+
+    balance = [r for r in rows(store, balances_daily) if r["as_of_date"] == EARLIER.date()][0]
+    assert balance["current_minor"] == 777, "an older response overwrote the operator's own row"
+    assert balance["source"] == "manual"
+    assert balance["raw_response_id"] is None, (
+        "the row now carries a raw_response_id, so the next rebuild will delete it"
+    )
+
+
 def _one_account_body(account_id: str, *, current: float) -> bytes:
     """One account, in the shape `/accounts/get` sends."""
     account = _account(current=current)

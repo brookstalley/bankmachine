@@ -569,7 +569,11 @@ def test_every_retry_record_names_its_connection(caplog: pytest.LogCaptureFixtur
     with caplog.at_level(logging.WARNING, logger="bankmachine"):
         assert _run(call) == "answered"
 
-    assert [r for r in caplog.records if "5" in r.getMessage()], (
+    # Matched as the phrase rather than as a bare "5": the attempt counter is in
+    # the same line, so `attempt 1 of 5` would satisfy a substring check the day
+    # someone raises DEFAULT_RETRY_ATTEMPTS -- and the assertion would go on
+    # passing with no connection in the record at all.
+    assert [r for r in caplog.records if "for connection 5" in r.getMessage()], (
         "no record names the connection it belongs to"
     )
 

@@ -174,7 +174,8 @@ transport failures unwrapped, so an offline machine reported a `urllib3` traceba
 of the Critic — `ApiException.reason` is the HTTP reason phrase, so every rejection read
 `400: Bad Request` until the error body was parsed for the cause.
 
-The datastore layer this plan archives through is complete and green; there was no deriver to register, and `store rebuild` refused a real archive until Chunk 04
+The datastore layer this plan archives through is complete and green; there was no deriver to
+register, and `store rebuild` refused a real archive until Chunk 04
 fills it. **Build step 2 is complete.** Next is build step 3, the enrollment flow — and 🔴 its first real connection is where AC-1.2 becomes irreversible and where the granted history window becomes observable for the first time.
 
 ## Scaffolding

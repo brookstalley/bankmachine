@@ -415,6 +415,13 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "    str(INSTITUTIONS_GET): derive_item,",
         f"{DERIVER_TESTS}::test_a_catalogue_page_derives_no_rows_at_all",
     ),
+    (
+        "FR-7: a row this deriver did not write is never replaced by one it did",
+        CONNECTOR_DERIVERS,
+        "        if raw_response_id is None:",
+        "        if False:",
+        f"{DERIVER_TESTS}::test_a_manual_row_survives_an_older_response_replayed_over_it",
+    ),
 ]
 
 
