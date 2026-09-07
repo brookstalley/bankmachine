@@ -54,6 +54,7 @@ CONTAINED = "tests/preferences/test_connector_is_contained.py"
 CONNECTOR_CLI_TESTS = "tests/cli/test_connector_commands.py"
 CONNECTOR_TESTS = "tests/connector/test_client.py"
 ERROR_TESTS = "tests/connector/test_errors.py"
+ENROLLMENT_TESTS = "tests/connector/test_enrollment.py"
 
 #: (description, file, text to replace, replacement, the test that must go red)
 CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
@@ -340,6 +341,28 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         '        if not grouping and "retryable" not in cls.__dict__:',
         "        if False:",
         f"{ERROR_TESTS}::test_a_type_that_never_decided_whether_it_retries_cannot_be_defined",
+    ),
+    (
+        "AC-1.2: a link token cannot be requested without naming its history window",
+        CONNECTOR_CLIENT,
+        "        history_days: int,",
+        "        history_days: int = 90,",
+        f"{ENROLLMENT_TESTS}::test_a_link_token_cannot_be_requested_without_a_history_window",
+    ),
+    (
+        "AC-10.1: a credential-bearing response cannot be made archivable",
+        CONNECTOR_PACKAGE,
+        "        if self.endpoint.issues_credential:",
+        "        if False:",
+        f"{ENROLLMENT_TESTS}::test_a_credential_bearing_response_cannot_be_made_archivable",
+    ),
+    (
+        "AC-3.2: capabilities are what the connection could do, not what we asked for",
+        CONNECTOR_CLIENT,
+        '    available = item.get("available_products")',
+        '    available = item.get("products")',
+        f"{ENROLLMENT_TESTS}::"
+        "test_capabilities_answer_what_the_connection_could_do_not_what_we_asked_for",
     ),
 ]
 

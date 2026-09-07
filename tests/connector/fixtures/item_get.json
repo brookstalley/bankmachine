@@ -1,0 +1,42 @@
+{
+  "item": {
+    "available_products": [
+      "assets",
+      "auth",
+      "balance",
+      "identity",
+      "identity_match",
+      "income_verification",
+      "investments",
+      "investments_auth",
+      "liabilities",
+      "recurring_transactions",
+      "signal",
+      "statements",
+      "transactions_refresh",
+      "transfer"
+    ],
+    "billed_products": [
+      "transactions"
+    ],
+    "consent_expiration_time": null,
+    "created_at": "2026-09-07T16:44:22Z",
+    "error": null,
+    "institution_id": "ins_109508",
+    "institution_name": "First Platypus Bank",
+    "item_id": "7mpdlypzebfxDRvgRArNil5AZ4QN9DcN3b1Gl",
+    "products": [
+      "transactions"
+    ],
+    "update_type": "background",
+    "webhook": ""
+  },
+  "request_id": "cfba910e221de71",
+  "status": {
+    "last_webhook": null,
+    "transactions": {
+      "last_failed_update": null,
+      "last_successful_update": null
+    }
+  }
+}

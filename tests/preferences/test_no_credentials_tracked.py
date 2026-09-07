@@ -67,11 +67,34 @@ _RAW_KEY = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{64}(?![0-9a-fA-F])")
 
 #: A labelled credential with a value that is actually there. The empty
 #: assignment in `.env.example` is the shape this must NOT match.
+#: The quote is captured, not skipped, because whether the value was quoted is
+#: the whole discrimination in `_is_a_variable_reference` below.
 _LABELLED = re.compile(
     r"(?:access[_-]?token|client[_-]?secret|api[_-]?key|password|passwd)"
-    r"\s*[=:]\s*[\"']?([A-Za-z0-9_\-]{12,})",
+    r"\s*[=:]\s*([\"']?)([A-Za-z0-9_\-]{12,})",
     re.IGNORECASE,
 )
+
+
+def _is_a_variable_reference(quote: str, value: str, path: Path) -> bool:
+    """`access_token=enrolled_item` names a variable; it does not carry one.
+
+    🔴 **Scoped to Python source, and to unquoted values, deliberately.** In
+    Python an unquoted bare identifier after `=` is a reference to something
+    defined elsewhere -- a credential lives in the quoted literal it was
+    assigned from, and that assignment is what this scan should catch. In a
+    `.env`, `.toml` or shell file the same shape *is* a literal
+    (`API_KEY=mysecret123`), so the exemption must not reach those, and the
+    suffix check is what keeps it out.
+
+    Without this the check fires on every function that accepts an access token
+    and passes it on by keyword -- and a guard that fires on ordinary code is a
+    guard someone narrows in irritation later, which is how a security check
+    dies quietly. The alternative was renaming those parameters, which makes the
+    product worse to appease the checker.
+    """
+    return not quote and path.suffix == ".py" and value.isidentifier()
+
 
 #: A 64-hex run is also what every content hash looks like. Excluding by CONTEXT
 #: rather than by file keeps the check alive inside lockfiles and schema
@@ -151,9 +174,10 @@ def _findings(text: str, path: Path) -> list[str]:
             found.append(f"{where}: an aggregator access token")
         if _RAW_KEY.search(line) and not _IS_A_HASH.search(line):
             found.append(f"{where}: a 64-hex run, the datastore key's shape")
-        for value in _LABELLED.findall(line):
-            if not _PLACEHOLDER.match(value):
-                found.append(f"{where}: a labelled credential with a value")
+        for quote, value in _LABELLED.findall(line):
+            if _PLACEHOLDER.match(value) or _is_a_variable_reference(quote, value, path):
+                continue
+            found.append(f"{where}: a labelled credential with a value")
     return found
 
 
@@ -230,6 +254,33 @@ def test_the_placeholder_and_hash_exemptions_do_not_swallow_a_real_secret() -> N
     assert not _findings(f"sha256 = {'ab' * 32}", REPO_ROOT / "x.txt")
     # ...but the same key shape on an ordinary line is still caught.
     assert _findings(f"key = {'ab' * 32}", REPO_ROOT / "x.txt")
+
+
+def test_a_variable_reference_is_exempt_but_only_in_python_and_only_unquoted() -> None:
+    """The exemption has three edges, and each one is load-bearing.
+
+    Python source, unquoted, and a bare identifier. Drop any of them and either
+    the guard fires on ordinary code -- which is how it gets narrowed in
+    irritation later -- or it stops seeing the file format where an unquoted
+    value really is the secret.
+    """
+    assert not _findings("access_token=access_token", REPO_ROOT / "x.py")
+    assert not _findings("    ItemGetRequest(access_token=enrolled_item),", REPO_ROOT / "x.py")
+
+    token = "access-sandbox-11112222-3333-4444-5555-666677778888"  # credential-shape: test vector
+    # Quoted is a literal, wherever it appears.
+    assert _findings(f'access_token = "{token}"', REPO_ROOT / "x.py")
+    # credential-shape: test vector
+    assert _findings("access_token = 'supersecretvalue'", REPO_ROOT / "x.py")
+    # 🔴 The same unquoted shape in a dotenv IS the secret, so the exemption must
+    # not reach there. This is the edge that would silently un-guard `.env`.
+    # credential-shape: test vector
+    assert _findings("BANKMACHINE_API_KEY=mysecretvalue123", REPO_ROOT / ".env")
+    # credential-shape: test vector
+    assert _findings("client_secret: mysecretvalue123", REPO_ROOT / "config.toml")
+    # A hyphenated value is not a Python identifier, so it is not a reference.
+    # credential-shape: test vector
+    assert _findings("access_token=not-an-identifier-value", REPO_ROOT / "x.py")
 
 
 def test_the_declaration_marker_exempts_one_line_and_only_that_line() -> None:

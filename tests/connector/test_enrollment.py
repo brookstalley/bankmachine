@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -264,7 +265,7 @@ def test_a_credential_bearing_response_cannot_be_made_archivable() -> None:
         with pytest.raises(CredentialBearingResponseError, match="never reach the archive"):
             FetchedResponse(
                 endpoint=endpoint,
-                body=b'{"access_token": "access-sandbox-secret"}',
+                body=b'{"access_token": "fake-access-token-for-tests"}',
                 received_at=now_utc(),
                 request_context=None,
             )
@@ -283,13 +284,13 @@ def test_an_exchange_returns_no_archivable_response_at_all(client_config: Config
     A test asserting "the caller does not archive it" would be about the caller.
     This is about there being nothing to archive.
     """
-    invoke = _answering({"access_token": "access-sandbox-secret", "item_id": "item-1"})
+    invoke = _answering({"access_token": "fake-access-token-for-tests", "item_id": "item-1"})
 
     with _client(client_config) as client:
         client._api.item_public_token_exchange = invoke
         grant = client.exchange_public_token("public-sandbox-token")
 
-    assert grant.access_token == "access-sandbox-secret"
+    assert grant.access_token == "fake-access-token-for-tests"
     assert grant.source_connection_id == "item-1"
     assert not isinstance(grant, FetchedResponse)
     assert not hasattr(grant, "body"), "the exchange body outlived the call that read it"
@@ -308,7 +309,7 @@ def test_an_accounts_call_is_archivable_because_it_carries_no_credential(
 
     with _client(client_config) as client:
         client._api.accounts_get = invoke
-        fetched = client.accounts_get("access-sandbox-secret", connection_id=4)
+        fetched = client.accounts_get("fake-access-token-for-tests", connection_id=4)
 
     assert isinstance(fetched, FetchedResponse)
     assert fetched.endpoint is ACCOUNTS_GET
@@ -320,14 +321,16 @@ def test_no_access_token_reaches_the_request_context(client_config: Config) -> N
     `request_context` records what was asked, never what it was asked with -- and
     these are the first two calls in the product whose *arguments* are secret.
     """
-    for endpoint_attr, call in (
-        ("item_get", lambda c: c.item_get("access-sandbox-secret", connection_id=4)),
-        ("accounts_get", lambda c: c.accounts_get("access-sandbox-secret", connection_id=4)),
-    ):
+    token = "fake-access-token-for-tests"
+    calls: list[tuple[str, Callable[[PlaidClient], FetchedResponse]]] = [
+        ("item_get", lambda client: client.item_get(token, connection_id=4)),
+        ("accounts_get", lambda client: client.accounts_get(token, connection_id=4)),
+    ]
+    for endpoint_attr, call in calls:
         with _client(client_config) as client:
             setattr(client._api, endpoint_attr, _answering({"item": {}, "accounts": []}))
             fetched = call(client)
-        assert "access-sandbox-secret" not in (fetched.request_context or "")
+        assert token not in (fetched.request_context or "")
 
 
 # --------------------------------------------------------------------------

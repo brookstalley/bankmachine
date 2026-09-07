@@ -188,6 +188,26 @@ exception message or a `repr` (AC-10.1, AC-10.3). The datastore holds
 `connections.credential_ref` — the *name* of a keychain entry, never a token,
 because a datastore backup travels and a credential inside it travels with it.
 
+🔴 **The archive exemption is a property of the endpoint, not a list kept beside
+the archive.** `Endpoint.issues_credential` marks the endpoints whose *response
+body* carries a credential — today `/link/token/create` and
+`/item/public_token/exchange`, the latter verified live as returning
+`access_token`, `item_id`, `request_id`. `FetchedResponse.__post_init__` refuses
+to exist for such an endpoint, and `store.raw` derives everything it persists
+from one of those — so a credential-bearing body cannot be archived by any
+caller, including one written years from now by someone who never read
+`store/raw.py`'s docstring.
+
+The alternative was a list of exempt paths consulted at the archive site. That is
+an enumeration standing in for a property, and this project has already been
+burned once by a rule that matched on a name where it meant a relationship. The
+cost of getting it wrong is not recoverable: `raw_responses` is append-only, so a
+token written there is written permanently and travels with every backup.
+
+**The credential-issuing calls therefore return their own types** — `LinkToken`
+and `AccessGrant` — rather than a `FetchedResponse`. There is no path from either
+into the archive, which is what keeps this structural rather than remembered.
+
 ### MCP Tool Surface — *not built; build step 7*
 
 **Producer:** `src/bankmachine/mcp/` (does not exist yet).

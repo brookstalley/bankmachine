@@ -31,22 +31,38 @@ import pytest
 from plaid.api import plaid_api
 from plaid.model.country_code import CountryCode
 from plaid.model.institutions_get_request import InstitutionsGetRequest
+from plaid.model.item_public_token_exchange_request import (  # noqa: F401
+    ItemPublicTokenExchangeRequest,
+)
+from plaid.model.products import Products
+from plaid.model.sandbox_item_reset_login_request import SandboxItemResetLoginRequest
+from plaid.model.sandbox_public_token_create_request import SandboxPublicTokenCreateRequest
 
-from bankmachine.config import Config, load_config
+from bankmachine.config import MAX_HISTORY_DAYS, Config, load_config
 from bankmachine.connector import (
     INSTITUTIONS_GET,
+    ITEM_PUBLIC_TOKEN_EXCHANGE,
     AggregatorNotConfiguredError,
     AggregatorRequestError,
     ConnectorError,
+    CredentialBearingResponseError,
+    Endpoint,
+    FetchedResponse,
+    ReauthRequiredError,
 )
-from bankmachine.connector.plaid.client import PlaidClient
+from bankmachine.connector.plaid.client import AccessGrant, PlaidClient, capabilities_of
 from bankmachine.connector.plaid.errors import RetryPolicy
 from bankmachine.secrets import AggregatorCredentialMissingError, get_plaid_secret
+from bankmachine.store.types import now_utc
 
 pytestmark = pytest.mark.sandbox
 
 FIXTURES = Path(__file__).parent / "fixtures"
 RECORDING = os.environ.get("BANKMACHINE_RECORD_FIXTURES") == "1"
+
+#: The aggregator's own fictional test bank. Belongs to the aggregator, not to
+#: any institution roster, which is what makes it safe to name in a tracked file.
+SANDBOX_INSTITUTION = "ins_109508"
 
 
 @pytest.fixture
@@ -270,3 +286,133 @@ def test_a_live_refusal_carries_what_a_degraded_record_needs(sandbox_config: Con
     assert failure.failed_at is not None, "no far end for AC-4.5's subtraction"
     assert failure.connection_id == 11
     assert "a" * 30 not in str(failure), "the secret reached the failure message"
+
+
+# --------------------------------------------------------------------------
+# Enrollment against the real sandbox (FR-1), and the item-level error half
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def enrolled_item(sandbox_client: Any) -> str:
+    """One disposable sandbox connection, and the access token that reads it.
+
+    `/sandbox/public_token/create` mints an Item without a browser, which is the
+    only way to reach the item-level half of the error taxonomy: everything
+    Chunk 02 could provoke was a *credential* rejection, and those never touch
+    the states FR-4 is actually written about.
+    """
+    public = sandbox_client._fetch_bytes(
+        Endpoint("/sandbox/public_token/create"),
+        sandbox_client._api.sandbox_public_token_create,
+        SandboxPublicTokenCreateRequest(
+            institution_id=SANDBOX_INSTITUTION, initial_products=[Products("transactions")]
+        ),
+    )
+    public_token = json.loads(public)["public_token"]
+    assert isinstance(public_token, str)
+    grant: AccessGrant = sandbox_client.exchange_public_token(public_token)
+    return grant.access_token
+
+
+def test_a_link_token_is_created_live_at_the_configured_maximum(sandbox_client: Any) -> None:
+    """AC-1.2 against the real aggregator, as far as the aggregator can be asked.
+
+    🔴 **The response does not report the window** *(verified: the reply is
+    `expiration`, `link_token`, `request_id`)*, so what is checkable here is that
+    730 is accepted and that the value travels back to the caller. What the
+    aggregator actually *grants* is not observable until build step 3's first
+    real connection -- which is where AC-1.2 becomes irreversible, and no test
+    before it should be read as having verified the granted window.
+    """
+    issued = sandbox_client.link_token_create(
+        history_days=MAX_HISTORY_DAYS,
+        client_user_id="bankmachine-suite",
+        country_codes=["US"],
+        products=["transactions"],
+    )
+
+    assert issued.token.startswith("link-sandbox-")
+    assert issued.requested_history_days == MAX_HISTORY_DAYS == 730
+    assert issued.expires_at, "a session with no expiry is not a session"
+
+
+def test_an_exchange_yields_a_token_that_no_archive_could_have_taken(
+    sandbox_client: Any, enrolled_item: str
+) -> None:
+    """AC-10.1 against a real credential, not a constructed one.
+
+    The exchange happened for real and the access token is in hand, and there is
+    still no `FetchedResponse` anywhere that could have carried it -- because the
+    endpoint is declared credential-issuing and the archive's own input type
+    refuses to exist for it.
+    """
+    assert enrolled_item.startswith("access-sandbox-")
+    with pytest.raises(CredentialBearingResponseError):
+        FetchedResponse(
+            endpoint=ITEM_PUBLIC_TOKEN_EXCHANGE,
+            body=b'{"access_token": "whatever"}',
+            received_at=now_utc(),
+            request_context=None,
+        )
+
+
+def test_capabilities_come_back_from_a_real_connection(
+    sandbox_client: Any, enrolled_item: str
+) -> None:
+    """AC-3.2 against a live item, where `products` and `available_products` differ.
+
+    They differ *because* the item was enrolled with `transactions` alone, which
+    is what makes this a real discrimination rather than two names for one list.
+    A fake could be written either way and would agree with whichever was coded.
+    """
+    fetched = sandbox_client.item_get(enrolled_item, connection_id=1)
+    capabilities = capabilities_of(fetched.body)
+
+    _record_or_compare("item_get", fetched.body)
+    assert "investments" in capabilities, (
+        "the sandbox item reports investments among what it could do; if this is empty, "
+        "capability discovery is reading `products` and would never discover anything"
+    )
+    assert capabilities != set(json.loads(fetched.body)["item"]["products"])
+
+
+def test_accounts_come_back_and_are_archivable(sandbox_client: Any, enrolled_item: str) -> None:
+    """The shape Chunk 04's derivers are written against, recorded from the live call."""
+    fetched = sandbox_client.accounts_get(enrolled_item, connection_id=1)
+    payload = _record_or_compare("accounts_get", fetched.body)
+
+    assert payload["accounts"], "an enrolled item with no accounts is not a fixture"
+    account = payload["accounts"][0]
+    for field in ("account_id", "name", "type", "subtype", "balances"):
+        assert field in account, f"the deriver reads {field} and the aggregator stopped sending it"
+
+
+def test_a_reset_login_drives_a_real_item_login_required_through_the_taxonomy(
+    sandbox_client: Any, enrolled_item: str
+) -> None:
+    """🔴 The item-level half of FR-4, which no credential rejection can reach.
+
+    Moved here from Chunk 02, which asked for it before the exchange call that
+    mints an Item existed. `/sandbox/item/reset_login` invalidates a connection's
+    credentials exactly as an institution's password change does, so this is the
+    real `ITEM_LOGIN_REQUIRED` -- the state that decides whether an operator is
+    told to re-link, and the one whose remedy is in this product rather than at
+    their bank.
+    """
+    sandbox_client._fetch_bytes(
+        Endpoint("/sandbox/item/reset_login"),
+        sandbox_client._api.sandbox_item_reset_login,
+        SandboxItemResetLoginRequest(access_token=enrolled_item),
+    )
+
+    with pytest.raises(ReauthRequiredError) as caught:
+        sandbox_client.accounts_get(enrolled_item, connection_id=7)
+
+    failure = caught.value
+    assert failure.error_code == "ITEM_LOGIN_REQUIRED"
+    assert failure.connection_id == 7, "AC-4.1's isolation needs the connection named"
+    assert failure.failed_at is not None, "AC-4.5 needs the far end of the data hole"
+    assert type(failure).retryable is False, (
+        "retrying a connection that needs a human delays the report that tells them"
+    )
