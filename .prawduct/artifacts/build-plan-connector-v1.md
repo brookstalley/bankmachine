@@ -54,6 +54,21 @@ Derivation Seam — was built in step 1 specifically so step 2 would have someth
   `plaid-python`'s source first and *then* probes, because the two disagree in exactly the places
   that matter — a fixture written from a model definition inherits whatever the model got wrong.
 
+- `[DECISION: whether an aggregator failure is worth retrying is a property of its error type,
+  not a list kept in the retry loop | taken during Chunk 02, 2026-09-07 | user can revisit]`
+  `retryable` has no default on `ConnectorError`, and `__init_subclass__` refuses at class
+  creation any subclass that did not declare one. **The alternative was a set of retryable
+  types checked inside `call_with_retry`,** which is how this is usually written and is
+  simpler to read in one place. It was rejected because that set is an enumeration standing in
+  for a property: it goes stale the moment an error type is added by someone who does not
+  think to open that file, and it goes stale *silently*, in whichever direction the omission
+  happens to fall — an un-retried transient stops the nightly sync, a retried permanent one
+  hammers the aggregator with a call that cannot work. The cost of the choice is real and
+  worth stating: every future error type must decide, and a second aggregator's module cannot
+  define one without deciding. That is the intended cost. Recorded as a decision rather than
+  left in prose because it constrains every error type anyone adds from here, and the owner
+  should get the chance to say a plain list would have been fine.
+
 **Open assumptions:**
 
 - ~~`[ASSUMPTION: credential-issuing responses are exempt from the raw archive | HIGH impact]`~~
@@ -315,8 +330,20 @@ relationship (who may import what), not a naming convention.
   asserted by mypy over a negative fixture) and sends the configured value, not a default; unit — the
   exchange response is **not** archived, by a test naming the exempt endpoints, while `/accounts/get`
   is; unit — capabilities are read from the item's own product list, and no code path branches on an
-  institution's identity; sandbox (marked) — a link token is created and its `days_requested` echoes
-  back at the configured maximum
+  institution's identity; sandbox (marked) — a link token is created live with the configured
+  maximum and the aggregator accepts it
+
+  **Amended during the build (2026-09-07), by `verify-api` doing its job.** This chunk was drawn
+  asking that the created link token's `days_requested` "echoes back at the configured maximum".
+  It does not: probed live with `days_requested=730`, the response carries exactly `expiration`,
+  `link_token` and `request_id` — nothing about the window, requested or granted
+  (`api-notes-plaid.md` §11). So the echo cannot be asserted, and asserting a weaker thing while
+  keeping the old sentence would be worse than saying this. What *is* checkable here is the value
+  this product sends, on the request object the SDK builds, plus a live call proving 730 is
+  accepted. 🔴 **The granted window stays unobservable until build step 3's first real
+  connection**, which is already the step where AC-1.2 becomes irreversible — and AC-11.8's
+  shortfall cannot be computed before it. No chunk in this plan should be read as having
+  verified the window the aggregator actually grants
 - **Acceptance criteria:** a link token opens in Plaid Link and reports the requested window; the
   access token returned by an exchange reaches the caller and appears in neither the archive nor any
   log line

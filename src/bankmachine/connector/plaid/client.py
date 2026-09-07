@@ -41,10 +41,10 @@ from bankmachine.config import Config
 from bankmachine.connector import (
     INSTITUTIONS_GET,
     AggregatorNotConfiguredError,
-    AggregatorRequestError,
     ConnectorError,
     Endpoint,
     FetchedResponse,
+    MalformedResponseError,
     TransportError,
 )
 from bankmachine.connector.plaid.errors import (
@@ -186,12 +186,14 @@ class PlaidClient:
         connection_id: int | None,
     ) -> FetchedResponse:
         """One call, with every way it can fail turned into a local type."""
+        raw = None
         try:
             raw = invoke(
                 request,
                 _preload_content=False,
                 _request_timeout=self._timeout_seconds,
             )
+            body = raw.data
         except plaid.ApiException as exc:
             raise self._refusal(endpoint, exc, connection_id) from exc
         except urllib3.exceptions.HTTPError as exc:
@@ -230,12 +232,24 @@ class PlaidClient:
                 connection_id=connection_id,
                 failed_at=self._now(),
             ) from exc
-        try:
-            body = raw.data
+        except OSError as exc:
+            # The body is read inside this `try` on purpose. urllib3 streams it,
+            # so a connection reset lands *here* rather than at the call -- and
+            # read outside, it escaped as a bare `OSError` from a connector whose
+            # whole contract is that its failures are local types. Retryable,
+            # because a reset connection is the transient case by definition.
+            raise TransportError(
+                f"{endpoint} lost the connection to the aggregator while the response "
+                f"was being read: {type(exc).__name__}",
+                endpoint=endpoint,
+                connection_id=connection_id,
+                failed_at=self._now(),
+            ) from exc
         finally:
-            raw.release_conn()
-        if not isinstance(body, bytes):  # pragma: no cover -- urllib3 returns bytes
-            raise AggregatorRequestError(
+            if raw is not None:
+                raw.release_conn()
+        if not isinstance(body, bytes):
+            raise MalformedResponseError(
                 f"{endpoint} returned {type(body).__name__}, expected undecoded bytes",
                 endpoint=endpoint,
                 connection_id=connection_id,

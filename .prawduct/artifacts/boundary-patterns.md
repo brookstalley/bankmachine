@@ -318,8 +318,18 @@ the moment an error type is added by someone who does not think to visit that
 file — and it goes stale silently, in whichever direction the omission falls: an
 un-retried transient stops the nightly sync, a retried permanent one hammers the
 aggregator with a call that cannot work. `retryable` has no default on the base
-class, and `test_every_error_type_decides_whether_it_retries` requires each type
-to declare its own.
+class, and `ConnectorError.__init_subclass__` refuses **at class creation** any
+subclass that did not declare one — so a second aggregator's module cannot define
+an error type without deciding. A test walking `__subclasses__()` was the first
+attempt and is not enough: that walk sees only subclasses whose module has been
+imported, so it guarantees something about the types one test file happens to
+import rather than about every error type.
+
+The grouping classes — `ConnectorError` and `AggregatorError` — exist to be
+caught and are declared `grouping=True`, which exempts them from that rule and
+makes them **non-instantiable**. Raising one would otherwise fail a frame away
+inside the retry loop, reading a class attribute nobody set, on the error path of
+the error path.
 
 **The retry channel wraps the HTTP call and nothing else.** `architecture.md`
 permits backoff on exactly this boundary because it is the only one that can

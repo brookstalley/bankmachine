@@ -9,6 +9,8 @@ from a model definition inherits whatever that model got wrong.
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
 
@@ -18,6 +20,7 @@ from hypothesis import strategies as st
 
 from bankmachine.connector import (
     INSTITUTIONS_GET,
+    AggregatorError,
     AggregatorNotConfiguredError,
     AggregatorRequestError,
     AggregatorUnavailableError,
@@ -44,22 +47,6 @@ from bankmachine.connector.plaid.errors import (
 )
 from bankmachine.store.types import now_utc
 
-
-def _body(**fields: object) -> str:
-    """An error body in the shape the aggregator actually sends."""
-    payload: dict[str, object] = {
-        "display_message": None,
-        "documentation_url": "https://plaid.com/docs/?ref=error",
-        "error_code": None,
-        "error_message": None,
-        "error_type": None,
-        "request_id": "476e317baa236b1",
-        "suggested_action": None,
-    }
-    payload.update(fields)
-    return json.dumps(payload)
-
-
 # --------------------------------------------------------------------------
 # Layer 1: the error code
 # --------------------------------------------------------------------------
@@ -80,9 +67,9 @@ def _body(**fields: object) -> str:
     ],
 )
 def test_each_code_maps_to_the_type_that_names_its_remedy(
-    code: str, expected: type[ConnectorError]
+    code: str, expected: type[ConnectorError], error_body: Callable[..., str]
 ) -> None:
-    detail = parse_error_body(_body(error_code=code, error_type="ITEM_ERROR"))
+    detail = parse_error_body(error_body(error_code=code, error_type="ITEM_ERROR"))
     assert classify(400, detail) is expected
 
 
@@ -118,7 +105,7 @@ def test_the_four_connection_health_states_are_four_distinct_types() -> None:
     ],
 )
 def test_an_unknown_code_still_classifies_by_its_error_type(
-    error_type: str, expected: type[ConnectorError]
+    error_type: str, expected: type[ConnectorError], error_body: Callable[..., str]
 ) -> None:
     """The coarse layer, exercised where the precise one cannot reach.
 
@@ -129,7 +116,7 @@ def test_an_unknown_code_still_classifies_by_its_error_type(
     moment there is no one watching.
     """
     detail = parse_error_body(
-        _body(error_code="A_CODE_INVENTED_FOR_THIS_TEST", error_type=error_type)
+        error_body(error_code="A_CODE_INVENTED_FOR_THIS_TEST", error_type=error_type)
     )
     assert classify(400, detail) is expected
 
@@ -161,23 +148,27 @@ def test_a_server_error_with_no_vocabulary_is_the_aggregators_own(status: int) -
     assert classify(status, AggregatorErrorDetail()) is AggregatorUnavailableError
 
 
-def test_an_unrecognized_refusal_raises_something_specific_rather_than_being_swallowed() -> None:
+def test_an_unrecognized_refusal_raises_something_specific_rather_than_being_swallowed(
+    error_body: Callable[..., str],
+) -> None:
     """Silence is the one disallowed outcome.
 
     Not folded into a neighbouring type: filing an unknown code under "probably
     transient" hides a connection that will never recover, and under "probably
     terminal" retires one that only needed a retry.
     """
-    detail = parse_error_body(_body(error_code="SOMETHING_NEW", error_type="A_NEW_TYPE"))
+    detail = parse_error_body(error_body(error_code="SOMETHING_NEW", error_type="A_NEW_TYPE"))
     assert classify(400, detail) is UnrecognizedAggregatorError
     assert issubclass(UnrecognizedAggregatorError, ConnectorError)
     assert UnrecognizedAggregatorError is not ConnectorError
 
 
 @pytest.mark.parametrize("code", sorted(KNOWN_UNCLASSIFIED_CODES))
-def test_a_known_code_with_no_remedy_says_so_rather_than_claiming_it_is_new(code: str) -> None:
+def test_a_known_code_with_no_remedy_says_so_rather_than_claiming_it_is_new(
+    code: str, error_body: Callable[..., str]
+) -> None:
     """The difference between a gap someone chose and a gap nobody noticed."""
-    detail = parse_error_body(_body(error_code=code, error_type="ITEM_ERROR"))
+    detail = parse_error_body(error_body(error_code=code, error_type="ITEM_ERROR"))
     assert classify(400, detail) is UnrecognizedAggregatorError
     message = describe(INSTITUTIONS_GET, 400, "Bad Request", detail)
     assert "implements no remedy" in message
@@ -224,34 +215,46 @@ def test_any_body_at_all_parses_into_a_detail_rather_than_raising(body: object) 
 # --------------------------------------------------------------------------
 
 
-def _leaf_error_types() -> list[type[ConnectorError]]:
-    """Every error type nothing else inherits from -- the ones actually raised."""
+def test_a_type_that_never_decided_whether_it_retries_cannot_be_defined() -> None:
+    """The mechanism, checked where it actually fires: class creation.
 
-    def walk(cls: type[ConnectorError]) -> list[type[ConnectorError]]:
-        subclasses = cls.__subclasses__()
-        if not subclasses:
-            return [cls]
-        return [leaf for sub in subclasses for leaf in walk(sub)]
-
-    return walk(ConnectorError)
-
-
-def test_every_error_type_decides_whether_it_retries() -> None:
-    """The mechanism behind `retryable` having no default on the base class.
-
-    A default is what lets a type added next year inherit an answer nobody
-    decided, and the two directions fail differently: an un-retried transient
-    stops the nightly sync, a retried permanent one hammers the aggregator with
-    a call that cannot work. Requiring the attribute in the class's *own*
-    `__dict__` is what makes inheriting the answer insufficient.
+    A test that walked `ConnectorError.__subclasses__()` would only ever see
+    subclasses whose module had been imported -- so it would guarantee something
+    about the types this file happens to import, not about every error type. The
+    case it misses is the one the connector's own docstring anticipates: a second
+    aggregator arriving as a new module, whose new error type would leave the
+    walk green and raise `AttributeError` from inside the retry loop, one frame
+    from the `raise`, on the error path of the error path.
     """
-    leaves = _leaf_error_types()
-    assert leaves, "the walk found no error types, so it is proving nothing"
-    undecided = [cls.__name__ for cls in leaves if "retryable" not in cls.__dict__]
-    assert not undecided, (
-        f"{undecided} inherit `retryable` instead of declaring it. Decide it on the class: "
-        f"the retry loop asks the exception, and a wrong inherited answer is silent"
-    )
+    with pytest.raises(TypeError, match="must declare `retryable`"):
+
+        class ForgotToDecideError(ConnectorError):
+            """A type that never said whether trying again could help."""
+
+    # Positive control: declaring it is all that was missing, so the refusal is
+    # about the decision rather than about subclassing being blocked outright.
+    class DecidedError(ConnectorError):
+        retryable = False
+
+    assert DecidedError("x").retryable is False
+
+
+def test_a_grouping_class_cannot_be_raised_because_it_cannot_be_built() -> None:
+    """Grouping classes exist to be caught. Raising one is a mistake that reports itself.
+
+    Structural rather than conventional: they declare no `retryable`, so without
+    this the mistake would surface inside the retry loop as an `AttributeError`
+    about a class attribute -- a confusing report of a simple error, on a path
+    that may not run for months.
+    """
+    for grouping in (ConnectorError, AggregatorError):
+        with pytest.raises(TypeError, match="not raisable"):
+            grouping("this should never be constructible")
+
+    # Positive control: a leaf of each builds fine, so the refusal is about the
+    # grouping classes rather than about the hierarchy being broken.
+    assert TransportError("offline").retryable is True
+    assert ReauthRequiredError("re-link it").retryable is False
 
 
 def test_the_retry_loop_asks_the_type_rather_than_keeping_its_own_list() -> None:
@@ -371,7 +374,36 @@ def test_giving_up_is_loud_and_says_how_many_times_it_tried() -> None:
     assert caught.value.connection_id == 7
     assert caught.value.endpoint is INSTITUTIONS_GET
     assert caught.value.request_id == "abc123"
-    assert isinstance(caught.value.__cause__, RateLimitedError)
+
+
+def test_giving_up_keeps_every_field_the_failure_arrived_with() -> None:
+    """The give-up path re-raises rather than rebuilds.
+
+    A rebuild has to copy each field by hand, and the first version of this one
+    copied five and forgot `retry_after_seconds` -- the field that says how long
+    the aggregator asked us to wait, dropped at exactly the moment a caller is
+    deciding what to do about a connection it has just given up on.
+    """
+    original = RateLimitedError(
+        "slow down",
+        endpoint=INSTITUTIONS_GET,
+        connection_id=9,
+        error_code="RATE_LIMIT_EXCEEDED",
+        request_id="req-1",
+        retry_after_seconds=15.0,
+    )
+
+    def call() -> str:
+        raise original
+
+    with pytest.raises(RateLimitedError) as caught:
+        _run(call, policy=RetryPolicy(attempts=2))
+
+    for field in ("endpoint", "connection_id", "error_code", "request_id", "retry_after_seconds"):
+        assert getattr(caught.value, field) == getattr(original, field), (
+            f"the give-up path dropped {field}"
+        )
+    assert caught.value.failed_at is not None, "giving up is itself a moment worth stamping"
 
 
 @pytest.mark.parametrize(
@@ -420,6 +452,70 @@ def test_the_aggregators_own_retry_after_is_a_floor_on_the_wait() -> None:
 
     assert _run(call, clock=clock) == "answered"
     assert clock.slept == [30.0], "the computed backoff overrode the aggregator's instruction"
+
+
+def test_the_aggregator_cannot_ask_for_a_longer_wait_than_the_policy_allows() -> None:
+    """🔴 `max_delay_seconds` is the field whose whole job is bounding the wait.
+
+    A `Retry-After` honoured without a ceiling bypasses it: `Retry-After: 3600`
+    on a four-attempt policy spends three silent hours inside one nightly sync,
+    turning a connection this run could have reported as degraded into one that
+    simply never reports -- which is the exact failure AC-4.4 calls this
+    system's primary mode. The aggregator gets to ask for longer; it does not
+    get to decide how long this product hangs.
+    """
+    clock = FakeClock()
+    policy = RetryPolicy(attempts=3, max_delay_seconds=5.0)
+
+    def call() -> str:
+        raise RateLimitedError("slow down", retry_after_seconds=3600.0)
+
+    with pytest.raises(RateLimitedError):
+        _run(call, policy=policy, clock=clock)
+
+    assert clock.slept == [5.0, 5.0]
+    assert sum(clock.slept) <= policy.max_delay_seconds * (policy.attempts - 1)
+
+
+@pytest.mark.parametrize("value", ["inf", "Infinity", "1e400", "-inf", "nan"])
+def test_a_non_finite_retry_after_never_reaches_the_clock(value: str) -> None:
+    """`float()` accepts these, and `time.sleep(inf)` raises `OverflowError`.
+
+    Untyped, past this boundary, and into a CLI handler that catches only
+    `ConnectorError` and its kin -- so an aggregator header would become a
+    traceback. A header is external input and is treated as such.
+    """
+    assert parse_retry_after({"Retry-After": value}) is None
+
+
+def test_a_retry_and_a_give_up_both_leave_a_trace(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Silence is the one disallowed outcome, and a wait nobody can see is silence.
+
+    A call that succeeds on attempt 3 would otherwise leave nothing behind, and
+    an operator asking why last night's unattended sync took minutes has only
+    the logs to read.
+    """
+    attempts = 0
+
+    def call() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise RateLimitedError("slow down", endpoint=INSTITUTIONS_GET)
+        return "answered"
+
+    with caplog.at_level(logging.WARNING, logger="bankmachine"):
+        assert _run(call) == "answered"
+    retried = [r for r in caplog.records if "retrying" in r.getMessage()]
+    assert len(retried) == 2, "a silent retry is a wait no operator can account for"
+    assert "/institutions/get" in retried[0].getMessage()
+
+    caplog.clear()
+    with caplog.at_level(logging.ERROR, logger="bankmachine"), pytest.raises(RateLimitedError):
+        _run(lambda: (_ for _ in ()).throw(RateLimitedError("no")), policy=RetryPolicy(attempts=2))
+    assert any("giving up" in r.getMessage() for r in caplog.records)
 
 
 def test_a_policy_that_could_never_call_anything_is_refused() -> None:
@@ -489,9 +585,11 @@ def test_a_failure_before_enrollment_carries_no_connection_rather_than_a_wrong_o
     assert error.connection_id is None
 
 
-def test_the_description_names_the_cause_and_not_the_reason_phrase() -> None:
+def test_the_description_names_the_cause_and_not_the_reason_phrase(
+    error_body: Callable[..., str],
+) -> None:
     detail = parse_error_body(
-        _body(
+        error_body(
             error_code="INVALID_FIELD",
             error_type="INVALID_REQUEST",
             error_message="client_id must be a properly formatted, non-empty string",
@@ -500,7 +598,11 @@ def test_the_description_names_the_cause_and_not_the_reason_phrase() -> None:
     described = describe(INSTITUTIONS_GET, 400, "Bad Request", detail)
     assert "INVALID_FIELD" in described
     assert "client_id must be a properly formatted" in described
-    assert "476e317baa236b1" in described
+    # Read from the same body rather than copied from it: a literal here is a
+    # value that goes stale the next time the fixture is re-recorded, and it
+    # would fail for a reason that says nothing about the code under test.
+    assert detail.request_id is not None
+    assert detail.request_id in described
     assert "Bad Request" not in described
 
 

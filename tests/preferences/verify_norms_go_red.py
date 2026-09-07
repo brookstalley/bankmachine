@@ -300,17 +300,6 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "test_check_refuses_a_missing_datastore_before_reaching_the_aggregator",
     ),
     (
-        "FR-4: every error type decides for itself whether it retries",
-        CONNECTOR_PACKAGE,
-        """    there costs a rotation that was never needed.
-    \"\"\"
-
-    retryable = True""",
-        """    there costs a rotation that was never needed.
-    \"\"\"""",
-        f"{ERROR_TESTS}::test_every_error_type_decides_whether_it_retries",
-    ),
-    (
         "FR-4: the retry loop asks the exception rather than keeping its own list",
         CONNECTOR_ERRORS,
         "            if not type(exc).retryable:",
@@ -337,6 +326,20 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
 
     retryable = False""",
         f"{ERROR_TESTS}::test_a_transient_refusal_succeeds_after_backoff",
+    ),
+    (
+        "FR-4: a grouping error class cannot be built, so it cannot be raised",
+        CONNECTOR_PACKAGE,
+        "        if cls.grouping or cls is ConnectorError:",
+        "        if False:",
+        f"{ERROR_TESTS}::test_a_grouping_class_cannot_be_raised_because_it_cannot_be_built",
+    ),
+    (
+        "FR-4: a type that never decided whether it retries cannot be defined",
+        CONNECTOR_PACKAGE,
+        '        if not grouping and "retryable" not in cls.__dict__:',
+        "        if False:",
+        f"{ERROR_TESTS}::test_a_type_that_never_decided_whether_it_retries_cannot_be_defined",
     ),
 ]
 

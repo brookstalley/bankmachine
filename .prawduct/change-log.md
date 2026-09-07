@@ -34,6 +34,75 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-07: The connector's error taxonomy, and the retry channel it feeds
+
+<!-- prawduct: scope=connector-v1 -->
+
+**Why:** FR-4 is written in four connection-health states — auth-required, locked,
+institution-down, rate-limit — and until this chunk every aggregator failure reached the
+caller as one `ConnectorError` carrying a sentence. A sync loop cannot honour AC-4.1's
+"one broken connection never aborts another" against a single type, and cannot record
+AC-4.2's error code or compute AC-4.5's data hole from a message.
+
+**What shipped.** `connector/plaid/errors.py` maps the aggregator's vocabulary onto local
+types defined in `connector/__init__.py` — outside the `plaid` subpackage, so catching an
+aggregator failure never requires importing the aggregator. The types are organized by
+**what the caller must do next** rather than by what the aggregator called it: Plaid's own
+`ITEM_ERROR` spans re-link, go-to-your-bank and nothing-to-sync, and a consumer switching on
+it would send the operator somewhere that cannot help them. Every failure carries its
+connection, its code, its request id and the instant it happened. Alongside it,
+backoff-and-retry on the one channel `architecture.md` permits it on (AC-2.6), with the
+clock injected so the suite exercises the real schedule at full speed.
+
+**Three decisions worth reading.**
+
+- **Retryability is a property of each error type, never a list in the retry loop.** A list
+  goes stale the moment someone adds a type without visiting that file, and it fails in both
+  directions: an un-retried transient stops the nightly sync, a retried permanent one hammers
+  the aggregator with a call that cannot work. `retryable` has no base-class default, and
+  `__init_subclass__` refuses at *class creation* a type that never decided. The first version
+  of this used a test walking `__subclasses__()`; the Critic pointed out that walk sees only
+  modules that have been imported, so it would have guaranteed something about the types one
+  test file happens to import — and the case it misses is the second aggregator this package
+  is explicitly shaped for. That test is consolidated away, because the class-creation guard
+  makes it a check that can no longer fail.
+- **`ITEM_ERROR` is deliberately absent from the classification's coarse layer.** Mapping it
+  would be confidently wrong two times in three, and a wrong remedy is worse than a refusal.
+- **An unrecognized code gets its own type, not a neighbour's.** Filing an unknown refusal
+  under "probably transient" hides a connection that will never recover; under "probably
+  terminal" it retires one that only needed a retry. Codes this build *recognizes* but has no
+  FR-4 class for say so in as many words, which is the difference between a gap someone chose
+  and a gap nobody noticed.
+
+**A dependency bug, contained narrowly.** `plaid-python` 44.0.0's `api_client.py` calls
+`e.body.decode('utf-8')` on a body it just set to `None`, so one class of SSL failure leaves
+the SDK as `AttributeError` rather than as anything catchable. It is caught here and
+**re-raised untouched unless the SDK's own exception is standing behind it** — catching
+`AttributeError` around a call would swallow every genuine typo in the module and report it
+as a network problem, so the narrowing has its own negative control. Getting there took two
+probes that disagreed with each other and with the source reading; `api-notes-plaid.md` §9
+records which SSL failures actually reach which path.
+
+**What the Critic caught, and it is the same shape twice.** A `Retry-After` header was
+honoured as a floor with no ceiling, so the aggregator could ask this product to sleep for an
+hour inside one nightly sync — bypassing `max_delay_seconds`, the field whose whole job is
+bounding the wait — and `float("inf")` passed the only guard on it, which `time.sleep` turns
+into an `OverflowError` past the boundary. Both are external input reaching a wait, and the
+docstring one line above promised a bound the code did not enforce: **the prose was right and
+the mechanism was weaker, so the mechanism was raised.** Separately, the response body was
+read outside the exception mapping, so a reset connection escaped as a bare `OSError` from a
+connector whose whole contract is that its failures are typed.
+
+**Two amendments to the plan, both stated rather than absorbed.** The chunk's sandbox test
+asked for `/sandbox/item/reset_login` to drive a real `ITEM_LOGIN_REQUIRED`; that needs an
+enrolled Item, which needs Chunk 03's exchange call, so it moves there. What runs instead is
+still live — invalid credentials reach the same host and come back with the real error shape,
+and the taxonomy now tells a wrong secret from a malformed call against the real server, which
+is the failure VRF-002 item 5 was written to catch. And the declared "error fixtures" now
+exist and are recorded verbatim from real rejections, replacing three hand-written body shapes
+that had drifted into two test modules; the offline suite builds every constructed body from
+that one recorded shape, so a change in the aggregator's error body moves them all together.
+
 ## 2026-09-07: The strategy artifacts, and the two gaps writing them exposed
 
 <!-- prawduct: scope=strategy-artifacts -->

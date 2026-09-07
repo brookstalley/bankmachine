@@ -28,6 +28,7 @@ because a wrong remedy sends the operator somewhere that cannot help them.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Final, TypeVar
@@ -45,6 +46,7 @@ from bankmachine.connector import (
     ReauthRequiredError,
     UnrecognizedAggregatorError,
 )
+from bankmachine.logging_setup import get_logger
 from bankmachine.store.types import UtcInstant
 
 #: Aggregator error code -> the local type naming what the caller must do.
@@ -235,7 +237,15 @@ def parse_retry_after(headers: object) -> float | None:
             seconds = float(value)
         except (TypeError, ValueError):
             return None
-        return seconds if seconds >= 0 else None
+        if not math.isfinite(seconds) or seconds < 0:
+            # `float()` accepts "inf", "Infinity" and "1e400". A header is
+            # external input, and `time.sleep(inf)` does not wait forever -- it
+            # raises `OverflowError`, untyped, past this boundary and into a CLI
+            # handler that catches only `ConnectorError` and its kin. An
+            # unreadable instruction falls back to the computed backoff, which
+            # is always a valid answer.
+            return None
+        return seconds
     return None
 
 
@@ -245,7 +255,9 @@ def parse_retry_after(headers: object) -> float | None:
 #: that is not ready, and both resolve in seconds-to-minutes or not at all. With
 #: the delays below that is a bounded ~7 seconds of waiting before a connection
 #: is reported degraded -- which AC-4.4 would rather have than a sync that hangs
-#: on optimism.
+#: on optimism. `max_delay_seconds` is what makes "bounded" true of *every* wait,
+#: a `Retry-After` the aggregator asked for included, so the worst case is
+#: `(attempts - 1) * max_delay_seconds` rather than whatever a header said.
 DEFAULT_RETRY_ATTEMPTS: Final = 4
 
 #: The first wait, doubling each attempt up to the cap.
@@ -287,6 +299,8 @@ class RetryPolicy:
             self.max_delay_seconds,
         )
 
+
+_log = get_logger(__name__)
 
 T = TypeVar("T")
 
@@ -330,17 +344,46 @@ def call_with_retry(
             if not type(exc).retryable:
                 raise
             last = exc
+            # Logged at every retry, because a call that succeeds on attempt 3
+            # otherwise leaves no trace at all, and an operator asking why last
+            # night's unattended sync took minutes has nothing to read. In the
+            # one subsystem whose named primary failure mode is silent
+            # staleness, a wait nobody can see is the failure in miniature.
+            _log.warning(
+                "%s on %s: retrying (attempt %d of %d)",
+                type(exc).__name__,
+                exc.endpoint or "the aggregator",
+                attempt,
+                policy.attempts,
+            )
             # The aggregator's own instruction is a floor, not a replacement: a
             # service that says "wait 30s" and is asked again at 2s has been
             # given a reason to keep saying no. Computed after the failure, so
             # the last attempt sets a delay nothing waits out.
-            pending_delay = max(policy.delay_before(attempt + 1), exc.retry_after_seconds or 0.0)
+            # 🔴 Clamped, because `max_delay_seconds` is the field whose whole
+            # job is bounding the wait. A `Retry-After: 3600` that bypassed it
+            # would spend three silent hours inside one nightly sync -- turning a
+            # connection this run could have reported as degraded into one that
+            # simply never reports, which is the exact failure AC-4.4 calls this
+            # system's primary mode. The aggregator gets to ask for longer; it
+            # does not get to decide how long this product hangs.
+            pending_delay = min(
+                max(policy.delay_before(attempt + 1), exc.retry_after_seconds or 0.0),
+                policy.max_delay_seconds,
+            )
     assert last is not None  # the loop runs at least once and only exits here on failure
-    raise type(last)(
-        f"{last} -- gave up after {policy.attempts} attempts",
-        endpoint=last.endpoint,
-        connection_id=last.connection_id,
-        error_code=last.error_code,
-        request_id=last.request_id,
-        failed_at=now(),
-    ) from last
+    # The last failure is re-raised rather than rebuilt. A rebuild has to copy
+    # every field by hand, which is a list that goes stale the moment a field is
+    # added -- and it would drop the cause, burying the aggregator's own
+    # exception a level further down than the operator has to dig. `failed_at`
+    # is restamped because the interesting moment is when this gave up, not when
+    # it first tried.
+    last.args = (f"{last} -- gave up after {policy.attempts} attempts",)
+    last.failed_at = now()
+    _log.error(
+        "%s on %s: giving up after %d attempts",
+        type(last).__name__,
+        last.endpoint or "the aggregator",
+        policy.attempts,
+    )
+    raise last

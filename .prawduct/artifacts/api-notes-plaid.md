@@ -249,6 +249,77 @@ the parsing is exercised against synthetic headers only.
 
 ---
 
+## What Chunk 03's `verify-api` established
+
+### 11. 🔴 `days_requested` is nested, capped at 730 — and the response does not echo it
+
+It lives at `LinkTokenCreateRequest.transactions.days_requested`, inside a
+`LinkTokenTransactions` object rather than on the request itself
+(`link_token_create_request.py` types the field as `LinkTokenTransactions`;
+`link_token_transactions.py` declares `days_requested: (int,)`). The SDK carries
+the documented bounds as validations: **inclusive maximum 730, inclusive minimum
+1**, which is where this product's "documented maximum" comes from rather than
+from a number someone remembered.
+
+🔴 **The create response does not contain it.** Probed live with
+`days_requested=730`: the response keys are exactly `expiration`, `link_token`,
+`request_id`. There is nothing in the reply that says what window was requested,
+let alone what was granted.
+
+That falsifies the plan's Chunk 03 sandbox test as written — "a link token is
+created and its `days_requested` echoes back at the configured maximum" is not a
+thing this endpoint can be asked. What is checkable here is the *request*: the
+value this product sends, asserted on the request object the SDK builds, plus a
+live call proving the aggregator accepts 730. **The granted window is only
+observable after enrollment**, which is build step 3's first real connection —
+already the step flagged as where AC-1.2 becomes irreversible. AC-11.8's
+shortfall (`requested_history_days` minus `granted_history_days`) therefore
+cannot be computed until then, and no earlier chunk should imply otherwise.
+
+### 12. The exchange response carries the access token in its body
+
+`/item/public_token/exchange` answers with exactly `access_token`, `item_id`,
+`request_id` — confirmed both in the SDK's model and against the live sandbox.
+
+This is what turns the archive exemption from a decision into an obligation:
+`store/raw.py` is append-only and a datastore backup travels, so archiving this
+body verbatim would satisfy AC-5.1 by breaking AC-10.1 permanently. The exemption
+is Chunk 03's mechanism to build, and it must key on the endpoint rather than on
+a rule anyone has to remember.
+
+### 13. Capabilities are four separate product lists, and `products` is not the useful one
+
+`/item/get` returns `item` with `available_products`, `billed_products`,
+`products`, `consent_expiration_time`, `error`, `institution_id`,
+`institution_name`, `item_id`, `update_type`, `webhook` — plus a top-level
+`status`. On a sandbox item created with `transactions`:
+
+- `products` → `['transactions']` (what was asked for)
+- `available_products` → 14 entries including `investments`, `liabilities`,
+  `identity` (what this connection *could* do)
+- `consented_products` → `None` in the sandbox
+
+AC-3.2 requires investments to be pulled for any connection whose recorded
+capabilities include investments, **never for a named institution**. The list
+that answers "could this connection do investments" is `available_products`, not
+`products` — a capability discovery reading `products` would report exactly what
+this product already asked for and never discover anything.
+
+### 14. `/accounts/get` shape, and what Chunk 04's derivers get
+
+14 accounts from `ins_109508`. Each account carries `account_id`, `mask`,
+`name`, `official_name`, `type`, `subtype`, `apy`, `holder_category`, and a
+`balances` object of `available`, `current`, `iso_currency_code`, `limit`,
+`unofficial_currency_code`.
+
+Two things follow for the derivers. `current` and `available` are **floats** in
+JSON, and the schema stores integer minor units — the conversion is the deriver's
+job and is where a float rounding error becomes a wrong balance. And `mask` is
+present here but is documented as nullable, which is one of Chunk 04's hostile
+fixtures rather than a shape the sandbox will hand over on its own.
+
+---
+
 ## What is deliberately unused
 
 The generated response models — the largest part of the package — are not used at all, and

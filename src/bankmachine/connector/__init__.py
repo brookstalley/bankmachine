@@ -54,13 +54,54 @@ class ConnectorError(Exception):
     """
 
     #: Whether trying the same call again could plausibly succeed. Declared on
-    #: every concrete subclass and deliberately **not** given a default here: a
+    #: every raisable subclass and deliberately **not** given a default here: a
     #: default is what lets a later error type inherit an answer nobody decided,
     #: and the two directions fail differently -- an un-retried transient stops
     #: the nightly sync, a retried permanent one hammers the aggregator with a
-    #: call that cannot work. `test_every_error_type_decides_whether_it_retries`
-    #: is the mechanism; without it this is a comment.
+    #: call that cannot work.
     retryable: ClassVar[bool]
+
+    #: A grouping class exists to be caught, never raised, and declares no
+    #: `retryable` because it has no single answer to give.
+    grouping: ClassVar[bool] = False
+
+    def __init_subclass__(cls, *, grouping: bool = False, **kwargs: object) -> None:
+        """Refuse, at class-creation time, a type that never decided whether it retries.
+
+        🔴 **This is the mechanism; a test that walks `__subclasses__()` is not.**
+        That walk sees only subclasses whose defining module has been imported,
+        so it would guarantee something about "the types the test happens to
+        import" rather than about every error type -- and the case it would miss
+        is precisely the one this package's docstring anticipates, a second
+        aggregator arriving as a new module. A type defined there would leave the
+        walk green and raise `AttributeError` from inside the retry loop, one
+        frame from the `raise`, on the error path of the error path.
+
+        Enforcing at subclass creation moves the failure to import time, where
+        it names the class that forgot.
+        """
+        super().__init_subclass__(**kwargs)
+        cls.grouping = grouping
+        if not grouping and "retryable" not in cls.__dict__:
+            raise TypeError(
+                f"{cls.__name__} must declare `retryable`: the retry loop asks the exception, "
+                f"and inheriting the answer means inheriting one nobody decided for this type. "
+                f"Pass `grouping=True` if it exists to be caught rather than raised"
+            )
+
+    def __new__(cls, *args: object, **kwargs: object) -> ConnectorError:
+        """A grouping class cannot be instantiated, so it cannot be raised.
+
+        Without this, `raise ConnectorError(...)` fails later and elsewhere --
+        inside the retry loop, reading a class attribute that was never set --
+        which is a confusing report of a simple mistake.
+        """
+        if cls.grouping or cls is ConnectorError:
+            raise TypeError(
+                f"{cls.__name__} groups error types and is not raisable. Raise the type that "
+                f"names what the caller must do about this failure"
+            )
+        return super().__new__(cls, *args, **kwargs)
 
     def __init__(
         self,
@@ -132,12 +173,31 @@ class TransportError(ConnectorError):
     retryable = True
 
 
-class AggregatorError(ConnectorError):
+class MalformedResponseError(ConnectorError):
+    """The aggregator answered, and this build cannot use what it said.
+
+    Distinct from a refusal: nothing was rejected, the response simply is not
+    what the contract requires -- a decoded body where verbatim bytes were
+    asked for, which means something upstream deserialized it and archiving it
+    would put a re-encoding in the archive and call it verbatim.
+
+    Not retried. A response shape does not change because it was asked for twice.
+    """
+
+    retryable = False
+
+
+class AggregatorError(ConnectorError, grouping=True):
     """The aggregator answered, and the answer was a refusal.
 
     Everything below is a refusal this build recognized. An answer it did not
     recognize is `UnrecognizedAggregatorError`, which is a sibling rather than a
     fallback value of this one.
+
+    🔴 **A grouping class, never raised** -- `grouping=True` makes that structural
+    rather than a convention: it declares no `retryable`, and `__new__` refuses to
+    build one, so the mistake fails at the `raise` instead of one frame away in
+    the retry loop.
     """
 
 

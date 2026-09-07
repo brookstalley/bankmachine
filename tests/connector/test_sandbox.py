@@ -26,7 +26,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import plaid
 import pytest
+from plaid.api import plaid_api
 from plaid.model.country_code import CountryCode
 from plaid.model.institutions_get_request import InstitutionsGetRequest
 
@@ -149,6 +151,64 @@ def sandbox_config() -> Config:
     return config
 
 
+def _record_or_compare_error(name: str, body: str) -> None:
+    """Keep the recorded error shape honest against the live one.
+
+    The body is recorded **verbatim**, for the same reason the archive holds
+    responses verbatim: a body rebuilt from the fields this product happened to
+    read back can only ever contain the fields this product happened to read.
+    The first version of this helper did exactly that and silently dropped
+    `error_type` -- the field the taxonomy's second layer classifies on.
+
+    Compared by keys and by `error_code`, never by `request_id`, which changes
+    every call and would fail for a reason that says nothing about this product.
+    """
+    path = _fixture_path(name)
+    payload: dict[str, Any] = json.loads(body)
+    if RECORDING:
+        FIXTURES.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        return
+    if not path.exists():
+        pytest.skip(f"no recorded fixture at {path}; run with BANKMACHINE_RECORD_FIXTURES=1")
+    recorded = json.loads(path.read_text())
+    assert set(recorded) == set(payload), (
+        f"the aggregator's error body no longer has the keys {name} was recorded from; "
+        f"the taxonomy reads error_code, error_type, error_message and request_id out of it"
+    )
+    assert recorded["error_code"] == payload["error_code"], (
+        f"the aggregator now answers {name} with {payload['error_code']!r}; the taxonomy maps "
+        f"{recorded['error_code']!r}, so a remedy is being chosen from a code that is gone"
+    )
+
+
+def _provoke(config: Config, secret: str) -> str:
+    """One deliberately-rejected call, returning the aggregator's verbatim error body.
+
+    Goes through the SDK rather than through `PlaidClient`, because the client's
+    whole job is to turn this body into a local type -- and what needs recording
+    is the body, before that happens.
+    """
+    api_client = plaid.ApiClient(
+        plaid.Configuration(
+            host=plaid.Environment.Sandbox,
+            api_key={"clientId": config.plaid_client_id, "secret": secret},
+        )
+    )
+    try:
+        with pytest.raises(plaid.ApiException) as caught:
+            plaid_api.PlaidApi(api_client).institutions_get(
+                InstitutionsGetRequest(count=1, offset=0, country_codes=[CountryCode("US")]),
+                _preload_content=False,
+                _request_timeout=30.0,
+            )
+    finally:
+        api_client.close()
+    body = caught.value.body
+    assert isinstance(body, str), "the SDK is documented to decode the error body before re-raising"
+    return body
+
+
 def test_a_wrong_secret_and_a_malformed_call_are_told_apart_by_the_real_server(
     sandbox_config: Config,
 ) -> None:
@@ -161,18 +221,27 @@ def test_a_wrong_secret_and_a_malformed_call_are_told_apart_by_the_real_server(
     live server, because the whole question is what the live server actually
     sends, and a fake would answer with whatever was assumed while writing it.
     """
-    with _client_for(sandbox_config, "a" * 30) as client:
-        with pytest.raises(AggregatorNotConfiguredError) as rejected_credential:
-            client.institutions_get(count=1, offset=0, country_codes=["US"])
+    with (
+        _client_for(sandbox_config, "a" * 30) as client,
+        pytest.raises(AggregatorNotConfiguredError) as rejected_credential,
+    ):
+        client.institutions_get(count=1, offset=0, country_codes=["US"])
 
-    with _client_for(
-        replace(sandbox_config, plaid_client_id="not a client id"), "a" * 30
-    ) as client:
-        with pytest.raises(AggregatorRequestError) as rejected_request:
-            client.institutions_get(count=1, offset=0, country_codes=["US"])
+    with (
+        _client_for(replace(sandbox_config, plaid_client_id="not a client id"), "a" * 30) as client,
+        pytest.raises(AggregatorRequestError) as rejected_request,
+    ):
+        client.institutions_get(count=1, offset=0, country_codes=["US"])
 
     assert rejected_credential.value.error_code == "INVALID_API_KEYS"
     assert rejected_request.value.error_code == "INVALID_FIELD"
+    # Recorded so the offline suite tests the shape the aggregator actually
+    # sends rather than one written from memory beside it. Two descriptions,
+    # compared: only their disagreement can tell you the error shape changed.
+    _record_or_compare_error("error_invalid_api_keys", _provoke(sandbox_config, "a" * 30))
+    _record_or_compare_error(
+        "error_invalid_field", _provoke(replace(sandbox_config, plaid_client_id="nope"), "a" * 30)
+    )
     # The two `pytest.raises` above are what assert the distinction: each names a
     # different type, and neither is a subclass of the other, so a taxonomy that
     # flattened them back together would fail one of the two rather than reach here.
@@ -184,14 +253,16 @@ def test_a_wrong_secret_and_a_malformed_call_are_told_apart_by_the_real_server(
 
 def test_a_live_refusal_carries_what_a_degraded_record_needs(sandbox_config: Config) -> None:
     """AC-4.2 and AC-4.5, from a real response rather than a hand-written body."""
-    with _client_for(sandbox_config, "a" * 30) as client:
-        with pytest.raises(ConnectorError) as caught:
-            client._fetch(
-                INSTITUTIONS_GET,
-                client._api.institutions_get,
-                InstitutionsGetRequest(count=1, offset=0, country_codes=[CountryCode("US")]),
-                connection_id=11,
-            )
+    with (
+        _client_for(sandbox_config, "a" * 30) as client,
+        pytest.raises(ConnectorError) as caught,
+    ):
+        client._fetch(
+            INSTITUTIONS_GET,
+            client._api.institutions_get,
+            InstitutionsGetRequest(count=1, offset=0, country_codes=[CountryCode("US")]),
+            connection_id=11,
+        )
 
     failure = caught.value
     assert failure.error_code, "no code to write to connections.last_error_code"
