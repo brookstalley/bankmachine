@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 
 from bankmachine.config import Config
+from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.logging_setup import get_logger
 from bankmachine.secrets import (
     DatastoreKeyMissingError,
@@ -162,7 +163,11 @@ def _print_status(status: connection.DatastoreStatus) -> None:
 
 
 def cmd_rebuild(config: Config, args: argparse.Namespace) -> int:
-    report = rebuild(config, accept_content_change=args.accept_content_change)
+    report = rebuild(
+        config,
+        derivers=ALL_DERIVERS,
+        accept_content_change=args.accept_content_change,
+    )
     _print_rebuild(report)
     return 0
 

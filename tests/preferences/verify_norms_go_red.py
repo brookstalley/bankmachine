@@ -55,6 +55,8 @@ CONNECTOR_CLI_TESTS = "tests/cli/test_connector_commands.py"
 CONNECTOR_TESTS = "tests/connector/test_client.py"
 ERROR_TESTS = "tests/connector/test_errors.py"
 ENROLLMENT_TESTS = "tests/connector/test_enrollment.py"
+DERIVER_TESTS = "tests/connector/test_derivers.py"
+CONNECTOR_DERIVERS = pathlib.Path("src/bankmachine/connector/plaid/derivers.py")
 
 #: (description, file, text to replace, replacement, the test that must go red)
 CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
@@ -363,6 +365,41 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         '    available = item.get("products")',
         f"{ENROLLMENT_TESTS}::"
         "test_capabilities_answer_what_the_connection_could_do_not_what_we_asked_for",
+    ),
+    (
+        "FR-1: a call the far end cannot absorb twice is never retried",
+        CONNECTOR_PACKAGE,
+        '    "/item/public_token/exchange", retry_safe=False, issues_credential=True',
+        '    "/item/public_token/exchange", retry_safe=True, issues_credential=True',
+        f"{ENROLLMENT_TESTS}::test_an_exchange_is_never_retried",
+    ),
+    (
+        "AC-10.1: no enrollment credential reaches a repr",
+        CONNECTOR_PACKAGE,
+        '            f"AccessGrant(access_token=<redacted>, "',
+        '            f"AccessGrant(access_token={self.access_token}, "',
+        f"{ENROLLMENT_TESTS}::test_no_enrollment_credential_reaches_a_repr",
+    ),
+    (
+        "the sign convention: a liability balance is stored negative",
+        CONNECTOR_DERIVERS,
+        '    if balance_class == "liability" and current > 0:',
+        "    if False:",
+        f"{DERIVER_TESTS}::test_a_liability_reported_positive_is_stored_negative",
+    ),
+    (
+        "AC-6.2: money is read as text, never through a float",
+        CONNECTOR_DERIVERS,
+        "        parsed = json.loads(response.body, parse_float=str)",
+        "        parsed = json.loads(response.body)",
+        f"{DERIVER_TESTS}::test_an_amount_a_float_would_have_mangled_survives_exactly",
+    ),
+    (
+        "the derivation seam: no deriver reads the clock",
+        CONNECTOR_DERIVERS,
+        '        "updated_at": response.received_at,',
+        '        "updated_at": __import__("bankmachine.store.types", fromlist=["x"]).now_utc(),',
+        f"{DERIVER_TESTS}::test_no_deriver_reads_the_clock",
     ),
 ]
 

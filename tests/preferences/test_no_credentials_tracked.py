@@ -76,8 +76,8 @@ _LABELLED = re.compile(
 )
 
 
-def _is_a_variable_reference(quote: str, value: str, path: Path) -> bool:
-    """`access_token=enrolled_item` names a variable; it does not carry one.
+def _is_a_variable_reference(quote: str, value: str, path: Path, line: str) -> bool:
+    """`access_token=token` names a variable; it does not carry one.
 
     🔴 **Scoped to Python source, and to unquoted values, deliberately.** In
     Python an unquoted bare identifier after `=` is a reference to something
@@ -93,7 +93,23 @@ def _is_a_variable_reference(quote: str, value: str, path: Path) -> bool:
     dies quietly. The alternative was renaming those parameters, which makes the
     product worse to appease the checker.
     """
-    return not quote and path.suffix == ".py" and value.isidentifier()
+    return (
+        not quote and path.suffix == ".py" and value.isidentifier() and not _looks_like_prose(line)
+    )
+
+
+def _looks_like_prose(line: str) -> bool:
+    """Whether the line is a comment or a docstring rather than executable code.
+
+    🔴 The fourth edge of the exemption, and the one that is easy to miss: in
+    a comment or a docstring an unquoted identifier-shaped value is just
+    *text*, and text is exactly where a secret gets parked "temporarily".
+    Restricting the exemption to lines that could be code keeps
+    `# access_token=hunter2` caught while `ItemGetRequest(access_token=token)`
+    is not.
+    """
+    stripped = line.lstrip()
+    return stripped.startswith(("#", '"""', "'''")) or '"""' in line
 
 
 #: A 64-hex run is also what every content hash looks like. Excluding by CONTEXT
@@ -175,7 +191,7 @@ def _findings(text: str, path: Path) -> list[str]:
         if _RAW_KEY.search(line) and not _IS_A_HASH.search(line):
             found.append(f"{where}: a 64-hex run, the datastore key's shape")
         for quote, value in _LABELLED.findall(line):
-            if _PLACEHOLDER.match(value) or _is_a_variable_reference(quote, value, path):
+            if _PLACEHOLDER.match(value) or _is_a_variable_reference(quote, value, path, line):
                 continue
             found.append(f"{where}: a labelled credential with a value")
     return found
@@ -266,6 +282,12 @@ def test_a_variable_reference_is_exempt_but_only_in_python_and_only_unquoted() -
     """
     assert not _findings("access_token=access_token", REPO_ROOT / "x.py")
     assert not _findings("    ItemGetRequest(access_token=enrolled_item),", REPO_ROOT / "x.py")
+    # 🔴 A comment or a docstring is text, and text is where a secret gets
+    # parked "temporarily". The exemption must not reach it.
+    # credential-shape: test vector
+    assert _findings("# access_token=parkedheretemporarily", REPO_ROOT / "x.py")
+    # credential-shape: test vector
+    assert _findings('    """Set access_token=parkedheretemporarily here."""', REPO_ROOT / "x.py")
 
     token = "access-sandbox-11112222-3333-4444-5555-666677778888"  # credential-shape: test vector
     # Quoted is a literal, wherever it appears.

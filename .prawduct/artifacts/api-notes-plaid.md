@@ -340,12 +340,18 @@ assumed.
 
 - ~~**The success path has not been probed.**~~ Done 2026-09-06 — see §7. The fixture is
   recorded and `tests/connector/test_sandbox.py` now compares against it rather than skipping.
-- **`days_requested`'s actual location** in the link-token request — Chunk 03's own
-  `verify-api` step, and the highest-stakes parameter in the system (AC-1.2).
-- **A real `ITEM_LOGIN_REQUIRED`**, via `/sandbox/item/reset_login`. It needs an
-  enrolled Item, which needs the exchange call, so it moved from Chunk 02 to
-  Chunk 03 — see that plan's amendment note.
+- ~~**`days_requested`'s actual location**~~ Done — §11. It is nested under
+  `transactions`, capped at 730, and **not echoed by the response**.
+- ~~**What `/item/public_token/exchange` carries**~~ Done — §12. `access_token`,
+  `item_id`, `request_id`, which is what makes the archive exemption an
+  obligation rather than a preference.
+- ~~**A real `ITEM_LOGIN_REQUIRED`**~~ Done — driven live through
+  `/sandbox/item/reset_login` in `test_sandbox.py`, once the exchange call
+  existed to mint an Item.
 - **A real rate limit or a real `PRODUCT_NOT_READY`.** Neither was provoked;
-  both are exercised against constructed responses only.
+  both are exercised against constructed responses only, and `PRODUCT_NOT_READY`
+  remains the least-evidenced entry in the taxonomy.
+- 🔴 **The granted history window.** Not observable before build step 3's first
+  real connection, so AC-11.8's shortfall cannot be computed until then.
 - **What `/item/public_token/exchange` carries**, to make the credential-archive exemption
   a mechanism rather than the decision `store/raw.py` currently records.

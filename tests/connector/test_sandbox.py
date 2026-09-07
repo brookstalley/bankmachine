@@ -42,6 +42,7 @@ from bankmachine.config import MAX_HISTORY_DAYS, Config, load_config
 from bankmachine.connector import (
     INSTITUTIONS_GET,
     ITEM_PUBLIC_TOKEN_EXCHANGE,
+    AccessGrant,
     AggregatorNotConfiguredError,
     AggregatorRequestError,
     ConnectorError,
@@ -50,7 +51,7 @@ from bankmachine.connector import (
     FetchedResponse,
     ReauthRequiredError,
 )
-from bankmachine.connector.plaid.client import AccessGrant, PlaidClient, capabilities_of
+from bankmachine.connector.plaid.client import PlaidClient, capabilities_of
 from bankmachine.connector.plaid.errors import RetryPolicy
 from bankmachine.secrets import AggregatorCredentialMissingError, get_plaid_secret
 from bankmachine.store.types import now_utc

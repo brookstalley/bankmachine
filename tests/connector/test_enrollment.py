@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import urllib3.exceptions
 
 from bankmachine.config import MAX_HISTORY_DAYS, Config, ConfigError, load_config
 from bankmachine.connector import (
@@ -30,11 +31,14 @@ from bankmachine.connector import (
     ITEM_GET,
     ITEM_PUBLIC_TOKEN_EXCHANGE,
     LINK_TOKEN_CREATE,
+    AccessGrant,
     AggregatorNotConfiguredError,
     CredentialBearingResponseError,
     Endpoint,
     FetchedResponse,
+    LinkToken,
     MalformedResponseError,
+    TransportError,
 )
 from bankmachine.connector.plaid.client import PlaidClient, capabilities_of
 from bankmachine.connector.plaid.errors import RetryPolicy
@@ -406,3 +410,130 @@ def test_the_endpoint_paths_are_the_aggregators_own() -> None:
     assert ITEM_GET.path == "/item/get"
     assert ACCOUNTS_GET.path == "/accounts/get"
     assert Endpoint("/accounts/get") == ACCOUNTS_GET
+
+
+# --------------------------------------------------------------------------
+# What the far end cannot absorb twice (review R-1)
+# --------------------------------------------------------------------------
+
+
+def test_an_exchange_is_never_retried(client_config: Config) -> None:
+    """🔴 A single-use token, and a durable Item at the other end.
+
+    The retry channel's safety argument is that this side persists nothing, so a
+    second attempt has no partial write to interleave against. That is true and
+    it is *local*: an exchange spends the public token and creates an Item at the
+    aggregator, so a transport failure after the far end processed the request
+    would, retried, either fail on a spent token or enroll twice -- and both look
+    like a network blip from here.
+    """
+    attempts = 0
+
+    def invoke(request: Any, **kwargs: Any) -> FakeHttpResponse:
+        nonlocal attempts
+        attempts += 1
+        raise urllib3.exceptions.MaxRetryError(
+            pool=urllib3.HTTPConnectionPool("127.0.0.1", 9), url="/item/public_token/exchange"
+        )
+
+    with PlaidClient(
+        client_config, "test-secret", retry_policy=RetryPolicy(attempts=5), sleep=lambda s: None
+    ) as client:
+        client._api.item_public_token_exchange = invoke
+        with pytest.raises(TransportError):
+            client.exchange_public_token("public-sandbox-token")
+
+    assert attempts == 1, "the exchange was retried; a spent token or a second Item"
+
+
+def test_a_read_only_call_is_still_retried(client_config: Config) -> None:
+    """The control that makes `retry_safe` a discrimination rather than an off switch.
+
+    Without it, disabling retries everywhere would pass the test above and
+    quietly undo AC-2.6 and the rate-limit channel.
+    """
+    attempts = 0
+
+    def invoke(request: Any, **kwargs: Any) -> FakeHttpResponse:
+        nonlocal attempts
+        attempts += 1
+        raise urllib3.exceptions.MaxRetryError(
+            pool=urllib3.HTTPConnectionPool("127.0.0.1", 9), url="/accounts/get"
+        )
+
+    with PlaidClient(
+        client_config, "test-secret", retry_policy=RetryPolicy(attempts=3), sleep=lambda s: None
+    ) as client:
+        client._api.accounts_get = invoke
+        with pytest.raises(TransportError):
+            client.accounts_get("fake-access-token-for-tests")
+
+    assert attempts == 3
+
+
+def test_the_endpoints_that_cannot_be_retried_are_named_as_such() -> None:
+    assert not ITEM_PUBLIC_TOKEN_EXCHANGE.retry_safe
+    # The mirror half: every read is retryable, or the backoff channel guards
+    # nothing and the assertion above would pass with retries off everywhere.
+    for endpoint in (INSTITUTIONS_GET, ITEM_GET, ACCOUNTS_GET, LINK_TOKEN_CREATE):
+        assert endpoint.retry_safe, f"{endpoint} would never retry a rate limit"
+
+
+# --------------------------------------------------------------------------
+# No credential in a repr (security-model Direction; review R-13)
+# --------------------------------------------------------------------------
+
+
+def test_no_enrollment_credential_reaches_a_repr() -> None:
+    """🔴 A ratified norm: no secret in a log line, an exception message or a `repr`.
+
+    A dataclass writes every field into its generated `repr`, and a `repr` is
+    what reaches a traceback, a debugger, and any log line that interpolated the
+    object rather than a field of it. That is the accident, and it is why this
+    is asserted rather than left to whoever adds the next field.
+    """
+    grant = AccessGrant(access_token="fake-token-value-for-tests", source_connection_id="item-1")
+    issued = LinkToken(
+        token="fake-link-token-for-tests",
+        expires_at="2026-09-08T00:00:00Z",
+        requested_history_days=730,
+    )
+
+    for rendered in (repr(grant), str(grant), f"{grant}", repr(issued), str(issued)):
+        assert "fake-token-value-for-tests" not in rendered
+        assert "fake-link-token-for-tests" not in rendered
+        assert "<redacted>" in rendered
+    # Positive control: the non-secret half still shows, so the redaction is
+    # about the credential rather than about the repr being empty.
+    assert "item-1" in repr(grant)
+    assert "730" in repr(issued)
+
+
+def test_the_enrollment_types_are_nameable_without_the_aggregator_sdk() -> None:
+    """Build step 3's CLI will name an `AccessGrant`; it should not load `plaid` to do it.
+
+    They were first defined inside the vendor package, which would have pulled
+    the SDK into the import graph of every module that mentions one.
+    """
+    import bankmachine.connector as boundary
+
+    assert boundary.AccessGrant is AccessGrant
+    assert boundary.LinkToken is LinkToken
+
+
+def test_the_documented_maximum_is_the_one_the_sdk_enforces() -> None:
+    """🔴 `MAX_HISTORY_DAYS` mirrors a number that lives in the dependency.
+
+    `plaid-python` is not pinned to an exact version, so the aggregator's own
+    maximum can move under this constant -- and the failure would be a link token
+    rejected at enrollment, which is the least convenient moment this product
+    has. Comparing them here turns that into a test failure on `uv sync`.
+    """
+    from plaid.model.link_token_transactions import LinkTokenTransactions
+
+    declared = LinkTokenTransactions.validations[("days_requested",)]
+    assert declared["inclusive_maximum"] == MAX_HISTORY_DAYS, (
+        f"the aggregator now allows {declared['inclusive_maximum']} days of history and this "
+        f"build still asks for {MAX_HISTORY_DAYS}"
+    )
+    assert declared["inclusive_minimum"] == 1

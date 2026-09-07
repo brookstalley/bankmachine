@@ -475,21 +475,27 @@ def test_an_unreproducible_rebuild_can_be_accepted_deliberately(
 def test_a_changed_derivation_version_makes_the_difference_a_recorded_one(
     initialized_config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Read from the constant rather than written as literals: these are the
+    # build's derivation version and its successor, and a copy of a number that
+    # moves under you fails for a reason that says nothing about the behaviour
+    # under test -- which is exactly what happened when the first derivers
+    # landed and the version went to 2.
+    shipped = derivation.DERIVATION_VERSION
     apply_corpus(initialized_config, A_CORPUS)
     before = digest_of(initialized_config)
-    monkeypatch.setattr(derivation, "DERIVATION_VERSION", derivation.DERIVATION_VERSION + 1)
+    monkeypatch.setattr(derivation, "DERIVATION_VERSION", shipped + 1)
 
     report = rebuild(initialized_config, derivers=RECATEGORIZED)
 
     assert report.content_changed
     assert report.change_was_expected
-    assert report.previous_derivation_versions == (1,)
+    assert report.previous_derivation_versions == (shipped,)
     assert digest_of(initialized_config) != before
     with reading(initialized_config) as conn:
         recorded = conn.execute(
             select(derivation_versions.c.version).order_by(derivation_versions.c.version)
         ).scalars()
-        assert list(recorded) == [1, 2]
+        assert list(recorded) == [shipped, shipped + 1]
         stamps = conn.execute(select(transactions.c.derivation_version_id).distinct()).scalars()
         assert list(stamps) == [report.derivation_version_id]
 

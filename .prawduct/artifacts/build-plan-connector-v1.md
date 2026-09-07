@@ -133,8 +133,8 @@ Three positions, since a plan handed over without one reads as endorsed:
 
 - [x] Chunk 01: Walking skeleton — credentials, the contained client, one sandbox response archived
 - [x] Chunk 02: The error taxonomy and the one retry channel
-- [ ] Chunk 03: Enrollment endpoints — link token, exchange, capability discovery
-- [ ] Chunk 04: Institutions and accounts derivers; rebuild on a real archive
+- [x] Chunk 03: Enrollment endpoints — link token, exchange, capability discovery
+- [x] Chunk 04: Institutions and accounts derivers; rebuild on a real archive
 Context: Plan drawn 2026-09-06, directly after `build-plan-datastore-v1.md` closed and merged as
 `4c7a491`.
 
@@ -176,7 +176,7 @@ of the Critic — `ApiException.reason` is the HTTP reason phrase, so every reje
 
 The datastore layer this plan archives through is complete and green; the `DERIVERS` registry it
 registers into is deliberately empty, and `store rebuild` refuses a real archive until Chunk 04
-fills it. **Next: Chunk 03 — the enrollment endpoints.**
+fills it. **Build step 2 is complete.** Next is build step 3, the enrollment flow — and 🔴 its first real connection is where AC-1.2 becomes irreversible and where the granted history window becomes observable for the first time.
 
 ## Scaffolding
 

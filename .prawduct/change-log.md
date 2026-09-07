@@ -34,6 +34,74 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-07: Enrollment, the derivers, and the archive exemption made structural
+
+<!-- prawduct: scope=connector-v1 -->
+
+**Why:** build step 2's remaining half. Chunk 03 adds the calls enrollment will make —
+`/link/token/create`, `/item/public_token/exchange`, `/item/get`, `/accounts/get` — and Chunk 04
+registers the first derivers, so `store rebuild` runs end-to-end over an archive of real responses
+instead of refusing one for want of a deriver. Build step 2 is complete.
+
+**Three things are held by construction here, because each is a mistake nobody notices making.**
+
+- 🔴 **The history window is a required argument with no default.** AC-1.2 makes it immutable after
+  enrollment and the requirements call a vendor-default build a failed build, so forgetting it is a
+  type error — and the test runs mypy, because asserting at runtime that a window was passed tests
+  the call site in front of it rather than the property that no call site can omit it. The maximum,
+  730, is read off the SDK's own request validation and a test compares the two, since
+  `plaid-python` is not pinned and the number can move under us.
+- 🔴 **A credential-bearing response cannot become an archivable one.**
+  `Endpoint.issues_credential` marks the two endpoints whose body carries a credential, and
+  `FetchedResponse` refuses to exist for such an endpoint — so there is no object to hand the
+  archive. A list of exempt paths beside the archive would be an enumeration standing in for a
+  property, and this project has been burned once already by a rule matching a name where it meant a
+  relationship. `raw_responses` is append-only, so a token written there is written permanently and
+  travels with every backup.
+- 🔴 **A call the far end cannot absorb twice is never retried.** The Critic caught this: the retry
+  channel's safety argument — that the connector persists nothing, so a second attempt has no
+  partial write to interleave against — is about the *local* side only. An exchange spends a
+  single-use public token and mints a durable Item at the aggregator, so a retry after a
+  transport failure either fails on a spent token or enrolls twice. `retry_safe` is now a property
+  of the endpoint, with a control proving reads still retry.
+
+**Capabilities read `available_products`, not `products`.** AC-3.2 pulls investments for any
+connection whose capabilities include them and never for a named institution — and `products`
+answers "what did we already ask for". A discovery reading it would report back this product's own
+request, discover nothing, and pass every test asserting that discovery happened. Measured against a
+live item: `products` is `['transactions']`, `available_products` has fourteen entries.
+
+**The derivers, and the one place this build rounds.** Institutions and accounts converge on their
+natural keys rather than inserting, because a rebuild never empties them — their local ids are what
+every row of history references (AC-6.3), and reassigning them would orphan it. `first_seen_at` is a
+minimum and `last_seen_at` a maximum, so replay order cannot change the result, which is what makes
+the order-independence property a property of the arithmetic rather than of today's `ORDER BY`.
+
+Money never touches a float: bodies are parsed with `parse_float=str`, so an amount arrives as the
+digits the aggregator sent. The exception is deliberate and was the owner's call. Plaid's own
+sandbox institution returns a 401k balance of `23631.9805` USD — canned data, so the aggregator is
+deliberately exercising the case and sub-cent valuations are a production shape. An investment
+`current` is price times quantity, computed rather than transacted, and no brokerage statement
+reports hundredths of a cent, so it is rounded **half-even** (half-up would bias a portfolio upward a
+fraction of a cent at a time, forever), **logged every time**, and the archive keeps the exact
+original. The distinction that makes this legitimate — a *valuation* is not a *ledger amount* — is
+recorded, not assumed.
+
+**The sign convention now has the mechanism it was ratified in-transition without** (issue #9). A
+liability's balance is stored negative whatever sign the source used; several aggregators report a
+card balance as a positive amount owed, and a consumer taking that at face value is wrong by twice
+the debt, silently. `available_minor` and `limit_minor` are the documented exceptions and keep their
+magnitudes — asserted explicitly, or a later change that signed every column alike would look like a
+tidy-up and pass.
+
+**A guard caught its own author, twice.** AC-10.2's credential scan fired on this work's test data,
+which was right and the test data changed. It also fired on a keyword argument forwarding a
+same-named variable in the product code — ordinary Python, and the shape that gets a guard narrowed
+in irritation later — so the exemption is now principled: in Python source an unquoted bare
+identifier is a reference, never a literal. The Critic then found the hole in *that*: an unquoted identifier inside
+a comment or a docstring is text, and text is where a secret gets parked "temporarily". Four edges,
+a control on each.
+
 ## 2026-09-07: The connector's error taxonomy, and the retry channel it feeds
 
 <!-- prawduct: scope=connector-v1 -->

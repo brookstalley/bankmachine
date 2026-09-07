@@ -24,7 +24,7 @@ this package cannot reach the datastore at all.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import ClassVar
 
 from bankmachine.store.types import UtcInstant
@@ -327,6 +327,23 @@ class Endpoint:
     from now has to be able to tell what a stored response was.
     """
 
+    retry_safe: bool = True
+    """Whether re-sending this call after a failure is harmless.
+
+    🔴 **Not every call can be retried, and the retry channel's safety argument
+    only covered the local side.** It is true that the connector persists
+    nothing, so a retry cannot interleave a second attempt against a partial
+    write *here* -- but `/item/public_token/exchange` consumes a single-use
+    public token and mints a durable Item at the far end. A transport failure
+    after the aggregator processed the request, retried, either fails on a spent
+    token or enrolls twice; neither is recoverable by this side, and both look
+    like a network blip in the logs.
+
+    Declared on the endpoint rather than passed at the call site, for the same
+    reason `issues_credential` is: the property belongs to the thing it is about,
+    and a flag at one call site is a decision the next call site never sees.
+    """
+
     issues_credential: bool = False
     """Whether this endpoint's response body carries a credential.
 
@@ -359,7 +376,9 @@ LINK_TOKEN_CREATE = Endpoint("/link/token/create", issues_credential=True)
 #: Trades a public token for the access token a connection is thereafter read
 #: with. 🔴 The single most sensitive response this product ever receives:
 #: *(verified live)* its body is exactly `access_token`, `item_id`, `request_id`.
-ITEM_PUBLIC_TOKEN_EXCHANGE = Endpoint("/item/public_token/exchange", issues_credential=True)
+ITEM_PUBLIC_TOKEN_EXCHANGE = Endpoint(
+    "/item/public_token/exchange", retry_safe=False, issues_credential=True
+)
 
 #: One connection's own record of itself -- which products it was enrolled with,
 #: and which it could support. Carries no credential: the access token goes up in
@@ -368,6 +387,58 @@ ITEM_GET = Endpoint("/item/get")
 
 #: The accounts behind one connection.
 ACCOUNTS_GET = Endpoint("/accounts/get")
+
+
+@dataclass(frozen=True, slots=True)
+class LinkToken:
+    """A Link session, and the window it was opened asking for.
+
+    `requested_history_days` is carried because the response does not contain it
+    *(verified live: the reply is `expiration`, `link_token`, `request_id` and
+    nothing else)*. Without it the caller would have no record of what was asked
+    for, and AC-11.8's shortfall -- requested minus granted -- would have no
+    left-hand side.
+
+    Defined here rather than beside the client so that build step 3's enrollment
+    command can name one without importing the aggregator SDK.
+    """
+
+    token: str = field(repr=False)
+    expires_at: str
+    requested_history_days: int
+
+    def __repr__(self) -> str:
+        """🔴 The token stays out, per the never-in-a-`repr` norm.
+
+        A dataclass writes every field into its generated `repr`, and a `repr` is
+        what reaches a traceback, a debugger and a log line that interpolated the
+        object rather than a field of it -- which is exactly the accident the
+        norm exists to prevent.
+        """
+        return (
+            f"LinkToken(token=<redacted>, expires_at={self.expires_at!r}, "
+            f"requested_history_days={self.requested_history_days})"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AccessGrant:
+    """What an exchange yields: a credential, and the aggregator's id for the connection.
+
+    Deliberately not a `FetchedResponse`. There is no path from this type into
+    `store.raw`, which is what keeps the archive exemption structural rather than
+    remembered.
+    """
+
+    access_token: str = field(repr=False)
+    source_connection_id: str
+
+    def __repr__(self) -> str:
+        """The access token is the most sensitive value this product holds."""
+        return (
+            f"AccessGrant(access_token=<redacted>, "
+            f"source_connection_id={self.source_connection_id!r})"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -385,6 +456,10 @@ class FetchedResponse:
     body: bytes
     received_at: UtcInstant
     request_context: str | None
+    """What was asked for, when that is not recoverable from the response.
+
+    A paginated fetch returns page three with nothing in it saying so.
+    """
 
     def __post_init__(self) -> None:
         """Refuse to exist for an endpoint whose body carries a credential.
@@ -408,8 +483,3 @@ class FetchedResponse:
                 f"so a token written there is written permanently. Read what is needed out "
                 f"of the body and let the body go"
             )
-
-    """What was asked for, when that is not recoverable from the response.
-
-    A paginated fetch returns page three with nothing in it saying so.
-    """

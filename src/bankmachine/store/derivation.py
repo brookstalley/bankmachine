@@ -1,11 +1,12 @@
 """The seam between a raw response and the normalized rows derived from it.
 
-Nothing in this build derives anything: the aggregator client is build step 2,
-and `DERIVERS` ships empty. What ships here is the contract that step 2 has to
-be written against, and it is deliberately in place *before* the sync path
-exists -- a sync path written first would normalize straight into the tables,
-and retro-fitting raw preservation around it afterwards would mean rewriting the
-part that was already working.
+What ships here is the contract a deriver is written against, and it was
+deliberately in place *before* the sync path existed -- a sync path written first
+would normalize straight into the tables, and retro-fitting raw preservation
+around it afterwards would mean rewriting the part that was already working. The
+first derivers, for institutions and accounts, arrived with build step 2; see
+`DERIVERS` below for why they are composed above this module rather than listed
+in it.
 
 **One normalization, two callers.** The sync path and `store rebuild` run the
 same derivers over the same responses. That is what makes AC-11.5's "rebuild
@@ -53,11 +54,30 @@ from bankmachine.store.types import UtcInstant, now_utc
 #: column. AC-5.3 exists because losslessness is only well-defined against a
 #: recorded version: without one, an upstream taxonomy change and a rebuild bug
 #: are indistinguishable, since both simply produce different rows than before.
-DERIVATION_VERSION = 1
+DERIVATION_VERSION = 2
 
 #: What that version means, recorded beside it so a datastore carrying rows from
 #: an old version says something useful about them years later.
-DERIVATION_DESCRIPTION = "raw-response layer and rebuild; no aggregator derivers registered yet"
+DERIVATION_DESCRIPTION = (
+    "institutions and accounts derived from the aggregator; balances signed from the "
+    "operator's point of view"
+)
+
+
+class DerivationError(StoreError):
+    """A response could not be turned into rows, and no partial row was written.
+
+    Belongs to the seam rather than to any one deriver: a caller catching a
+    derivation failure should not have to know which aggregator produced it, and
+    a deriver must not reach `store.connection` for a base class -- the
+    containment norm names that module as one that hands out a datastore handle,
+    and a connector module that can import it can also open one.
+
+    Loud rather than best-effort. A deriver that wrote what it understood and
+    skipped the rest would produce a dataset that is incomplete and still adds
+    up, which is this product's named primary failure mode reached through the
+    layer built to prevent it.
+    """
 
 
 class UnknownEndpointError(StoreError):
@@ -86,11 +106,22 @@ class DerivationContext:
 #: rows must carry, write the normalized rows that response implies.
 Deriver = Callable[[SAConnection, RawResponse, DerivationContext], None]
 
-#: Endpoint -> deriver. Empty in this build: build step 2 registers the
-#: aggregator's endpoints here as it learns to call them. It is a mapping rather
-#: than a mutable dict so nothing registers a deriver as a side effect of being
-#: imported -- what a rebuild replays is then a property of the build, not of
-#: which modules happened to be loaded first.
+#: Endpoint -> deriver. **Empty here on purpose, and not because none exist.**
+#:
+#: The derivers live in `bankmachine.connector.plaid.derivers` and are composed
+#: into a registry by `bankmachine.derivers`, which sits above both layers.
+#: Populating this mapping instead would mean `store` importing `connector` --
+#: pulling the aggregator SDK into every process that opens the datastore,
+#: including the read-only query surface, which must never load the network
+#: layer at all.
+#:
+#: It stays a mapping rather than a mutable dict so nothing registers a deriver
+#: as a side effect of being imported: what a rebuild replays is a property of
+#: the build, not of which modules happened to be loaded first.
+#:
+#: Falling through to this default is loud, not silent -- `deriver_for` refuses
+#: and names the endpoint, so a caller that forgot to pass a registry finds out
+#: on the first response rather than by producing an empty dataset.
 DERIVERS: Mapping[str, Deriver] = MappingProxyType({})
 
 

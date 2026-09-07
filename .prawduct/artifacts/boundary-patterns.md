@@ -218,15 +218,25 @@ degraded data (AC-9.3), and stated units, sign conventions and applied rules
 (AC-9.4). This *is* the product's public API contract; `api-contract.md` is the
 artifact that will hold it, and it does not exist yet.
 
-### Derivation Seam — the contract build step 2 is written against
+### Derivation Seam — the contract the aggregator's derivers are written against
 
 **Producer:** `src/bankmachine/store/derivation.py` — the `Deriver` signature,
 the endpoint registry, and `apply_response`, which persists a response and
 commits it before anything derives from it.
 
-**Consumers:** `src/bankmachine/store/rebuild.py` today. The aggregator client
-(build step 2) is the consumer it exists for: it registers a deriver per endpoint
-in `DERIVERS`, which ships empty.
+**Consumers:** `src/bankmachine/store/rebuild.py` and the sync path. The
+aggregator's derivers live in `connector/plaid/derivers.py` and are composed into
+a registry by `bankmachine/derivers.py`, which is passed explicitly to whoever
+runs a derivation.
+
+🔴 **`store.derivation.DERIVERS` stays empty, and that is the design rather than
+a gap.** Populating it would mean `store` importing `connector`, which pulls the
+aggregator SDK into every process that opens the datastore — the read-only query
+surface included, which must never load the network layer at all. An import graph
+is a better guarantee of that than a rule about who calls what. Falling through
+to the empty default is loud rather than silent: `deriver_for` refuses and names
+the endpoint, so a caller that forgot to pass a registry finds out on the first
+response instead of producing an empty dataset.
 
 **Contract**, and every clause is load-bearing:
 
@@ -281,7 +291,7 @@ stand-in derivers that exercise the three shapes the schema has — an identity
 table a rebuild must not delete, an append-only series, and a fact table it
 rebuilds outright.
 
-### Aggregator Client — *partially built; build step 2*
+### Aggregator Client — *built; build step 2*
 
 **Producer:** `src/bankmachine/connector/` — `plaid/client.py` makes the calls;
 `__init__.py` holds everything a caller is allowed to see.
@@ -357,9 +367,15 @@ fail transiently. The connector persists nothing, so there is no write inside
 the retried boundary to interleave a second attempt against — which is what
 makes retrying safe here and would not make it safe anywhere downstream.
 
-**Not built yet:** the enrollment endpoints and the credential-archive
-*mechanism* (Chunk 03), and any deriver at all (Chunk 04) — `DERIVERS` is still
-empty, so `store rebuild` still refuses a real archive.
+**Built as of build step 2:** the endpoints `/institutions/get`,
+`/link/token/create`, `/item/public_token/exchange`, `/item/get` and
+`/accounts/get`; the error taxonomy and its retry channel; the
+credential-archive mechanism; and the institutions and accounts derivers, so
+`store rebuild` now runs end-to-end over a real archive.
+
+**Not built yet:** the enrollment *flow* — the CLI, idempotency and the
+connection cap — which is build step 3, and the transactions deriver, which
+lands with its cursor loop in build step 4.
 
 ## Test Levels
 

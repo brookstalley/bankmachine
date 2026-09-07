@@ -56,11 +56,23 @@ nothing to migrate or grandfather.
   plain sum, and AC-11.2's reconciliation is "change in balance equals sum of transactions" for
   every account. The rejected alternative — store as reported, let each consumer apply the sign —
   makes net worth type-dependent and puts the error in whichever consumer forgets.
-  Status: in-transition — tracked by `brookstalley/bankmachine#9`, which adds the connector
-  normalization test. Flips to steady-state when that test is green and has been seen red.
-  Ruling (2026-09-07): ratified in-transition rather than steady-state **because nothing tests it
-  today** and the code that must obey it is mid-build. Calling it steady-state with no mechanism
-  would be the aspirational failure this lifecycle exists to prevent.
+  Status: **steady-state** as of 2026-09-07, closing `brookstalley/bankmachine#9`. The connector
+  normalizes in `connector/plaid/derivers.py`; `test_a_liability_reported_positive_is_stored_negative`
+  and its siblings assert it, `verify_norms_go_red.py` proves the assertion goes red with the
+  normalization removed, and the two documented exceptions are asserted explicitly so a later change
+  that signed every column alike cannot pass as a tidy-up.
+  Ruling (2026-09-07): ratified in-transition rather than steady-state **because nothing tested it
+  then** and the code that had to obey it was mid-build. Calling it steady-state with no mechanism
+  would have been the aspirational failure this lifecycle exists to prevent.
+  Amendment (2026-09-07, build step 2 Chunk 04): flipped to steady-state on the mechanism landing.
+  One clarification came with it, because a real payload forced it. **The convention governs ledger
+  amounts and valuations alike, but only ledger amounts are exact.** An investment account's
+  `current` is price times quantity — a *valuation* — and the aggregator returns it at whatever
+  precision that arithmetic produced (measured: a sandbox 401k at `23631.9805` USD, canned data, so
+  the case is deliberate). Those are rounded half-even to the currency's minor unit, logged each
+  time, with the exact original kept in the archive. Ledger amounts are still converted exactly or
+  refused. Recorded here rather than left implicit because "valuation" is a distinction this norm
+  did not previously draw.
 
 - **All monetary values are stored as integer minor units. No floats anywhere in the schema or in
   aggregation code.**

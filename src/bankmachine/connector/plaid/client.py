@@ -30,7 +30,6 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any, Final
 
 import plaid
@@ -53,10 +52,12 @@ from bankmachine.connector import (
     ITEM_GET,
     ITEM_PUBLIC_TOKEN_EXCHANGE,
     LINK_TOKEN_CREATE,
+    AccessGrant,
     AggregatorNotConfiguredError,
     ConnectorError,
     Endpoint,
     FetchedResponse,
+    LinkToken,
     MalformedResponseError,
     TransportError,
 )
@@ -105,35 +106,6 @@ def _host_for(environment: str) -> str:
 #: the top of the enrollment flow.
 LINK_CLIENT_NAME: Final = "bankmachine"
 LINK_LANGUAGE: Final = "en"
-
-
-@dataclass(frozen=True, slots=True)
-class LinkToken:
-    """A Link session, and the window it was opened asking for.
-
-    `requested_history_days` is carried because the response does not contain it
-    *(verified live: the reply is `expiration`, `link_token`, `request_id` and
-    nothing else)*. Without it the caller would have no record of what was asked
-    for, and AC-11.8's shortfall -- requested minus granted -- would have no
-    left-hand side.
-    """
-
-    token: str
-    expires_at: str
-    requested_history_days: int
-
-
-@dataclass(frozen=True, slots=True)
-class AccessGrant:
-    """What an exchange yields: a credential, and the aggregator's id for the connection.
-
-    Deliberately not a `FetchedResponse`. There is no path from this type into
-    `store.raw`, which is what keeps the archive exemption structural rather than
-    remembered.
-    """
-
-    access_token: str
-    source_connection_id: str
 
 
 def _payload(endpoint: Endpoint, body: bytes) -> dict[str, Any]:
@@ -287,9 +259,15 @@ class PlaidClient:
         anything that could persist it, because nothing here builds the type
         `store.raw` consumes.
         """
+        # 🔴 A call the far end cannot absorb twice is made once. The retry
+        # channel's safety argument -- that this side persists nothing, so there
+        # is no partial write for a second attempt to interleave against -- is
+        # about the local side only, and an exchange spends a single-use token
+        # and mints a durable Item at the aggregator.
+        policy = self._retry_policy if endpoint.retry_safe else RetryPolicy(attempts=1)
         return call_with_retry(
             lambda: self._attempt(endpoint, invoke, request, connection_id=connection_id),
-            policy=self._retry_policy,
+            policy=policy,
             sleep=self._sleep,
             now=self._now,
         )
