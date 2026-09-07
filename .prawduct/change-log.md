@@ -198,8 +198,9 @@ checks first. Replaced with the measured reason.
 And three deferrals that existed only as prose are now filed — `#10` (schedule the backup,
 rehearse the restore), `#11` (`data-model.md` is a third uncompared description of the
 frozen DDL), `#12` (`verify_norms_go_red` does not know the three newest norms). The § Owed
-table claimed its gaps were "filed rather than rediscovered" while the highest-value one
-had no item; it now cites them.
+table claimed its gaps were "filed rather than rediscovered" while the highest-value one had
+no item; it now cites `#10`. `#11` and `#12` are not operational gaps and correctly do not
+appear there.
 
 **Still open, and named rather than quietly carried:** nothing *schedules* the backup, and
 the key is still backed up by hand — the command cannot do that half without defeating the
