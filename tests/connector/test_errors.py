@@ -510,8 +510,6 @@ def test_a_retry_and_a_give_up_both_leave_a_trace(
         assert _run(call) == "answered"
     retried = [r for r in caplog.records if "retrying" in r.getMessage()]
     assert len(retried) == 2, "a silent retry is a wait no operator can account for"
-    assert "/institutions/get" in retried[0].getMessage()
-
     assert str(INSTITUTIONS_GET) in retried[0].getMessage()
 
     caplog.clear()
