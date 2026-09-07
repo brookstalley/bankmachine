@@ -196,7 +196,7 @@ product_definition:
       - "Keychain-backed secrets, SQLCipher at rest, redacted logs, no telemetry (§6)"
       - "launchd scheduling with missed-window recovery and logging (AC-ARCH.2)"
       - "`sync shell` — authenticated SQLCipher REPL, built in step 1 as the debugging affordance for every later step"
-      - "`store backup` — an operator-invoked verified encrypted copy taken under the writer lock. In v1 because the datastore key cannot be recovered once lost and the daily balance series is the one class of data no re-sync rebuilds; SCHEDULING it is not (see `later`). Added 2026-09-07 when the command was built — it had no scope home before, which read as deferring backup entirely."
+      - "`store backup` — an operator-invoked verified encrypted copy taken under the writer lock. In v1 because the datastore key cannot be recovered once lost and the daily balance series is the one class of data no re-sync rebuilds; SCHEDULING it is not (see `later`)."
       - "The §7 verification gate, run and published"
     accommodate:
       - "Plaid webhooks — leave a clean seam, do not build (needs a public endpoint)"

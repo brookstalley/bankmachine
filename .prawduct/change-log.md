@@ -176,9 +176,11 @@ returned `supersedes disp:...:R-13:1`, so version 1 was on record all along. The
 because a fix applied to a defect that is not there is a change with no reason.
 
 **Accepted rather than fixed**, recorded as dispositions: the fourth copy of the AST import
-scanner (extraction would edit three tests this bundle does not touch), the absent parent
-requirement for `store backup`, and `data-model.md` being a third uncompared description of
-the frozen DDL — a real drift risk that wants a construction of its own.
+scanner (extraction would edit three tests this bundle does not touch), and `data-model.md`
+being a third uncompared description of the frozen DDL — a real drift risk that wants a
+construction of its own, now tracked as `#11`. *(The absent parent requirement for
+`store backup` was on this list until the PR review; it was fixed rather than accepted, and
+leaving it here would have had the entry contradict itself two paragraphs later.)*
 
 **The PR reviewer then caught the scope trace.** `store backup` had no parent
 requirement anywhere: `docs/system-requirements.md` carries no backup criterion, and

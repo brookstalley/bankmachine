@@ -295,5 +295,5 @@ code; each is work the build sequence has not reached, except the first.
 | **AC-ARCH.1 is not an automated test** | "A fresh clone works on a clean machine" is asserted, not checked, and it decays silently with every undocumented step someone adds |
 | **launchd agent not built** (step 8) | Including the missed-window recovery case, which must be verified by firing it for real rather than simulated |
 | **No runbooks** (`#10` covers restore) | See above |
-| **Log rotation unspecified** | Low stakes — local files, trivial volume — but unbounded |
-| **Raw-response retention undecided** | `docs/system-requirements.md` §9 open question 1; the recommendation is to keep indefinitely |
+| **Log rotation unspecified** — 🔴 **untracked, and `#3` is why** | Low stakes (local files, trivial volume) but genuinely unbounded: `logging_setup.py` attaches a plain `FileHandler`, and no rotation handler exists anywhere in `src/` (checked 2026-09-07). `#3` names this gap and is **closed as COMPLETED**, so the one item that would track it reads as done. The row is the accurate half; the closed issue is not. Reopening it is the operator's call, not a builder's — it may have been closed as a deliberate "won't do" |
+| **Raw-response retention undecided** (`#5`) | `docs/system-requirements.md` §9 open question 1; the recommendation is to keep indefinitely |
