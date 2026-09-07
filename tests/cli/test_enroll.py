@@ -611,7 +611,7 @@ def test_a_failure_after_the_exchange_names_the_item_and_the_credential(
     assert run(["enroll", "--yes"]) == 2
 
     err = capsys.readouterr().err
-    assert ITEM_ID in err
+    assert f"item is {ITEM_ID}" in err
     assert cli_env.connection_keychain_account(ITEM_ID) in err
     assert "the disk went away" in err, "the cause must survive, not be swallowed"
     assert "enroll" in err, "the operator needs to be told what converges this"
@@ -901,7 +901,12 @@ def test_a_keychain_failure_after_the_exchange_still_names_the_item(
     assert run(["enroll", "--yes"]) == 2
 
     err = capsys.readouterr().err
-    assert ITEM_ID in err, "an item exists at the aggregator and the operator must be told"
+    # 🔴 The phrase, not the bare id. `credential_ref` embeds the item id, so
+    # `ITEM_ID in err` passes even when the item field is empty -- it cannot tell
+    # "names the item" from "names the credential", which are the two different
+    # handles a recovery needs.
+    assert f"item is {ITEM_ID}" in err, "an item exists at the aggregator; say which"
+    assert cli_env.connection_keychain_account(ITEM_ID) in err
     assert "the keychain is locked" in err
 
 

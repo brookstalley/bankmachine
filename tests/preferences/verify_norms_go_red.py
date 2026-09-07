@@ -25,6 +25,7 @@ Each case restores the file it edited, including on failure.
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import shutil
 import subprocess
@@ -116,13 +117,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "migration atomicity: DDL and version stamp commit together",
         MIGRATIONS,
-        "                step.apply(conn)\n"
-        "                stamp_schema_version(conn, step.version)\n",
-        "                step.apply(conn)\n"
-        '            conn.execute("COMMIT")\n'
-        '            conn.execute("BEGIN IMMEDIATE")\n'
-        "            try:\n"
-        "                stamp_schema_version(conn, step.version)\n",
+        '            conn.execute("BEGIN IMMEDIATE")\n            try:',
+        "            try:",
         f"{NORMS}::test_a_migration_killed_between_its_ddl_and_its_stamp_leaves_nothing_healthy",
     ),
     (
@@ -564,8 +560,9 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "FR-1: a keychain failure past the exchange still names the item",
         CLI_ENROLL,
-        "        set_access_token(config, credential_ref, grant.access_token)",
-        "        pass  # noqa\n    set_access_token(config, credential_ref, grant.access_token)",
+        "    try:\n        # Inside the guard",
+        "    set_access_token(config, credential_ref, grant.access_token)\n"
+        "    try:\n        # Inside the guard",
         f"{ENROLL_CLI_TESTS}::test_a_keychain_failure_after_the_exchange_still_names_the_item",
     ),
     (
@@ -585,8 +582,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "FR-1: a failure after the exchange names the item and the credential",
         CLI_ENROLL,
-        "        raise EnrollmentIncompleteError(",
-        "        raise EnrollmentError(  # noqa\n        _unused = EnrollmentIncompleteError(",
+        "            source_connection_id=grant.source_connection_id,\n            credential_ref",
+        '            source_connection_id="",\n            credential_ref',
         f"{ENROLL_CLI_TESTS}::test_a_failure_after_the_exchange_names_the_item_and_the_credential",
     ),
     (
@@ -642,7 +639,29 @@ def main() -> int:
             survivors.append(name)
             continue
 
-        path.write_text(original.replace(old, new, 1), encoding="utf-8")
+        mutated = original.replace(old, new, 1)
+        # 🔴 The mutation must still be valid Python, and this is not a nicety.
+        # `main` judges a case by pytest's exit code, and pytest exits non-zero
+        # on a COLLECTION error exactly as it does on a failure -- so a mutation
+        # that does not parse prints RED without ever exercising the guarantee,
+        # and the case passes forever no matter what the code does. That is the
+        # same shape as every defect this harness exists to catch, in the harness
+        # itself. Checked before the run rather than inferred from its output,
+        # because by then the two are indistinguishable.
+        if path.suffix == ".py":
+            try:
+                ast.parse(mutated)
+            except SyntaxError as exc:
+                print(
+                    f"INVALID {name}\n"
+                    f"       the mutation does not parse ({exc.msg} at line {exc.lineno}), so "
+                    f"pytest would fail to COLLECT and the case would report RED without "
+                    f"testing anything"
+                )
+                survivors.append(name)
+                continue
+
+        path.write_text(mutated, encoding="utf-8")
         _drop_bytecode()
         try:
             result = subprocess.run(
