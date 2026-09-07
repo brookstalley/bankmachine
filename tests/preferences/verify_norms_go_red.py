@@ -422,6 +422,42 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "        if False:",
         f"{DERIVER_TESTS}::test_a_manual_row_survives_an_older_response_replayed_over_it",
     ),
+    (
+        "AC-10.1: a polled Link session carries a public token and is never archived",
+        CONNECTOR_PACKAGE,
+        'LINK_TOKEN_GET = Endpoint("/link/token/get", issues_credential=True)',
+        'LINK_TOKEN_GET = Endpoint("/link/token/get")',
+        f"{ENROLLMENT_TESTS}::test_a_polled_session_can_never_become_an_archivable_response",
+    ),
+    (
+        "AC-1.1: an unfinished session is the absence of a key, not an empty list",
+        CONNECTOR_CLIENT,
+        "        if not isinstance(sessions, list) or not sessions:",
+        "        if len(sessions) == 0:",
+        f"{ENROLLMENT_TESTS}::test_an_unfinished_session_is_reported_by_the_absence_of_a_key",
+    ),
+    (
+        "AC-1.1: a hosted session with no URL is refused rather than returned empty",
+        CONNECTOR_CLIENT,
+        "        if not isinstance(hosted_url, str) or not hosted_url:",
+        "        if False:",
+        f"{ENROLLMENT_TESTS}::"
+        "test_a_hosted_session_that_returns_no_url_is_refused_not_returned_empty",
+    ),
+    (
+        "AC-1.2: the window that gets sent is the configured one, not a literal",
+        CONNECTOR_CLIENT,
+        "            transactions=LinkTokenTransactions(days_requested=history_days),",
+        "            transactions=LinkTokenTransactions(days_requested=MAX_HISTORY_DAYS),",
+        f"{ENROLLMENT_TESTS}::test_the_configured_window_travels_from_config_not_from_a_literal",
+    ),
+    (
+        "AC-10.1: a public token never reaches a repr",
+        CONNECTOR_PACKAGE,
+        '        held = "<redacted>" if self.public_token is not None else None',
+        "        held = self.public_token",
+        f"{ENROLLMENT_TESTS}::test_no_enrollment_credential_reaches_a_repr",
+    ),
 ]
 
 

@@ -1181,6 +1181,28 @@ distribution: plugin
 # `/prawduct:backlog` routes on this scalar.
 backlog_service_repo: brookstalley/bankmachine
 
+# Raised from the 40KB default on 2026-09-07, after measuring rather than
+# guessing at what the two nudged files actually hold.
+#
+# `change-log.md` (81KB) cannot shrink at all right now: all thirteen entries
+# carry a `<!-- prawduct: scope=... -->` tag and NOT ONE carries `release=`, so
+# every entry is release-pending. Deleting any of them silently unships the work
+# it records. The file shrinks by itself at the first `develop -> main` release,
+# which archives by scope -- that release, not a deletion, is the remedy.
+#
+# `project-state.yaml` (79KB) is ~35KB `technical_decisions` + `design_decisions`
+# + `open_questions`, which the nudge itself says is the methodology working and
+# not the thing to cut. Most of the rest is explanatory comment on config keys.
+#
+# 100, not higher, is chosen so the nudge keeps a job. It clears both files
+# today with headroom, and fires again once `change-log.md` gains roughly three
+# more entries without a release -- at which point the nudge is no longer noise
+# about file size, it is the signal that the release archive is overdue. The
+# knob is repo-wide, so this also relaxes the ceiling for build plans; those run
+# an order of magnitude smaller, so a build plan reaching 100KB is still a real
+# finding.
+oversized_file_threshold_kb: 100
+
 # =============================================================================
 # NORM REGISTRY
 # =============================================================================

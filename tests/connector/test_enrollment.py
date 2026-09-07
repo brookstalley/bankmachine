@@ -31,11 +31,13 @@ from bankmachine.connector import (
     ITEM_GET,
     ITEM_PUBLIC_TOKEN_EXCHANGE,
     LINK_TOKEN_CREATE,
+    LINK_TOKEN_GET,
     AccessGrant,
     AggregatorNotConfiguredError,
     CredentialBearingResponseError,
     Endpoint,
     FetchedResponse,
+    LinkSession,
     LinkToken,
     MalformedResponseError,
     TransportError,
@@ -179,7 +181,13 @@ def test_the_configured_window_is_what_gets_sent_not_a_vendor_default(
     client_config: Config,
 ) -> None:
     """Asserted on the request the SDK builds, because that is what is sent."""
-    invoke = _answering({"link_token": "link-sandbox-x", "expiration": "2026-09-08T00:00:00Z"})
+    invoke = _answering(
+        {
+            "link_token": "link-sandbox-x",
+            "expiration": "2026-09-08T00:00:00Z",
+            "hosted_link_url": "https://secure.example/hl/session",
+        }
+    )
 
     with _client(client_config) as client:
         client._api.link_token_create = invoke
@@ -193,10 +201,72 @@ def test_the_configured_window_is_what_gets_sent_not_a_vendor_default(
     request = invoke.captured["request"]
     assert request.transactions.days_requested == 365
     # Carried on the way out because the response does not contain it *(verified
-    # live: the reply is expiration, link_token, request_id)*. Without this the
-    # caller would have no record of what was asked, and AC-11.8's shortfall --
-    # requested minus granted -- would have no left-hand side.
+    # live: a hosted session replies with expiration, hosted_link_url, link_token,
+    # request_id -- and none of those is the window)*. Without this the caller
+    # would have no record of what was asked, and AC-11.8's shortfall -- requested
+    # minus granted -- would have no left-hand side.
     assert issued.requested_history_days == 365
+
+
+def test_the_configured_window_travels_from_config_not_from_a_literal(
+    client_config: Config,
+) -> None:
+    """🔴 The obligation build step 2 recorded and could not discharge.
+
+    Every other test here passes `history_days` as a literal, which proves the
+    argument is *carried* but not that anything reads the operator's setting. The
+    required argument stops a caller forgetting a window; it cannot stop one
+    passing the wrong one, and AC-1.2 makes the result immutable per connection.
+    So the value is driven from a `Config` whose window is deliberately NOT the
+    default -- a test using 730 would pass against code that ignored config and
+    hardcoded the maximum.
+    """
+    configured = replace(client_config, history_days=365)
+    assert configured.history_days != MAX_HISTORY_DAYS, "the test must not assert the default"
+    invoke = _answering(
+        {
+            "link_token": "link-sandbox-x",
+            "expiration": "2026-09-08T00:00:00Z",
+            "hosted_link_url": "https://secure.example/hl/session",
+        }
+    )
+
+    with _client(configured) as client:
+        client._api.link_token_create = invoke
+        issued = client.link_token_create(
+            history_days=configured.history_days,
+            client_user_id="operator",
+            country_codes=["US"],
+            products=["transactions"],
+        )
+
+    assert invoke.captured["request"].transactions.days_requested == configured.history_days
+    assert issued.requested_history_days == configured.history_days
+
+
+def test_a_hosted_session_that_returns_no_url_is_refused_not_returned_empty(
+    client_config: Config,
+) -> None:
+    """AC-1.1 needs a URL to print, and a blank one fails at the operator instead.
+
+    Separate from the link_token/expiration check because its cause is different
+    and more specific: the request asked for a hosted session and did not get
+    one, which points at Hosted Link not being enabled rather than at anything
+    about the token.
+    """
+    invoke = _answering({"link_token": "link-sandbox-x", "expiration": "2026-09-08T00:00:00Z"})
+
+    with _client(client_config) as client:
+        client._api.link_token_create = invoke
+        with pytest.raises(MalformedResponseError) as raised:
+            client.link_token_create(
+                history_days=730,
+                client_user_id="operator",
+                country_codes=["US"],
+                products=["transactions"],
+            )
+
+    assert "hosted_link_url" in str(raised.value)
 
 
 def test_a_window_the_aggregator_would_reject_is_refused_here(client_config: Config) -> None:
@@ -251,6 +321,10 @@ def test_the_endpoints_that_issue_credentials_are_named_as_such() -> None:
     """
     assert LINK_TOKEN_CREATE.issues_credential
     assert ITEM_PUBLIC_TOKEN_EXCHANGE.issues_credential
+    # A finished session's body carries the public token -- the same single-use
+    # value the exchange spends -- so polling is archivable only if a credential
+    # in the append-only store is acceptable, and it is not.
+    assert LINK_TOKEN_GET.issues_credential
     # The mirror half, which is what makes the flag a discrimination rather than
     # a decoration: the data endpoints must NOT carry it, or the archive would be
     # empty and every test above would still pass.
@@ -497,16 +571,36 @@ def test_no_enrollment_credential_reaches_a_repr() -> None:
         token="fake-link-token-for-tests",
         expires_at="2026-09-08T00:00:00Z",
         requested_history_days=730,
+        hosted_link_url="https://secure.example/hl/session",
+    )
+    session = LinkSession(
+        public_token="fake-public-token-for-tests",
+        session_id="session-1",
+        institution_id="ins_109508",
     )
 
-    for rendered in (repr(grant), str(grant), f"{grant}", repr(issued), str(issued)):
+    for rendered in (
+        repr(grant),
+        str(grant),
+        f"{grant}",
+        repr(issued),
+        str(issued),
+        repr(session),
+        str(session),
+    ):
         assert "fake-token-value-for-tests" not in rendered
         assert "fake-link-token-for-tests" not in rendered
+        assert "fake-public-token-for-tests" not in rendered
         assert "<redacted>" in rendered
     # Positive control: the non-secret half still shows, so the redaction is
     # about the credential rather than about the repr being empty.
     assert "item-1" in repr(grant)
     assert "730" in repr(issued)
+    assert "session-1" in repr(session)
+    # 🔴 The hosted URL is deliberately NOT redacted. It is what the operator must
+    # read off the terminal to enrol at, and a session they are being asked to
+    # complete is not a secret being kept from them.
+    assert "https://secure.example/hl/session" in repr(issued)
 
 
 def test_the_enrollment_types_are_nameable_without_the_aggregator_sdk() -> None:
@@ -537,3 +631,146 @@ def test_the_documented_maximum_is_the_one_the_sdk_enforces() -> None:
         f"build still asks for {MAX_HISTORY_DAYS}"
     )
     assert declared["inclusive_minimum"] == 1
+
+
+# --------------------------------------------------------------------------
+# AC-1.1 — polling a Link session the operator completes in a browser
+# --------------------------------------------------------------------------
+
+
+def test_an_unfinished_session_is_reported_by_the_absence_of_a_key(
+    client_config: Config,
+) -> None:
+    """🔴 The shape that would have broken every poll before completion.
+
+    *Verified live:* an unfinished session replies with `created_at`,
+    `expiration`, `link_token`, `metadata`, `request_id` -- and **no**
+    `link_sessions` key at all. It is not an empty list and there is no status
+    field, so "still waiting" is the absence of a key. Code that measured a
+    length here would raise on every poll until the operator finished, which is
+    most of a session's life.
+    """
+    invoke = _answering(
+        {
+            "link_token": "link-sandbox-x",
+            "expiration": "2026-09-08T00:00:00Z",
+            "created_at": "2026-09-07T00:00:00Z",
+            "metadata": {"client_name": "bankmachine", "initial_products": ["transactions"]},
+        }
+    )
+
+    with _client(client_config) as client:
+        client._api.link_token_get = invoke
+        session = client.link_token_get("link-sandbox-x")
+
+    assert not session.finished
+    assert session.public_token is None
+
+
+def test_a_finished_session_yields_the_public_token(client_config: Config) -> None:
+    """The current shape: `results.item_add_results[].public_token`."""
+    invoke = _answering(
+        {
+            "link_token": "link-sandbox-x",
+            "link_sessions": [
+                {
+                    "link_session_id": "session-1",
+                    "results": {
+                        "item_add_results": [
+                            {
+                                "public_token": "public-sandbox-token",
+                                "institution": {"institution_id": "ins_109508"},
+                            }
+                        ]
+                    },
+                }
+            ],
+        }
+    )
+
+    with _client(client_config) as client:
+        client._api.link_token_get = invoke
+        session = client.link_token_get("link-sandbox-x")
+
+    assert session.finished
+    assert session.public_token == "public-sandbox-token"
+    assert session.session_id == "session-1"
+    assert session.institution_id == "ins_109508"
+
+
+def test_the_older_on_success_shape_is_also_read(client_config: Config) -> None:
+    """Both places the SDK types a public token are read, in order.
+
+    Which one a real completion uses has not been observed by this product yet,
+    and the moment it would be discovered is a real enrollment -- where a
+    completed session cannot be completed again. Reading both costs a few lines
+    and removes a failure that only appears when retrying is impossible.
+    """
+    invoke = _answering(
+        {
+            "link_token": "link-sandbox-x",
+            "link_sessions": [
+                {
+                    "link_session_id": "session-1",
+                    "on_success": {"public_token": "public-sandbox-token"},
+                }
+            ],
+        }
+    )
+
+    with _client(client_config) as client:
+        client._api.link_token_get = invoke
+        session = client.link_token_get("link-sandbox-x")
+
+    assert session.finished
+    assert session.public_token == "public-sandbox-token"
+
+
+def test_an_opened_but_incomplete_session_is_not_an_error(client_config: Config) -> None:
+    """A session exists from the moment the operator opens the URL.
+
+    It carries no token until they finish, so a present session with no result is
+    the ordinary mid-enrollment state -- not a malformed response.
+    """
+    invoke = _answering(
+        {"link_token": "link-sandbox-x", "link_sessions": [{"link_session_id": "session-1"}]}
+    )
+
+    with _client(client_config) as client:
+        client._api.link_token_get = invoke
+        session = client.link_token_get("link-sandbox-x")
+
+    assert not session.finished
+    assert session.session_id == "session-1"
+
+
+def test_a_session_cannot_report_finished_without_a_token() -> None:
+    """`finished` is derived, so the flag and the token cannot disagree.
+
+    A stored boolean could be set with no token -- and the caller that trusted it
+    would exchange `None` against the aggregator.
+    """
+    assert not LinkSession(public_token=None, session_id="s", institution_id=None).finished
+    assert LinkSession(public_token="t", session_id="s", institution_id=None).finished
+    # The structural half: `finished` is not storage, so there is no field to set
+    # inconsistently. Asserted on the slots rather than on behaviour, because the
+    # behaviour above would still pass if someone added a field that happened to
+    # agree today.
+    assert "finished" not in LinkSession.__slots__
+
+
+def test_polling_is_retried_because_it_is_a_pure_read(client_config: Config) -> None:
+    """Unlike the exchange, which spends a single-use token at the far end."""
+    assert LINK_TOKEN_GET.retry_safe
+    assert not ITEM_PUBLIC_TOKEN_EXCHANGE.retry_safe
+
+
+def test_a_polled_session_can_never_become_an_archivable_response() -> None:
+    """The archive exemption, held by construction rather than remembered."""
+    with pytest.raises(CredentialBearingResponseError):
+        FetchedResponse(
+            endpoint=LINK_TOKEN_GET,
+            body=b'{"link_sessions": [{"on_success": {"public_token": "fake-for-tests"}}]}',
+            received_at=now_utc(),
+            request_context=None,
+        )

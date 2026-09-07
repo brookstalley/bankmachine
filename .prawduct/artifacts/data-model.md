@@ -207,7 +207,7 @@ Every normalized row in the silver layer carries `derivation_version_id NOT NULL
 | `credential_ref` | text | | **A keychain lookup handle, never a token.** See the security model |
 | `capabilities` | text (JSON) | | Discovered at enrollment; drives investment pulls (AC-3.2) |
 | `requested_history_days` | int | integer-or-null | What AC-1.2 asked for |
-| `granted_history_days` | int | integer-or-null | 🔴 What was actually granted — **may be less**, and the delta is a recorded gap (AC-11.8) |
+| `granted_history_days` | int | integer-or-null | 🔴 What was actually granted — **may be less**, and the delta is a recorded gap (AC-11.8). **Null means not yet known, never no shortfall** (AC-1.3a) |
 | `status` | text | `active` \| `degraded` \| `retired` | |
 | `last_success_at` | UTC instant | nullable | |
 | `last_error_code` / `last_error_at` | text / UTC instant | nullable | |
@@ -228,6 +228,14 @@ Table-level invariants, enforced in the database:
 calls the requested window the single highest-stakes parameter in the system — it cannot be raised
 after enrollment without re-linking — and AC-3.3/AC-11.8 require shortfalls to be *visible rather
 than silent*. Storing only what was granted would make the shortfall unrecoverable.
+
+🔴 **They are also written at different times, which is why neither can stand in for the other.**
+`requested_history_days` is known at enrollment; `granted_history_days` is not, because no response
+in the enrollment path reports it (AC-1.3a). It is filled once the initial backfill reveals the
+oldest transaction actually returned. So a connection with a requested window and a null granted one
+is the **normal** state between enrollment and first sync — a reader that treats null as "granted
+what we asked for" converts an unmeasured window into a silent claim of completeness, which is the
+exact failure AC-11.8 exists to prevent.
 
 #### `accounts` — the unit everything else hangs from (AC-6.3, AC-6.5)
 

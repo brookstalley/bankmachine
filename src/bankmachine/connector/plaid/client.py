@@ -40,8 +40,10 @@ from plaid.model.country_code import CountryCode
 from plaid.model.institutions_get_request import InstitutionsGetRequest
 from plaid.model.item_get_request import ItemGetRequest
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
+from plaid.model.link_token_create_hosted_link import LinkTokenCreateHostedLink
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
 from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
+from plaid.model.link_token_get_request import LinkTokenGetRequest
 from plaid.model.link_token_transactions import LinkTokenTransactions
 from plaid.model.products import Products
 
@@ -52,11 +54,13 @@ from bankmachine.connector import (
     ITEM_GET,
     ITEM_PUBLIC_TOKEN_EXCHANGE,
     LINK_TOKEN_CREATE,
+    LINK_TOKEN_GET,
     AccessGrant,
     AggregatorNotConfiguredError,
     ConnectorError,
     Endpoint,
     FetchedResponse,
+    LinkSession,
     LinkToken,
     MalformedResponseError,
     TransportError,
@@ -78,6 +82,67 @@ from bankmachine.store.types import UtcInstant, now_utc
 #: notices data has stopped arriving, which is this product's named primary
 #: failure mode wearing a different hat.
 DEFAULT_REQUEST_TIMEOUT_SECONDS: Final = 30.0
+
+#: How long the hosted enrollment URL stays usable. The operator has to leave the
+#: terminal, open a browser, find their institution and pass its authentication --
+#: sometimes including a one-time code from a phone. Fifteen minutes is enough for
+#: that without leaving a URL that mints an Item lying around for an afternoon.
+DEFAULT_HOSTED_URL_LIFETIME_SECONDS: Final = 900
+
+
+def _session_public_token(session: dict[str, Any]) -> str | None:
+    """The public token a finished Link session yields, or None while it runs.
+
+    🔴 **Two places, read in order, because the aggregator's own models offer
+    both and this product has not yet observed which a real completion uses.**
+    `results.item_add_results[].public_token` is the current shape;
+    `on_success.public_token` is the older one the SDK still types. Reading both
+    costs a few lines and removes a class of failure that would only appear at a
+    real enrollment -- the moment this product is least able to retry, since a
+    completed session cannot be completed again.
+
+    A session that is present but has neither is not an error: a session exists
+    from the moment the operator opens the URL, and carries no token until they
+    finish.
+    """
+    results = session.get("results")
+    if isinstance(results, dict):
+        added = results.get("item_add_results")
+        if isinstance(added, list):
+            for entry in added:
+                if not isinstance(entry, dict):
+                    continue
+                token = entry.get("public_token")
+                if isinstance(token, str):
+                    return token
+    on_success = session.get("on_success")
+    if isinstance(on_success, dict):
+        token = on_success.get("public_token")
+        if isinstance(token, str):
+            return token
+    return None
+
+
+def _session_institution_id(session: dict[str, Any]) -> str | None:
+    """Which institution the operator picked, for the log line that says so.
+
+    Not the source of truth for the connection's institution -- that comes from
+    `/item/get`, which reports the one the Item actually belongs to.
+    """
+    results = session.get("results")
+    if isinstance(results, dict):
+        added = results.get("item_add_results")
+        if isinstance(added, list):
+            for entry in added:
+                if not isinstance(entry, dict):
+                    continue
+                institution = entry.get("institution")
+                if not isinstance(institution, dict):
+                    continue
+                institution_id = institution.get("institution_id")
+                if isinstance(institution_id, str):
+                    return institution_id
+    return None
 
 _HOSTS: Final[dict[str, str]] = {
     "sandbox": plaid.Environment.Sandbox,
@@ -413,6 +478,7 @@ class PlaidClient:
         client_user_id: str,
         country_codes: list[str],
         products: list[str],
+        hosted_url_lifetime_seconds: int = DEFAULT_HOSTED_URL_LIFETIME_SECONDS,
     ) -> LinkToken:
         """Open a Link session that will request `history_days` of history.
 
@@ -441,18 +507,77 @@ class PlaidClient:
             user=LinkTokenCreateRequestUser(client_user_id=client_user_id),
             products=[Products(product) for product in products],
             transactions=LinkTokenTransactions(days_requested=history_days),
+            # 🔴 What makes AC-1.1 reachable without a local web server. Asking
+            # for a hosted session is what puts `hosted_link_url` in the reply;
+            # without it the operator has a token and nowhere to type it, and
+            # the product would need a listener and a registered redirect URI.
+            hosted_link=LinkTokenCreateHostedLink(
+                url_lifetime_seconds=hosted_url_lifetime_seconds,
+            ),
         )
         body = self._fetch_bytes(LINK_TOKEN_CREATE, self._api.link_token_create, request)
         payload = _payload(LINK_TOKEN_CREATE, body)
         token = payload.get("link_token")
         expiration = payload.get("expiration")
+        hosted_url = payload.get("hosted_link_url")
         if not isinstance(token, str) or not isinstance(expiration, str):
             raise MalformedResponseError(
                 f"{LINK_TOKEN_CREATE} answered without a link_token and expiration",
                 endpoint=LINK_TOKEN_CREATE,
                 failed_at=self._now(),
             )
-        return LinkToken(token=token, expires_at=expiration, requested_history_days=history_days)
+        if not isinstance(hosted_url, str) or not hosted_url:
+            # Checked separately from the pair above because its absence means
+            # something different and more specific: the request asked for a
+            # hosted session and did not get one, which is the aggregator saying
+            # Hosted Link is not available here. Folding it into the same message
+            # would send the operator looking at their link token.
+            raise MalformedResponseError(
+                f"{LINK_TOKEN_CREATE} returned no hosted_link_url, so there is no URL to "
+                f"enrol at. The request asked for a hosted session; an account without "
+                f"Hosted Link enabled is the likely cause",
+                endpoint=LINK_TOKEN_CREATE,
+                failed_at=self._now(),
+            )
+        return LinkToken(
+            token=token,
+            expires_at=expiration,
+            requested_history_days=history_days,
+            hosted_link_url=hosted_url,
+        )
+
+    def link_token_get(self, link_token: str) -> LinkSession:
+        """Poll one Link session. Never archived: a finished one carries a credential.
+
+        🔴 **An unfinished session omits `link_sessions` altogether** *(verified
+        live)* -- it is not an empty list and there is no status field, so
+        "still waiting" is the absence of a key. Reading a length here would
+        raise on every poll before the operator finishes, which is most of them.
+
+        The endpoint is `retry_safe`: polling is a pure read the far end can
+        absorb any number of times. It is also `issues_credential`, so its body
+        cannot become a `FetchedResponse` and therefore cannot be archived --
+        the public token is read out here and the body let go.
+        """
+        body = self._fetch_bytes(
+            LINK_TOKEN_GET, self._api.link_token_get, LinkTokenGetRequest(link_token=link_token)
+        )
+        payload = _payload(LINK_TOKEN_GET, body)
+        sessions = payload.get("link_sessions")
+        if not isinstance(sessions, list) or not sessions:
+            return LinkSession(public_token=None, session_id=None, institution_id=None)
+        session = sessions[-1]
+        if not isinstance(session, dict):
+            raise MalformedResponseError(
+                f"{LINK_TOKEN_GET} returned a link_sessions entry that is not an object",
+                endpoint=LINK_TOKEN_GET,
+                failed_at=self._now(),
+            )
+        return LinkSession(
+            public_token=_session_public_token(session),
+            session_id=session.get("link_session_id"),
+            institution_id=_session_institution_id(session),
+        )
 
     def exchange_public_token(self, public_token: str) -> AccessGrant:
         """Trade a public token for the access token a connection is read with.

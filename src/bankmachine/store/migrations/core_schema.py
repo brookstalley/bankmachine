@@ -99,7 +99,7 @@ _DDL_TEMPLATES: tuple[str, ...] = (
     # token itself is never in this file (AC-10.1): a datastore backup travels,
     # and a credential that travels with it is a credential that has leaked.
     #
-    # `granted_history_days` is nullable because AC-1.3 records what the source
+    # `granted_history_days` is nullable because AC-1.3a records what the source
     # actually gave, which is not known until the first sync returns; AC-11.8
     # turns the shortfall against `requested_history_days` into a known gap
     # rather than letting the returned window pass as complete.

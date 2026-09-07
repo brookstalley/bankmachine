@@ -321,6 +321,42 @@ fixtures rather than a shape the sandbox will hand over on its own.
 
 ---
 
+## What Chunk 01 of enrollment established
+
+### 15. 🔴 Hosted Link works, and an unfinished session has no `link_sessions` key
+
+Probed live against sandbox 2026-09-07, which is what settled the enrollment design.
+
+**`/link/token/create` with `hosted_link` set** returns `expiration`, `hosted_link_url`,
+`link_token`, `request_id` — one key more than the same call without it (§11 recorded
+`expiration`, `link_token`, `request_id`). So the hosted URL is available on this account, and
+AC-1.1's "prints a hosted enrollment URL" needs no local web server: the operator opens the URL,
+and the CLI polls for the result.
+
+🔴 **`hosted_link_url` is discarded by the current client.** `LinkToken` carries `token`,
+`expires_at` and `requested_history_days` only, and `link_token_create` does not send `hosted_link`
+at all — so AC-1.1 was unreachable before this chunk, which is not what "the client half exists"
+suggested.
+
+**`/link/token/get` on an unfinished session omits `link_sessions` entirely.** Measured keys:
+`created_at`, `expiration`, `link_token`, `metadata`, `request_id`. `link_sessions` is **absent**,
+not an empty list and not a status field — so *"has the operator finished?"* is answered by the
+absence of a key. A poll loop that reads `len(link_sessions)` raises `TypeError` on every call
+before completion, which is the normal case for most of the loop's life.
+
+**The metadata carries no window field**, confirming live what §11 established from the models:
+`client_name`, `country_codes`, `initial_products`, `language`, `redirect_uri`, `webhook`. Together
+with `Item` carrying none either, this is the third and last place the granted window could have
+been and is not — the evidence behind the AC-1.3/AC-1.3a split.
+
+**Still unprobed: the finished-session payload.** Sandbox offers no way to complete a Hosted Link
+session programmatically — `/sandbox/public_token/create` bypasses Link, so it mints a public token
+without ever creating a session `/link/token/get` would report. The finished shape needs a human to
+complete one session in a browser. Narrowly stated: what is blocked is the *finished* payload only,
+and everything above was reachable without it.
+
+---
+
 ## What is deliberately unused
 
 The generated response models — the largest part of the package — are not used at all, and

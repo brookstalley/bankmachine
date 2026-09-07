@@ -387,6 +387,15 @@ ITEM_PUBLIC_TOKEN_EXCHANGE = Endpoint(
     "/item/public_token/exchange", retry_safe=False, issues_credential=True
 )
 
+#: The state of a Link session, polled while the operator completes it in a
+#: browser. 🔴 `issues_credential` because a *finished* session's body carries the
+#: `public_token` -- the same single-use value the exchange spends to mint a
+#: durable Item, so archiving this response would put a credential in the
+#: append-only store exactly as archiving the exchange would. `retry_safe`
+#: because polling is a pure read that the far end can absorb any number of
+#: times; the two properties are independent and both are declared.
+LINK_TOKEN_GET = Endpoint("/link/token/get", issues_credential=True)
+
 #: One connection's own record of itself -- which products it was enrolled with,
 #: and which it could support. Carries no credential: the access token goes up in
 #: the request, and nothing comes back down.
@@ -401,18 +410,25 @@ class LinkToken:
     """A Link session, and the window it was opened asking for.
 
     `requested_history_days` is carried because the response does not contain it
-    *(verified live: the reply is `expiration`, `link_token`, `request_id` and
-    nothing else)*. Without it the caller would have no record of what was asked
-    for, and AC-11.8's shortfall -- requested minus granted -- would have no
-    left-hand side.
+    *(verified live: a hosted session replies with `expiration`, `hosted_link_url`,
+    `link_token`, `request_id`, and none of those is the window)*. Without it the
+    caller would have no record of what was asked for, and AC-11.8's shortfall --
+    requested minus granted -- would have no left-hand side.
 
-    Defined here rather than beside the client so that build step 3's enrollment
-    command can name one without importing the aggregator SDK.
+    `hosted_link_url` is what AC-1.1 prints. It is the operator-facing half of the
+    session and is deliberately NOT redacted: it is a URL the operator must be
+    able to read off their terminal and open, and a session they are being asked
+    to complete is not a secret being kept from them. The `token` beside it is a
+    credential and stays out of the `repr`.
+
+    Defined here rather than beside the client so that the enrollment command can
+    name one without importing the aggregator SDK.
     """
 
     token: str = field(repr=False)
     expires_at: str
     requested_history_days: int
+    hosted_link_url: str
 
     def __repr__(self) -> str:
         """🔴 The token stays out, per the never-in-a-`repr` norm.
@@ -424,7 +440,45 @@ class LinkToken:
         """
         return (
             f"LinkToken(token=<redacted>, expires_at={self.expires_at!r}, "
-            f"requested_history_days={self.requested_history_days})"
+            f"requested_history_days={self.requested_history_days}, "
+            f"hosted_link_url={self.hosted_link_url!r})"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class LinkSession:
+    """One polled look at a Link session the operator is completing in a browser.
+
+    🔴 **`finished` is derived from the token rather than stored beside it.** The
+    aggregator reports an unfinished session by *omitting* `link_sessions`
+    entirely -- not an empty list, not a status field *(verified live: an
+    unfinished session replies with `created_at`, `expiration`, `link_token`,
+    `metadata`, `request_id` and no `link_sessions` key at all)*. A separate
+    `finished` flag could be set with no token or unset with one, and the caller
+    that trusted the flag would exchange `None`; deriving it means the two cannot
+    disagree.
+
+    `institution_id` is what the operator picked. It is recorded for the log line
+    that says which institution was enrolled, not as the source of truth --
+    AC-1.3's institution comes from `/item/get`, which reports the institution the
+    Item actually belongs to.
+    """
+
+    public_token: str | None = field(repr=False)
+    session_id: str | None
+    institution_id: str | None
+
+    @property
+    def finished(self) -> bool:
+        """Whether the operator has completed the session."""
+        return self.public_token is not None
+
+    def __repr__(self) -> str:
+        """The public token is single-use, and single-use is not the same as harmless."""
+        held = "<redacted>" if self.public_token is not None else None
+        return (
+            f"LinkSession(public_token={held}, session_id={self.session_id!r}, "
+            f"institution_id={self.institution_id!r})"
         )
 
 

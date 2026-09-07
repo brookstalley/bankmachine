@@ -319,12 +319,16 @@ def enrolled_item(sandbox_client: Any) -> str:
 def test_a_link_token_is_created_live_at_the_configured_maximum(sandbox_client: Any) -> None:
     """AC-1.2 against the real aggregator, as far as the aggregator can be asked.
 
-    🔴 **The response does not report the window** *(verified: the reply is
-    `expiration`, `link_token`, `request_id`)*, so what is checkable here is that
-    730 is accepted and that the value travels back to the caller. What the
-    aggregator actually *grants* is not observable until build step 3's first
-    real connection -- which is where AC-1.2 becomes irreversible, and no test
-    before it should be read as having verified the granted window.
+    🔴 **The response does not report the window** *(verified: a hosted session
+    replies with `expiration`, `hosted_link_url`, `link_token`, `request_id`, and
+    none of those is the window)*, so what is checkable here is that 730 is
+    accepted and that the value travels back to the caller. What the aggregator
+    actually *grants* is not observable anywhere in the enrollment path -- see
+    AC-1.3a -- so no test here should be read as having verified it.
+
+    The hosted URL is asserted alongside because AC-1.1 has nothing to print
+    without it, and its absence is how an account without Hosted Link enabled
+    would announce itself.
     """
     issued = sandbox_client.link_token_create(
         history_days=MAX_HISTORY_DAYS,
@@ -336,6 +340,32 @@ def test_a_link_token_is_created_live_at_the_configured_maximum(sandbox_client: 
     assert issued.token.startswith("link-sandbox-")
     assert issued.requested_history_days == MAX_HISTORY_DAYS == 730
     assert issued.expires_at, "a session with no expiry is not a session"
+    assert issued.hosted_link_url.startswith("https://"), (
+        "AC-1.1 prints this URL to the operator; anything but https is not printable"
+    )
+
+
+def test_an_unfinished_session_reports_itself_by_omitting_link_sessions(
+    sandbox_client: Any,
+) -> None:
+    """🔴 The live shape the poll loop is written against.
+
+    A session nobody has opened carries no `link_sessions` key at all -- not an
+    empty list, and no status field. This asserts it against the real aggregator
+    rather than against the fixture that encodes the same belief, because the
+    fixture was written from this observation and could only ever agree with it.
+    """
+    issued = sandbox_client.link_token_create(
+        history_days=MAX_HISTORY_DAYS,
+        client_user_id="bankmachine-suite",
+        country_codes=["US"],
+        products=["transactions"],
+    )
+
+    session = sandbox_client.link_token_get(issued.token)
+
+    assert not session.finished
+    assert session.public_token is None
 
 
 def test_an_exchange_yields_a_token_that_no_archive_could_have_taken(
