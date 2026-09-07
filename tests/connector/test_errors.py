@@ -547,7 +547,7 @@ def test_the_failure_that_ends_a_sync_is_the_one_that_gets_logged(
     assert len(errors) == 1, "a terminal failure left no record, or left more than one"
     message = errors[0].getMessage()
     assert "ITEM_LOGIN_REQUIRED" in message, "the code AC-4.2 records is not in the log"
-    assert "12" in message, "the record does not say which connection is broken"
+    assert "for connection 12" in message, "the record does not say which connection is broken"
     assert "not retryable" in message
 
 
