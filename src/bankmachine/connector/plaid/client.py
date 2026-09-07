@@ -215,6 +215,36 @@ def _payload(endpoint: Endpoint, body: bytes) -> dict[str, Any]:
     return payload
 
 
+def institution_ref_of(item_body: bytes) -> tuple[str, str]:
+    """The institution behind one connection: its source id and its name.
+
+    Read here rather than in the caller for the same reason `capabilities_of` is:
+    the shape of an item body is the aggregator's, and knowing it is what
+    `connector/plaid/` exists to contain. A CLI reaching into `item.institution_id`
+    would put aggregator knowledge in a module the containment test cannot guard.
+
+    🔴 From `/item/get`, never from `/institutions/get`. This is the institution
+    the Item actually belongs to; the catalogue endpoint serves the aggregator's
+    production list of every institution it supports, which is not a fact about
+    this operator.
+    """
+    payload = _payload(ITEM_GET, item_body)
+    item = payload.get("item")
+    if not isinstance(item, dict):
+        raise MalformedResponseError(
+            f"{ITEM_GET} answered without an item object", endpoint=ITEM_GET
+        )
+    source_id = item.get("institution_id")
+    name = item.get("institution_name")
+    if not isinstance(source_id, str) or not isinstance(name, str):
+        raise MalformedResponseError(
+            f"{ITEM_GET} answered without an institution_id and institution_name, so the "
+            f"connection has no institution to hang from",
+            endpoint=ITEM_GET,
+        )
+    return source_id, name
+
+
 def capabilities_of(item_body: bytes) -> frozenset[str]:
     """What a connection can do, read from its own record.
 

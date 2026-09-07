@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from bankmachine.config import MAX_HISTORY_DAYS, Config, Environment
+from bankmachine.config import DEFAULT_CONNECTION_CAP, MAX_HISTORY_DAYS, Config, Environment
 from bankmachine.secrets import delete_datastore_key, set_datastore_key
 
 
@@ -44,6 +44,7 @@ def make_config(
     datastore_name: str = "store.db",
     plaid_client_id: str | None = None,
     history_days: int = MAX_HISTORY_DAYS,
+    connection_cap: int = DEFAULT_CONNECTION_CAP,
 ) -> Config:
     return Config(
         environment=environment,
@@ -53,6 +54,7 @@ def make_config(
         busy_timeout_ms=200,
         plaid_client_id=plaid_client_id,
         history_days=history_days,
+        connection_cap=connection_cap,
         config_path=None,
     )
 

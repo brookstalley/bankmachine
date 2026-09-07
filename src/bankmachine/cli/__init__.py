@@ -9,8 +9,10 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from bankmachine.cli import connector as connector_commands
+from bankmachine.cli import enroll as enroll_commands
 from bankmachine.cli import store as store_commands
 from bankmachine.cli import sync as sync_commands
+from bankmachine.cli.enroll import EnrollmentAbandonedError, EnrollmentError
 from bankmachine.config import Config, ConfigError, load_config
 from bankmachine.connector import ConnectorError
 from bankmachine.logging_setup import configure_logging, log_startup
@@ -38,6 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     store_commands.add_arguments(subparsers)
     connector_commands.add_arguments(subparsers)
+    enroll_commands.add_arguments(subparsers)
     sync_commands.add_arguments(subparsers)
     return parser
 
@@ -56,7 +59,14 @@ def run(argv: Sequence[str] | None = None) -> int:
 
     try:
         return int(args.handler(config, args))
-    except (StoreError, SecretsError, ConnectorError) as exc:
+    except EnrollmentAbandonedError as exc:
+        # 🔴 `1`, not `2`: the command ran fine and found a problem in the world.
+        # The api-contract norm calls the 1/2 split non-collapsible because a
+        # scheduled job reads these -- and `2` here would make an operator who
+        # walked away from a browser tab indistinguishable from a broken install.
+        print(f"bankmachine: {exc}", file=sys.stderr)
+        return EXIT_UNHEALTHY
+    except (StoreError, SecretsError, ConnectorError, EnrollmentError) as exc:
         # Expected failures get a sentence, not a traceback -- but they are never
         # silent, which is the one outcome this project disallows.
         print(f"bankmachine: {exc}", file=sys.stderr)

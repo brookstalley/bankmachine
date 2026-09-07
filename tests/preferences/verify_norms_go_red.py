@@ -40,6 +40,7 @@ METADATA = pathlib.Path("src/bankmachine/store/schema.py")
 SHELL = pathlib.Path("src/bankmachine/cli/sync.py")
 SECRETS = pathlib.Path("src/bankmachine/secrets.py")
 CLI_CONNECTOR = pathlib.Path("src/bankmachine/cli/connector.py")
+CLI_ENROLL = pathlib.Path("src/bankmachine/cli/enroll.py")
 CONNECTOR_CLIENT = pathlib.Path("src/bankmachine/connector/plaid/client.py")
 CONNECTOR_PACKAGE = pathlib.Path("src/bankmachine/connector/__init__.py")
 CONNECTOR_ERRORS = pathlib.Path("src/bankmachine/connector/plaid/errors.py")
@@ -55,6 +56,7 @@ CONNECTOR_CLI_TESTS = "tests/cli/test_connector_commands.py"
 CONNECTOR_TESTS = "tests/connector/test_client.py"
 ERROR_TESTS = "tests/connector/test_errors.py"
 ENROLLMENT_TESTS = "tests/connector/test_enrollment.py"
+ENROLL_CLI_TESTS = "tests/cli/test_enroll.py"
 DERIVER_TESTS = "tests/connector/test_derivers.py"
 CONNECTOR_DERIVERS = pathlib.Path("src/bankmachine/connector/plaid/derivers.py")
 
@@ -492,6 +494,42 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "            (s for s in reversed(readable) if _session_public_token(s) is not None), None",
         "            (s for s in readable if _session_public_token(s) is not None), None",
         f"{ENROLLMENT_TESTS}::test_the_newest_of_two_finished_sessions_is_the_one_exchanged",
+    ),
+    (
+        "AC-1.5: the cap refuses before a token is minted, not after",
+        CLI_ENROLL,
+        "    if len(live) >= config.connection_cap:",
+        "    if False:",
+        f"{ENROLL_CLI_TESTS}::test_the_cap_refuses_before_anything_is_minted",
+    ),
+    (
+        "AC-1.2: enrollment asks for the CONFIGURED window, not a literal",
+        CLI_ENROLL,
+        "            history_days=config.history_days,",
+        "            history_days=730,",
+        f"{ENROLL_CLI_TESTS}::test_the_configured_window_is_what_enrollment_asks_for",
+    ),
+    (
+        "AC-1.3a: a new connection's granted window is null, never assumed",
+        CLI_ENROLL,
+        "            granted_history_days=None,",
+        "            granted_history_days=730,",
+        f"{ENROLL_CLI_TESTS}::"
+        "test_enrollment_records_the_requested_window_and_leaves_granted_unknown",
+    ),
+    (
+        "AC-1.4: re-enrolling an institution updates rather than duplicating",
+        CLI_ENROLL,
+        "    if existing is not None:",
+        "    if False:",
+        f"{ENROLL_CLI_TESTS}::test_re_enrolling_the_same_institution_updates_rather_than_duplicates",
+    ),
+    (
+        "AC-1.2: declining the window confirmation links nothing",
+        CLI_ENROLL,
+        "        if not _confirm_window(config, issued, assume_yes=args.yes):",
+        "        if False:",
+        f"{ENROLL_CLI_TESTS}::test_nothing_is_linked_when_the_window_is_not_confirmed",
     ),
     (
         "AC-10.1: a public token never reaches a repr",

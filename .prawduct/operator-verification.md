@@ -223,3 +223,37 @@ response is production's own catalogue. It stands as written for accounts and
 transactions, which do come from the fictional institutions.
 
 **Verified:** 2026-09-06
+
+## VRF-003 — the hosted enrollment flow reads correctly to a human
+
+**Chunk:** enrollment-v1 Chunk 02 · **Raised:** 2026-09-07 · **Status:** pending
+
+**Why a human:** the offline suite fakes the aggregator, and a Hosted Link session
+cannot be completed programmatically — `/sandbox/public_token/create` bypasses Link
+entirely, so it mints a public token without creating a session `/link/token/get`
+would ever report. What no test here can speak to is whether the printed page reads
+unambiguously to someone about to make an irreversible choice.
+
+**To verify**, with sandbox credentials in place:
+
+    uv run bankmachine store init
+    uv run bankmachine enroll
+
+Then, at a terminal (not piped — the confirmation prompt is skipped when stdin is
+not a tty):
+
+1. 🔴 **The history-window line appears BEFORE the URL, and reads as a warning.**
+   An operator who has already opened the browser has stopped reading the terminal,
+   and this is the last moment AC-1.2 is reversible. Confirm the number shown is the
+   window you intend.
+2. Answering anything but `y` links nothing and exits 1.
+3. The printed URL opens a working Link session. Use Plaid's sandbox credentials
+   (`user_good` / `pass_good`) and pick any institution.
+4. While the browser is open, the terminal says it is waiting — it does not look hung.
+5. On completion the command reports the institution, the requested window, and
+   **"granted history: not yet known"**. 🔴 Confirm that line cannot be misread as
+   "we got what we asked for"; that misreading is what AC-1.3a exists to prevent.
+6. Re-run `bankmachine enroll` against the same institution: it reports an *updated*
+   connection rather than a new one, and `bankmachine store shell` shows one row.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-003`

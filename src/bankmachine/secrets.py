@@ -37,6 +37,17 @@ class DatastoreKeyMissingError(SecretsError):
     """No datastore key exists for this configuration."""
 
 
+class AccessTokenMissingError(SecretsError):
+    """A connection's row exists but its access token does not.
+
+    Its own type because its remedy is neither of the other two: the datastore
+    key is unrecoverable and the aggregator secret is re-readable from a
+    dashboard, but an access token can only be restored by re-enrolling that one
+    institution -- which is an operator action against one connection, not a
+    credential to paste.
+    """
+
+
 class AggregatorCredentialMissingError(SecretsError):
     """No aggregator secret exists for this configuration.
 
@@ -162,6 +173,57 @@ def delete_plaid_secret(config: Config) -> None:
         return
     except KeyringError as exc:
         raise SecretsError(f"keychain {service}/{account} could not be cleared: {exc}") from exc
+
+
+def get_access_token(config: Config, credential_ref: str) -> str:
+    """One connection's access token, by the handle its `connections` row holds.
+
+    🔴 `credential_ref` is a keychain account name, not a credential. That is the
+    whole reason the column can live in the datastore: a backup travels, and a
+    backup carrying access tokens would be a permanent leak (AC-10.1). The
+    lookup fails loudly rather than returning None, because a sync that silently
+    skipped a connection whose credential vanished would report success over
+    data it never fetched.
+    """
+    service = config.keychain_service
+    try:
+        stored = keyring.get_password(service, credential_ref)
+    except KeyringError as exc:
+        raise SecretsError(f"keychain {service}/{credential_ref} could not be read: {exc}") from exc
+    if stored is None:
+        raise AccessTokenMissingError(
+            f"no access token in keychain {service}/{credential_ref}. The connection exists in "
+            f"the datastore but its credential does not; re-enrol the institution to restore it"
+        )
+    if not stored.strip():
+        raise SecretsError(f"access token in {service}/{credential_ref} is empty")
+    return stored
+
+
+def set_access_token(config: Config, credential_ref: str, access_token: str) -> None:
+    """Store one connection's access token under its handle."""
+    service = config.keychain_service
+    if not access_token.strip():
+        raise SecretsError("refusing to store an empty access token")
+    try:
+        keyring.set_password(service, credential_ref, access_token)
+    except KeyringError as exc:
+        raise SecretsError(
+            f"keychain {service}/{credential_ref} could not be written: {exc}"
+        ) from exc
+
+
+def delete_access_token(config: Config, credential_ref: str) -> None:
+    """Remove one connection's access token. Absence is not an error."""
+    service = config.keychain_service
+    try:
+        keyring.delete_password(service, credential_ref)
+    except keyring.errors.PasswordDeleteError:
+        return
+    except KeyringError as exc:
+        raise SecretsError(
+            f"keychain {service}/{credential_ref} could not be cleared: {exc}"
+        ) from exc
 
 
 def ensure_datastore_key(config: Config) -> tuple[str, bool]:
