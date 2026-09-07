@@ -972,7 +972,7 @@ def test_migration_002_ddl_is_frozen(writer: SAConnection) -> None:
 def test_an_aggregator_row_must_name_the_response_it_came_from(writer: SAConnection) -> None:
     """AC-7.4 asks where a row came from, and silence is not an answer.
 
-    Chunk 03's rebuild is written against this constraint. A row whose origin is
+    The rebuild is written against this constraint. A row whose origin is
     `aggregator` with no raw response behind it is a row nothing can trace, and
     it would look identical to one that had been traced.
     """

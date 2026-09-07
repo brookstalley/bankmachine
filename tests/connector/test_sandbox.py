@@ -150,8 +150,8 @@ def test_the_body_is_undecoded_bytes_from_a_real_response(sandbox_client: Any) -
 # the half of an external system that invalid inputs reach: the request goes to
 # the same host and comes back with the real error shape. What genuinely needs
 # an enrolled connection is the item-level half -- `ITEM_LOGIN_REQUIRED` via
-# `/sandbox/item/reset_login` -- which cannot be enrolled until the exchange
-# call exists, so it lands with Chunk 03 rather than here.
+# `/sandbox/item/reset_login` -- which needs the exchange call to mint an Item
+# first.
 
 
 def _client_for(config: Config, secret: str) -> PlaidClient:
@@ -299,9 +299,9 @@ def enrolled_item(sandbox_client: Any) -> str:
     """One disposable sandbox connection, and the access token that reads it.
 
     `/sandbox/public_token/create` mints an Item without a browser, which is the
-    only way to reach the item-level half of the error taxonomy: everything
-    Chunk 02 could provoke was a *credential* rejection, and those never touch
-    the states FR-4 is actually written about.
+    only way to reach the item-level half of the error taxonomy: a credential
+    rejection is all that can be provoked without one, and those never touch the
+    states FR-4 is actually written about.
     """
     public = sandbox_client._fetch_bytes(
         Endpoint("/sandbox/public_token/create"),
@@ -379,7 +379,7 @@ def test_capabilities_come_back_from_a_real_connection(
 
 
 def test_accounts_come_back_and_are_archivable(sandbox_client: Any, enrolled_item: str) -> None:
-    """The shape Chunk 04's derivers are written against, recorded from the live call."""
+    """The shape the accounts deriver is written against, recorded from the live call."""
     fetched = sandbox_client.accounts_get(enrolled_item, connection_id=1)
     payload = _record_or_compare("accounts_get", fetched.body)
 
@@ -394,8 +394,9 @@ def test_a_reset_login_drives_a_real_item_login_required_through_the_taxonomy(
 ) -> None:
     """🔴 The item-level half of FR-4, which no credential rejection can reach.
 
-    Moved here from Chunk 02, which asked for it before the exchange call that
-    mints an Item existed. `/sandbox/item/reset_login` invalidates a connection's
+    Needs an Item, so it needs the exchange call that mints one -- which is why
+    it lives beside enrollment rather than beside the taxonomy it exercises.
+    `/sandbox/item/reset_login` invalidates a connection's
     credentials exactly as an institution's password change does, so this is the
     real `ITEM_LOGIN_REQUIRED` -- the state that decides whether an operator is
     told to re-link, and the one whose remedy is in this product rather than at

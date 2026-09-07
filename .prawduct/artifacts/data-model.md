@@ -64,7 +64,15 @@ nothing to migrate or grandfather.
   Ruling (2026-09-07): ratified in-transition rather than steady-state **because nothing tested it
   then** and the code that had to obey it was mid-build. Calling it steady-state with no mechanism
   would have been the aspirational failure this lifecycle exists to prevent.
-  Amendment (2026-09-07, build step 2 Chunk 04): flipped to steady-state on the mechanism landing.
+  Amendment (2026-09-07, build step 2): flipped to steady-state on the mechanism landing. The
+  clarification below is new normative content rather than a restatement, so it carries its own
+  decision -- `[DECISION: an investment valuation is rounded half-even to the currency's minor unit,
+  where a ledger amount is converted exactly or refused | taken by the owner 2026-09-07, on the
+  evidence that the aggregator's own sandbox ships a four-decimal 401k balance as canned data and is
+  therefore exercising the case deliberately | user can revisit]`, recorded in
+  `build-plan-connector-v1.md` § Requirements Confidence alongside this plan's other owner
+  decisions. Recorded there rather than asserted here because the code this amendment blesses is the
+  code the same commit adds, which is the shape `docs/norms.md` warns hardest about.
   One clarification came with it, because a real payload forced it. **The convention governs ledger
   amounts and valuations alike, but only ledger amounts are exact.** An investment account's
   `current` is price times quantity — a *valuation* — and the aggregator returns it at whatever

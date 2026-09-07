@@ -180,8 +180,8 @@ def test_the_request_context_records_what_was_asked_not_what_it_was_asked_with(
 
     Asserted against the real client, because the value under test is the one
     the real client builds -- a stub asserting its own fabricated string would
-    stay green through exactly the change that matters, which is Chunk 03 adding
-    the link-token and exchange calls where a token could reach this field.
+    stay green through exactly the change that matters: the link-token and exchange
+    calls, where a credential could reach this field.
     """
     response = FakeHttpResponse(b"{}")
 

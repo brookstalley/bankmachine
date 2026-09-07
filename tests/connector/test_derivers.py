@@ -353,9 +353,9 @@ def test_a_second_capture_on_a_recorded_day_is_rejected_not_merged(store: Config
 
     The series must not depend on what time of day anyone happened to look, and
     no aggregator backfills a balance series — so a day already recorded is a day
-    already answered. This was an upsert before the Critic caught it, and the
-    reinterpretation that justified it ("AC-3.1 is about the series") lived only
-    in the deriver's own comment, which is not where a norm gets amended.
+    already answered. The tempting reading -- that AC-3.1 is "about the series",
+    so a same-day refinement is not an overwrite -- is a reinterpretation of a
+    ratified norm, and a comment in a deriver is not where one gets made.
     """
     first = derive(
         store,

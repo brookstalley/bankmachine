@@ -69,6 +69,22 @@ Derivation Seam — was built in step 1 specifically so step 2 would have someth
   left in prose because it constrains every error type anyone adds from here, and the owner
   should get the chance to say a plain list would have been fine.
 
+- `[DECISION: an investment valuation is rounded half-even to the currency's minor unit; a ledger
+  amount is still converted exactly or refused | taken by the owner 2026-09-07, during Chunk 04 |
+  user can revisit]` `/accounts/get` returns an investment `current` at whatever precision price
+  times quantity produced — measured: Plaid's own sandbox institution ships a 401k balance of
+  `23631.9805` USD as canned data, which is the aggregator exercising the case deliberately rather
+  than a sandbox artifact. `from_decimal_string` refuses excess precision by design, so the three
+  live options were refuse (no real investment account could be stored at all), round, or widen the
+  column (a migration against frozen DDL). **The owner chose to round**, on the reasoning that an
+  investment `current` is a *valuation* rather than a transacted amount and no brokerage statement
+  reports hundredths of a cent. Half-even because it applies to every valuation on every sync and
+  half-up would bias a portfolio upward a fraction of a cent at a time, forever; logged every time,
+  with the exact original kept in the archive, so a later build that widens the column can
+  re-derive it. **This introduced a domain distinction the requirements did not contain** — a
+  valuation is not a ledger amount — which is recorded as an amendment to `data-model.md`'s sign
+  convention rather than left implicit in the deriver.
+
 **Open assumptions:**
 
 - ~~`[ASSUMPTION: credential-issuing responses are exempt from the raw archive | HIGH impact]`~~
