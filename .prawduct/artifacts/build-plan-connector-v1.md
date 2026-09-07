@@ -48,7 +48,7 @@ Derivation Seam — was built in step 1 specifically so step 2 would have someth
   `test_connection_is_the_sole_constructor.py`. A `Protocol` with one implementation was considered
   and rejected: an interface designed against a single known implementation encodes that
   implementation's shape, and the honest version of it cannot be written until a second aggregator
-  exists. **This closes §9.2** — fold the answer back into that section when the plan lands.
+  exists. **This closed §9.2**, and the answer is folded back into that section (2026-09-07).
 - `[DECISION: fixtures are recorded from live sandbox responses, not written from the SDK's models |
   confirmed the owner has sandbox credentials | user can revisit]` Chunk 01's `verify-api` step reads
   `plaid-python`'s source first and *then* probes, because the two disagree in exactly the places
@@ -401,7 +401,8 @@ relationship (who may import what), not a naming convention.
   1. Acceptance criteria met and tests pass
   2. `uv run python tests/preferences/verify_norms_go_red.py` passes — the raw/rebuild layer changed
   3. Committed, then `/prawduct:critic cumulative` run and blocking findings resolved
-  4. Chunk marked `[x]` in Status, and `system-requirements.md` §9.2 closed with this plan's answer
+  4. Chunk marked `[x]` in Status, and `system-requirements.md` §9.2 closed with this plan's
+     answer — done 2026-09-07, with what enforces each half of the containment recorded there
 
 ## Early Feedback Milestone
 

@@ -438,10 +438,38 @@ complete.
 
 1. **Retention on raw responses.** Keep indefinitely (recommended — volume is trivial and it is the
    system of record) or prune after N months?
-2. **Aggregator pluggability.** v1 builds one aggregator implementation. Is a second ever expected?
-   The answer changes how hard the connector boundary is drawn.
-*(The project-name question that stood here is closed: the product is named **bankmachine**,
-chosen 2026-09-05 before build step 1 fixed any identifier. See `project-state.yaml`.)*
+
+*(Two questions that stood here are closed.)*
+
+**The project-name question is closed:** the product is named **bankmachine**, chosen 2026-09-05
+before build step 1 fixed any identifier. See `project-state.yaml`.
+
+**§9.2, aggregator pluggability, is closed** — decided by the owner 2026-09-06 and built out over
+build step 2. **One aggregator in v1, drawn so that a second is a new module rather than a
+rewrite.** The boundary is therefore *containment*, not an abstract interface: an abstract client
+`Protocol` with exactly one implementation would encode that implementation's shape and call it a
+contract, and the honest version cannot be written until a second aggregator exists to disagree
+with the first.
+
+What containment means in practice, and what enforces each part:
+
+- Nothing outside `src/bankmachine/connector/plaid/` imports the aggregator SDK, and nothing in
+  `connector/` imports a module that hands out a datastore handle
+  (`tests/preferences/test_connector_is_contained.py`). The second half is what makes AC-5.1
+  structural: the connector *cannot* write, so there is no path through it that normalizes before
+  archiving.
+- Everything outside the boundary speaks only local types — `FetchedResponse`, `Endpoint`,
+  `LinkToken`, `AccessGrant`, and the error taxonomy — all defined in `connector/__init__.py` so
+  that catching an aggregator failure, or naming an access grant, never requires importing the
+  aggregator.
+- The derivation registry is composed in `bankmachine/derivers.py`, above both layers, rather than
+  in `store.derivation` — which keeps the SDK out of the import graph of every process that opens
+  the datastore, the read-only query surface included.
+
+**A second aggregator would be a new module beside `connector/plaid/` and one line in
+`bankmachine/derivers.py`**, and the error types it defines would have to declare `retryable`
+because `ConnectorError.__init_subclass__` refuses one that does not. That is the shape this
+answer was chosen for, and the point at which the abstract interface could be written honestly.
 
 Deployment-layer open questions live in the operator's own deployment-requirements document, and
 so are not listed here — see `deployment-requirements.template.md` §6 for how they are tracked.
