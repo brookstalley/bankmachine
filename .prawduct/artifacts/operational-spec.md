@@ -86,6 +86,19 @@ config file → the documented default.
 | Keychain service | `bankmachine` |
 | Busy timeout | 5000 ms |
 | Environment | `sandbox` |
+| Aggregator client id | none — `connector check` refuses without one |
+| History window | 730 days (the aggregator's own documented maximum) |
+
+🔴 **The history window is the one setting that cannot be corrected later.** It is what enrollment
+asks the aggregator to grant, it is immutable per connection once that connection exists (AC-1.2),
+and changing the value afterwards moves nothing that has already been enrolled — it only changes
+what the *next* enrollment asks for. Getting it wrong costs a re-link of every institution.
+
+The default is therefore the **maximum**, deliberately: the two ways to be wrong are not
+symmetric. Asking for more history than you need costs nothing and can be ignored; asking for less
+costs history that cannot be bought back at any price. A value outside 1–730 is **refused rather
+than clamped**, because a clamp would enroll at a window the operator never chose and never told
+them about.
 
 🔴 **Sandbox and production are separated at four levels**, and the redundancy is deliberate: a
 different **datastore file** (`store-sandbox.db` vs `store.db`), a different **keychain account for the
