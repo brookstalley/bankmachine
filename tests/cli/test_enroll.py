@@ -34,8 +34,11 @@ from bankmachine.store.engine import reader_connection
 from bankmachine.store.schema import connections, institutions, raw_responses
 from bankmachine.store.types import now_utc
 
-ACCESS_TOKEN = "access-sandbox-fake-for-tests"
-PUBLIC_TOKEN = "public-sandbox-fake-for-tests"
+# Declared per line, as any file must. These carry the aggregator's real token
+# SHAPES because the sweep below proves nothing against a value that could not
+# have been mistaken for a credential in the first place.
+ACCESS_TOKEN = "access-sandbox-fake-for-tests"  # credential-shape: test vector
+PUBLIC_TOKEN = "public-sandbox-fake-for-tests"  # credential-shape: test vector
 ITEM_ID = "item-fake-for-tests"
 INSTITUTION_ID = "ins_109508"
 

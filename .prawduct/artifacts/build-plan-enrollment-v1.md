@@ -222,6 +222,17 @@ The command AC-1.1 names, through to a persisted connection.
 - Enrollment refuses past the cap, explains the limit, and lists current connections (AC-1.5).
 - `connections list` and `connections retire <id>` — retirement sets `retired_at` and `status`
   without deleting history (AC-1.6, AC-6.5).
+- 🔴 **`/item/remove`, and the orphan Chunk 02 leaves behind.** Found by scrubbing Chunk 02's own
+  diff rather than by a test: a re-enrollment goes through Link again and the aggregator mints a
+  **new** Item, so `_record_connection` overwrites `source_connection_id` and the previous Item is
+  no longer referenced from anywhere. It does not stop existing. It keeps counting against the plan
+  cap at the aggregator and keeps billing, while this side shows one tidy connection and reports
+  success. AC-1.4 says re-enrolling "updates rather than duplicating the connection" and locally it
+  does — the duplication moved to the far end, where nothing here can see it.
+  Retirement needs the same call, so the two land together: `/item/remove` is `retry_safe=False`
+  (it spends state at the far end) and carries no credential in its reply. Removing the superseded
+  Item happens **after** the new connection row is committed, never before — an operator who ends
+  up with two live Items has a bill; one who ends up with none has lost the connection.
 - Exit codes fixed per the api-contract norm: cap refusal `1`, absent datastore or unreachable
   aggregator `2`.
 
@@ -237,6 +248,8 @@ The command AC-1.1 names, through to a persisted connection.
 4. A retired institution can be re-enrolled, producing a second connection row (retired connections
    accumulate freely per `data-model.md`).
 5. `verify_norms_go_red.py` gains the exit-code cases.
+6. Re-enrolling an institution removes the superseded Item at the aggregator, and a test proves
+   the removal is attempted only after the replacement row is committed.
 
 ## Verification Strategy
 

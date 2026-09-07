@@ -13,15 +13,14 @@ from bankmachine.cli import enroll as enroll_commands
 from bankmachine.cli import store as store_commands
 from bankmachine.cli import sync as sync_commands
 from bankmachine.cli.enroll import EnrollmentAbandonedError, EnrollmentError
+from bankmachine.cli.exit_codes import EXIT_ERROR, EXIT_OK, EXIT_UNHEALTHY
 from bankmachine.config import Config, ConfigError, load_config
 from bankmachine.connector import ConnectorError
 from bankmachine.logging_setup import configure_logging, log_startup
 from bankmachine.secrets import SecretsError
 from bankmachine.store.connection import StoreError
 
-EXIT_OK = 0
-EXIT_UNHEALTHY = 1
-EXIT_ERROR = 2
+__all__ = ["EXIT_ERROR", "EXIT_OK", "EXIT_UNHEALTHY", "build_parser", "run"]
 
 
 def build_parser() -> argparse.ArgumentParser:

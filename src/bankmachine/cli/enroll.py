@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from sqlalchemy import func, insert, select, update
 from sqlalchemy.engine import Connection as SAConnection
 
+from bankmachine.cli.exit_codes import EXIT_OK, EXIT_UNHEALTHY
 from bankmachine.config import Config
 from bankmachine.connector import LinkSession, LinkToken
 from bankmachine.connector.plaid.client import (
@@ -196,8 +197,6 @@ def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
 
 
 def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
-    from bankmachine.cli import EXIT_OK, EXIT_UNHEALTHY
-
     # Before the network call and before the URL, because a typo'd datastore path
     # would otherwise be discovered after the operator had completed a Link
     # session -- at which point the Item exists at the aggregator and this side
@@ -324,7 +323,6 @@ def _await_completion(
     issued: LinkToken,
     *,
     timeout_seconds: int,
-    sleep: object = None,
 ) -> LinkSession:
     """Poll until the operator finishes, or until waiting stops being useful.
 
@@ -332,7 +330,6 @@ def _await_completion(
     slow aggregator does not shorten the operator's window to finish -- the thing
     being waited on is a human in a browser, not a request.
     """
-    pause = time.sleep if sleep is None else sleep
     deadline = time.monotonic() + timeout_seconds
     while True:
         session = client.link_token_get(issued.token)
@@ -344,7 +341,7 @@ def _await_completion(
                 + (f" (session {session.session_id})" if session.session_id else "")
                 + ". Nothing was linked; run `bankmachine enroll` again to start over"
             )
-        pause(POLL_INTERVAL_SECONDS)  # type: ignore[operator]
+        time.sleep(POLL_INTERVAL_SECONDS)
 
 
 def _record_connection(
@@ -371,6 +368,12 @@ def _record_connection(
     enrollment continuing rather than a new one; `granted_history_days` is left
     alone for the same reason, since a re-link does not re-grant a window this
     product has not yet observed (AC-1.3a).
+
+    `requested_history_days` IS rewritten, and the asymmetry is deliberate: a
+    re-enrollment goes through Link again, which is exactly the "remove and
+    re-link" AC-1.2 names as the only way to change the window. So the new value
+    is what was actually asked for this time, and preserving the old one would
+    make the column describe a request nobody made.
     """
     institution = conn.execute(
         select(institutions.c.institution_id, institutions.c.name).where(
