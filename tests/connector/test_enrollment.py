@@ -744,6 +744,161 @@ def test_an_opened_but_incomplete_session_is_not_an_error(client_config: Config)
     assert session.session_id == "session-1"
 
 
+def test_a_completed_session_is_found_behind_a_newer_empty_one(client_config: Config) -> None:
+    """🔴 One hosted URL can be opened more than once, and each opening is an entry.
+
+    An operator who completes the flow and then reopens the link -- out of
+    uncertainty, or because the browser restored the tab -- leaves the finished
+    session behind a newer empty one. Reading only the most recent would report
+    "still waiting" until the poll timed out, while the Item already existed at
+    the aggregator: spent, billable, and invisible from here. It is the worst
+    shape a bug can take in this command, because the far end cannot be undone.
+    """
+    invoke = _answering(
+        {
+            "link_token": "link-sandbox-x",
+            "link_sessions": [
+                {
+                    "link_session_id": "session-completed",
+                    "results": {
+                        "item_add_results": [
+                            {
+                                "public_token": "public-sandbox-token",
+                                "institution": {"institution_id": "ins_109508"},
+                            }
+                        ]
+                    },
+                },
+                {"link_session_id": "session-reopened"},
+            ],
+        }
+    )
+
+    with _client(client_config) as client:
+        client._api.link_token_get = invoke
+        session = client.link_token_get("link-sandbox-x")
+
+    assert session.finished
+    assert session.public_token == "public-sandbox-token"
+    assert session.session_id == "session-completed"
+
+
+def test_an_unreadable_entry_does_not_strand_a_completed_session(
+    client_config: Config,
+) -> None:
+    """🔴 One bad entry must not abort the poll.
+
+    Refusing the whole response on any unreadable entry would strand an Item that
+    already exists at the aggregator -- spent, billable, and invisible from here.
+    That is the same harm the ordering rule guards against, so validating it back
+    in would be incoherent. The readable entries are read; the rest are skipped.
+
+    🔴 **Unreadable entries sit on BOTH sides of the completed one deliberately.**
+    Search runs newest-first, so a fixture with the bad entry only before the good
+    one never reaches the skip — the token is found and the guard is never asked a
+    question. That version of this test passed against code with the guard removed,
+    which is how it was caught: the harness reported the norm break as unnoticed.
+    """
+    invoke = _answering(
+        {
+            "link_token": "link-sandbox-x",
+            "link_sessions": [
+                "not-an-object",
+                {
+                    "link_session_id": "session-completed",
+                    "on_success": {"public_token": "public-sandbox-token"},
+                },
+                7,
+            ],
+        }
+    )
+
+    with _client(client_config) as client:
+        client._api.link_token_get = invoke
+        session = client.link_token_get("link-sandbox-x")
+
+    assert session.finished
+    assert session.public_token == "public-sandbox-token"
+
+
+def test_a_response_with_no_readable_session_at_all_is_refused(client_config: Config) -> None:
+    """Different in kind from one bad entry: there is nothing to poll.
+
+    Reporting "still waiting" here would wait forever on a response that will
+    never become readable, which is the silent outcome the error norm forbids.
+    """
+    invoke = _answering({"link_token": "link-sandbox-x", "link_sessions": ["x", 7]})
+
+    with _client(client_config) as client:
+        client._api.link_token_get = invoke
+        with pytest.raises(MalformedResponseError) as raised:
+            client.link_token_get("link-sandbox-x")
+
+    assert "not one is an object" in str(raised.value)
+
+
+def test_the_newest_of_two_finished_sessions_is_the_one_exchanged(
+    client_config: Config,
+) -> None:
+    """🔴 Reachable from the same reopening the sibling test describes.
+
+    An operator who completes the flow twice leaves two finished sessions. The
+    older public token may already have expired, and exchanging it fails while
+    the newer Item stays live and billable -- a connection the operator is paying
+    for that this product does not know exists. Newest wins, which is also what
+    the unfinished fallback does, so the two cannot disagree.
+    """
+    invoke = _answering(
+        {
+            "link_token": "link-sandbox-x",
+            "link_sessions": [
+                {
+                    "link_session_id": "session-older",
+                    "on_success": {"public_token": "public-token-older"},
+                },
+                {
+                    "link_session_id": "session-newer",
+                    "on_success": {"public_token": "public-token-newer"},
+                },
+            ],
+        }
+    )
+
+    with _client(client_config) as client:
+        client._api.link_token_get = invoke
+        session = client.link_token_get("link-sandbox-x")
+
+    assert session.public_token == "public-token-newer"
+    assert session.session_id == "session-newer"
+
+
+def test_the_newest_session_identifies_an_enrollment_still_in_progress(
+    client_config: Config,
+) -> None:
+    """With nothing finished anywhere, the most recent attempt is the one to name.
+
+    The mirror of the test above: without it, "search every session" could be
+    satisfied by code that always returned the first entry, which would name a
+    stale attempt in the message an abandoned run prints.
+    """
+    invoke = _answering(
+        {
+            "link_token": "link-sandbox-x",
+            "link_sessions": [
+                {"link_session_id": "session-abandoned"},
+                {"link_session_id": "session-current"},
+            ],
+        }
+    )
+
+    with _client(client_config) as client:
+        client._api.link_token_get = invoke
+        session = client.link_token_get("link-sandbox-x")
+
+    assert not session.finished
+    assert session.session_id == "session-current"
+
+
 def test_a_session_cannot_report_finished_without_a_token() -> None:
     """`finished` is derived, so the flag and the token cannot disagree.
 

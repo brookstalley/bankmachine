@@ -154,3 +154,35 @@ nothing ever reports that it could have run.
   *success* response shape, which is what derivers get written against. Splitting the plan's
   acceptance criteria into the half that could be met and the half that could not is what made the
   remainder a gate instead of a mood.
+
+---
+
+## The norm harness sabotages the working tree, so nothing else may read it
+
+**When `verify_norms_go_red.py` is running, do not run the suite, dispatch a review, or commit —
+it edits source files in place to prove each assertion goes red, so for the length of the run the
+working tree contains code nobody wrote. Anything that reads the tree during that window reads
+sabotage and reports it as fact.**
+
+The harness is the mechanism behind [[two-descriptions-compared]] — it removes a mechanism and
+checks that a named test notices. Removing the mechanism means *writing the broken version to
+disk*, running one test, and putting it back. Fifty-five times. The tree is correct before and
+after and wrong in between, which is the shape that makes it invisible: every check of the file
+afterwards agrees with what you meant.
+
+**Instances:**
+
+- *2026-09-07, Chunk 01 of enrollment.* A Critic review was dispatched while the harness ran. Its
+  first two dispatches were unreviewable and it said so: one manifest caught `store/rebuild.py`
+  holding the harness's sabotage — `_points_at` returning `True` unconditionally — and
+  `connector/plaid/client.py` transiently holding `finished = None`, which was the *mutation* of a
+  line I had just written rather than the line. **A review of either snapshot would have produced
+  confident, well-argued findings about code that does not exist in any commit.** The Critic
+  retried until the tree was stable, which is the only reason this was caught rather than acted on.
+
+**How to apply:** treat the harness as an exclusive lock on the working tree. Run it alone, wait
+for "all N norm breaks were caught", and only then run the suite, dispatch a review, or stage a
+commit. The cost of getting this wrong is not a failed run — a failed run would be fine, because
+it announces itself. It is a *successful* run of something else against source that was briefly a
+lie, and that result looks exactly like a real one. Related: [[review-coverage]] and
+[[guarantees-by-construction]] — the same family again, a check whose bad news never arrives.

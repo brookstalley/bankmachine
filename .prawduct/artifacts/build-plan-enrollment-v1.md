@@ -133,7 +133,8 @@ no call site passes `config.history_days`.
   returns. It is currently discarded, so AC-1.1 cannot be met without this.
 - New endpoint `LINK_TOKEN_GET`, declared `retry_safe=True` (a pure read) and 🔴
   `issues_credential=True` — its body carries a `public_token` that mints a durable Item, the same
-  property that keeps `/item/public_token/exchange` out of the archive. Without this declaration the
+  property that keeps the exchange endpoint (`POST /item/public_token/exchange`) out of the
+  archive. Without this declaration the
   poll response lands verbatim in the append-only archive and travels in every backup.
 - `link_token_get(link_token)` returns the completed session's public token, or reports that the
   session is unfinished. The path is
@@ -143,7 +144,8 @@ no call site passes `config.history_days`.
 **Done-when:**
 
 0. **`verify-api`** — probe the live sandbox: create a link token with `hosted_link`, confirm
-   `hosted_link_url` is returned, and read back an *unfinished* session through `/link/token/get` to
+   `hosted_link_url` is returned, and read back an *unfinished* session through
+   `POST /link/token/get` to
    capture the shape before completion. Record findings in `api-notes-plaid.md` §15. 🔴 If Hosted
    Link is unavailable on this account, stop and report — Chunk 02's design depends on the answer.
 1. `hosted_link_url` is on `LinkToken` and asserted from a recorded fixture.

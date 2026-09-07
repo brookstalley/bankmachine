@@ -566,13 +566,38 @@ class PlaidClient:
         sessions = payload.get("link_sessions")
         if not isinstance(sessions, list) or not sessions:
             return LinkSession(public_token=None, session_id=None, institution_id=None)
-        session = sessions[-1]
-        if not isinstance(session, dict):
+        # An entry that is not an object is skipped rather than raised on. One
+        # unreadable entry must not abort the poll: the readable ones may hold a
+        # completed session, and refusing the whole response would strand an Item
+        # that already exists at the aggregator -- spent, billable, and invisible
+        # from here. That is the same harm the ordering below guards against, so
+        # it would be incoherent to reintroduce it as a validation.
+        readable = [entry for entry in sessions if isinstance(entry, dict)]
+        if not readable:
+            # Every entry unreadable is different in kind: there is nothing to
+            # poll, and reporting "still waiting" would wait forever on a response
+            # that will never become readable.
             raise MalformedResponseError(
-                f"{LINK_TOKEN_GET} returned a link_sessions entry that is not an object",
+                f"{LINK_TOKEN_GET} returned {len(sessions)} link_sessions and not one "
+                f"is an object, so no session can be read",
                 endpoint=LINK_TOKEN_GET,
                 failed_at=self._now(),
             )
+        # 🔴 Every session is searched, and the NEWEST match wins -- both halves
+        # matter and they are one decision. One hosted URL can be opened more than
+        # once, and each opening is another entry. Searching all of them means an
+        # operator who completes the flow and then reopens the link is not
+        # reported as "still waiting" forever while their Item already exists.
+        # Taking the newest means that when two sessions are BOTH finished -- the
+        # same reopening, completed twice -- the token exchanged belongs to the
+        # Item just created, not to an older one whose public token may already
+        # have expired while the newer Item stays live and billable. The fallback
+        # for the unfinished case is newest for the same reason, so one rule
+        # covers both rather than two that can disagree.
+        finished = next(
+            (s for s in reversed(readable) if _session_public_token(s) is not None), None
+        )
+        session = finished if finished is not None else readable[-1]
         return LinkSession(
             public_token=_session_public_token(session),
             session_id=session.get("link_session_id"),
