@@ -22,11 +22,16 @@ import sys
 import time
 from dataclasses import dataclass
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import insert, select, update
 from sqlalchemy.engine import Connection as SAConnection
 
-from bankmachine.cli.connections import connection_rows, explain_cap, release_at_aggregator
-from bankmachine.cli.exit_codes import EXIT_OK, EXIT_UNHEALTHY
+from bankmachine.cli.connections import (
+    ConnectionRow,
+    connection_rows,
+    explain_cap,
+    release_at_aggregator,
+)
+from bankmachine.cli.exit_codes import EXIT_ERROR, EXIT_OK, EXIT_UNHEALTHY
 from bankmachine.config import Config
 from bankmachine.connector import LinkSession, LinkToken
 from bankmachine.connector.plaid.client import (
@@ -68,6 +73,12 @@ POLL_INTERVAL_SECONDS = 3.0
 class EnrollmentError(Exception):
     """Enrollment could not be completed.
 
+    `exit_code` is carried here rather than decided by a chain of `except` arms
+    in `run`. The default is `2` -- "could not run" -- because that is the safe
+    answer for a failure nobody has classified; a subclass that means "ran and
+    found a problem" says so once, beside the condition it describes, instead of
+    relying on someone remembering to extend a tuple two modules away.
+
     🔴 **It can be raised after the public token is spent, and that is the state
     worth understanding.** An earlier version of this docstring claimed otherwise;
     the claim was false and `_record_connection` was already raising past that
@@ -77,6 +88,8 @@ class EnrollmentError(Exception):
     `EnrollmentIncompleteError` can name the credential and the item, and a
     re-run converges rather than duplicating.
     """
+
+    exit_code: int = EXIT_ERROR
 
 
 class EnrollmentIncompleteError(EnrollmentError):
@@ -108,13 +121,15 @@ class ConnectionCapReachedError(EnrollmentError):
     message cannot do.
     """
 
-    def __init__(self, *, live_count: int, cap: int) -> None:
-        self.live_count = live_count
+    exit_code: int = EXIT_UNHEALTHY  # ran and found a problem: the roster is full
+
+    def __init__(self, *, live: list[ConnectionRow], cap: int) -> None:
+        self.live = live
         self.cap = cap
-        super().__init__(
-            f"the configured connection cap is {cap} and {live_count} are already live. "
-            f"Retire one with `bankmachine connections retire <id>` before enrolling another"
-        )
+        # One message, built once. The refusal is raised from two places -- before
+        # the link token and again inside the write transaction -- and two
+        # independently worded messages for one condition is how they drift.
+        super().__init__(explain_cap(live, cap))
 
 
 class EnrollmentAbandonedError(EnrollmentError):
@@ -124,6 +139,8 @@ class EnrollmentAbandonedError(EnrollmentError):
     is wrong, the operator simply walked away, and the remedy is to run the
     command again rather than to investigate anything.
     """
+
+    exit_code: int = EXIT_UNHEALTHY  # ran and found a problem: the operator walked away
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,8 +223,7 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
             len(live),
             config.connection_cap,
         )
-        print(f"bankmachine: {explain_cap(live, config.connection_cap)}", file=sys.stderr)
-        return EXIT_UNHEALTHY
+        raise ConnectionCapReachedError(live=live, cap=config.connection_cap)
 
     secret = get_plaid_secret(config)
     with PlaidClient(config, secret) as client:
@@ -223,12 +239,11 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
             return EXIT_UNHEALTHY
 
         _print_invitation(config, issued)
-        try:
-            session = _await_completion(client, issued, timeout_seconds=args.timeout)
-        except EnrollmentAbandonedError as exc:
-            logger.warning("enrollment abandoned: %s", exc)
-            print(f"bankmachine: {exc}", file=sys.stderr)
-            return EXIT_UNHEALTHY
+        # `EnrollmentAbandonedError` propagates rather than being caught here.
+        # Catching it to return a code would put the exit-code decision in two
+        # places, which is the split that made one condition answer 1 and 2
+        # depending on which check caught it.
+        session = _await_completion(client, issued, timeout_seconds=args.timeout)
 
         # 🔴 Past this line the far end has spent a single-use token and minted a
         # durable Item. Everything after it is this side catching up, and a
@@ -239,9 +254,13 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
         item = client.item_get(grant.access_token)
 
     credential_ref = config.connection_keychain_account(grant.source_connection_id)
-    set_access_token(config, credential_ref, grant.access_token)
 
     try:
+        # Inside the guard, not before it. A keychain failure here is the worst
+        # of the post-exchange states: the Item exists, is billable, and this
+        # product would hold no handle to it -- so not even `connections retire`
+        # could ever remove it. Naming it in the error is the only recovery left.
+        set_access_token(config, credential_ref, grant.access_token)
         with writer_connection(config) as conn:
             # `apply_response` rather than a bare record: it archives and derives
             # as the sync path does, in the two commits that keep the archive when
@@ -269,6 +288,18 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
                     now=now_utc(),
                 )
     except ConnectionCapReachedError:
+        # 🔴 The cap race, reached only past the exchange: the pre-flight check saw
+        # room and the transaction did not. An Item now exists that this product
+        # has just refused to record, so it is released rather than left behind --
+        # anything else bills the operator for a connection they were simultaneously
+        # told they could not have. The refusal itself still stands and still exits
+        # 1; releasing does not turn it into a success.
+        if not release_at_aggregator(config, credential_ref):
+            logger.error(
+                "the connection refused by the cap could not be removed at the aggregator; "
+                "item %s may still be billing",
+                grant.source_connection_id,
+            )
         raise
     except Exception as exc:  # prawduct:allow prawduct/broad-except -- see below
         # 🔴 Broad on purpose, and narrow in what it does. Past the exchange the
@@ -287,8 +318,8 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
             cause=str(exc),
         ) from exc
 
-    # R-8/R-20: a re-enrollment went through Link again, so the aggregator minted
-    # a NEW item and the row above now points at it. The one it replaced is still
+    # A re-enrollment went through Link again, so the aggregator minted a NEW item
+    # and the row above now points at it. The one it replaced is still
     # live at the far end, still counting against the plan cap and still billing,
     # with nothing here referencing it. Released after the replacement is
     # committed, never before -- two live items is a bill, none is a lost
@@ -366,6 +397,7 @@ def _await_completion(
         if session.finished:
             return session
         if time.monotonic() >= deadline:
+            logger.warning("enrollment abandoned after %ss", timeout_seconds)
             raise EnrollmentAbandonedError(
                 f"the hosted session was not completed within {timeout_seconds}s"
                 + (f" (session {session.session_id})" if session.session_id else "")
@@ -464,13 +496,9 @@ def _record_connection(
             ),
         )
 
-    live = conn.execute(
-        select(func.count())
-        .select_from(connections)
-        .where(connections.c.retired_at.is_(None))
-    ).scalar_one()
-    if live >= connection_cap:
-        raise ConnectionCapReachedError(live_count=int(live), cap=connection_cap)
+    live = connection_rows(conn, include_retired=False)
+    if len(live) >= connection_cap:
+        raise ConnectionCapReachedError(live=live, cap=connection_cap)
 
     result = conn.execute(
         insert(connections).values(

@@ -42,6 +42,7 @@ SECRETS = pathlib.Path("src/bankmachine/secrets.py")
 CLI_CONNECTOR = pathlib.Path("src/bankmachine/cli/connector.py")
 CLI_ENROLL = pathlib.Path("src/bankmachine/cli/enroll.py")
 CLI_CONNECTIONS = pathlib.Path("src/bankmachine/cli/connections.py")
+CLI_MAIN = pathlib.Path("src/bankmachine/cli/__init__.py")
 CONNECTOR_CLIENT = pathlib.Path("src/bankmachine/connector/plaid/client.py")
 CONNECTOR_PACKAGE = pathlib.Path("src/bankmachine/connector/__init__.py")
 CONNECTOR_ERRORS = pathlib.Path("src/bankmachine/connector/plaid/errors.py")
@@ -533,6 +534,41 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         f"{ENROLL_CLI_TESTS}::test_nothing_is_linked_when_the_window_is_not_confirmed",
     ),
     (
+        "exit codes: a cap refusal is 1 (ran and found a problem), never 2",
+        CLI_ENROLL,
+        "EXIT_UNHEALTHY  # ran and found a problem: the roster is full",
+        "EXIT_ERROR  # ran and found a problem: the roster is full",
+        f"{ENROLL_CLI_TESTS}::test_the_cap_race_releases_the_item_it_just_minted",
+    ),
+    (
+        "exit codes: an abandoned session is 1, not a broken install",
+        CLI_ENROLL,
+        "EXIT_UNHEALTHY  # ran and found a problem: the operator walked away",
+        "EXIT_ERROR  # ran and found a problem: the operator walked away",
+        f"{ENROLL_CLI_TESTS}::test_an_abandoned_session_exits_one_and_names_the_session",
+    ),
+    (
+        "exit codes: the code comes off the exception, not a tuple of types in run()",
+        CLI_MAIN,
+        "        return exc.exit_code",
+        "        return EXIT_UNHEALTHY",
+        f"{ENROLL_CLI_TESTS}::test_a_keychain_failure_after_the_exchange_still_names_the_item",
+    ),
+    (
+        "FR-1: the cap race releases the item it just minted",
+        CLI_ENROLL,
+        "        if not release_at_aggregator(config, credential_ref):",
+        "        if False:",
+        f"{ENROLL_CLI_TESTS}::test_the_cap_race_releases_the_item_it_just_minted",
+    ),
+    (
+        "FR-1: a keychain failure past the exchange still names the item",
+        CLI_ENROLL,
+        "        set_access_token(config, credential_ref, grant.access_token)",
+        "        pass  # noqa\n    set_access_token(config, credential_ref, grant.access_token)",
+        f"{ENROLL_CLI_TESTS}::test_a_keychain_failure_after_the_exchange_still_names_the_item",
+    ),
+    (
         "AC-1.4: a re-enrollment removes the item it superseded",
         CLI_ENROLL,
         "    if enrolled.superseded_credential_ref is not None:",
@@ -570,8 +606,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-10.1: the credential outlives a failed removal, being the only handle left",
         CLI_CONNECTIONS,
-        "    delete_access_token(config, credential_ref)\n    logger.info",
-        "    logger.info",
+        "        delete_access_token(config, credential_ref)",
+        "        pass",
         f"{ENROLL_CLI_TESTS}::test_retiring_removes_the_item_at_the_aggregator",
     ),
     (

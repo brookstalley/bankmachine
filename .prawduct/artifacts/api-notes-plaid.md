@@ -357,6 +357,45 @@ and everything above was reachable without it.
 
 ---
 
+## What the transaction-sync verify-api established
+
+### 16. 🔴 `transactions_update_status` answers AC-2.6 on the SUCCESS path, and gates AC-1.3a
+
+Read from the pinned SDK 2026-09-07, before any of build step 4 was designed.
+
+`POST /transactions/sync` takes `access_token`, `cursor`, `count`, `options` and answers with
+`transactions_update_status`, `accounts`, `added`, `modified`, `removed`, `next_cursor`,
+`has_more`, `request_id`. Everything FR-2 asks for is there: `has_more`/`next_cursor` for AC-2.1's
+loop and its transactional cursor, the three change lists for AC-2.2, and
+`Transaction.pending_transaction_id` for AC-2.3's pending→posted match. A `RemovedTransaction`
+carries only `transaction_id` and `account_id`, which is all AC-2.2's soft delete needs.
+
+🔴 **`transactions_update_status` is an enum on the success path**, with values
+`TRANSACTIONS_UPDATE_STATUS_UNKNOWN`, `NOT_READY`, `INITIAL_UPDATE_COMPLETE`,
+`HISTORICAL_UPDATE_COMPLETE`. Two consequences, and the second is the one that would have been
+expensive to discover late:
+
+1. **AC-2.6's "not yet ready" is a field, not an error.** The requirement says a not-yet-ready
+   response must trigger backoff-and-retry rather than failure, and this is how the aggregator
+   actually says it. `PRODUCT_NOT_READY` — recorded in the handoff as the least-evidenced entry in
+   the whole error taxonomy — is not the primary channel for this case. Reading the status field is
+   both better evidenced and on the path the code already takes.
+
+2. 🔴 **AC-1.3a's granted window cannot be computed until `HISTORICAL_UPDATE_COMPLETE`.**
+   `sync_state.history_start_date` is meant to hold the oldest transaction the aggregator actually
+   returned, and that is what `granted_history_days` is derived from. Computing it at
+   `INITIAL_UPDATE_COMPLETE` would measure a backfill still in flight and record a shortfall that
+   does not exist — a confidently wrong number, well-formed and plausible, which is the exact
+   failure class this product was built to prevent. **The status field is the gate**, and a build
+   that fills `granted_history_days` on the first completed page has failed AC-11.8 while appearing
+   to satisfy it.
+
+`accounts` also rides the sync response, so a sync refreshes account rows without a separate
+`POST /accounts/get`. Whether to use it or keep the endpoints separate is a build step 4 decision,
+not settled here.
+
+---
+
 ## What is deliberately unused
 
 The generated response models — the largest part of the package — are not used at all, and

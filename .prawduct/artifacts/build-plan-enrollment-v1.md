@@ -271,9 +271,13 @@ The command AC-1.1 names, through to a persisted connection.
 Tests cover the shapes; two things they cannot speak to are called out explicitly.
 
 **The live path** is exercised against the sandbox in every chunk, and Chunk 01's probe gates the
-rest. Sandbox Link can be completed programmatically, so Chunk 02's end-to-end test is automated
-rather than manual — but the *printed output* an operator reads is not, which is why Chunk 02
-carries an operator-verification entry.
+rest. 🔴 **Sandbox Link CANNOT be completed programmatically** — `POST /sandbox/public_token/create`
+bypasses Link entirely, minting a public token without ever creating a session
+`POST /link/token/get` would report. So Chunk 02's end-to-end coverage runs against a fake
+aggregator, the live halves that can be asserted are in `tests/connector/test_sandbox.py`, and the
+rest is VRF-003. An earlier draft of this paragraph claimed the opposite and survived the Done-when
+amendment that contradicted it two sections above — the amendment and the strategy now tell the
+same story.
 
 🔴 **The granted history window is verified in build step 4, not here**, and this plan makes no
 claim about it. AC-1.3a is the record of that boundary. Nothing in this plan should be read as

@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from bankmachine.cli import connections as connections_module
 from bankmachine.cli import run
 from bankmachine.config import Config
 from bankmachine.connector import (
@@ -190,6 +191,25 @@ def offline_client(monkeypatch: pytest.MonkeyPatch) -> type[FakeClient]:
     monkeypatch.setattr("bankmachine.cli.connections.PlaidClient", FakeClient)
     monkeypatch.setattr("bankmachine.cli.enroll.time.sleep", lambda _seconds: None)
     return FakeClient
+
+
+def _blind_the_preflight_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the FIRST `connection_rows` call see room, and later ones tell the truth.
+
+    That is the race: the pre-flight check runs before a browser flow that takes
+    a human minutes, and another enrollment can fill the last slot in between. A
+    patch that blinded every call would also blind the in-transaction check --
+    which is the one under test -- and the enrollment would simply succeed,
+    proving nothing.
+    """
+    real = connections_module.connection_rows
+    calls = {"n": 0}
+
+    def counted(*args: Any, **kwargs: Any) -> Any:
+        calls["n"] += 1
+        return [] if calls["n"] == 1 else real(*args, **kwargs)
+
+    monkeypatch.setattr("bankmachine.cli.enroll.connection_rows", counted)
 
 
 def _rows(config: Config, table: Any) -> list[Any]:
@@ -555,7 +575,7 @@ def test_both_cap_checks_report_the_same_exit_code(
     # The race path, reached by making the pre-flight check see room that the
     # transaction then does not. This is the check that closes the window between
     # two concurrent enrollments, and it must answer with the same code.
-    monkeypatch.setattr("bankmachine.cli.enroll.connection_rows", lambda *a, **k: [])
+    _blind_the_preflight_only(monkeypatch)
     FakeClient.item_id = "item-second-institution"
     # A DIFFERENT institution, or the write takes the update branch and never
     # reaches the count -- which is what made the first version of this test pass
@@ -821,7 +841,7 @@ def test_a_piped_run_approves_the_window_without_a_prompt_but_still_prints_it(
     cli_env: Config, offline_client: type[FakeClient], monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """R-6: the irreversible window auto-approves off a tty, and that needed a test.
+    """The irreversible window auto-approves off a tty, and that branch needs a test.
 
     Blocking on a question nobody can answer would hang an unattended enrollment
     forever, so a piped run proceeds. What it must NOT do is proceed quietly --
@@ -841,7 +861,7 @@ def test_a_piped_run_approves_the_window_without_a_prompt_but_still_prints_it(
 def test_the_cap_refusal_reaches_the_log_not_only_stderr(
     cli_env: Config, offline_client: type[FakeClient], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """R-22: stderr reaches whoever is watching; the log is what an unattended run leaves.
+    """stderr reaches whoever is watching; the log is what an unattended run leaves.
 
     An enrollment that refused and logged nothing is indistinguishable, afterwards,
     from one nobody ran.
@@ -851,3 +871,81 @@ def test_the_cap_refusal_reaches_the_log_not_only_stderr(
     assert run(["enroll", "--yes"]) == 1
 
     assert "cap of 1" in _log_text(cli_env)
+
+
+# --------------------------------------------------------------------------
+# The post-exchange states, at every site that can reach them
+# --------------------------------------------------------------------------
+
+
+def test_a_keychain_failure_after_the_exchange_still_names_the_item(
+    cli_env: Config,
+    offline_client: type[FakeClient],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """🔴 The worst of the post-exchange states, and it sat outside the guard.
+
+    The Item exists and is billable, and if the credential never reached the
+    keychain this product holds no handle to it -- so not even
+    `connections retire` could ever remove it. Naming the item in the error is
+    the only recovery left, which is why storing the token belongs inside the
+    guard rather than one line before it.
+    """
+
+    def refuse(*args: Any, **kwargs: Any) -> None:
+        raise SecretsError("the keychain is locked")
+
+    monkeypatch.setattr("bankmachine.cli.enroll.set_access_token", refuse)
+
+    assert run(["enroll", "--yes"]) == 2
+
+    err = capsys.readouterr().err
+    assert ITEM_ID in err, "an item exists at the aggregator and the operator must be told"
+    assert "the keychain is locked" in err
+
+
+def test_the_cap_race_releases_the_item_it_just_minted(
+    cli_env: Config, offline_client: type[FakeClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 Refused past the exchange, so an Item exists that will never be used.
+
+    The pre-flight check saw room and the transaction did not. Leaving the Item
+    would bill the operator for a connection they were simultaneously told they
+    could not have -- so it is released. The refusal still stands and still
+    exits 1; releasing does not turn it into a success.
+    """
+    monkeypatch.setenv("BANKMACHINE_CONNECTION_CAP", "1")
+    assert run(["enroll", "--yes"]) == 0
+    FakeClient.removed_tokens = []
+
+    _blind_the_preflight_only(monkeypatch)
+    FakeClient.item_id, FakeClient.institution_id = "item-raced", "ins_second"
+
+    assert run(["enroll", "--yes"]) == 1
+
+    assert FakeClient.removed_tokens == [f"{ACCESS_TOKEN}-item-raced"], (
+        "the item minted by the refused enrollment is still billing"
+    )
+    assert len(_rows(cli_env, connections)) == 1
+
+
+def test_a_refusal_type_that_forgets_its_exit_code_says_could_not_run(
+    cli_env: Config, offline_client: type[FakeClient]
+) -> None:
+    """The exit code is a property of the exception, not a tuple in `run`.
+
+    A tuple would have to be extended by whoever adds the next refusal type, and
+    would answer 2 when they forget. Carrying the default on the base class means
+    forgetting produces the SAFE answer -- "could not run" -- rather than a
+    silent claim that the command ran and found a problem.
+    """
+    from bankmachine.cli.enroll import (
+        ConnectionCapReachedError,
+        EnrollmentAbandonedError,
+        EnrollmentError,
+    )
+
+    assert EnrollmentError.exit_code == 2
+    assert ConnectionCapReachedError.exit_code == 1
+    assert EnrollmentAbandonedError.exit_code == 1

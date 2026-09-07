@@ -13,11 +13,7 @@ from bankmachine.cli import connector as connector_commands
 from bankmachine.cli import enroll as enroll_commands
 from bankmachine.cli import store as store_commands
 from bankmachine.cli import sync as sync_commands
-from bankmachine.cli.enroll import (
-    ConnectionCapReachedError,
-    EnrollmentAbandonedError,
-    EnrollmentError,
-)
+from bankmachine.cli.enroll import EnrollmentError
 from bankmachine.cli.exit_codes import EXIT_ERROR, EXIT_OK, EXIT_UNHEALTHY
 from bankmachine.config import Config, ConfigError, load_config
 from bankmachine.connector import ConnectorError
@@ -64,20 +60,19 @@ def run(argv: Sequence[str] | None = None) -> int:
 
     try:
         return int(args.handler(config, args))
-    except (EnrollmentAbandonedError, ConnectionCapReachedError) as exc:
-        # 🔴 `1`, not `2`: the command ran fine and found a problem in the world.
-        # The api-contract norm calls the 1/2 split non-collapsible because a
-        # scheduled job reads these -- and `2` here would make an operator who
-        # walked away from a browser tab indistinguishable from a broken install.
-        #
-        # The cap belongs here for the same reason AND for a sharper one: it is
-        # refused from two places -- before the link token, and again inside the
-        # write transaction that closes the race between two enrollments. One
-        # condition reported with two different exit codes depending on which
-        # check caught it is worse than either code alone.
+    except EnrollmentError as exc:
+        # 🔴 The code comes off the exception, not from the type named here. The
+        # api-contract norm calls the 1/2 split non-collapsible because a
+        # scheduled job reads it, and the cap proved why that needs a mechanism:
+        # it is refused from two places -- before the link token, and again inside
+        # the write transaction that closes the race between two enrollments --
+        # and reporting one condition with two different codes depending on which
+        # check caught it is worse than either code alone. A tuple of types here
+        # would have to be extended by whoever adds the next refusal, and would
+        # silently answer `2` when they forget.
         print(f"bankmachine: {exc}", file=sys.stderr)
-        return EXIT_UNHEALTHY
-    except (StoreError, SecretsError, ConnectorError, EnrollmentError) as exc:
+        return exc.exit_code
+    except (StoreError, SecretsError, ConnectorError) as exc:
         # Expected failures get a sentence, not a traceback -- but they are never
         # silent, which is the one outcome this project disallows.
         print(f"bankmachine: {exc}", file=sys.stderr)

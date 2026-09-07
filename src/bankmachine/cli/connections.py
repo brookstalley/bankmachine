@@ -29,6 +29,7 @@ from bankmachine.connector.plaid.client import PlaidClient
 from bankmachine.logging_setup import get_logger
 from bankmachine.secrets import (
     AccessTokenMissingError,
+    SecretsError,
     delete_access_token,
     get_access_token,
     get_plaid_secret,
@@ -180,7 +181,10 @@ def release_at_aggregator(
         secret = get_plaid_secret(config)
         with PlaidClient(config, secret) as client:
             client.item_remove(access_token, connection_id=connection_id)
-    except ConnectorError as exc:
+    except (ConnectorError, SecretsError) as exc:
+        # `SecretsError` as well as `ConnectorError`: the aggregator secret is read
+        # here too, and a keychain that cannot be reached must not become an
+        # exception either -- the docstring's promise is what the callers rely on.
         logger.warning(
             "could not remove the item behind %s at the aggregator: %s. "
             "It may still be counting against the plan cap",
@@ -189,7 +193,18 @@ def release_at_aggregator(
         )
         return False
 
-    delete_access_token(config, credential_ref)
+    try:
+        delete_access_token(config, credential_ref)
+    except SecretsError as exc:
+        # The item IS removed at this point, so this is not a failure of the
+        # operation -- it is a stale credential for an item that no longer
+        # exists. Reported rather than raised, and reported as what it is.
+        logger.warning(
+            "removed the item behind %s, but its keychain entry could not be "
+            "cleared: %s. The entry is now stale rather than sensitive",
+            credential_ref,
+            exc,
+        )
     logger.info("removed the item behind %s at the aggregator", credential_ref)
     return True
 
