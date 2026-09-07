@@ -15,11 +15,13 @@ one encrypted datastore file. This artifact is the home of **AC-ARCH.7**, which
 reader isolation under encryption are specified in the system architecture, not left to whichever
 component encounters them first."*
 
-**Dependency note.** The template's usual upstreams — product brief, data model, security model,
-non-functional requirements — do not exist as separate artifacts in this project. Their content
-lives in `docs/system-requirements.md` (§0 purpose, §4 data model, §6 security), which is this
-artifact's single upstream. That is a recorded shape, not an oversight; the strategy-artifact
-coverage advisory tracks the rest.
+**Dependency note.** This artifact was written before the rest of the strategy set existed, against
+`docs/system-requirements.md` (§0 purpose, §4 data model, §6 security) as its single upstream. Those
+upstreams now exist as artifacts — `data-model.md`, `security-model.md`,
+`nonfunctional-requirements.md`, `api-contract.md`, `observability-strategy.md`,
+`operational-spec.md`, authored 2026-09-06 — and they reconcile *to* this one rather than revising
+it: the four ratified norms below are cited from all of them and restated in none. The product brief
+remains the one absent upstream; §0 of the requirements document carries that content.
 
 **Evidence.** Every concurrency claim below was measured on this machine (macOS, Apple Silicon,
 CPython 3.12.3) against `sqlcipher3-wheels` 0.5.7 — SQLCipher 4.12.0 community, OpenSSL provider,

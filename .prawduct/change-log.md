@@ -34,6 +34,84 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-07: The strategy artifacts, and the two gaps writing them exposed
+
+<!-- prawduct: scope=strategy-artifacts -->
+
+**Why:** `/prawduct:doctor` reported the coverage chain stuck at layer 1 — six expected
+strategy-class artifacts had never been created. They are now written, in the dependency
+order the planning guide sets: data model, non-functional requirements, security model, API
+contract, observability strategy, operational spec. This was **reconciliation, not
+invention**: `docs/system-requirements.md` and `project-state.yaml` already held nearly all
+of it, and what the artifacts add is the shape — each criterion sitting next to the decision
+that motivated it and the code or test that discharges it. Each marks what is *built* versus
+*specified*, because four of the six describe surfaces that do not exist yet.
+
+**Writing them surfaced two real gaps, and both are closed here rather than filed.**
+
+🔴 **AC-10.2 was never implemented.** The criterion asks for a test that greps a fresh
+`git ls-files` for token-shaped strings; what existed was `check-no-personal-data.sh`, which
+hunts *roster* tokens supplied by `deployment/`. **Neither subsumes the other** — a roster
+name is not token-shaped, and a leaked access token names no institution, so a stray
+credential matching no institution walked past every guard in the repository.
+`tests/preferences/test_no_credentials_tracked.py` closes it: `git check-ignore` per AC-10.2
+clause with a negative control that `.env.example` stays tracked, plus a shape scan for
+access-token prefixes, 64-hex key runs, and labelled credentials with a real value.
+
+Its one exemption is a **per-line declaration, not a file skip list**, and the distinction is
+the design. A skip list exempts the *next* real secret to land in that file and nobody
+decides anything; the marker `credential-shape: test vector` exempts one line and appears in
+the diff of whoever adds it. It is used once, on the redaction test's own fixtures, which
+must carry real credential shapes or they prove nothing. A test asserts the marker does not
+spill onto neighbouring lines — **it caught exactly that bug while being written.**
+
+🔴 **There was no backup at all**, against a datastore key that cannot be recovered once lost
+and a `balances_daily` series no re-sync can rebuild. `bankmachine store backup` now writes a
+verified, consistent, single-file encrypted copy.
+
+**The measurements that shaped it, none of which came from documentation.** `VACUUM INTO`
+from a read-role handle **fails** under `PRAGMA query_only=ON` (`SQLITE_READONLY`) *and
+leaves a zero-byte file at the destination* — a file indistinguishable from a backup until
+the day it is needed, which is the single most dangerous artifact this command could
+produce. So the copy is taken from the writer factory, which is also the right answer for an
+unrelated reason: it holds the exclusive lock, so consistency is a consequence of the lock
+rather than of timing. The copy folds the WAL in — measured against a source holding a 2 MB
+hot WAL, whose 300 rows all appear in the copy while a plain `cp store.db` is short of every
+one of them. That comparison is a **negative control in the test**, so the command is known
+to differ from `cp` rather than assumed to.
+
+The tests also caught a defect in the first draft: `back_up` leaked a raw driver
+`OperationalError` instead of a named `StoreError`, so the CLI would have printed a
+traceback where every other failure in this repository prints a sentence.
+
+**17 norms ratified** (`norm_registry_ratified: 2026-09-07`), homed in the `## Direction`
+sections of the four artifacts that govern them, with pointer rows in
+`project-preferences.md`. Sixteen are steady-state. **One is `in-transition` on purpose:**
+the operator-POV sign convention, tracked by `#9`. Nothing tests it, and the connector that
+must obey it is mid-build — and the failure it guards against has no symptom, since an
+aggregator reporting a card balance as a positive amount owed makes a consumer wrong *by
+twice the debt*, silently and plausibly. Ratifying it steady-state with no mechanism would
+have been the aspirational failure the lifecycle exists to prevent.
+
+Two norms bind the **not-yet-built** MCP surface — read-only, and freshness-plus-warnings on
+every response. That follows this repo's own precedent: `architecture.md`'s four norms were
+also born before their code, and the point is that step 7 is *built to* them rather than
+discovering them.
+
+Where a norm has no mechanism, the Enforcement row says `Critic` and names nothing. Two data
+norms are recorded that way deliberately — the schema makes "never overwrite a source value"
+and "never hard-delete" *possible* to obey, not *impossible* to break, and naming a
+constraint that does not constrain would overstate the guarantee.
+
+**AC-10.4 got a mechanism too:** `test_only_the_connector_reaches_the_network.py` asserts
+nothing outside `connector/` imports a network transport — verified red by planting an
+`httpx` import, then green. Its limit is recorded in the norm rather than left implied: it
+cannot see a subprocess shelling out to `curl`, nor a dependency phoning home.
+
+**Still open, and named rather than quietly carried:** nothing *schedules* the backup, and
+the key is still backed up by hand — the command cannot do that half without defeating the
+keychain. Restore has no runbook and has not been rehearsed end to end by a human.
+
 ## 2026-09-06: VRF-002 discharged — the connector's live half, and what the sandbox really serves
 
 <!-- prawduct: scope=connector-v1 -->

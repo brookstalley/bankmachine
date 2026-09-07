@@ -40,7 +40,10 @@ def formatted() -> object:
 @pytest.mark.parametrize(
     "secret",
     [
-        "access-sandbox-8f2c1d4e-1111-2222-3333-abcdefabcdef",
+        # These must carry real credential SHAPES or they prove nothing about
+        # redaction, so each declares itself to `test_no_credentials_tracked`,
+        # which otherwise reports them as a leak -- correctly, on shape alone.
+        "access-sandbox-8f2c1d4e-1111-2222-3333-abcdefabcdef",  # credential-shape: test vector
         "a" * 64,
         "sk_live_9aZq3XcV8bNm2LpO7rTyU1wE5dFgH6jK",
         "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9abcdefghijklmnop",

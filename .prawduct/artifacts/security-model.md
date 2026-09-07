@@ -1,0 +1,395 @@
+---
+artifact: security-model
+version: 1
+depends_on:
+  - artifact: system-requirements
+    file_path: docs/system-requirements.md
+  - artifact: data-model
+    file_path: .prawduct/artifacts/data-model.md
+  - artifact: architecture
+    file_path: .prawduct/artifacts/architecture.md
+last_validated: null
+---
+
+# Security Model — bankmachine
+
+**Scope:** the trust boundaries of a single-operator local pipeline holding financial data, the
+controls on each, and — stated plainly — the places where the control is "the operating system" and
+that is the right answer.
+
+**Dependency note.** The template's usual product-brief upstream does not exist as a separate
+artifact; §0 and §6 of `docs/system-requirements.md` carry that content.
+
+---
+
+## Direction
+
+Norms. These bind future work; departure is a recorded decision, never silent
+(`/prawduct:methodology norms`). Ratified 2026-09-07 by the owner. Each describes a control the
+code already implements, so no retroactivity decision applies.
+
+- **Secrets live only in the OS keychain, and nothing returns one into a log line, an exception
+  message, or a `repr`.** The datastore key, the aggregator secret, and every access token. One
+  module imports the keychain library; everything else asks it.
+  Why: AC-10.1. A credential in a dotfile, a log, or shell history is a credential in a backup, a
+  screen share, and a support paste. Confining the keychain to one module is what makes the rule
+  checkable rather than a habit — and *a `KeyError` naming the account is fine; the value never is*,
+  because exception text reaches logs by paths nobody planned.
+  Status: steady-state.
+
+- **Log redaction happens at the formatter, over-redacts by design, and is keyed to credential
+  shape rather than to any one vendor's token prefix.**
+  Why: at the formatter means it covers records this project did not write, including third-party
+  libraries and exception text. Over-redaction is a deliberate trade — a filesystem path containing
+  a 32-character segment is blanked along with the tokens, costing some legibility, and the
+  alternative of requiring high entropy first trades that back for the chance of a real token
+  slipping through. Provider-agnostic matters most: **a rule keyed to one aggregator's prefix would
+  silently stop redacting the day a second is added**, a failure with no symptom until the leak.
+  Status: steady-state.
+
+- **No tracked file carries a credential-shaped string, and the ignore rules cover data, logs, and
+  credential paths.** The one exemption is a per-line `credential-shape: test vector` declaration.
+  Why: AC-10.2, and this repository is a general-purpose tool that may be published. The guard is
+  deliberately separate from the roster leak guard because **neither subsumes the other**: that one
+  hunts institution names supplied by `deployment/`, so a stray secret matching no roster token walks
+  past it. The exemption is per-line and hand-written rather than a file skip list, because a skip
+  list exempts the *next* secret to land in that file and nobody decides anything; a marker appears
+  in the diff of whoever adds it.
+  Status: steady-state.
+
+- **The aggregator's API is the only network destination.** No telemetry, no analytics, no
+  third-party error reporting. Nothing outside `connector/` may reach a network transport.
+  Why: AC-10.4, and it is a confidentiality requirement rather than a cost one — which is why it is
+  not revisitable if a free tier appears. It also does more architectural work than any other control
+  here: it rules out every hosted service that would otherwise be the cheap answer to monitoring,
+  alerting, and log aggregation, and that constraint is what shapes `observability-strategy.md`.
+  **Known limit of the mechanism, stated so it is not mistaken for coverage:** the import scan cannot
+  see a subprocess shelling out to `curl`, nor a dependency phoning home on its own. Those remain
+  judgment calls under this same norm.
+  Status: steady-state.
+
+---
+
+## Threat model, stated first
+
+Getting this right determines whether every control below is proportionate or theatre.
+
+**Who this system defends against:**
+
+| Adversary | Reachable how | Control |
+|---|---|---|
+| **Someone holding a backup copy** of the datastore | Cloud sync, external drive, an old Time Machine volume | 🔴 The **primary** threat. Page-level encryption; the backup is ciphertext without further work |
+| **Someone with the repository** (it may be published) | GitHub, a clone, a fork | No roster, no credentials, no operator identity in any tracked file — enforced on every push |
+| **A process on this machine running as another user** | Filesystem | OS file permissions; the key is in the keychain, not on disk |
+| **The network** | — | 🔴 **Not reachable.** The MCP server opens no sockets; the only outbound destination is the aggregator |
+
+**Who it does *not* defend against, deliberately:**
+
+- **The operator.** They own the accounts, the machine, and the keychain. There is no privilege
+  boundary to draw inside a single-user tool, and inventing one would be theatre.
+- **An attacker with the unlocked machine and the operator's session.** They have the keychain. This
+  is the OS's boundary — FileVault and the login password — and it is the right layer for it.
+- **A malicious aggregator.** Trusted by construction: it is the data source. What *is* defended is
+  the aggregator being *wrong* — see "Data integrity" below, which is where this product's real
+  paranoia lives.
+
+🔴 **The distinctive risk here is not breach. It is silent wrongness.** A system that leaks nothing
+and reports confidently incorrect financial data has failed at its actual job. That threat is handled
+across `data-model.md` (constraints in the database), `observability-strategy.md` (loud degradation),
+and §7's verification gate — not here. This document covers confidentiality and integrity of the
+data at rest and in transit.
+
+---
+
+## Authentication
+
+🔴 **There is none, and that is the design.**
+
+This is a single-operator tool. The authentication boundary is **the macOS user account** — login
+password, FileVault, and the keychain's own unlock. Adding an application-level password would store
+a second credential to protect data already protected by the first, and the operator would keep it in
+the same keychain.
+
+**What authenticates instead, per surface:**
+
+| Surface | Who may use it | Enforced by |
+|---|---|---|
+| CLI (`bankmachine …`) | Anyone in the operator's OS session | Filesystem + keychain ACL |
+| MCP server (stdio) | The process that spawned it — the MCP client | 🔴 **Process ancestry.** No socket, no listener, nothing to authenticate to |
+| Datastore file | Anyone holding the 256-bit key | SQLCipher |
+| Aggregator API | This installation's client credentials | Keychain-held secret |
+
+**Why the MCP transport decision is a security decision.** Local stdio only, confirmed 2026-09-05 and
+recorded because it had previously been an *unexamined default rather than a decision*. It is the one
+architectural choice that would have been expensive to reverse: a remote transport would require
+authentication, authorization, TLS, and rate limiting, and would expose a financial datastore to a
+socket. AC-10.5 — *the MCP server opens no network sockets and reads only its own datastore file* —
+**holds**, and holds structurally rather than by policy.
+
+---
+
+## Authorization
+
+**Within the product: none, for the same reason.** One operator, one role, everything visible. There
+are no per-entity access rules to write.
+
+**The one authorization boundary that does exist is between the two processes**, and it is enforced
+by the operating system rather than by application logic — which is what makes it hold. From
+`architecture.md` § Direction (ratified norms; not restated here, only cited):
+
+- Every **writable** handle comes from one writer factory that takes an exclusive `flock` before it
+  returns. Writer-role membership is a property of how a handle was constructed, not a list someone
+  has to remember to keep current.
+- Every **read-role** handle opens `mode=ro` at the file, with `PRAGMA query_only=ON` as a second
+  layer, and never falls back to a writable handle.
+
+🔴 **Why `mode=ro` and not `query_only` alone — this is a security control, not a concurrency one.**
+`PRAGMA query_only=OFF` re-enables writes on a read-write handle *(measured)*, and `sync shell` exists
+precisely to run operator-supplied SQL — it is the surface that can type it. Under `mode=ro` the
+identical sequence still fails *(measured)*, because the refusal lives in the file handle rather than
+in a session flag. §5's mandate — *"Read-only. No mutation tools. No exceptions."* — is therefore
+structural rather than a convention every future tool author remembers.
+
+### API-design failure modes (OWASP API Top 10)
+
+Assessed rather than skipped, because `exposes_programmatic_interface` is recorded. Most do not apply,
+and *why* they do not apply is the useful part:
+
+| Failure mode | Applies? | Reasoning |
+|---|---|---|
+| **BOLA / object-level authz** (API1) | **No** | One operator owns every object. There is no "another user's transaction" to leak |
+| **Broken authentication** (API2) | **No** | Nothing to authenticate to; process ancestry is the boundary |
+| **Broken object property level authz** / mass assignment | **No** | 🔴 The surface is **read-only**. There is no request binding to over-permit |
+| **Unrestricted resource consumption** (API4) | 🔴 **Yes** | A caller can drive cost. Mitigated by the ~500-row hard cap and aggregate-first design (AC-9.1) |
+| **Improper inventory management** (API9) | 🔴 **Yes** | A forgotten tool is a real risk. Mitigated by the declared surface inventory in `api-contract.md` |
+| **Unsafe consumption of third-party APIs** (API10) | 🔴 **Yes** | The aggregator's responses are unowned input. See "Data integrity" below |
+| **Excessive data exposure** | Partly | The consumer is an LLM with finite context; returning less is a *performance* requirement too |
+
+The three that apply are handled in `api-contract.md` § Security, not duplicated here.
+
+---
+
+## Data Privacy
+
+### Classification
+
+| Class | Examples | Handling |
+|---|---|---|
+| 🔴 **Secret** | Datastore key, aggregator client secret, access tokens | Keychain only. Never on disk, never in a log, never in a `repr` |
+| 🔴 **Sensitive** | Transactions, balances, holdings, account numbers, institution roster | Encrypted at rest. Never leaves the machine except as an encrypted backup |
+| **Restricted** | The operator's identity, machine name, institution names | Never in a tracked file — the repository may be published |
+| Public | The engine's source code | The point of the layering rule |
+
+### Secrets: the keychain seam
+
+🔴 **AC-10.1 — the aggregator credentials, all access tokens, and the datastore encryption key live in
+the OS keychain**, accessed at runtime. Never in the repo, never in a plaintext dotfile, never in
+shell history, never in a log line.
+
+`src/bankmachine/secrets.py` is **the only module that imports `keyring`**. Everything else asks it, so
+the one part of the system that is genuinely painful to port lives behind a single interface. Nothing
+in it returns a secret into a log line, an exception message, or a `repr` — *a `KeyError` naming the
+account is fine; the value never is.*
+
+Two properties worth recording:
+
+- **The key in the keychain *is* the key.** SQLCipher takes a 256-bit raw key as 64 hex characters;
+  passing it raw rather than as a passphrase skips SQLCipher's KDF, so **there is no derivation whose
+  parameters could drift** between the process that created the datastore and the one that opens it.
+- **Malformed keys are rejected loudly, and the value is never in the message.** A malformed key is
+  still a key, and exception text reaches logs.
+- **The two missing-secret errors are deliberately distinct types** because their remedies share
+  nothing: 🔴 **a datastore key cannot be recovered once lost**, while an aggregator secret is always
+  re-readable from the vendor's own dashboard. See "Backup & Recovery" in `operational-spec.md` — this
+  is the sharpest operational hazard in the product.
+
+`connections.credential_ref` holds **a keychain lookup handle, never a token** (`data-model.md`).
+
+### Encryption at rest
+
+🔴 **AC-ARCH.5 — SQLCipher Community Edition, page-level AES-256 with per-page HMAC**, the whole file
+encrypted including the header, so a file-copy backup is ciphertext without further work.
+
+Empirically verified on this machine 2026-09-05: the prebuilt wheel installs with no compiler, the
+`SQLite format 3` magic is **absent** from the file, a known plaintext is **not recoverable** from raw
+bytes, and a wrong key **raises rather than returning garbage.** AC-ARCH.5 requires that last property
+to stay verified by a test, not by memory.
+
+**The WAL and shm files are encrypted too — checked**, because an unencrypted WAL would have traded
+AC-ARCH.5 away for AC-ARCH.7's concurrency.
+
+🔴 **Why not field-level encryption — the rejection is load-bearing.** Application-level AES on
+sensitive columns destroys the SQL queryability the aggregate-first design depends on: no range scans
+on date, no `GROUP BY` category, no `SUM` in SQL, no useful indexes. And the workaround —
+deterministic or order-preserving encryption to restore indexability — **leaks equality and ordering
+patterns that frequency analysis over a personal transaction set substantially defeats.** It also
+leaves schema, indexes, row counts, and freed-page residue structurally visible, which page encryption
+does not. *(Plain SQLite was the v1 requirement before this decision superseded it; it leaves the
+backup in plaintext, and the backup is the copy that leaves the machine.)*
+
+### Data in transit
+
+🔴 **AC-10.4 — no telemetry, no analytics, no error reporting to third parties.** The **only** network
+destinations are the aggregator's API hosts, over HTTPS, read-only endpoints only. Any other
+destination is a finding, not a feature.
+
+This constraint does more architectural work than any other in this document: it rules out every
+hosted service that would otherwise be the cheap answer to monitoring, alerting, and log aggregation.
+See `observability-strategy.md`.
+
+**Polling, not webhooks** (v1) — webhooks require a publicly reachable endpoint, which this machine is
+not and should not become. A clean seam is left; the endpoint is not.
+
+### Logs
+
+🔴 **AC-10.3 — logs redact access tokens and account numbers. Account masks (last 4) are acceptable.**
+
+Redaction happens **at the formatter**, so it applies to every record regardless of which code emitted
+it. Two rules: named sensitive keys (`access_token`, `client_secret`, `api_key`, `password`, `token`,
+`key`, …) and opaque high-entropy strings.
+
+🔴 **They over-redact, and that is the chosen direction.** A filesystem path containing a 32-character
+segment is blanked along with the tokens, which costs some log legibility. The alternative — requiring
+high entropy before redacting — trades that back for the chance of a real token slipping through.
+
+The rules are deliberately **provider-agnostic**: a redaction rule keyed to one aggregator's token
+prefix would silently stop redacting the day a second one is added. Account masks survive on purpose —
+a fully redacted number would make logs useless for the operator.
+
+### Repository scope — the control that is not about the datastore at all
+
+🔴 **This repository is a general-purpose tool that may be published.** No operator's roster,
+institution name, account detail, balance, operator name, or machine name may appear in a tracked
+file. The roster lives in the gitignored `deployment/` directory;
+`docs/deployment-requirements.template.md` carries its shape.
+
+Two automated checks apply the rule at **two different scopes**, stated separately because they are
+not the same guarantee (AC-0.4):
+
+1. **Source and schema roots** — `tests/preferences/test_no_provider_identity.py`. No roster name
+   reaches the code. This is what a build regression trips.
+2. **Every commit being pushed** — `tests/preferences/check-no-personal-data.sh`, wired into
+   `.githooks/pre-push` and run from the suite. Over the *commits*, not the working tree.
+
+🔴 **The second is wider on purpose, and the reason is a real incident: the exposure this project
+actually had was documentation sitting in already-pushed history behind a clean tip** — which a
+worktree or tip-only check reports clean. Three doc paths reached a remote. The history was rewritten
+rather than accepted, because the repository was three pushed commits old and the cost never gets
+lower.
+
+**Matching is by explicit per-entry tokens from the roster config, on word boundaries — never by
+matching institution labels directly** (AC-0.3). Matching labels fails both ways: a label is the
+institution's own spelling, so a shortened token in code slips past a literal match, while tokenizing
+a label collides with unrelated legitimate text. 🔴 **A token that cannot match is worse than a missing
+one, because it still counts toward a reassuring total** — so tokens are validated at load and
+**rejected loudly**, never silently normalized into something unmatchable.
+
+🔴 **Both fail closed.** An unreadable token file, a rejected regex, a missing script — all abort.
+*A check whose only bad-news channel is the absence of output cannot report that it stopped checking.*
+The guard carries a positive control and a not-scanning-nothing assertion, because a scan over zero
+files passes forever.
+
+A checkout with no `deployment/` directory has no roster to leak and passes with a note — which is what
+makes the guard itself publishable.
+
+### Retention
+
+- **Raw responses: kept indefinitely** by default — the system of record for the rebuild guarantee.
+  *(Pruning is `docs/system-requirements.md` §9 open question 1.)*
+- **Transactions: never hard-deleted.** Removal is a soft delete with a timestamp (AC-2.2).
+- **Retiring an account or connection never deletes history** (AC-1.6, AC-6.5).
+- **Secrets: deleted on request** — `delete_datastore_key`, `delete_plaid_secret`.
+
+There is no automatic expiry anywhere. For a personal financial record, deletion is the loss mode, not
+the safety mode.
+
+### Regulatory
+
+🔴 **`regulatory: []` — and that is a recorded finding, not an unfilled field.** No regime binds a
+personal, single-user, read-only tool: this is not a financial institution (GLBA), it stores no card
+PANs (PCI-DSS), and it holds no health data. **The controls in this document are self-imposed, which
+makes them requirements rather than compliance.** Recorded so a later reader does not mistake absence
+for oversight.
+
+---
+
+## Data integrity — where this product's paranoia actually lives
+
+The aggregator is trusted as a *source* and distrusted as an *authority*. Controls:
+
+- **Verbatim bronze layer.** Every response persisted before normalization (AC-5.1), so a derivation
+  bug is a re-run rather than a re-fetch and lineage back to source is preserved.
+- **Constraints in the database, not only in code** — `typeof()` on money, `GLOB`/`LIKE` on dates and
+  instants, provenance CHECKs, partial unique indexes for idempotency. These survive a `sync shell`
+  session typing raw SQL, which a Python-side check does not.
+- **Sign normalization is the connector's job** — aggregators disagree with each other, and several
+  report a card balance as a positive amount owed (`data-model.md` § Constraints).
+- **Foreign-API verification before wrapping.** Vendor docs lag code and training data lags further;
+  the shape is read or probed, not assumed.
+
+🔴 **AC-10.6 — sandbox vs. production is an explicit config flag, logged loudly at every startup.**
+Inferring it from which credentials happen to be present was rejected as silent and easy to get wrong.
+**Syncing fixture data into the real datastore must be hard to do by accident** — and the reverse,
+real data into a test store, is the disclosure version of the same mistake.
+
+---
+
+## Abuse Prevention
+
+There are no untrusted users, so the realistic failures are **operator error, supply chain, and
+backup handling** — and pretending otherwise would be the over-engineering the template warns about.
+
+| Risk | Control |
+|---|---|
+| 🔴 **Backup leaves the machine in plaintext** | Page-level encryption makes a file copy ciphertext. This is the primary control in the whole document |
+| 🔴 **Datastore key lost** | Unrecoverable by design. Its own error type; the operational spec owns the remedy |
+| **Wrong environment** | Explicit flag, loud banner at every startup (AC-10.6) |
+| **Roster or identity pushed to a remote** | Fail-closed pre-push guard over commits, plus a source-root test |
+| **Secrets in shell history** | Secrets are set through the keychain seam, never passed as CLI arguments |
+| **Supply chain** | `uv.lock` pins the dependency graph. The aggregator SDK and `sqlcipher3-wheels` are the surfaces that matter |
+| **A tool that mutates** | Structurally impossible: `mode=ro` at the file handle, and no mutation tool exists |
+| **Cost/resource exhaustion by a caller** | ~500-row hard cap; aggregates computed in SQL |
+
+**Rate limiting: not applicable inbound** (no listener, one local caller). *Outbound* rate-limit
+errors from the aggregator are handled per connection as a degraded state, never as a crash (AC-4.1).
+
+**Input validation** applies at exactly two places, and both are unowned surfaces: the aggregator's
+responses, and manual-import files. 🔴 **Import adapters are verified against real exported sample
+files, not hand-written fixtures that encode our assumptions about the format** (AC-7.3).
+
+---
+
+## Verification
+
+Security properties that must stay checked by a test rather than by memory:
+
+| Property | Evidence |
+|---|---|
+| The datastore file is ciphertext | Known plaintext not recoverable from raw bytes; `SQLite format 3` magic absent (AC-ARCH.5) |
+| A wrong key raises rather than returning garbage | Verified 2026-09-05 |
+| WAL and shm are encrypted too | Verified 2026-09-05 |
+| A read-role handle cannot write, even after `query_only=OFF` | `tests/store/test_connection_norms.py` |
+| No roster identity in source or schema | `tests/preferences/test_no_provider_identity.py` |
+| No roster or operator identity in any pushed commit | `tests/preferences/check-no-personal-data.sh` + `.githooks/pre-push` |
+| Secrets never reach a log line | `tests/test_logging_setup.py` — token-shaped values, labelled credentials whatever their shape, exception messages, and an account number keeping only its last four; plus a negative control that ordinary prose survives |
+| The environment banner is loud in both sandbox and production | `tests/test_logging_setup.py` (AC-10.6) |
+| An unusable log directory does not take the process down | `tests/test_logging_setup.py` |
+| `.gitignore` covers data, logs, and credential paths | `tests/preferences/test_no_credentials_tracked.py` — `git check-ignore` over a representative of each AC-10.2 clause, plus a negative control that `.env.example` and `pyproject.toml` stay tracked (rules that ignored everything would pass the positive half) |
+| No tracked file carries a token-shaped string | Same file — a fresh `git ls-files` scanned for aggregator access-token prefixes, 64-hex datastore-key runs, and labelled credentials with a real value |
+
+**AC-10.2 is discharged.** The credential guard is deliberately a **separate check from
+`check-no-personal-data.sh`**, and neither subsumes the other: that script hunts *roster tokens*
+supplied by `deployment/`, so a stray secret matching no institution name walks past it; this one
+knows nothing about the roster and looks only at credential **shape**. A roster name is not
+token-shaped, and a leaked access token names no institution.
+
+🔴 **Its one exemption is a per-line declaration, not a skip list**, and the distinction is
+load-bearing. A skip list exempts a *file*, so the next real secret to land there is exempt too and
+nobody decides anything. The marker `credential-shape: test vector` exempts exactly one line, is
+written by hand, and appears in the diff of whoever adds it — so exempting a real credential is an
+act someone performs and a reviewer can see. It is used once today, on the redaction test's own
+fixtures, which must carry real credential shapes or they prove nothing. A test asserts the marker
+does not spill onto neighbouring lines; it caught that exact bug while being written.
+
+The MCP-surface controls (row caps, inventory) cannot be verified until build step 7 creates the
+surface.
