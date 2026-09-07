@@ -55,6 +55,7 @@ def statement_is_complete(sql: str) -> bool:
     """
     return bool(dbapi2.complete_statement(sql))
 
+
 #: The schema versions this build of the code understands. A datastore outside
 #: this range is refused, loudly, rather than served against.
 SUPPORTED_SCHEMA_VERSION: Final = 2

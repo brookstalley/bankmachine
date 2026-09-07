@@ -204,9 +204,9 @@ def test_a_write_is_still_refused_after_pragma_query_only_off(
     assert "error:" in out
     assert any(word in out.lower() for word in ("readonly", "read-only", "attempt to write"))
     with connection.reader(initialized_config) as conn:
-        present = conn.execute(
-            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'nope'"
-        ).fetchone()[0]
+        present = conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name = 'nope'").fetchone()[
+            0
+        ]
     assert present == 0
 
 
