@@ -47,7 +47,10 @@ src = ["src", "tests"]
 # does not contain, and the decision resting on it (`_preload_content=False`,
 # AC-5.1) would cite evidence that had been silently tidied.
 #
-# Scoped to the formatter only: `ruff check` still lints these files.
+# Scoped to the formatter rather than to `[tool.ruff]` because the formatter is the
+# only half that reaches Markdown at all: `ruff check` on a `.md` path reports
+# "No Python files found" and lints nothing (measured, ruff 0.16.6). Excluding
+# here says exactly what is true and nothing more.
 exclude = ["*.md"]
 
 [tool.ruff.lint]

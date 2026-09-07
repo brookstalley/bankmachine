@@ -180,6 +180,27 @@ scanner (extraction would edit three tests this bundle does not touch), the abse
 requirement for `store backup`, and `data-model.md` being a third uncompared description of
 the frozen DDL — a real drift risk that wants a construction of its own.
 
+**The PR reviewer then caught the scope trace.** `store backup` had no parent
+requirement anywhere: `docs/system-requirements.md` carries no backup criterion, and
+`project-state.yaml`'s `scope.later` said *"Multi-machine or backup-restore automation"* —
+which reads as deferring backup out of v1 entirely, in the bundle that ships it. The
+capability was properly reached and consumed; only the trace was missing. `scope.v1` now
+names the manual command and says why it is v1, and `later` is sharpened to the half that
+genuinely is deferred: scheduling, retention, and a rehearsed restore.
+
+It also measured a sentence in `pyproject.toml` that was simply false. The
+`[tool.ruff.format]` rationale said *"`ruff check` still lints these files"* — it does not:
+`ruff check` on a `.md` path reports "No Python files found" and lints nothing (confirmed
+against the 0.16.6 this commit pins). The exclude is right and load-bearing; the sentence
+explaining *why it is scoped to the formatter* was wrong, which is the sentence a reader
+checks first. Replaced with the measured reason.
+
+And three deferrals that existed only as prose are now filed — `#10` (schedule the backup,
+rehearse the restore), `#11` (`data-model.md` is a third uncompared description of the
+frozen DDL), `#12` (`verify_norms_go_red` does not know the three newest norms). The § Owed
+table claimed its gaps were "filed rather than rediscovered" while the highest-value one
+had no item; it now cites them.
+
 **Still open, and named rather than quietly carried:** nothing *schedules* the backup, and
 the key is still backed up by hand — the command cannot do that half without defeating the
 keychain. Restore has no runbook and has not been rehearsed end to end by a human.

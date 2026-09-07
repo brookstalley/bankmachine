@@ -289,10 +289,11 @@ code; each is work the build sequence has not reached, except the first.
 
 | Gap | Why it matters |
 |---|---|
-| **Backup is not scheduled** | `store backup` exists and is verified, but nothing runs it. The remaining half of the gap: a backup command nobody invokes protects nothing. Wiring it into the same launchd agent as the sync is the obvious answer and is not yet specified |
+| **Backup is not scheduled** (`#10`) | `store backup` exists and is verified, but nothing runs it. A backup command nobody invokes protects nothing. Wiring it into the same launchd agent as the sync is the obvious answer and is not yet specified |
+| **Restore has never been rehearsed** (`#10`) | The copy is known readable — the tests reopen it through the ordinary reader. The operator procedure around it is not. This is the procedure someone improvises under pressure against data that trying again cannot recover |
 | **The key is still backed up by hand** | The command cannot do this — writing the datastore key anywhere the product controls would defeat the keychain. It stays an operator instruction, and it is the half with no remedy |
 | **AC-ARCH.1 is not an automated test** | "A fresh clone works on a clean machine" is asserted, not checked, and it decays silently with every undocumented step someone adds |
 | **launchd agent not built** (step 8) | Including the missed-window recovery case, which must be verified by firing it for real rather than simulated |
-| **No runbooks** | See above |
+| **No runbooks** (`#10` covers restore) | See above |
 | **Log rotation unspecified** | Low stakes — local files, trivial volume — but unbounded |
 | **Raw-response retention undecided** | `docs/system-requirements.md` §9 open question 1; the recommendation is to keep indefinitely |
