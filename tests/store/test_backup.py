@@ -22,9 +22,11 @@ from sqlalchemy import insert
 
 from bankmachine.config import Config
 from bankmachine.secrets import get_datastore_key
+from bankmachine.store import backup as backup_module
 from bankmachine.store import connection
 from bankmachine.store.backup import (
     BackupDestinationExistsError,
+    BackupDestinationUnusableError,
     BackupUnverifiedError,
     back_up,
 )
@@ -132,34 +134,70 @@ def test_it_refuses_an_existing_destination(initialized_config: Config, tmp_path
     assert destination.read_bytes() == b"an earlier backup", "an existing backup was overwritten"
 
 
-def test_it_refuses_a_destination_directory_that_does_not_exist(
+def test_a_missing_destination_directory_is_reported_as_unusable_not_as_existing(
     initialized_config: Config, tmp_path: Path
 ) -> None:
+    """The two refusals are different errors because the remedies are opposite.
+
+    "Already exists" means pick another path; "unusable" means the path you
+    picked has no directory. Reporting the second as the first sends the
+    operator looking for a file that is not there.
+    """
     destination = tmp_path / "nope" / "backup.db"
-    with pytest.raises(BackupDestinationExistsError):
+    with pytest.raises(BackupDestinationUnusableError):
         back_up(initialized_config, destination)
     assert not destination.exists()
 
 
-def test_it_leaves_no_zero_byte_file_when_it_cannot_write(
-    initialized_config: Config, tmp_path: Path
+def test_it_removes_the_zero_byte_file_a_failed_vacuum_leaves_behind(
+    initialized_config: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The hazard this command exists to avoid producing.
+    """The measured hazard, reproduced in a directory that CAN be written to.
 
-    A read-role handle fails VACUUM INTO with SQLITE_READONLY *and leaves a
-    zero-byte destination behind* -- a file indistinguishable from a backup
-    until the day it is needed. Whatever the failure, no file may be left.
+    This is the case that matters and the earlier version of this test could not
+    reach it: asserting `not destination.exists()` inside a chmod-0o500
+    directory is true before `back_up` runs, so it held no matter what the code
+    did. Here the directory is writable, so a leftover file is genuinely
+    possible -- and swapping the writer factory for the read-role one reproduces
+    the exact measured failure the module docstring records: VACUUM INTO fails
+    SQLITE_READONLY and leaves a zero-byte destination.
+
+    A zero-byte file is indistinguishable from a backup until the day it is
+    needed, so the module must remove it rather than trusting the driver to.
     """
-    unwritable = tmp_path / "locked"
-    unwritable.mkdir()
-    unwritable.chmod(0o500)
-    destination = unwritable / "backup.db"
-    try:
-        with pytest.raises(StoreError):
-            back_up(initialized_config, destination)
-        assert not destination.exists(), "a failed backup left a file that looks like one"
-    finally:
-        unwritable.chmod(0o700)
+    monkeypatch.setattr(connection, "writer", connection.reader)
+    destination = tmp_path / "backup.db"
+
+    with pytest.raises(StoreError):
+        back_up(initialized_config, destination)
+
+    assert not destination.exists(), (
+        "a failed backup left a file behind -- it is zero bytes and looks like a backup"
+    )
+
+
+def test_the_failure_reproduces_the_debris_when_the_module_does_not_clean_up(
+    initialized_config: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The negative control for the test above.
+
+    Without this, `test_it_removes_the_zero_byte_file...` would pass just as
+    happily if VACUUM INTO had quietly stopped leaving debris -- and the unlink
+    it exists to pin would be protecting nothing. Neutralize the cleanup and the
+    zero-byte file must appear, which is what proves there was something to
+    clean up.
+    """
+    monkeypatch.setattr(connection, "writer", connection.reader)
+    monkeypatch.setattr(backup_module, "_discard", lambda destination: "left in place.")
+    destination = tmp_path / "backup.db"
+
+    with pytest.raises(StoreError):
+        back_up(initialized_config, destination)
+
+    assert destination.exists() and destination.stat().st_size == 0, (
+        "the driver no longer leaves a zero-byte file, so the cleanup this module "
+        "performs is no longer pinned by the test above -- re-derive the hazard"
+    )
 
 
 def test_a_backup_is_itself_backup_able(initialized_config: Config, tmp_path: Path) -> None:

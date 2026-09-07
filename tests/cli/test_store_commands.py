@@ -201,3 +201,73 @@ def test_rebuild_names_an_accepted_change_as_unexplained(
     assert run(["store", "rebuild", "--accept-content-change"]) == 0
 
     assert "CHANGED at an unchanged derivation version, accepted" in capsys.readouterr().out
+
+
+def test_backup_writes_a_verified_copy_and_reports_it(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run(["store", "init"]) == 0
+    capsys.readouterr()
+    destination = cli_env.datastore_path.parent / "backup.db"
+
+    exit_code = run(["store", "backup", str(destination)])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert destination.exists()
+    assert f"backup:          {destination}" in out
+    assert f"schema version:  {SUPPORTED_SCHEMA_VERSION}" in out
+    assert "verified:        yes" in out
+
+
+def test_backup_warns_that_the_copy_is_useless_without_the_key(
+    cli_env: Config, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The one thing an operator must not miss.
+
+    The datastore key has no other source -- an aggregator secret can be re-read
+    from the vendor's dashboard, this cannot be re-read from anywhere. A copy
+    without it is noise that looks like a backup, so the warning is
+    unconditional rather than something the operator has to ask for.
+    """
+    assert run(["store", "init"]) == 0
+    destination = cli_env.datastore_path.parent / "backup.db"
+
+    with caplog.at_level("WARNING", logger="bankmachine"):
+        assert run(["store", "backup", str(destination)]) == 0
+
+    warnings = "\n".join(r.getMessage() for r in caplog.records if r.levelname == "WARNING")
+    assert "USELESS WITHOUT THE DATASTORE KEY" in warnings
+    assert cli_env.keychain_service in warnings
+
+
+def test_backup_refuses_an_existing_destination_with_exit_2(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert run(["store", "init"]) == 0
+    destination = cli_env.datastore_path.parent / "backup.db"
+    destination.write_bytes(b"an earlier backup")
+    capsys.readouterr()
+
+    exit_code = run(["store", "backup", str(destination)])
+    err = capsys.readouterr().err
+
+    # EXIT_ERROR, not EXIT_UNHEALTHY: the command could not run. launchd reads
+    # this distinction, so it is asserted rather than assumed.
+    assert exit_code == 2
+    assert "never overwrites a backup" in err
+    assert destination.read_bytes() == b"an earlier backup"
+
+
+def test_backup_reports_a_missing_datastore_rather_than_creating_one(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    destination = cli_env.datastore_path.parent / "backup.db"
+
+    exit_code = run(["store", "backup", str(destination)])
+    err = capsys.readouterr().err
+
+    assert exit_code == 2
+    assert "no datastore at" in err
+    assert not destination.exists()
+    assert not cli_env.datastore_path.exists()

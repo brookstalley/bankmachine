@@ -108,6 +108,61 @@ nothing outside `connector/` imports a network transport — verified red by pla
 `httpx` import, then green. Its limit is recorded in the norm rather than left implied: it
 cannot see a subprocess shelling out to `curl`, nor a dependency phoning home.
 
+**What the cumulative Critic caught, and it was worth the round.** 0 blocking, 14 warnings,
+8 notes across three reviewers, who converged independently on one theme: `store backup`
+shipped ahead of its own governance. The fixes, in this same bundle:
+
+🔴 **A test that could not fail.** `test_it_leaves_no_zero_byte_file_when_it_cannot_write`
+chmod'd the parent to `0o500` and then asserted the destination did not exist — true
+*before* `back_up` ran, in a directory nothing can create a file in. Worse, the guarantee
+it claimed to check was **inherited from `VACUUM INTO`**, not enforced by this module,
+whose own docstring records a measured failure that leaves a zero-byte file. Both halves
+are fixed: the failure path now unlinks the destination itself, and the test reproduces
+the real hazard in a *writable* directory by swapping the writer factory for the read-role
+one. A negative control neutralizes the cleanup and confirms the driver genuinely does
+leave debris — so the unlink is pinned rather than decorative. This is exactly the
+vacuous-fixture failure the test-evidence prompt names, written by the same hand that
+quoted it.
+
+🔴 **The credential guard exempted its own file.** `if path == Path(__file__): continue` —
+a file-level skip list, in the module whose docstring argues against file-level skip lists,
+covering the one file where a credential-shaped literal looks normal to a reviewer. It now
+scans itself and declares its own vectors per line, like any other file.
+
+**`BackupDestinationExistsError` was raised for a missing parent directory** — a misnomer
+that sends the operator looking for a file that is not there. Split into
+`BackupDestinationUnusableError`; the remedies are opposite.
+
+**`store backup` was graded `stable` on the day it was written**, against the inventory's
+own criterion (*shipped and depended on*), while mid-build `connector` commands sat at
+`experimental` — and the `Retention:` rule defers removal of a stable member to a major.
+Now `experimental`, with the reasoning recorded.
+
+**The append-only norm claimed `Test` for a mechanism that does not enforce it.** A
+composite primary key rejects a duplicate INSERT but permits `UPDATE`, `DELETE` and upsert
+— and AC-2.4's idempotency requirement is precisely what will tempt the sync writer toward
+`ON CONFLICT DO UPDATE`. Recorded `Critic` with the partial structure named, matching the
+discipline the same bundle applied to the source-overwrite and hard-delete norms. Claiming
+`Test` would have had the janitor sweep read it as machine-checked, and the guard for the
+one series no re-sync can rebuild would never have been written.
+
+**Two coherence defects in the records themselves:** `project-state.yaml` asserted the new
+artifacts declare no `## Direction` section thirty lines above a registry saying the 17
+norms are homed in those sections; and `operational-spec.md` re-homed architecture.md's
+implicit-creation norm while both files recorded that nothing was restated. One rule now
+has one home — operational-spec keeps the backup half and cites architecture for the
+datastore half. `architecture.md`'s canonical command table, which declares itself
+canonical precisely so a command set is not restated in four places, has regained the three
+commands it was missing.
+
+Also added: the `store backup` CLI surface had no test at all (four now), and the backup
+path wrote no log record, so an unattended failure left only an exit code.
+
+**Accepted rather than fixed**, recorded as dispositions: the fourth copy of the AST import
+scanner (extraction would edit three tests this bundle does not touch), the absent parent
+requirement for `store backup`, and `data-model.md` being a third uncompared description of
+the frozen DDL — a real drift risk that wants a construction of its own.
+
 **Still open, and named rather than quietly carried:** nothing *schedules* the backup, and
 the key is still backed up by hand — the command cannot do that half without defeating the
 keychain. Restore has no runbook and has not been rehearsed end to end by a human.

@@ -164,6 +164,9 @@ contact.
   | `store init` | writer | step 1 — the sole creator of the datastore |
   | `store status` | reader | step 1 |
   | `store rebuild` | writer | step 1 — rebuilds normalized tables from raw (AC-5.2) |
+  | `store backup` | writer | 2026-09-07 — verified single-file encrypted copy, under the lock |
+  | `connector check` | reader (network) | step 2 |
+  | `connector set-secret` | none — keychain only | step 2 |
   | `sync shell` | reader — no writer shell (see `boundary-patterns.md`, Operator SQL Surface) | step 1 (AC-ARCH.6) |
   | `enroll` | writer | step 3 |
   | `repair` | writer | step 6 |

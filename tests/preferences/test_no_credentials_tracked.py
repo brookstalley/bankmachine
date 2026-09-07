@@ -14,6 +14,14 @@ SCOPE: tracked files, from a fresh `git ls-files`, as AC-10.2 words it. Not the
 working tree -- an untracked scratch file holding a token is not a leak, and
 including them would make the check noisy enough to be turned off.
 
+NO FILE IS EXEMPT, INCLUDING THIS ONE. An earlier version skipped itself -- the
+file carrying the patterns "cannot scan itself" -- which made the repository's
+credential guard the one place it never looked, and that is precisely the file
+skip list the marker below exists to avoid. It is also the file where a
+credential-shaped literal looks normal to a reviewer, so someone debugging a
+pattern by pasting in a real token is a plausible path rather than an exotic
+one. This file declares its own vectors per line, like any other file must.
+
 FAILING CLOSED: every error path fails the test. A guard whose only bad-news
 channel is the absence of output cannot report that it stopped guarding, which
 is the rule `check-no-personal-data.sh` already states and this file inherits.
@@ -188,8 +196,6 @@ def test_the_ignore_rules_are_not_swallowing_tracked_files(candidate: str) -> No
 def test_no_tracked_file_carries_a_token_shaped_string() -> None:
     offenders: list[str] = []
     for path in _tracked_text_files():
-        if path == Path(__file__):
-            continue  # the file carrying the patterns cannot scan itself
         text = _read(path)
         if text is None:
             continue
@@ -207,8 +213,10 @@ def test_the_scan_can_actually_find_each_shape() -> None:
     """The positive control. A scan that has never matched is not known to work."""
     planted = "\n".join(
         (
+            # credential-shape: test vector
             "access_token = access-sandbox-11112222-3333-4444-5555-666677778888",
             "datastore key: " + "9f" * 32,
+            # credential-shape: test vector
             'client_secret = "s3cr3tvalue_that_is_long"',
         )
     )
@@ -231,6 +239,7 @@ def test_the_declaration_marker_exempts_one_line_and_only_that_line() -> None:
     list this design refuses -- silently, and with the comment still claiming
     otherwise.
     """
+    # credential-shape: test vector
     token = "access-sandbox-11112222-3333-4444-5555-666677778888"
     assert not _findings(f"{token}  # credential-shape: test vector", REPO_ROOT / "x.py")
     assert not _findings(f"# credential-shape: test vector\n{token}", REPO_ROOT / "x.py")

@@ -24,8 +24,9 @@ rather than of timing.
 WHAT THE COPY IS
 
 A single file. `VACUUM INTO` folds the WAL's contents into it, so the copy needs
-no `-wal` or `-shm` companion -- measured against a source holding a 2 MB hot
-WAL, whose 501 rows all appear in a 16 KB copy. That is what makes this better
+no `-wal` or `-shm` companion -- measured in `tests/store/test_backup.py`
+against a source holding a 2 MB hot WAL, whose 300 rows all appear in the copy
+while a plain `cp` of `store.db` is short of them. That is what makes this better
 than `cp`: copying `store.db` alone silently loses everything still in the WAL,
 and copying all three files is only consistent if nothing is mid-commit.
 
@@ -47,12 +48,25 @@ from pathlib import Path
 import sqlcipher3.dbapi2 as dbapi2
 
 from bankmachine.config import Config
+from bankmachine.logging_setup import get_logger
 from bankmachine.store import connection
 from bankmachine.store.connection import StoreError
+
+logger = get_logger("store.backup")
 
 
 class BackupDestinationExistsError(StoreError):
     """The destination is already there. This command never overwrites a backup."""
+
+
+class BackupDestinationUnusableError(StoreError):
+    """The destination path cannot be written to -- its parent is not a directory.
+
+    Distinct from `BackupDestinationExistsError` because the operator's next move
+    is the opposite one: that error means "pick another path", this one means
+    "the path you picked has no directory". Reporting a missing directory as an
+    existing file sends them looking for a file that is not there.
+    """
 
 
 class BackupNotWrittenError(StoreError):
@@ -85,6 +99,25 @@ class BackupReport:
     source_path: Path
 
 
+def _discard(destination: Path) -> str:
+    """Remove a failed copy, and report what was actually there.
+
+    Returns a sentence for the error message rather than a bool: "no partial
+    file was left behind" and "a partial file was removed" are different facts
+    about the run, and asserting the first when the second happened is the kind
+    of confident wrongness this product is built against.
+    """
+    try:
+        size = destination.stat().st_size
+    except OSError:
+        return "No partial file was left behind."
+    try:
+        destination.unlink()
+    except OSError:  # pragma: no cover - the directory would have to change mid-run
+        return f"A partial file of {size} bytes REMAINS at {destination} and is not a backup."
+    return f"A partial file of {size} bytes was written and has been removed."
+
+
 def back_up(config: Config, destination: Path) -> BackupReport:
     """Write a verified, consistent, encrypted copy of the datastore.
 
@@ -99,12 +132,13 @@ def back_up(config: Config, destination: Path) -> BackupReport:
             f"Choose another path, or move the existing file aside"
         )
     if not destination.parent.is_dir():
-        raise BackupDestinationExistsError(
+        raise BackupDestinationUnusableError(
             f"{destination.parent} is not a directory -- nothing creates a backup "
             f"directory implicitly, for the same reason nothing creates a datastore "
             f"implicitly: a typo'd path must be reported, not populated"
         )
 
+    logger.info("backup starting: %s -> %s", config.datastore_path, destination)
     with connection.writer(config) as conn:
         try:
             # A bound parameter, not an f-string: a destination path is operator
@@ -112,14 +146,18 @@ def back_up(config: Config, destination: Path) -> BackupReport:
             # make that a syntax error at best.
             conn.execute("VACUUM INTO ?", (str(destination),))
         except dbapi2.DatabaseError as exc:
-            # The destination is checked for existence above, so what reaches
-            # here is a filesystem refusal: an unwritable directory, a full
-            # disk, a path that is not a file. `VACUUM INTO` cleans up after
-            # itself on this path -- measured: no partial file is left -- but
-            # say so rather than leaving the operator to wonder.
+            # Remove any partial or zero-byte destination BEFORE raising, rather
+            # than trusting the driver to have cleaned up. `VACUUM INTO` does
+            # tidy after itself on the paths measured here -- but it demonstrably
+            # does NOT on all of them: from a read-role handle it fails
+            # `SQLITE_READONLY` and leaves a zero-byte file (see the module
+            # docstring). A zero-byte file is indistinguishable from a backup
+            # until the day it is needed, so the guarantee has to be enforced by
+            # this module rather than inherited from the driver's good behaviour.
+            leftover = _discard(destination)
             raise BackupNotWrittenError(
-                f"could not write the copy to {destination} ({exc}). No partial file "
-                f"was left behind; the datastore itself is untouched"
+                f"could not write the copy to {destination} ({exc}). "
+                f"{leftover} The datastore itself is untouched"
             ) from exc
 
     return _verify(config, destination)
@@ -162,9 +200,18 @@ def _verify(config: Config, destination: Path) -> BackupReport:
             f"It is still on disk and is NOT a usable backup"
         )
 
-    return BackupReport(
+    report = BackupReport(
         destination=destination,
         bytes_written=destination.stat().st_size,
         schema_version=version,
         source_path=config.datastore_path,
     )
+    # An unattended run leaves only an exit code otherwise, and the log
+    # directory is the one place an operator can ask what was taken and when.
+    logger.info(
+        "backup verified: %s (%d bytes, schema version %d)",
+        report.destination,
+        report.bytes_written,
+        report.schema_version,
+    )
+    return report

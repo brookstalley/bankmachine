@@ -130,7 +130,7 @@ The product's headline goal is not "answer the question" but "answer it, or say 
 
 | Command | Purpose | Mutating |
 |---|---|---|
-| `store init` | Create the encrypted datastore and run migrations | yes — 🔴 the **only** implicit-creation path, with the migration runner |
+| `store init` | Create the encrypted datastore and run migrations | yes — 🔴 the **only explicit creator**, with the migration runner; everything else opens a file that must already exist |
 | `store status` | Report the datastore's state without changing it | no |
 | `store rebuild` | Re-derive the silver layer from raw responses at a recorded derivation version (AC-5.2) | yes |
 | `store backup` | Write a verified, consistent, encrypted single-file copy under the writer lock | 🔴 writes only to the **destination**; the datastore is untouched |
@@ -317,7 +317,7 @@ about code that does not exist:
 - `bankmachine store init` — stable
 - `bankmachine store status` — stable
 - `bankmachine store rebuild` — stable
-- `bankmachine store backup` — stable
+- `bankmachine store backup` — experimental
 - `bankmachine sync shell` — stable
 - `bankmachine connector check` — experimental
 - `bankmachine connector set-secret` — experimental
@@ -326,7 +326,12 @@ about code that does not exist:
 - exit codes `0` / `1` / `2` — stable
 
 The `connector` commands are `experimental` because the connector is mid-build (step 2) and its
-command shape may still move; `store` and `sync shell` shipped in step 1 and are depended on.
+command shape may still move; `store init`/`status`/`rebuild` and `sync shell` shipped in step 1 and
+are depended on. 🔴 **`store backup` is `experimental` despite being a `store` command**, because
+the inventory's criterion is *shipped and depended on*, not *which noun it starts with* — it was
+written on 2026-09-07, nothing schedules it yet, and its restore path has never been rehearsed. The
+`Retention:` rule defers removal of a `stable` member to a major, so grading a day-old command
+`stable` would bind the surface to a shape nobody has used in anger.
 
 **Internal, explicitly not contract:** every `bankmachine.*` Python module. This is an application, not
 a library — importing it is not a supported use.

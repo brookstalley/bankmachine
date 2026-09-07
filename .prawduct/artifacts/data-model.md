@@ -94,9 +94,13 @@ nothing to migrate or grandfather.
   overwritten.**
   Why: no aggregator backfills a balance series, so a day not captured is a day gone for good, and a
   day overwritten is a day rewritten by whatever time someone happened to look. The composite primary
-  key **is the append rule made structural** — a second capture on a recorded day is rejected rather
-  than allowed to win, which also makes a re-run a no-op (AC-2.4). This is the one class of data in
-  the product that no re-sync can reconstruct.
+  key carries the *insert* half — a second capture on a recorded day is rejected rather than allowed
+  to win, which also makes a re-run a no-op (AC-2.4). 🔴 **It does not carry the whole rule:** a
+  primary key permits `UPDATE`, `DELETE` and upsert, and AC-2.4's idempotency requirement is exactly
+  what will tempt the sync writer toward `ON CONFLICT DO UPDATE`. Until a `BEFORE UPDATE/DELETE`
+  trigger exists, the rest of this norm is judgment, and the Enforcement row says so rather than
+  claiming a guarantee the schema does not give. This is the one class of data in the product that
+  no re-sync can reconstruct.
   Status: steady-state.
 
 - **A source value is never overwritten in place; local interpretation lives in its own column.**

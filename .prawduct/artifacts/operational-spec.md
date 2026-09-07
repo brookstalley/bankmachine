@@ -2,6 +2,8 @@
 artifact: operational-spec
 version: 1
 depends_on:
+  - artifact: architecture
+    file_path: .prawduct/artifacts/architecture.md
   - artifact: nonfunctional-requirements
     file_path: .prawduct/artifacts/nonfunctional-requirements.md
   - artifact: security-model
@@ -38,14 +40,14 @@ Norms. These bind future work; departure is a recorded decision, never silent
   and it is what lets sandbox and production be separate files rather than separate ceremonies.
   Status: steady-state.
 
-- **Nothing brings a datastore, or a backup, into existence implicitly.** Only an explicit
-  `store init` and the migration runner may create a datastore; `store backup` refuses an existing
-  destination and refuses a destination directory that is not there.
-  Why: a plain connect to a missing path silently creates an empty encrypted database *(measured)*,
-  and under a configurable path a typo would then answer every question confidently from nothing.
-  The backup half is the same rule pointed at a different hazard: a command that creates directories
-  on request will eventually write a backup to a path nobody meant, and one that overwrites will
-  eventually overwrite the only good copy. **A typo'd path must be reported, not populated.**
+- **A backup destination is never created implicitly and never overwritten.** `store backup`
+  refuses an existing destination, and refuses a destination whose parent directory is not there.
+  Why: this is `architecture.md` § Direction's *no component creates the datastore implicitly*
+  pointed at a second hazard, and the datastore half stays homed there rather than being restated
+  here. A command that creates directories on request will eventually write a backup to a path
+  nobody meant, and one that overwrites will eventually overwrite the only good copy — which, for
+  the one series no re-sync can rebuild, is the whole loss. **A typo'd path must be reported, not
+  populated.**
   Status: steady-state.
 
 ---
@@ -176,10 +178,15 @@ command's own test asserts that gap, so the guarantee is checked rather than cla
    `integrity_check`. 🔴 *An unverified backup is a belief about a file, and the whole point of the
    file is the day the belief gets tested.*
 4. **Never overwrites.** An existing destination is refused by name.
-5. **Leaves no debris on failure.** This matters more than it sounds: taking the copy from a
+5. **Removes its own debris on failure.** This matters more than it sounds: taking the copy from a
    *read-role* handle fails and leaves a **zero-byte file** behind *(measured)* — a file
    indistinguishable from a backup until the day it is needed. That hazard is why the command is a
-   writer-role operation, and a test asserts no file survives a failed run.
+   writer-role operation, and why the failure path **unlinks the destination itself** rather than
+   trusting `VACUUM INTO` to have tidied up: the guarantee is enforced here, not inherited. The
+   error message says which happened — *no partial file was left* and *a partial file was removed*
+   are different facts about the run. A test reproduces the measured hazard in a writable directory
+   and asserts the file is gone, with a negative control that neutralizes the cleanup and confirms
+   the driver really does leave one.
 
 🔴 **The copy is ciphertext** — AC-ARCH.5's page-level AES-256 with the header encrypted, so it
 leaves the machine as ciphertext with no export step. FileVault does not cover a backup; this does.

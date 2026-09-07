@@ -807,9 +807,9 @@ artifact_manifest:
 
     # The strategy-class set, authored 2026-09-06 in dependency order (data model -> NFRs ->
     # security -> API contract -> observability -> operational spec). Reconciled from
-    # docs/system-requirements.md and the shipped schema, not interviewed. None declares a
-    # `## Direction` section: norm birth is an owner-ratification decision taken through
-    # /prawduct:doctor, never a side effect of authoring.
+    # docs/system-requirements.md and the shipped schema, not interviewed. Four of them
+    # (data-model, security-model, api-contract, operational-spec) now home ratified norms
+    # in their `## Direction` sections -- see the NORM REGISTRY block below.
     - name: "Data model"
       file_path: .prawduct/artifacts/data-model.md
       version: 1
