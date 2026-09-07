@@ -333,10 +333,12 @@ Probed live against sandbox 2026-09-07, which is what settled the enrollment des
 AC-1.1's "prints a hosted enrollment URL" needs no local web server: the operator opens the URL,
 and the CLI polls for the result.
 
-🔴 **`hosted_link_url` is discarded by the current client.** `LinkToken` carries `token`,
-`expires_at` and `requested_history_days` only, and `link_token_create` does not send `hosted_link`
-at all — so AC-1.1 was unreachable before this chunk, which is not what "the client half exists"
-suggested.
+🔴 **`hosted_link_url` WAS discarded by the client before this chunk.** `LinkToken` carried
+`token`, `expires_at` and `requested_history_days` only, and `link_token_create` did not send
+`hosted_link` at all — so AC-1.1 was unreachable, which is not what "the client half exists"
+suggested. Both were fixed in the same chunk. `LinkToken.hosted_link_url` carries it now, and the
+lifetime sent with the request is the caller's own wait, so the URL cannot outlive the poll watching
+for it.
 
 **`/link/token/get` on an unfinished session omits `link_sessions` entirely.** Measured keys:
 `created_at`, `expiration`, `link_token`, `metadata`, `request_id`. `link_sessions` is **absent**,

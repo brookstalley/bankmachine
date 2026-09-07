@@ -20,11 +20,13 @@ import pytest
 
 from bankmachine.cli import connections as connections_module
 from bankmachine.cli import run
+from bankmachine.cli.enroll import MIN_HOSTED_WAIT_SECONDS
 from bankmachine.config import Config
 from bankmachine.connector import (
     ITEM_GET,
     ITEM_REMOVE,
     AccessGrant,
+    Endpoint,
     FetchedResponse,
     LinkSession,
     LinkToken,
@@ -486,7 +488,10 @@ def test_the_command_polls_until_the_operator_finishes(
 
 
 def test_an_abandoned_session_exits_one_and_names_the_session(
-    cli_env: Config, offline_client: type[FakeClient], capsys: pytest.CaptureFixture[str]
+    cli_env: Config,
+    offline_client: type[FakeClient],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Not a fault: nothing is wrong, the operator walked away.
 
@@ -494,8 +499,15 @@ def test_an_abandoned_session_exits_one_and_names_the_session(
     to run the command again, and the message says so.
     """
     FakeClient.polls_before_finished = 10_000
+    # The clock is driven rather than waited on. `--timeout` cannot be 0 any more
+    # -- it is the hosted URL's lifetime, so a zero would be a URL nobody could
+    # use -- and spinning until a real 30s elapsed would make this test take 30
+    # seconds to assert a branch. Advancing the monotonic clock past the deadline
+    # exercises exactly the comparison the loop makes.
+    clock = iter([0.0, 0.0, 10_000.0])
+    monkeypatch.setattr("bankmachine.cli.enroll.time.monotonic", lambda: next(clock))
 
-    assert run(["enroll", "--yes", "--timeout", "0"]) == 1
+    assert run(["enroll", "--yes", "--timeout", str(MIN_HOSTED_WAIT_SECONDS)]) == 1
 
     err = capsys.readouterr().err
     assert "session-1" in err
@@ -1001,17 +1013,50 @@ def test_a_failed_release_of_the_superseded_item_is_reported_not_swallowed(
     assert "may still be billing" in capsys.readouterr().err
 
 
-def test_an_item_removal_is_never_retried(cli_env: Config) -> None:
-    """A retry cannot double-remove, but it can turn a success into ITEM_NOT_FOUND.
+def test_every_endpoint_declares_both_of_its_risk_properties_deliberately() -> None:
+    """🔴 Derived from the module, so the NEXT endpoint fails in the commit that adds it.
 
-    That matters because removal runs on paths where the operator is being told
-    something worked -- a removal reporting failure after succeeding sends
-    someone to the aggregator's dashboard to fix what is already fixed.
+    A hand-written pair of assertions per endpoint is the construction this test
+    replaces: it is an enumeration standing in for a property, correct on the day
+    it is written and silently incomplete from the first endpoint nobody
+    remembers to add. Walking `bankmachine.connector`'s own namespace means an
+    endpoint that is neither listed here nor deliberately exempted breaks this
+    test rather than shipping with whatever the defaults happened to be.
+
+    Both properties matter and they are independent. `retry_safe` asks whether the
+    far end can absorb the call twice; `issues_credential` asks whether its body
+    may reach the append-only archive.
     """
-    assert not ITEM_REMOVE.retry_safe
-    # The mirror half: a pure read IS retried, so the flag is a discrimination
-    # rather than a decoration.
-    assert ITEM_GET.retry_safe
+    import bankmachine.connector as boundary
+
+    endpoints = {
+        name: value
+        for name, value in vars(boundary).items()
+        if isinstance(value, Endpoint)
+    }
+    assert endpoints, "the walk found nothing, so it would pass whatever the module held"
+
+    #: Every endpoint that may NOT be retried, with the reason it cannot be.
+    not_retryable = {
+        # Spends a single-use token and mints a durable Item; a retry mints two.
+        "ITEM_PUBLIC_TOKEN_EXCHANGE",
+        # A retry cannot double-remove, but it can turn a success into a spurious
+        # ITEM_NOT_FOUND -- on paths where the operator is being told something
+        # worked, which sends them to fix what is already fixed.
+        "ITEM_REMOVE",
+    }
+    #: Every endpoint whose response body carries a credential.
+    credential_bearing = {"LINK_TOKEN_CREATE", "LINK_TOKEN_GET", "ITEM_PUBLIC_TOKEN_EXCHANGE"}
+
+    for name, endpoint in endpoints.items():
+        assert endpoint.retry_safe is (name not in not_retryable), (
+            f"{name}.retry_safe disagrees with this test's record of why it is safe "
+            f"to repeat. Decide it deliberately and say so here"
+        )
+        assert endpoint.issues_credential is (name in credential_bearing), (
+            f"{name}.issues_credential disagrees with this test's record of whether its "
+            f"body carries a credential. An endpoint wrongly marked False can be archived"
+        )
 
 
 def test_the_url_lifetime_is_the_wait_not_a_second_number(
@@ -1029,3 +1074,99 @@ def test_the_url_lifetime_is_the_wait_not_a_second_number(
 
     request = FakeClient.instances[0].hosted_lifetime
     assert request == 120, "the URL can outlive the wait, which orphans an Item"
+
+
+def test_an_unreadable_credential_does_not_collapse_a_cap_refusal_to_two(
+    cli_env: Config, offline_client: type[FakeClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 The consequence is two modules away from the cause.
+
+    `release_at_aggregator` promises never to raise. When it caught only
+    `AccessTokenMissingError`, a plain `SecretsError` from a locked keychain
+    escaped -- and on the cap-race path it escaped from inside the `except
+    ConnectionCapReachedError` arm, pre-empting the pending refusal before its
+    `raise`. The cap then exited 2 instead of 1: a full roster reported as a
+    broken install, which is the collapse the api-contract norm calls
+    non-collapsible.
+    """
+    monkeypatch.setenv("BANKMACHINE_CONNECTION_CAP", "1")
+    assert run(["enroll", "--yes"]) == 0
+
+    def locked(*args: Any, **kwargs: Any) -> None:
+        raise SecretsError("the keychain is locked")
+
+    monkeypatch.setattr("bankmachine.cli.connections.get_access_token", locked)
+    _blind_the_preflight_only(monkeypatch)
+    FakeClient.item_id, FakeClient.institution_id = "item-raced", "ins_second"
+
+    assert run(["enroll", "--yes"]) == 1, (
+        "an unreadable credential turned a full roster into 'could not run'"
+    )
+
+
+def test_an_unreadable_credential_leaves_retirement_standing_and_says_so(
+    cli_env: Config,
+    offline_client: type[FakeClient],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The same arm on the retirement path: reported, never raised.
+
+    The local retirement has already committed by then, so raising would leave
+    the operator's decision half-applied with no message explaining it.
+    """
+    assert run(["enroll", "--yes"]) == 0
+
+    def locked(*args: Any, **kwargs: Any) -> None:
+        raise SecretsError("the keychain is locked")
+
+    monkeypatch.setattr("bankmachine.cli.connections.get_access_token", locked)
+
+    assert run(["connections", "retire", "1"]) == 1
+
+    assert _rows(cli_env, connections)[0]._mapping["retired_at"] is not None
+    assert "may still be billing" in capsys.readouterr().out
+
+
+def test_a_production_length_item_id_is_redacted_from_the_log(
+    cli_env: Config, offline_client: type[FakeClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 The trap that makes a fixture-length id prove the wrong thing.
+
+    The formatter blanks any opaque run of 32+ characters. A real aggregator item
+    id is around 37 and is therefore redacted; this file's fixture id is 19 and
+    is not. So a log assertion written against the fixture would pass over a
+    production line reading `[REDACTED]` -- which is why the failure path logs
+    the institution and points at the command's error output instead of pretending
+    to log the id. Asserted here so nobody re-adds it believing it works.
+    """
+    long_id = "aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"  # credential-shape: test vector
+    assert len(long_id) >= 32
+    FakeClient.item_id = long_id
+
+    def explode(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("the disk went away")
+
+    monkeypatch.setattr("bankmachine.cli.enroll.apply_response", explode)
+    assert run(["enroll", "--yes"]) == 2
+
+    written = _log_text(cli_env)
+    assert long_id not in written, "an id this shape must not survive the formatter"
+    assert "[REDACTED]" in written or "the item id and credential are in" in written
+
+
+def test_a_timeout_below_the_floor_is_refused_before_the_aggregator(
+    cli_env: Config, offline_client: type[FakeClient]
+) -> None:
+    """It is the URL's lifetime now, so a tiny value is not a short wait.
+
+    Before the two numbers were unified a zero only shortened a local loop. It
+    reaches the vendor as `url_lifetime_seconds` now, where it would come back an
+    aggregator rejection -- exit 2, "could not run" -- for what is really a
+    mistyped argument.
+    """
+    with pytest.raises(SystemExit) as raised:
+        run(["enroll", "--yes", "--timeout", "0"])
+
+    assert raised.value.code == 2  # argparse's own usage exit
+    assert FakeClient.instances == [], "a bad argument must not reach the aggregator"

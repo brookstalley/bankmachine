@@ -50,6 +50,17 @@ from bankmachine.store.schema import connections, institutions
 from bankmachine.store.types import UtcInstant, now_utc
 
 logger = get_logger("cli.enroll")
+def source_institution_id_of(item_body: bytes) -> str:
+    """The institution id for a log line, or a placeholder if the body is unreadable.
+
+    Never raises: it is called from the failure path, where a second exception
+    would replace the one the operator needs to see.
+    """
+    try:
+        return institution_ref_of(item_body)[0]
+    except Exception:  # prawduct:allow prawduct/broad-except -- logging a failure
+        return "unreadable"
+
 
 #: What enrollment asks the aggregator for. Both products are requested up front
 #: by operator decision (2026-09-07), which bills `investments` on every
@@ -69,6 +80,11 @@ ENROLLMENT_COUNTRIES: tuple[str, ...] = ("US",)
 #: hosted URL's own lifetime: polling past the point the URL can still be used
 #: would report a timeout the operator could no longer do anything about.
 POLL_INTERVAL_SECONDS = 3.0
+
+#: The floor on `--timeout`. It is also the hosted URL's lifetime now, so a value
+#: below this is not a short wait -- it is a URL that expires before anyone could
+#: use it, and an aggregator rejection rather than a fast local abandon.
+MIN_HOSTED_WAIT_SECONDS = 30
 
 
 class EnrollmentError(Exception):
@@ -185,7 +201,7 @@ def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
     )
     enroll.add_argument(
         "--timeout",
-        type=int,
+        type=_positive_seconds,
         default=DEFAULT_HOSTED_URL_LIFETIME_SECONDS,
         metavar="SECONDS",
         help=(
@@ -195,6 +211,28 @@ def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
         ),
     )
     enroll.set_defaults(handler=cmd_enroll)
+
+
+def _positive_seconds(raw: str) -> int:
+    """A wait that is also the URL's lifetime, so it must be a value the vendor accepts.
+
+    Before the two numbers were unified, a zero or negative timeout only shortened
+    a local loop. It is now sent as `url_lifetime_seconds`, where it would come
+    back as an aggregator rejection -- exit 2, "could not run" -- for what is
+    really a mistyped argument.
+    """
+    try:
+        seconds = int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected a whole number of seconds, got {raw!r}"
+        ) from None
+    if seconds < MIN_HOSTED_WAIT_SECONDS:
+        raise argparse.ArgumentTypeError(
+            f"must be at least {MIN_HOSTED_WAIT_SECONDS} seconds; the hosted URL is live for "
+            f"exactly this long and nobody completes a bank login faster"
+        )
+    return seconds
 
 
 def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
@@ -326,11 +364,18 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
         # honest about the cause and silent about the consequence, which is the
         # one outcome this project disallows. The cause is preserved in the
         # message and in `__cause__`.
+        # 🔴 The item id is NOT logged, and that is the redaction norm working
+        # rather than a gap. A real item id is a ~37-character opaque run, so the
+        # formatter blanks it -- and over-redacting is the deliberate trade,
+        # because a rule that made an exception here would need one for every
+        # future field that happens to look like a token. What the operator needs
+        # to recover is in the error message on stderr, which is not a log record.
+        # What the log carries is the fact, the institution, and where to look.
         logger.error(
-            "enrollment failed after the item was created at the aggregator: item %s, "
-            "credential %s, cause: %s",
-            grant.source_connection_id,
-            credential_ref,
+            "enrollment failed after the item was created at the aggregator "
+            "(institution %s); the item id and credential are in the command's error "
+            "output. Cause: %s",
+            source_institution_id_of(item.body),
             exc,
         )
         raise EnrollmentIncompleteError(

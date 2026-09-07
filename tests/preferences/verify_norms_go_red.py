@@ -566,7 +566,22 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         f"{ENROLL_CLI_TESTS}::test_a_keychain_failure_after_the_exchange_still_names_the_item",
     ),
     (
-        "FR-1: the superseded item is released only AFTER the replacement commits",
+        "exit codes: an unreadable credential does not collapse a cap refusal to 2",
+        CLI_CONNECTIONS,
+        "        return True\n    except SecretsError as exc:",
+        "        return True\n    except AccessTokenMissingError as exc:  # noqa",
+        f"{ENROLL_CLI_TESTS}::"
+        "test_an_unreadable_credential_does_not_collapse_a_cap_refusal_to_two",
+    ),
+    (
+        "AC-1.2: --timeout is floored, because it is also the URL's lifetime",
+        CLI_ENROLL,
+        "    if seconds < MIN_HOSTED_WAIT_SECONDS:",
+        "    if False:",
+        f"{ENROLL_CLI_TESTS}::test_a_timeout_below_the_floor_is_refused_before_the_aggregator",
+    ),
+    (
+        "FR-1: a re-enrollment releases the item it superseded at all",
         CLI_ENROLL,
         "    superseded_released = True\n    if enrolled.superseded_credential_ref is not None:",
         "    superseded_released = True\n    if False:",

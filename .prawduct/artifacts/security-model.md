@@ -198,10 +198,13 @@ Two properties worth recording:
   parameters could drift** between the process that created the datastore and the one that opens it.
 - **Malformed keys are rejected loudly, and the value is never in the message.** A malformed key is
   still a key, and exception text reaches logs.
-- **The two missing-secret errors are deliberately distinct types** because their remedies share
+- **The three missing-secret errors are deliberately distinct types** because their remedies share
   nothing: 🔴 **a datastore key cannot be recovered once lost**, while an aggregator secret is always
   re-readable from the vendor's own dashboard. See "Backup & Recovery" in `operational-spec.md` — this
-  is the sharpest operational hazard in the product.
+  is the sharpest operational hazard in the product. The third is a **connection's access token**,
+added with enrollment: it cannot be pasted from anywhere, and its only remedy is to re-enrol that
+one institution — an operator action against a single connection rather than a credential to
+supply.
 
 `connections.credential_ref` holds **a keychain lookup handle, never a token** (`data-model.md`).
 
