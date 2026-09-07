@@ -229,14 +229,17 @@ aggregator's derivers live in `connector/plaid/derivers.py` and are composed int
 a registry by `bankmachine/derivers.py`, which is passed explicitly to whoever
 runs a derivation.
 
-🔴 **`store.derivation.DERIVERS` stays empty, and that is the design rather than
-a gap.** Populating it would mean `store` importing `connector`, which pulls the
+🔴 **`store.derivation` holds no registry at all, and that is the design rather
+than a gap.** One there would mean `store` importing `connector`, which pulls the
 aggregator SDK into every process that opens the datastore — the read-only query
 surface included, which must never load the network layer at all. An import graph
-is a better guarantee of that than a rule about who calls what. Falling through
-to the empty default is loud rather than silent: `deriver_for` refuses and names
-the endpoint, so a caller that forgot to pass a registry finds out on the first
-response instead of producing an empty dataset.
+is a better guarantee of that than a rule about who calls what.
+
+**`derivers` is a required argument** on `deriver_for`, `derive`, `apply_response`
+and `rebuild`. It briefly had a default; once the composition moved up a layer
+that default had exactly one reachable outcome, so a caller could omit it, pass
+mypy strict and the whole suite, and fail on the first response of an unattended
+nightly sync.
 
 **Contract**, and every clause is load-bearing:
 
@@ -329,7 +332,7 @@ drop fields they do not know about — and those are exactly the fields a later
 rebuild would need. Verified against the SDK's source, recorded in
 `api-notes-plaid.md`, and held red by `verify_norms_go_red.py`.
 
-**`Endpoint` is a vocabulary, not a label.** `store.derivation.DERIVERS` is keyed
+**`Endpoint` is a vocabulary, not a label.** The derivation registry is keyed
 by it, `store/raw.py` defers its credential-archive rule to it, and AC-ARCH.4's
 guard needs it to tell `/institutions/get` from a filesystem path.
 

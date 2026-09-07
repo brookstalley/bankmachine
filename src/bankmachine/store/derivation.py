@@ -4,9 +4,19 @@ What ships here is the contract a deriver is written against, and it was
 deliberately in place *before* the sync path existed -- a sync path written first
 would normalize straight into the tables, and retro-fitting raw preservation
 around it afterwards would mean rewriting the part that was already working. The
-first derivers, for institutions and accounts, arrived with build step 2; see
-`DERIVERS` below for why they are composed above this module rather than listed
-in it.
+first derivers, for institutions and accounts, arrived with build step 2.
+
+🔴 **There is no registry in this module, and `derivers` is a required argument.**
+Holding one here would mean `store` importing `connector`, which pulls the
+aggregator SDK into every process that opens the datastore -- the read-only query
+surface included, which must never load the network layer at all. An import graph
+is a better guarantee of that than a rule about who calls what, so the registry is
+composed in `bankmachine.derivers`, above both layers, and passed in.
+
+It briefly had a default. Once the composition moved up a layer that default had
+exactly one reachable outcome, so a caller could omit the argument, pass mypy
+strict and the whole suite, and fail at runtime on the first response of an
+unattended nightly sync.
 
 **One normalization, two callers.** The sync path and `store rebuild` run the
 same derivers over the same responses. That is what makes AC-11.5's "rebuild

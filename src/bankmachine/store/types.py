@@ -73,13 +73,6 @@ _MINOR_DIGITS: Final[Mapping[str, int]] = {
 DEFAULT_MINOR_DIGITS: Final = 2
 
 
-#: Aggregator account types whose balance is money the operator *owes*.
-#:
-#: Read from the account's own type rather than from anything naming an
-#: institution, per AC-3.2's rule that nothing branches on a roster identity. A
-#: type this build has never seen is refused rather than assumed to be an asset:
-#: guessing "asset" on an unrecognized liability reports a debt as savings, which
-#: is wrong by twice the balance and looks entirely reasonable.
 def minor_digits(currency: str) -> int:
     """How many minor digits a currency has.
 

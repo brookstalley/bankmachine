@@ -79,6 +79,13 @@ _log = get_logger(__name__)
 #: recorded as deferred in the build plan rather than half-built.
 _OPERATOR_OWNED: Final[frozenset[str]] = frozenset({"balance_class", "lifecycle_status"})
 
+#: Aggregator account types whose balance is money the operator *owes*.
+#:
+#: Read from the account's own type rather than from anything naming an
+#: institution, per AC-3.2's rule that nothing branches on a roster identity. A
+#: type this build has never seen is refused rather than assumed to be an asset:
+#: guessing "asset" on an unrecognized liability reports a debt as savings, which
+#: is wrong by twice the balance and looks entirely reasonable.
 _LIABILITY_TYPES: Final[frozenset[str]] = frozenset({"credit", "loan"})
 _ASSET_TYPES: Final[frozenset[str]] = frozenset({"depository", "investment", "brokerage", "other"})
 
@@ -548,6 +555,17 @@ def _write_balance(
         captured_at, raw_response_id = existing
         incoming = (response.received_at, response.raw_response_id)
         if (captured_at, raw_response_id or 0) <= incoming:
+            return
+        if raw_response_id is None:
+            # 🔴 A row this deriver did not write, and must not remove.
+            # `manual_import_id` rows come from FR-7's import path -- the
+            # operator's own statement -- and a rebuild deletes exactly the rows
+            # carrying a `raw_response_id`. Replacing one with an aggregator row
+            # would make it disappear a rebuild later, with nothing connecting
+            # the loss to the sync that caused it. The comparison above already
+            # covers ties and later captures; this covers the *earlier* archived
+            # response, which is the case the comparison would otherwise let
+            # through.
             return
         # The archive holds an earlier capture for this day than the row that is
         # here. Replaying it must still land on the earliest, or a rebuild would

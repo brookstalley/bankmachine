@@ -667,14 +667,24 @@ def test_no_deriver_reads_the_clock(store: Config) -> None:
     be the response's own `received_at` -- checked against an instant deliberately
     far from the present, so a clock call would be unmistakable.
     """
-    derive(store, str(INSTITUTIONS_GET), fixture("institutions_get"), received_at=EARLIER)
+    derive(store, str(ITEM_GET), fixture("item_get"), received_at=EARLIER)
     derive(store, str(ACCOUNTS_GET), fixture("accounts_get"), received_at=EARLIER)
 
-    for row in rows(store, institutions):
-        if row["source_institution_id"] == SEEDED_INSTITUTION:
-            continue  # the fixture connection's institution, inserted by the test
-        assert row["first_seen_at"] == EARLIER
-        assert row["last_seen_at"] == EARLIER
+    # The item deriver writes the seeded institution's row rather than a new one,
+    # so this asserts the *update* path's stamps. Skipping it as "the fixture's"
+    # would leave the loop with nothing in it -- which is what it had, silently,
+    # once the roster stopped being grown from the catalogue.
+    institution = [
+        r for r in rows(store, institutions) if r["source_institution_id"] == SEEDED_INSTITUTION
+    ]
+    assert institution, "no institution row, so the assertions below prove nothing"
+    row = institution[0]
+    # The response is older than the row the fixture seeded, so the minimum moves
+    # and the maximum does not. Both values come from data -- the response, or
+    # what was already stored -- and neither is anywhere near now, which is what
+    # a clock call would produce.
+    assert row["first_seen_at"] == EARLIER
+    assert row["last_seen_at"] == RECEIVED
     for row in rows(store, accounts):
         assert row["created_at"] == EARLIER
         assert row["updated_at"] == EARLIER
@@ -911,7 +921,7 @@ def test_every_archivable_endpoint_has_a_deriver() -> None:
 def test_the_composed_registry_is_what_the_rebuild_command_uses() -> None:
     """The registry lives above both layers, and `store` must not import `connector`.
 
-    Populating `store.derivation.DERIVERS` instead would pull the aggregator SDK
+    Holding a registry in `store.derivation` instead would pull the aggregator SDK
     into every process that opens the datastore -- the read-only query surface
     included, which must never load the network layer at all.
     """

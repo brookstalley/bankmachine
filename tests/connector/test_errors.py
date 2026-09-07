@@ -512,10 +512,66 @@ def test_a_retry_and_a_give_up_both_leave_a_trace(
     assert len(retried) == 2, "a silent retry is a wait no operator can account for"
     assert "/institutions/get" in retried[0].getMessage()
 
+    assert str(INSTITUTIONS_GET) in retried[0].getMessage()
+
     caplog.clear()
     with caplog.at_level(logging.ERROR, logger="bankmachine"), pytest.raises(RateLimitedError):
         _run(lambda: (_ for _ in ()).throw(RateLimitedError("no")), policy=RetryPolicy(attempts=2))
     assert any("giving up" in r.getMessage() for r in caplog.records)
+
+
+def test_the_failure_that_ends_a_sync_is_the_one_that_gets_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """🔴 The terminal path was the silent one, which is the failure in miniature.
+
+    The retryable path logged and the path that actually ends an unattended sync
+    re-raised without a word. `observability-strategy.md` asks for every error
+    with its code in the per-run log, and `connection_id` on every record that
+    touches a connection -- so the record IS the deliverable here rather than
+    decoration around one, and it needs something that notices it going away.
+    """
+
+    def call() -> str:
+        raise ReauthRequiredError(
+            "re-link it",
+            endpoint=INSTITUTIONS_GET,
+            connection_id=12,
+            error_code="ITEM_LOGIN_REQUIRED",
+        )
+
+    with caplog.at_level(logging.ERROR, logger="bankmachine"), pytest.raises(ReauthRequiredError):
+        _run(call, policy=RetryPolicy(attempts=4))
+
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1, "a terminal failure left no record, or left more than one"
+    message = errors[0].getMessage()
+    assert "ITEM_LOGIN_REQUIRED" in message, "the code AC-4.2 records is not in the log"
+    assert "12" in message, "the record does not say which connection is broken"
+    assert "not retryable" in message
+
+
+def test_every_retry_record_names_its_connection(caplog: pytest.LogCaptureFixture) -> None:
+    """One broken connection must be attributable in the log, not just in the exception.
+
+    An operator reading a night's log needs to tell four retries on one
+    connection from one retry on each of four.
+    """
+    attempts = 0
+
+    def call() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 2:
+            raise RateLimitedError("slow down", endpoint=INSTITUTIONS_GET, connection_id=5)
+        return "answered"
+
+    with caplog.at_level(logging.WARNING, logger="bankmachine"):
+        assert _run(call) == "answered"
+
+    assert [r for r in caplog.records if "5" in r.getMessage()], (
+        "no record names the connection it belongs to"
+    )
 
 
 def test_a_policy_that_could_never_call_anything_is_refused() -> None:

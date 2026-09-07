@@ -318,7 +318,7 @@ class Endpoint:
     """One of the aggregator's endpoints, named rather than spelled out at call sites.
 
     Three things need this to be a vocabulary rather than a scattering of string
-    literals. `store.derivation.DERIVERS` is keyed by endpoint, so a deriver is
+    literals. The derivation registry is keyed by endpoint, so a deriver is
     registered against a name that has to match exactly. `store.raw`'s docstring
     defers the credential-archive rule to "the endpoint vocabulary that could
     enforce it", which is this. And AC-ARCH.4's guard reasonably reads a bare

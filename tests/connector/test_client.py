@@ -269,7 +269,7 @@ def test_an_unreachable_aggregator_is_a_sentence_not_a_traceback(
 
 
 def test_the_endpoint_is_the_aggregators_own_path() -> None:
-    """The archive key, and later the `DERIVERS` key. Changing it orphans an archive."""
+    """The archive key, and the derivation-registry key. Changing it orphans an archive."""
     assert INSTITUTIONS_GET.path == "/institutions/get"
     assert str(INSTITUTIONS_GET) == "/institutions/get"
     assert Endpoint("/institutions/get") == INSTITUTIONS_GET

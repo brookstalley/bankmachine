@@ -404,7 +404,7 @@ def test_an_item_without_a_capability_list_is_refused_rather_than_read_as_empty(
 
 
 def test_the_endpoint_paths_are_the_aggregators_own() -> None:
-    """They are archive keys and `DERIVERS` keys. Changing one orphans an archive."""
+    """Archive keys, and derivation-registry keys. Changing one orphans an archive."""
     assert LINK_TOKEN_CREATE.path == "/link/token/create"
     assert ITEM_PUBLIC_TOKEN_EXCHANGE.path == "/item/public_token/exchange"
     assert ITEM_GET.path == "/item/get"

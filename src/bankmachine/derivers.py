@@ -1,8 +1,8 @@
 """The derivation registry, composed where both layers are already in scope.
 
-`store.derivation.DERIVERS` is empty and stays empty, because populating it
-would mean `store` importing `connector` -- which would pull the aggregator SDK
-into every process that opens the datastore, the read-only query surface
+There is no registry in `store.derivation` to hold these, and deliberately so:
+one there would mean `store` importing `connector`, which pulls the aggregator
+SDK into every process that opens the datastore, the read-only query surface
 included. That surface must never load the network layer at all, and an import
 graph is a better guarantee of that than a rule about who calls what.
 

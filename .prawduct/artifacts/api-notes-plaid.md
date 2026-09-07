@@ -344,8 +344,9 @@ assumed.
 - ~~**`days_requested`'s actual location**~~ Done — §11. It is nested under
   `transactions`, capped at 730, and **not echoed by the response**.
 - ~~**What `/item/public_token/exchange` carries**~~ Done — §12. `access_token`,
-  `item_id`, `request_id`, which is what makes the archive exemption an
-  obligation rather than a preference.
+  `item_id`, `request_id`. The archive exemption it forced is **built**:
+  `Endpoint.issues_credential` marks the endpoint and `FetchedResponse` refuses
+  to exist for one, so there is no object for the archive to be given.
 - ~~**A real `ITEM_LOGIN_REQUIRED`**~~ Done — driven live through
   `/sandbox/item/reset_login` in `test_sandbox.py`, once the exchange call
   existed to mint an Item.
@@ -354,5 +355,3 @@ assumed.
   remains the least-evidenced entry in the taxonomy.
 - 🔴 **The granted history window.** Not observable before build step 3's first
   real connection, so AC-11.8's shortfall cannot be computed until then.
-- **What `/item/public_token/exchange` carries**, to make the credential-archive exemption
-  a mechanism rather than the decision `store/raw.py` currently records.

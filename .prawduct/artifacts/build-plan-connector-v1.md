@@ -174,8 +174,7 @@ transport failures unwrapped, so an offline machine reported a `urllib3` traceba
 of the Critic — `ApiException.reason` is the HTTP reason phrase, so every rejection read
 `400: Bad Request` until the error body was parsed for the cause.
 
-The datastore layer this plan archives through is complete and green; the `DERIVERS` registry it
-registers into was deliberately empty, and `store rebuild` refused a real archive until Chunk 04
+The datastore layer this plan archives through is complete and green; there was no deriver to register, and `store rebuild` refused a real archive until Chunk 04
 fills it. **Build step 2 is complete.** Next is build step 3, the enrollment flow — and 🔴 its first real connection is where AC-1.2 becomes irreversible and where the granted history window becomes observable for the first time.
 
 ## Scaffolding
@@ -224,7 +223,7 @@ src/bankmachine/
 │   └── plaid/             # the ONLY place `plaid` is imported
 │       ├── client.py      # transport, auth, the endpoint wrappers
 │       ├── errors.py      # the error taxonomy (Chunk 02)
-│       └── derivers.py    # registered into store.derivation.DERIVERS (Chunk 04)
+│       └── derivers.py    # composed by bankmachine/derivers.py (Chunk 04)
 └── cli/connector.py       # `bankmachine connector check`
 tests/
 ├── connector/
@@ -384,7 +383,7 @@ relationship (who may import what), not a naming convention.
 - **Artifacts consumed:** `src/bankmachine/store/derivation.py` (the seam's contract),
   `docs/system-requirements.md` FR-5 (AC-5.2, AC-5.3), FR-6 (AC-6.2, AC-6.3)
 - **Deliverables:** new `src/bankmachine/connector/plaid/derivers.py` registered into
-  `DERIVERS`, `DERIVATION_VERSION` and its description updated in
+  the composed registry, `DERIVATION_VERSION` and its description updated in
   `src/bankmachine/store/derivation.py`, hostile fixtures under `tests/connector/fixtures/`
 - **Tests:** unit — money lands as integer minor units and never as a float, and history references
   the local `account_id` rather than the aggregator's (AC-6.3); property (hypothesis) — deriving twice
