@@ -176,6 +176,19 @@ def release_at_aggregator(
         # the credential is already gone, which is the state this aims at.
         logger.info("no stored credential for %s; nothing to remove", credential_ref)
         return True
+    except SecretsError as exc:
+        # 🔴 `AccessTokenMissingError` alone was not enough: `get_access_token`
+        # also raises plain `SecretsError` on an unreachable keychain or an empty
+        # value, and this function's whole contract is that it never raises. The
+        # escape had a consequence two modules away -- it pre-empted a pending
+        # `ConnectionCapReachedError`, so a cap refusal exited 2 instead of 1,
+        # which is the exact collapse the exit-code contract forbids.
+        logger.warning(
+            "the credential for %s could not be read, so its item was not removed: %s",
+            credential_ref,
+            exc,
+        )
+        return False
 
     try:
         secret = get_plaid_secret(config)

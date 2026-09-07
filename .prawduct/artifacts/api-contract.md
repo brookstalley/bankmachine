@@ -137,9 +137,17 @@ The product's headline goal is not "answer the question" but "answer it, or say 
 | `connector check` | Verify aggregator credentials and reachability | no |
 | `connector set-secret` | Write the aggregator secret to the keychain | yes (keychain) |
 | `sync shell` | 🔴 Authenticated SQLCipher REPL — read-role handle | no |
+| `enroll` | Link one institution and record the connection | yes (datastore + keychain + network) |
+| `connections list` | Show enrolled connections and slots used | no |
+| `connections retire` | Stop syncing a connection, keep its history, remove it at the aggregator | yes (datastore + keychain + network) |
 
-**Specified, not yet built** (steps 3–10): enrollment (`link`/`enroll`), `sync run`, `sync repair`
-(update-mode re-auth), `import`, connection retirement, and the §7 verification-gate runner. Their
+🔴 **The three-way exit code is carried on the exception, not decided by the caller.** A refusal type
+declares its own code — a full roster and an abandoned enrollment are both `1` — and the base class
+defaults to `2`, so a new refusal that forgets produces the safe answer rather than silently claiming
+the command ran and found a problem.
+
+**Specified, not yet built** (steps 4–10): `sync run`, `sync repair` (update-mode re-auth), `import`,
+and the §7 verification-gate runner. Their
 names are not fixed by this document; their *contract obligations* below are.
 
 🔴 **`sync shell` is built in step 1, not step 9** — deliberately. Page encryption is what breaks

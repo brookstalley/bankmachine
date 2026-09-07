@@ -16,10 +16,11 @@ with a rebuild that verifies its own output, `store backup` (a verified single-f
 taken under the writer lock), and `sync shell` — an authenticated SQL prompt, since page encryption
 breaks ordinary SQL tooling — all exist and are tested. The aggregator client's
 walking skeleton has since landed and been run against the real sandbox: `bankmachine connector
-check` makes one authenticated call and archives the answer verbatim. **There is still no financial
-data to read** — nothing enrolls an account or fetches a transaction yet, so `store init` gives you
-an empty encrypted datastore, `connector check` puts one institution-list response in its archive,
-and `sync shell` lets you look at both. See `docs/system-requirements.md` for what is being built
+check` makes one authenticated call and archives the answer verbatim. Enrollment has since landed:
+`bankmachine enroll` prints a hosted URL, waits while you complete it in a browser, and records the
+connection — with `bankmachine connections list` and `connections retire` alongside it. **There are
+still no transactions to read**: fetching them is the next step, so an enrolled connection gives you
+its institution and accounts and nothing below them yet, and `sync shell` lets you look. See `docs/system-requirements.md` for what is being built
 and `docs/build-vs-adopt-investigation.md` for why it is being built rather than adopted.
 
 ## What it is not

@@ -566,6 +566,20 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         f"{ENROLL_CLI_TESTS}::test_a_keychain_failure_after_the_exchange_still_names_the_item",
     ),
     (
+        "FR-1: the superseded item is released only AFTER the replacement commits",
+        CLI_ENROLL,
+        "    superseded_released = True\n    if enrolled.superseded_credential_ref is not None:",
+        "    superseded_released = True\n    if False:",
+        f"{ENROLL_CLI_TESTS}::test_removal_happens_only_after_the_replacement_is_committed",
+    ),
+    (
+        "AC-1.2: the hosted URL dies when this side stops waiting for it",
+        CLI_ENROLL,
+        "            hosted_url_lifetime_seconds=args.timeout,",
+        "            hosted_url_lifetime_seconds=900,",
+        f"{ENROLL_CLI_TESTS}::test_the_url_lifetime_is_the_wait_not_a_second_number",
+    ),
+    (
         "AC-1.4: a re-enrollment removes the item it superseded",
         CLI_ENROLL,
         "    if enrolled.superseded_credential_ref is not None:",

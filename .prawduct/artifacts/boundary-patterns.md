@@ -388,9 +388,9 @@ Item — is excluded by `Endpoint.retry_safe`, not by this reasoning.
 credential-archive mechanism; and the institutions and accounts derivers, so
 `store rebuild` now runs end-to-end over a real archive.
 
-**Not built yet:** the enrollment *flow* — the CLI, idempotency and the
-connection cap — which is build step 3, and the transactions deriver, which
-lands with its cursor loop in build step 4.
+**Built 2026-09-07 (build step 3):** the enrollment flow — the CLI, idempotency,
+the connection cap and retirement. **Not built yet:** the transactions deriver,
+which lands with its cursor loop in build step 4.
 
 ## Test Levels
 

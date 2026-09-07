@@ -117,6 +117,7 @@ class FakeClient:
         self.config = config
         self.requested_history_days: int | None = None
         self.requested_products: list[str] | None = None
+        self.hosted_lifetime: int | None = None
         self.polls = 0
         self.exchanged: str | None = None
         FakeClient.instances.append(self)
@@ -133,6 +134,7 @@ class FakeClient:
     ) -> LinkToken:
         self.requested_history_days = history_days
         self.requested_products = products
+        self.hosted_lifetime = kwargs.get("hosted_url_lifetime_seconds")
         return LinkToken(
             token="link-sandbox-fake",
             expires_at="2026-09-08T00:00:00Z",
@@ -667,21 +669,36 @@ def test_re_enrolling_removes_the_item_it_superseded(
 
 
 def test_removal_happens_only_after_the_replacement_is_committed(
-    cli_env: Config, offline_client: type[FakeClient]
+    cli_env: Config, offline_client: type[FakeClient], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Two live items is a bill; none is a lost connection.
+    """🔴 Two live items is a bill; none is a lost connection, so order decides which.
 
-    So the order is not arbitrary: the row naming the new item is committed
-    before the old one is released.
+    Asserted by reading the datastore AT THE MOMENT of removal, from inside the
+    removal itself. An earlier version checked only that the row survived and
+    that something was removed -- neither of which constrains order, so it passed
+    against a release that ran first. This is the test the plan cites for Chunk
+    03's Done-when 6, and it was proving nothing about the property it named.
     """
     assert run(["enroll", "--yes"]) == 0
+
+    observed: dict[str, object] = {}
+    real_release = connections_module.release_at_aggregator
+
+    def observing(config: Config, credential_ref: str, **kwargs: Any) -> bool:
+        # What the committed datastore says while the old item is being released.
+        observed["source_connection_id"] = _rows(config, connections)[0]._mapping[
+            "source_connection_id"
+        ]
+        return real_release(config, credential_ref, **kwargs)
+
+    monkeypatch.setattr("bankmachine.cli.enroll.release_at_aggregator", observing)
     FakeClient.item_id = "item-relinked"
     assert run(["enroll", "--yes"]) == 0
 
-    # The row survived the removal, which is only possible if the removal came
-    # after the commit that wrote it.
-    assert _rows(cli_env, connections)[0]._mapping["source_connection_id"] == "item-relinked"
-    assert FakeClient.removed_tokens
+    assert observed["source_connection_id"] == "item-relinked", (
+        "the release ran before the replacement was committed, so a crash between "
+        "them would leave no live item at all"
+    )
 
 
 def test_a_converging_re_run_against_the_same_item_removes_nothing(
@@ -954,3 +971,61 @@ def test_a_refusal_type_that_forgets_its_exit_code_says_could_not_run(
     assert EnrollmentError.exit_code == 2
     assert ConnectionCapReachedError.exit_code == 1
     assert EnrollmentAbandonedError.exit_code == 1
+
+
+def test_a_failed_release_of_the_superseded_item_is_reported_not_swallowed(
+    cli_env: Config,
+    offline_client: type[FakeClient],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The enrollment succeeded; the item it replaced is still billing.
+
+    Reported rather than raised -- the operator has a working connection and
+    losing it would be worse. But a success message that did not mention the
+    orphan would be the silent outcome this project disallows, so the run exits
+    1 and says which command shows what is enrolled.
+    """
+    assert run(["enroll", "--yes"]) == 0
+
+    def refuse(*args: Any, **kwargs: Any) -> None:
+        raise TransportError("the aggregator is unreachable", endpoint=ITEM_REMOVE)
+
+    monkeypatch.setattr(FakeClient, "item_remove", refuse)
+    FakeClient.item_id = "item-relinked"
+
+    assert run(["enroll", "--yes"]) == 1
+
+    # The enrollment still stands -- the new connection is usable.
+    assert _rows(cli_env, connections)[0]._mapping["source_connection_id"] == "item-relinked"
+    assert "may still be billing" in capsys.readouterr().err
+
+
+def test_an_item_removal_is_never_retried(cli_env: Config) -> None:
+    """A retry cannot double-remove, but it can turn a success into ITEM_NOT_FOUND.
+
+    That matters because removal runs on paths where the operator is being told
+    something worked -- a removal reporting failure after succeeding sends
+    someone to the aggregator's dashboard to fix what is already fixed.
+    """
+    assert not ITEM_REMOVE.retry_safe
+    # The mirror half: a pure read IS retried, so the flag is a discrimination
+    # rather than a decoration.
+    assert ITEM_GET.retry_safe
+
+
+def test_the_url_lifetime_is_the_wait_not_a_second_number(
+    cli_env: Config, offline_client: type[FakeClient]
+) -> None:
+    """🔴 Two numbers that happen to agree are one drift away from an orphan.
+
+    If the hosted URL outlives the wait, this side stops polling while the URL is
+    still usable. The operator completes Link, the aggregator mints an Item, and
+    its public token is never exchanged -- no row, no log, no access token, so
+    nothing in this product can ever remove it. Deriving the lifetime from the
+    wait means the URL dies when we stop listening.
+    """
+    assert run(["enroll", "--yes", "--timeout", "120"]) == 0
+
+    request = FakeClient.instances[0].hosted_lifetime
+    assert request == 120, "the URL can outlive the wait, which orphans an Item"

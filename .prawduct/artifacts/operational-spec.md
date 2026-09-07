@@ -87,19 +87,26 @@ config file → the documented default.
 | Busy timeout | 5000 ms |
 | Environment | `sandbox` |
 | Aggregator client id | none — `connector check` refuses without one |
-| History window | 730 days (the aggregator's own documented maximum) — **resolved, not yet consumed** |
+| History window | 730 days (the aggregator's own documented maximum) — **read at every enrollment** |
+| Connection cap | 10 — the aggregator plan tier (AC-1.5). Retired connections do not count |
 
-🔴 **The history window is the one setting that cannot be corrected later, and it is not wired up
-yet.** The value is resolved and range-checked at startup like every other setting in this table,
-and **no code path reads it**: enrollment is build step 3, and until that lands, setting it changes
-nothing. It is documented here rather than after the fact because it has to be decided *before* the
-first connection is enrolled — see the build plan's *What Build Step 3 Inherits*, which carries
-wiring it in as a named obligation.
+🔴 **The history window is the one setting that cannot be corrected later, and `bankmachine enroll`
+reads it every time.** It is what enrollment asks the aggregator to grant, and it becomes immutable
+per connection at that moment (AC-1.2): changing the value afterwards moves nothing already
+enrolled, it only changes what the *next* enrollment asks for. Getting it wrong costs a re-link of
+every institution, which is why `enroll` prints the window and asks you to confirm it **before** the
+exchange — the last point at which it can still be corrected.
 
-Once consumed, it is what enrollment asks the aggregator to grant, and it becomes immutable per
-connection at that moment (AC-1.2): changing the value afterwards moves nothing already enrolled,
-it only changes what the *next* enrollment asks for. Getting it wrong costs a re-link of every
-institution.
+What the aggregator actually *grants* may be less, and is **not visible at enrollment**: no response
+in that path reports it (AC-1.3a). `connections.granted_history_days` is null until the first
+backfill reveals the oldest transaction returned, and 🔴 **null means not yet known, never "we got
+what we asked for"**.
+
+**The connection cap** is configuration rather than a literal because plan tiers change (AC-1.5).
+`enroll` refuses past it *before* creating a link token, so a full roster costs no browser round
+trip, and the refusal lists the live connections with the command that retires one.
+`bankmachine connections retire <id>` frees a slot and removes the connection at the aggregator so
+it stops billing; every row it produced is kept (AC-1.6).
 
 The default is therefore the **maximum**, deliberately: the two ways to be wrong are not
 symmetric. Asking for more history than you need costs nothing and can be ignored; asking for less

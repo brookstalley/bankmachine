@@ -35,6 +35,7 @@ from bankmachine.cli.exit_codes import EXIT_ERROR, EXIT_OK, EXIT_UNHEALTHY
 from bankmachine.config import Config
 from bankmachine.connector import LinkSession, LinkToken
 from bankmachine.connector.plaid.client import (
+    DEFAULT_HOSTED_URL_LIFETIME_SECONDS,
     PlaidClient,
     capabilities_of,
     institution_ref_of,
@@ -185,9 +186,13 @@ def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
     enroll.add_argument(
         "--timeout",
         type=int,
-        default=900,
+        default=DEFAULT_HOSTED_URL_LIFETIME_SECONDS,
         metavar="SECONDS",
-        help="how long to wait for the hosted session to be completed (default: 900)",
+        help=(
+            "how long to wait for the hosted session to be completed, and how long the "
+            f"URL stays usable -- they are one number (default: "
+            f"{DEFAULT_HOSTED_URL_LIFETIME_SECONDS})"
+        ),
     )
     enroll.set_defaults(handler=cmd_enroll)
 
@@ -232,6 +237,13 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
             client_user_id=f"bankmachine-{config.environment}",
             country_codes=list(ENROLLMENT_COUNTRIES),
             products=list(ENROLLMENT_PRODUCTS),
+            # 🔴 ONE number, not two that happen to agree. The URL outliving the
+            # wait is the dangerous direction: this side stops polling, the
+            # operator completes Link anyway, and the aggregator mints an Item
+            # whose public token is never exchanged -- no row, no log, no access
+            # token, so nothing in this product can ever remove it. Deriving the
+            # lifetime from the wait means the URL dies when we stop listening.
+            hosted_url_lifetime_seconds=args.timeout,
         )
         if not _confirm_window(config, issued, assume_yes=args.yes):
             logger.info("enrollment cancelled at the window confirmation; nothing was linked")
@@ -250,6 +262,11 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
         # failure here leaves a connection that exists at the aggregator and not
         # in the datastore -- which is why nothing above it is allowed to fail.
         assert session.public_token is not None  # `finished` is derived from it
+        logger.info(
+            "link session %s completed for institution %s",
+            session.session_id or "unknown",
+            session.institution_id or "unreported",
+        )
         grant = client.exchange_public_token(session.public_token)
         item = client.item_get(grant.access_token)
 
@@ -310,7 +327,11 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
         # one outcome this project disallows. The cause is preserved in the
         # message and in `__cause__`.
         logger.error(
-            "enrollment failed after the item was created at the aggregator: %s", exc
+            "enrollment failed after the item was created at the aggregator: item %s, "
+            "credential %s, cause: %s",
+            grant.source_connection_id,
+            credential_ref,
+            exc,
         )
         raise EnrollmentIncompleteError(
             source_connection_id=grant.source_connection_id,
