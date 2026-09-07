@@ -188,6 +188,26 @@ exception message or a `repr` (AC-10.1, AC-10.3). The datastore holds
 `connections.credential_ref` — the *name* of a keychain entry, never a token,
 because a datastore backup travels and a credential inside it travels with it.
 
+🔴 **The archive exemption is a property of the endpoint, not a list kept beside
+the archive.** `Endpoint.issues_credential` marks the endpoints whose *response
+body* carries a credential — today `/link/token/create` and
+`/item/public_token/exchange`, the latter verified live as returning
+`access_token`, `item_id`, `request_id`. `FetchedResponse.__post_init__` refuses
+to exist for such an endpoint, and `store.raw` derives everything it persists
+from one of those — so a credential-bearing body cannot be archived by any
+caller, including one written years from now by someone who never read
+`store/raw.py`'s docstring.
+
+The alternative was a list of exempt paths consulted at the archive site. That is
+an enumeration standing in for a property, and this project has already been
+burned once by a rule that matched on a name where it meant a relationship. The
+cost of getting it wrong is not recoverable: `raw_responses` is append-only, so a
+token written there is written permanently and travels with every backup.
+
+**The credential-issuing calls therefore return their own types** — `LinkToken`
+and `AccessGrant` — rather than a `FetchedResponse`. There is no path from either
+into the archive, which is what keeps this structural rather than remembered.
+
 ### MCP Tool Surface — *not built; build step 7*
 
 **Producer:** `src/bankmachine/mcp/` (does not exist yet).
@@ -198,15 +218,28 @@ degraded data (AC-9.3), and stated units, sign conventions and applied rules
 (AC-9.4). This *is* the product's public API contract; `api-contract.md` is the
 artifact that will hold it, and it does not exist yet.
 
-### Derivation Seam — the contract build step 2 is written against
+### Derivation Seam — the contract the aggregator's derivers are written against
 
 **Producer:** `src/bankmachine/store/derivation.py` — the `Deriver` signature,
 the endpoint registry, and `apply_response`, which persists a response and
 commits it before anything derives from it.
 
-**Consumers:** `src/bankmachine/store/rebuild.py` today. The aggregator client
-(build step 2) is the consumer it exists for: it registers a deriver per endpoint
-in `DERIVERS`, which ships empty.
+**Consumers:** `src/bankmachine/store/rebuild.py` and the sync path. The
+aggregator's derivers live in `connector/plaid/derivers.py` and are composed into
+a registry by `bankmachine/derivers.py`, which is passed explicitly to whoever
+runs a derivation.
+
+🔴 **`store.derivation` holds no registry at all, and that is the design rather
+than a gap.** One there would mean `store` importing `connector`, which pulls the
+aggregator SDK into every process that opens the datastore — the read-only query
+surface included, which must never load the network layer at all. An import graph
+is a better guarantee of that than a rule about who calls what.
+
+**`derivers` is a required argument** on `deriver_for`, `derive`, `apply_response`
+and `rebuild`. It briefly had a default; once the composition moved up a layer
+that default had exactly one reachable outcome, so a caller could omit it, pass
+mypy strict and the whole suite, and fail on the first response of an unattended
+nightly sync.
 
 **Contract**, and every clause is load-bearing:
 
@@ -261,7 +294,7 @@ stand-in derivers that exercise the three shapes the schema has — an identity
 table a rebuild must not delete, an append-only series, and a fact table it
 rebuilds outright.
 
-### Aggregator Client — *partially built; build step 2*
+### Aggregator Client — *built; build step 2*
 
 **Producer:** `src/bankmachine/connector/` — `plaid/client.py` makes the calls;
 `__init__.py` holds everything a caller is allowed to see.
@@ -270,8 +303,16 @@ rebuilds outright.
 returned before anything normalizes it. Today: `cli/connector.py`.
 
 **Contract:** the connector returns `FetchedResponse` — an `Endpoint`, undecoded
-`body` bytes, and when they arrived — and **persists nothing**. Archiving is the
-caller's act, through `store.raw.record_response`.
+`body` bytes, and when they arrived. Archiving is the caller's act, through
+`store.raw.record_response`.
+
+🔴 **The property is that nothing under `connector/` can *obtain* a datastore
+handle** — not that nothing under it writes. The distinction became real when the
+derivers landed: a deriver writes rows, through a connection the caller already
+opened and owns. It cannot open one, cannot decide when the transaction commits,
+and cannot reach the archive except through the response it was handed. That is
+what makes AC-5.1's "archive before normalize" structural, and it is narrower and
+truer than "the connector persists nothing".
 
 `system-requirements.md` §9.2 is answered (2026-09-06): one aggregator in v1,
 contained so a second is a new module rather than a rewrite. The boundary is
@@ -291,14 +332,65 @@ drop fields they do not know about — and those are exactly the fields a later
 rebuild would need. Verified against the SDK's source, recorded in
 `api-notes-plaid.md`, and held red by `verify_norms_go_red.py`.
 
-**`Endpoint` is a vocabulary, not a label.** `store.derivation.DERIVERS` is keyed
+**`Endpoint` is a vocabulary, not a label.** The derivation registry is keyed
 by it, `store/raw.py` defers its credential-archive rule to it, and AC-ARCH.4's
 guard needs it to tell `/institutions/get` from a filesystem path.
 
-**Not built yet:** the error taxonomy and retry channel (Chunk 02), the
-enrollment endpoints and the credential-archive *mechanism* (Chunk 03), and any
-deriver at all (Chunk 04) — `DERIVERS` is still empty, so `store rebuild` still
-refuses a real archive.
+**Failure is part of the contract, and it is typed.** A caller catches a local
+exception from `connector/__init__.py`, never `plaid.ApiException` — the
+taxonomy is defined outside the `plaid` subpackage precisely so that catching an
+aggregator failure does not require importing the aggregator. The types are
+organized by *what the caller must do next* rather than by what the aggregator
+called it, because the aggregator's own `ITEM_ERROR` spans three different
+remedies and a consumer switching on it would send the operator somewhere that
+cannot help them.
+
+Every failure carries `connection_id`, `error_code`, `request_id` and
+`failed_at`. That set is not decoration: AC-4.1's "one broken connection never
+aborts another" is a property of the *caller's* loop, which can only honour it
+if the error says which connection it was; AC-4.2 wants the code recorded; and
+AC-4.5 refuses a degraded record whose data hole cannot be computed, so the
+connector owes the far end of that subtraction even though `last_success_at`
+lives in the datastore.
+
+🔴 **Whether a failure is worth retrying is a property of its type, not a list
+kept in the retry loop.** A list in the loop is an enumeration that goes stale
+the moment an error type is added by someone who does not think to visit that
+file — and it goes stale silently, in whichever direction the omission falls: an
+un-retried transient stops the nightly sync, a retried permanent one hammers the
+aggregator with a call that cannot work. `retryable` has no default on the base
+class, and `ConnectorError.__init_subclass__` refuses **at class creation** any
+subclass that did not declare one — so a second aggregator's module cannot define
+an error type without deciding. A test walking `__subclasses__()` was the first
+attempt and is not enough: that walk sees only subclasses whose module has been
+imported, so it guarantees something about the types one test file happens to
+import rather than about every error type.
+
+The grouping classes — `ConnectorError` and `AggregatorError` — exist to be
+caught and are declared `grouping=True`, which exempts them from that rule and
+makes them **non-instantiable**. Raising one would otherwise fail a frame away
+inside the retry loop, reading a class attribute nobody set, on the error path of
+the error path.
+
+**The retry channel wraps the HTTP call and nothing else.** `architecture.md`
+permits backoff on exactly this boundary because it is the only one that can
+fail transiently. Nothing inside the retried boundary writes, so there is no
+partial effect for a second attempt to interleave against — which is what makes
+retrying safe here and would not make it safe anywhere downstream.
+
+🔴 **That argument is about the local side only.** An endpoint the *far* end
+cannot absorb twice — an exchange spends a single-use token and mints a durable
+Item — is excluded by `Endpoint.retry_safe`, not by this reasoning.
+
+**Built as of build step 2:** the endpoints `/institutions/get`,
+`/link/token/create`, `/item/public_token/exchange`, `/item/get` and
+`/accounts/get`; the error taxonomy and its retry channel; the
+credential-archive mechanism; and the institutions and accounts derivers, so
+`store rebuild` now runs end-to-end over a real archive.
+
+**Not built yet:** the enrollment *flow* — the CLI, idempotency and the
+connection cap — which is build step 3, and the transactions deriver, which
+lands with its cursor loop in build step 4.
 
 ## Test Levels
 

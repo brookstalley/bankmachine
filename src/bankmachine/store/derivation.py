@@ -1,11 +1,22 @@
 """The seam between a raw response and the normalized rows derived from it.
 
-Nothing in this build derives anything: the aggregator client is build step 2,
-and `DERIVERS` ships empty. What ships here is the contract that step 2 has to
-be written against, and it is deliberately in place *before* the sync path
-exists -- a sync path written first would normalize straight into the tables,
-and retro-fitting raw preservation around it afterwards would mean rewriting the
-part that was already working.
+What ships here is the contract a deriver is written against, and it was
+deliberately in place *before* the sync path existed -- a sync path written first
+would normalize straight into the tables, and retro-fitting raw preservation
+around it afterwards would mean rewriting the part that was already working. The
+first derivers, for institutions and accounts, arrived with build step 2.
+
+🔴 **There is no registry in this module, and `derivers` is a required argument.**
+Holding one here would mean `store` importing `connector`, which pulls the
+aggregator SDK into every process that opens the datastore -- the read-only query
+surface included, which must never load the network layer at all. An import graph
+is a better guarantee of that than a rule about who calls what, so the registry is
+composed in `bankmachine.derivers`, above both layers, and passed in.
+
+It briefly had a default. Once the composition moved up a layer that default had
+exactly one reachable outcome, so a caller could omit the argument, pass mypy
+strict and the whole suite, and fail at runtime on the first response of an
+unattended nightly sync.
 
 **One normalization, two callers.** The sync path and `store rebuild` run the
 same derivers over the same responses. That is what makes AC-11.5's "rebuild
@@ -36,7 +47,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from types import MappingProxyType
 
 from sqlalchemy import Connection as SAConnection
 from sqlalchemy import insert, select
@@ -53,11 +63,30 @@ from bankmachine.store.types import UtcInstant, now_utc
 #: column. AC-5.3 exists because losslessness is only well-defined against a
 #: recorded version: without one, an upstream taxonomy change and a rebuild bug
 #: are indistinguishable, since both simply produce different rows than before.
-DERIVATION_VERSION = 1
+DERIVATION_VERSION = 2
 
 #: What that version means, recorded beside it so a datastore carrying rows from
 #: an old version says something useful about them years later.
-DERIVATION_DESCRIPTION = "raw-response layer and rebuild; no aggregator derivers registered yet"
+DERIVATION_DESCRIPTION = (
+    "institutions and accounts derived from the aggregator; balances signed from the "
+    "operator's point of view"
+)
+
+
+class DerivationError(StoreError):
+    """A response could not be turned into rows, and no partial row was written.
+
+    Belongs to the seam rather than to any one deriver: a caller catching a
+    derivation failure should not have to know which aggregator produced it, and
+    a deriver must not reach `store.connection` for a base class -- the
+    containment norm names that module as one that hands out a datastore handle,
+    and a connector module that can import it can also open one.
+
+    Loud rather than best-effort. A deriver that wrote what it understood and
+    skipped the rest would produce a dataset that is incomplete and still adds
+    up, which is this product's named primary failure mode reached through the
+    layer built to prevent it.
+    """
 
 
 class UnknownEndpointError(StoreError):
@@ -85,13 +114,6 @@ class DerivationContext:
 #: Given a writable handle, one persisted response, and the version stamp its
 #: rows must carry, write the normalized rows that response implies.
 Deriver = Callable[[SAConnection, RawResponse, DerivationContext], None]
-
-#: Endpoint -> deriver. Empty in this build: build step 2 registers the
-#: aggregator's endpoints here as it learns to call them. It is a mapping rather
-#: than a mutable dict so nothing registers a deriver as a side effect of being
-#: imported -- what a rebuild replays is then a property of the build, not of
-#: which modules happened to be loaded first.
-DERIVERS: Mapping[str, Deriver] = MappingProxyType({})
 
 
 def ensure_derivation_version(
@@ -133,9 +155,19 @@ def ensure_derivation_version(
     return int(primary_key[0])
 
 
-def deriver_for(endpoint: str, derivers: Mapping[str, Deriver] | None = None) -> Deriver:
-    """The deriver registered for an endpoint, or a refusal naming it."""
-    registry = DERIVERS if derivers is None else derivers
+def deriver_for(endpoint: str, derivers: Mapping[str, Deriver]) -> Deriver:
+    """The deriver registered for an endpoint, or a refusal naming it.
+
+    🔴 **`derivers` is required, and has no default.** It briefly had one -- an
+    empty module-level registry, left over from when this seam expected build
+    step 2 to populate it in place. Once the registry moved a layer up, that
+    default had exactly one reachable outcome: `UnknownEndpointError` on the
+    first response. A caller could omit the argument, pass mypy strict and the
+    whole suite, and fail at runtime on the first response of an unattended
+    nightly sync. The same reasoning as `link_token_create`'s history window: a
+    forgetful caller should fail to typecheck.
+    """
+    registry = derivers
     try:
         return registry[endpoint]
     except KeyError:
@@ -152,7 +184,7 @@ def derive(
     response: RawResponse,
     context: DerivationContext,
     *,
-    derivers: Mapping[str, Deriver] | None = None,
+    derivers: Mapping[str, Deriver],
 ) -> None:
     """Write the normalized rows one already-persisted response implies.
 
@@ -169,8 +201,8 @@ def apply_response(
     endpoint: str,
     body: bytes,
     received_at: UtcInstant,
+    derivers: Mapping[str, Deriver],
     request_context: str | None = None,
-    derivers: Mapping[str, Deriver] | None = None,
 ) -> RawResponse:
     """Persist a response, commit it, then derive from it. The sync path's one entry point.
 

@@ -30,7 +30,7 @@ from sqlalchemy import Connection as SAConnection
 from sqlalchemy import insert, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from bankmachine.config import Config
+from bankmachine.config import MAX_HISTORY_DAYS, Config
 from bankmachine.secrets import delete_datastore_key, generate_datastore_key, set_datastore_key
 from bankmachine.store import derivation
 from bankmachine.store.derivation import (
@@ -353,6 +353,7 @@ def temporary_store(base: Path) -> Iterator[Config]:
         log_dir=base / "logs",
         keychain_service=f"bankmachine-test-{uuid.uuid4()}",
         busy_timeout_ms=200,
+        history_days=MAX_HISTORY_DAYS,
         plaid_client_id=None,
         config_path=None,
     )
@@ -474,21 +475,27 @@ def test_an_unreproducible_rebuild_can_be_accepted_deliberately(
 def test_a_changed_derivation_version_makes_the_difference_a_recorded_one(
     initialized_config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Read from the constant rather than written as literals: these are the
+    # build's derivation version and its successor, and a copy of a number that
+    # moves under you fails for a reason that says nothing about the behaviour
+    # under test -- which is exactly what happened when the first derivers
+    # landed and the version went to 2.
+    shipped = derivation.DERIVATION_VERSION
     apply_corpus(initialized_config, A_CORPUS)
     before = digest_of(initialized_config)
-    monkeypatch.setattr(derivation, "DERIVATION_VERSION", derivation.DERIVATION_VERSION + 1)
+    monkeypatch.setattr(derivation, "DERIVATION_VERSION", shipped + 1)
 
     report = rebuild(initialized_config, derivers=RECATEGORIZED)
 
     assert report.content_changed
     assert report.change_was_expected
-    assert report.previous_derivation_versions == (1,)
+    assert report.previous_derivation_versions == (shipped,)
     assert digest_of(initialized_config) != before
     with reading(initialized_config) as conn:
         recorded = conn.execute(
             select(derivation_versions.c.version).order_by(derivation_versions.c.version)
         ).scalars()
-        assert list(recorded) == [1, 2]
+        assert list(recorded) == [shipped, shipped + 1]
         stamps = conn.execute(select(transactions.c.derivation_version_id).distinct()).scalars()
         assert list(stamps) == [report.derivation_version_id]
 
@@ -591,7 +598,7 @@ def test_local_account_ids_survive_a_rebuild(initialized_config: Config) -> None
 def test_rebuilding_an_untouched_datastore_changes_nothing(initialized_config: Config) -> None:
     # The shipped path today: no derivers are registered, and an empty archive
     # gives them nothing to do.
-    report = rebuild(initialized_config)
+    report = rebuild(initialized_config, derivers=DERIVERS)
 
     assert report.responses_replayed == 0
     assert not report.content_changed

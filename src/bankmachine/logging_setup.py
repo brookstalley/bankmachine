@@ -101,8 +101,19 @@ def configure_logging(config: Config, *, level: int = logging.INFO) -> None:
 
 
 def get_logger(name: str) -> logging.Logger:
-    """A logger under the application's root, so one handler set serves everything."""
-    return logging.getLogger(f"{APP_LOGGER}.{name}" if name != APP_LOGGER else APP_LOGGER)
+    """A logger under the application's root, so one handler set serves everything.
+
+    🔴 **Accepts a `__name__` as well as a bare label**, because `__name__` is
+    what every Python author reaches for and it already starts with the
+    application's own package. Prefixing it blindly produced
+    `bankmachine.bankmachine.connector.plaid.errors` -- which still logs, still
+    routes to the same handlers, and reads as a typo in every line it writes.
+    The two new modules that pass `__name__` were the first to do so, so this
+    surfaced only once something outside `store/` started logging.
+    """
+    if name == APP_LOGGER or name.startswith(f"{APP_LOGGER}."):
+        return logging.getLogger(name)
+    return logging.getLogger(f"{APP_LOGGER}.{name}")
 
 
 def log_startup(config: Config) -> None:

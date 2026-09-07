@@ -28,24 +28,49 @@ from the aggregator.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable
 from typing import Any, Final
 
 import plaid
 import urllib3.exceptions
 from plaid.api import plaid_api
+from plaid.model.accounts_get_request import AccountsGetRequest
 from plaid.model.country_code import CountryCode
 from plaid.model.institutions_get_request import InstitutionsGetRequest
+from plaid.model.item_get_request import ItemGetRequest
+from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
+from plaid.model.link_token_create_request import LinkTokenCreateRequest
+from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
+from plaid.model.link_token_transactions import LinkTokenTransactions
+from plaid.model.products import Products
 
-from bankmachine.config import Config
+from bankmachine.config import MAX_HISTORY_DAYS, Config
 from bankmachine.connector import (
+    ACCOUNTS_GET,
     INSTITUTIONS_GET,
+    ITEM_GET,
+    ITEM_PUBLIC_TOKEN_EXCHANGE,
+    LINK_TOKEN_CREATE,
+    AccessGrant,
     AggregatorNotConfiguredError,
     ConnectorError,
     Endpoint,
     FetchedResponse,
+    LinkToken,
+    MalformedResponseError,
+    TransportError,
 )
-from bankmachine.store.types import now_utc
+from bankmachine.connector.plaid.errors import (
+    RetryPolicy,
+    Sleeper,
+    call_with_retry,
+    classify,
+    describe,
+    parse_error_body,
+    parse_retry_after,
+)
+from bankmachine.store.types import UtcInstant, now_utc
 
 #: How long a single aggregator call may take before it is abandoned. The
 #: aggregator is the one channel that can fail transiently, and a call with no
@@ -75,50 +100,60 @@ def _host_for(environment: str) -> str:
         ) from None
 
 
-def _describe_failure(endpoint: Endpoint, exc: plaid.ApiException) -> str:
-    """What actually went wrong, in one line.
+#: What Link is told to call this application, and in what language. Fixed rather
+#: than configured: they are this product's own identity in someone else's UI,
+#: not an operator preference, and `client_name` is what the operator will see at
+#: the top of the enrollment flow.
+LINK_CLIENT_NAME: Final = "bankmachine"
+LINK_LANGUAGE: Final = "en"
 
-    🔴 **`reason` is the HTTP reason phrase and says nothing.** Wrong credentials,
-    a malformed field and an unsupported country all arrive as
-    `400: Bad Request`; the cause lives in the response body, which the SDK
-    attaches to the exception and decodes to `str` before re-raising *(both
-    verified by probing the real sandbox host with deliberately invalid
-    credentials: `error_type=INVALID_REQUEST`, `error_code=INVALID_FIELD`,
-    `error_message='client_id must be a properly formatted, non-empty string'`)*.
 
-    An operator reading `400: Bad Request` has no way to tell a rotated secret
-    from a bug in this code, and the wrong guess costs them a credential
-    rotation that was never the problem. The `request_id` is included because it
-    is what makes a failure traceable in the aggregator's own dashboard.
+def _payload(endpoint: Endpoint, body: bytes) -> dict[str, Any]:
+    """Read a response body this client has to look inside.
 
-    The body is parsed defensively: a failure that cannot be described must
-    still be reported, so an unrecognized body degrades to the status line
-    rather than replacing one bad message with an exception.
+    Used only where the client itself needs a value -- a link token, an access
+    token. Archivable responses are never parsed here: AC-5.1 puts the archive
+    before any normalization, and a client that parsed on the way through would
+    make itself the first normalization step.
     """
-    status = f"{endpoint} failed with status {exc.status}"
-    body = exc.body
-    if isinstance(body, bytes | bytearray):
-        body = body.decode("utf-8", errors="replace")
-    if not isinstance(body, str):
-        return f"{status}: {exc.reason}"
     try:
         payload = json.loads(body)
-    except json.JSONDecodeError:
-        return f"{status}: {exc.reason}"
+    except json.JSONDecodeError as exc:
+        raise MalformedResponseError(
+            f"{endpoint} answered with something that is not JSON", endpoint=endpoint
+        ) from exc
     if not isinstance(payload, dict):
-        return f"{status}: {exc.reason}"
+        raise MalformedResponseError(
+            f"{endpoint} answered with {type(payload).__name__}, expected an object",
+            endpoint=endpoint,
+        )
+    return payload
 
-    code = payload.get("error_code") or payload.get("error_type")
-    message = payload.get("error_message") or payload.get("display_message")
-    request_id = payload.get("request_id")
 
-    described = status
-    if code:
-        described += f" ({code})"
-    described += f": {message or exc.reason}"
-    if request_id:
-        described += f" [request_id {request_id}]"
-    return described
+def capabilities_of(item_body: bytes) -> frozenset[str]:
+    """What a connection can do, read from its own record.
+
+    🔴 **`available_products`, not `products`.** AC-3.2 requires investments to be
+    pulled for any connection whose capabilities include investments and **never
+    for a named institution** -- so this must answer "what could this connection
+    do", and `products` answers "what did we already ask for". A discovery reading
+    `products` would report back exactly what this product requested and never
+    discover anything *(measured: a sandbox item enrolled with `transactions`
+    returns `products: ['transactions']` and 14 entries in `available_products`)*.
+
+    Nothing here branches on `institution_id`, and nothing may: the whole point
+    of discovery is that the roster stays out of the code.
+    """
+    payload = _payload(ITEM_GET, item_body)
+    item = payload.get("item")
+    if not isinstance(item, dict):
+        raise MalformedResponseError(f"{ITEM_GET} answered without an item", endpoint=ITEM_GET)
+    available = item.get("available_products")
+    if not isinstance(available, list):
+        raise MalformedResponseError(
+            f"{ITEM_GET} answered without an available_products list", endpoint=ITEM_GET
+        )
+    return frozenset(product for product in available if isinstance(product, str))
 
 
 class PlaidClient:
@@ -134,6 +169,9 @@ class PlaidClient:
         secret: str,
         *,
         timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        retry_policy: RetryPolicy | None = None,
+        sleep: Sleeper = time.sleep,
+        now: Callable[[], UtcInstant] = now_utc,
     ) -> None:
         if not config.plaid_client_id:
             raise AggregatorNotConfiguredError(
@@ -142,6 +180,13 @@ class PlaidClient:
             )
         self._environment = config.environment
         self._timeout_seconds = timeout_seconds
+        self._retry_policy = RetryPolicy() if retry_policy is None else retry_policy
+        # Injected so the suite exercises the real backoff decisions at full
+        # speed. A test that had to wait out the schedule would be rewritten to
+        # a one-attempt policy, and the schedule -- the part with a bug in it --
+        # would stop being tested at all.
+        self._sleep = sleep
+        self._now = now
         configuration = plaid.Configuration(
             host=_host_for(config.environment),
             api_key={"clientId": config.plaid_client_id, "secret": secret},
@@ -175,23 +220,83 @@ class PlaidClient:
         request: Any,
         *,
         request_context: str | None = None,
+        connection_id: int | None = None,
     ) -> FetchedResponse:
-        """Make one call and return what came back, undecoded.
+        """Make one call and return what came back, undecoded and archivable.
 
         `received_at` is stamped from the clock here because this is the moment
         the system learned the thing, and it is the value every deriver is
         required to use instead of consulting a clock of its own.
+
+        `connection_id` travels into every failure raised from here. AC-4.1's
+        "one broken connection never aborts another" is a property of the
+        caller's loop, and a loop can only honour it if the error it catches
+        says which connection it belongs to.
+
+        Refuses a credential-issuing endpoint, by way of `FetchedResponse`
+        itself: those go through `_fetch_bytes`, which hands the body to a
+        wrapper that reads what it needs and lets the rest go.
         """
+        return FetchedResponse(
+            endpoint=endpoint,
+            body=self._fetch_bytes(endpoint, invoke, request, connection_id=connection_id),
+            received_at=self._now(),
+            request_context=request_context,
+        )
+
+    def _fetch_bytes(
+        self,
+        endpoint: Endpoint,
+        invoke: Callable[..., Any],
+        request: Any,
+        *,
+        connection_id: int | None = None,
+    ) -> bytes:
+        """The body, with retries, and nothing built around it.
+
+        The only route a credential-issuing response takes. Its caller parses out
+        the fields it needs and returns those; the body itself is never handed to
+        anything that could persist it, because nothing here builds the type
+        `store.raw` consumes.
+        """
+        # 🔴 A call the far end cannot absorb twice is made once. The retry
+        # channel's safety argument -- that this side persists nothing, so there
+        # is no partial write for a second attempt to interleave against -- is
+        # about the local side only, and an exchange spends a single-use token
+        # and mints a durable Item at the aggregator.
+        policy = self._retry_policy if endpoint.retry_safe else RetryPolicy(attempts=1)
+        return call_with_retry(
+            lambda: self._attempt(endpoint, invoke, request, connection_id=connection_id),
+            policy=policy,
+            sleep=self._sleep,
+            now=self._now,
+        )
+
+    def _attempt(
+        self,
+        endpoint: Endpoint,
+        invoke: Callable[..., Any],
+        request: Any,
+        *,
+        connection_id: int | None,
+    ) -> bytes:
+        """One call, with every way it can fail turned into a local type.
+
+        Returns bytes rather than a `FetchedResponse` because a
+        credential-issuing endpoint must never have one built for it, and the
+        thing that must not exist should not be constructed here and discarded
+        upstream.
+        """
+        raw = None
         try:
             raw = invoke(
                 request,
                 _preload_content=False,
                 _request_timeout=self._timeout_seconds,
             )
+            body = raw.data
         except plaid.ApiException as exc:
-            # Classified into the connection-health taxonomy in Chunk 02. What
-            # this build owes already is a message that names the cause.
-            raise ConnectorError(_describe_failure(endpoint, exc)) from exc
+            raise self._refusal(endpoint, exc, connection_id) from exc
         except urllib3.exceptions.HTTPError as exc:
             # The SDK wraps only SSL errors *(verified by probing an unreachable
             # host: a refused connection escapes as urllib3.MaxRetryError)*, so
@@ -200,23 +305,81 @@ class PlaidClient:
             # failure rather than an aggregator one, because the aggregator did
             # not answer -- and that distinction is what stops someone rotating a
             # secret that was never the problem.
-            raise ConnectorError(
+            raise TransportError(
                 f"{endpoint} could not reach the aggregator at the {self._environment} "
-                f"host: {type(exc).__name__}"
+                f"host: {type(exc).__name__}",
+                endpoint=endpoint,
+                connection_id=connection_id,
+                failed_at=self._now(),
             ) from exc
-        try:
-            body = raw.data
+        except AttributeError as exc:
+            # 🔴 A bug in the SDK, contained here because it surfaces as a
+            # traceback from a library the operator never chose. `rest.py` raises
+            # `ApiException(status=0, reason=...)` with no body when a bare
+            # `urllib3.exceptions.SSLError` escapes retry wrapping, and
+            # `api_client.py` then runs `e.body.decode('utf-8')` on that `None`
+            # *(both verified by probe: the AttributeError is raised at
+            # api_client.py:204 with the ApiException as its `__context__`)*.
+            #
+            # The narrowing is the point. Catching `AttributeError` around a call
+            # would swallow every genuine typo in this module, so this re-raises
+            # untouched unless the SDK's own exception is standing behind it.
+            if not isinstance(exc.__context__, plaid.ApiException):
+                raise
+            raise TransportError(
+                f"{endpoint} failed inside the aggregator SDK while it was reporting a "
+                f"transport error of its own: {exc.__context__.reason}",
+                endpoint=endpoint,
+                connection_id=connection_id,
+                failed_at=self._now(),
+            ) from exc
+        except OSError as exc:
+            # The body is read inside this `try` on purpose. urllib3 streams it,
+            # so a connection reset lands *here* rather than at the call -- and
+            # read outside, it escaped as a bare `OSError` from a connector whose
+            # whole contract is that its failures are local types. Retryable,
+            # because a reset connection is the transient case by definition.
+            raise TransportError(
+                f"{endpoint} lost the connection to the aggregator while the response "
+                f"was being read: {type(exc).__name__}",
+                endpoint=endpoint,
+                connection_id=connection_id,
+                failed_at=self._now(),
+            ) from exc
         finally:
-            raw.release_conn()
-        if not isinstance(body, bytes):  # pragma: no cover -- urllib3 returns bytes
-            raise ConnectorError(
-                f"{endpoint} returned {type(body).__name__}, expected undecoded bytes"
+            if raw is not None:
+                raw.release_conn()
+        if not isinstance(body, bytes):
+            raise MalformedResponseError(
+                f"{endpoint} returned {type(body).__name__}, expected undecoded bytes",
+                endpoint=endpoint,
+                connection_id=connection_id,
+                failed_at=self._now(),
             )
-        return FetchedResponse(
+        return body
+
+    def _refusal(
+        self,
+        endpoint: Endpoint,
+        exc: plaid.ApiException,
+        connection_id: int | None,
+    ) -> ConnectorError:
+        """The local exception one aggregator refusal becomes.
+
+        Built rather than raised so the `raise ... from exc` at the call site
+        keeps the SDK's exception as the cause -- the classification is this
+        product's reading of the failure, and the original stays reachable for
+        anyone who disagrees with it.
+        """
+        detail = parse_error_body(exc.body)
+        return classify(exc.status, detail)(
+            describe(endpoint, exc.status, exc.reason, detail),
             endpoint=endpoint,
-            body=body,
-            received_at=now_utc(),
-            request_context=request_context,
+            connection_id=connection_id,
+            error_code=detail.error_code,
+            request_id=detail.request_id,
+            failed_at=self._now(),
+            retry_after_seconds=parse_retry_after(exc.headers),
         )
 
     def institutions_get(
@@ -241,4 +404,97 @@ class PlaidClient:
             request_context=(
                 f"count={count} offset={offset} country_codes={','.join(country_codes)}"
             ),
+        )
+
+    def link_token_create(
+        self,
+        *,
+        history_days: int,
+        client_user_id: str,
+        country_codes: list[str],
+        products: list[str],
+    ) -> LinkToken:
+        """Open a Link session that will request `history_days` of history.
+
+        🔴 **`history_days` is required and has no default, and that is the whole
+        point of this signature.** AC-1.2 makes the granted window immutable
+        after enrollment, and the requirements call a vendor-default build a
+        failed build -- so a caller that forgets the window must fail to
+        typecheck rather than silently enroll at whatever the aggregator would
+        have chosen. A default value here is precisely how that failure happens,
+        and it would not be visible until someone asked for three-year-old
+        transactions and found they had never been fetched.
+
+        The response carries a `link_token` and nothing else this product keeps;
+        it is a credential, so it never becomes an archivable response.
+        """
+        if not 1 <= history_days <= MAX_HISTORY_DAYS:
+            raise AggregatorNotConfiguredError(
+                f"history_days must be between 1 and {MAX_HISTORY_DAYS}, got {history_days}. "
+                f"The aggregator would reject it, and the window cannot be changed after "
+                f"enrollment"
+            )
+        request = LinkTokenCreateRequest(
+            client_name=LINK_CLIENT_NAME,
+            language=LINK_LANGUAGE,
+            country_codes=[CountryCode(code) for code in country_codes],
+            user=LinkTokenCreateRequestUser(client_user_id=client_user_id),
+            products=[Products(product) for product in products],
+            transactions=LinkTokenTransactions(days_requested=history_days),
+        )
+        body = self._fetch_bytes(LINK_TOKEN_CREATE, self._api.link_token_create, request)
+        payload = _payload(LINK_TOKEN_CREATE, body)
+        token = payload.get("link_token")
+        expiration = payload.get("expiration")
+        if not isinstance(token, str) or not isinstance(expiration, str):
+            raise MalformedResponseError(
+                f"{LINK_TOKEN_CREATE} answered without a link_token and expiration",
+                endpoint=LINK_TOKEN_CREATE,
+                failed_at=self._now(),
+            )
+        return LinkToken(token=token, expires_at=expiration, requested_history_days=history_days)
+
+    def exchange_public_token(self, public_token: str) -> AccessGrant:
+        """Trade a public token for the access token a connection is read with.
+
+        🔴 The most sensitive response this product ever receives. Its body is
+        `access_token`, `item_id`, `request_id` *(verified live)*, and it is
+        never archived -- not by a rule anyone follows, but because
+        `ITEM_PUBLIC_TOKEN_EXCHANGE` is declared credential-issuing and
+        `FetchedResponse` refuses to exist for such an endpoint. The body is read
+        here and let go.
+        """
+        request = ItemPublicTokenExchangeRequest(public_token=public_token)
+        body = self._fetch_bytes(
+            ITEM_PUBLIC_TOKEN_EXCHANGE, self._api.item_public_token_exchange, request
+        )
+        payload = _payload(ITEM_PUBLIC_TOKEN_EXCHANGE, body)
+        access_token = payload.get("access_token")
+        item_id = payload.get("item_id")
+        if not isinstance(access_token, str) or not isinstance(item_id, str):
+            raise MalformedResponseError(
+                f"{ITEM_PUBLIC_TOKEN_EXCHANGE} answered without an access_token and item_id",
+                endpoint=ITEM_PUBLIC_TOKEN_EXCHANGE,
+                failed_at=self._now(),
+            )
+        return AccessGrant(access_token=access_token, source_connection_id=item_id)
+
+    def item_get(self, access_token: str, *, connection_id: int | None = None) -> FetchedResponse:
+        """One connection's own record of itself. Archivable: nothing comes back down."""
+        return self._fetch(
+            ITEM_GET,
+            self._api.item_get,
+            ItemGetRequest(access_token=access_token),
+            connection_id=connection_id,
+        )
+
+    def accounts_get(
+        self, access_token: str, *, connection_id: int | None = None
+    ) -> FetchedResponse:
+        """The accounts behind one connection."""
+        return self._fetch(
+            ACCOUNTS_GET,
+            self._api.accounts_get,
+            AccountsGetRequest(access_token=access_token),
+            connection_id=connection_id,
         )

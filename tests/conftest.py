@@ -8,13 +8,15 @@ plausible assumption, and a mock returns the assumption.
 
 from __future__ import annotations
 
+import json
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from bankmachine.config import Config, Environment
+from bankmachine.config import MAX_HISTORY_DAYS, Config, Environment
 from bankmachine.secrets import delete_datastore_key, set_datastore_key
 
 
@@ -41,6 +43,7 @@ def make_config(
     environment: Environment = "sandbox",
     datastore_name: str = "store.db",
     plaid_client_id: str | None = None,
+    history_days: int = MAX_HISTORY_DAYS,
 ) -> Config:
     return Config(
         environment=environment,
@@ -49,6 +52,7 @@ def make_config(
         keychain_service=keychain_service,
         busy_timeout_ms=200,
         plaid_client_id=plaid_client_id,
+        history_days=history_days,
         config_path=None,
     )
 
@@ -88,3 +92,38 @@ def _isolate_application_logging() -> Iterator[None]:
         logger.handlers[:] = handlers
         logger.setLevel(level)
         logger.propagate = propagate
+
+
+#: The recorded rejection whose shape every constructed error body is built from.
+#:
+#: The offline suite has to construct error bodies for codes that cannot be
+#: provoked -- there is no way to make the sandbox return `ITEM_LOCKED` on
+#: demand. What it must not do is *invent the shape* while doing so: a
+#: hand-written body tests the taxonomy against what its author remembered, and
+#: the fields they forget are exactly the ones nothing then checks. This file was
+#: recorded verbatim from a real rejection by `tests/connector/test_sandbox.py`,
+#: and is the one that carries a non-null `error_type` -- the field the
+#: taxonomy's second classification layer reads.
+#:
+#: It lives in this conftest rather than beside the connector tests because two
+#: `conftest.py` files in one un-packaged tree collide under mypy.
+ERROR_SHAPE_FIXTURE = Path(__file__).parent / "connector" / "fixtures" / "error_invalid_field.json"
+
+
+@pytest.fixture(scope="session")
+def error_body() -> Callable[..., str]:
+    """Build an aggregator error body in the shape the aggregator actually sends.
+
+    Session-scoped because it reads one file and returns a pure function; nothing
+    it hands out is mutable state shared between tests. When the aggregator
+    changes its error body, the sandbox test fails on the recorded keys and every
+    offline test that builds one moves with it.
+    """
+    recorded: dict[str, Any] = json.loads(ERROR_SHAPE_FIXTURE.read_text())
+
+    def build(**fields: object) -> str:
+        payload = dict(recorded)
+        payload.update(fields)
+        return json.dumps(payload)
+
+    return build

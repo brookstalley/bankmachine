@@ -34,6 +34,199 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-07: What the cumulative review changed about the derivers
+
+<!-- prawduct: scope=connector-v1 -->
+
+**Why:** the bundle review of build step 2 found one blocking defect and two design errors, and
+all three were mine to have caught.
+
+🔴 **A day's balance was being overwritten, and three ratified records say it is rejected.**
+AC-3.1, `data-model.md` and the DDL comment above `balances_daily` all say the same thing: a
+second capture on a day already recorded is *rejected*, so the series does not depend on what time
+of day anyone happened to look. My deriver upserted, and the reinterpretation that justified it —
+"AC-3.1 is about the series" — lived only in a comment in the deriver itself. **That is a
+normative change, and a comment is not where one gets made.** The rule now conforms: the first
+capture for a day wins, decided by comparing captures rather than by arriving first, so a replay
+in any order lands on the same row. AC-2.4 was measurably breached too — re-deriving rewrote
+`raw_response_id` and `captured_at`, and the idempotence test compared only the two tables where
+it held. The sharpest case had no test at all: a manual-import row was overwritten into an
+aggregator row, which the *next* rebuild deletes, so an operator's hand-entered balance would
+vanish one rebuild later with nothing connecting the loss to the sync that caused it.
+
+🔴 **The institutions deriver was writing a catalogue page into the roster.** `/institutions/get`
+serves the aggregator's *production* catalogue — 10,083 US institutions with real names and
+routing numbers — and `institutions` is the table `connections` hangs off. After a
+`connector check` and a rebuild, the roster would hold banks the operator never linked, with
+nothing to tell them apart and nothing that removes them, because a rebuild never empties that
+table. The institution now comes from `/item/get`, which carries exactly the one this connection
+belongs to. `/institutions/get` is registered as deriving **nothing**, by name: "archived and
+implies no rows" is a real answer, and left unregistered it is indistinguishable from the endpoint
+nobody got round to.
+
+**`/item/get` was archivable with no deriver**, which would have made every later rebuild refuse
+the whole archive — on a row that cannot be removed. The test named for that check asserted a
+hand-written pair, which is why adding the endpoint did not turn it red; it now derives the
+expected set from the endpoints that can produce a `FetchedResponse`, so the next one fails in the
+commit that adds it.
+
+**Two more where a shape held for a reason narrower than the claim above it.** The retry channel's
+safety argument — nothing inside it writes — is about the *local* side, and an exchange spends a
+single-use token at the far end; `Endpoint.retry_safe` now carries that. "The connector persists
+nothing" stopped being true when the derivers landed: a deriver writes rows through a handle the
+caller owns. The property that actually holds, and the one AC-5.1 rests on, is that nothing under
+`connector/` can *obtain* a handle — narrower, and true.
+
+**Smaller, and each one a thing that would have read as fine:** `_upsert_account` applied one
+values dict to insert and update, so derivation permanently owned `balance_class`, which
+`data-model.md` declares operator-correctable; the registry argument was optional everywhere with
+a default that could only fail; `get_logger` doubled its own prefix, so every new log line read
+`bankmachine.bankmachine.…`; the terminal failure — the one that ends a sync — was the one going
+unlogged; and the credential guard's exemption read one line at a time, so a secret inside a
+multi-line string was exempt on every line but the first. That last one is now answered with
+`ast` rather than quote-counting, after the counting version started reporting its own tests.
+
+**Three obligations this plan cannot discharge are written into it** rather than left to be
+noticed: wiring `config.history_days` into enrollment, the granted window that is unobservable
+until step 3's first real connection, and account retirement.
+
+## 2026-09-07: Enrollment, the derivers, and the archive exemption made structural
+
+<!-- prawduct: scope=connector-v1 -->
+
+**Why:** build step 2's remaining half. Chunk 03 adds the calls enrollment will make —
+`/link/token/create`, `/item/public_token/exchange`, `/item/get`, `/accounts/get` — and Chunk 04
+registers the first derivers, so `store rebuild` runs end-to-end over an archive of real responses
+instead of refusing one for want of a deriver. Build step 2 is complete.
+
+**Three things are held by construction here, because each is a mistake nobody notices making.**
+
+- 🔴 **The history window is a required argument with no default.** AC-1.2 makes it immutable after
+  enrollment and the requirements call a vendor-default build a failed build, so forgetting it is a
+  type error — and the test runs mypy, because asserting at runtime that a window was passed tests
+  the call site in front of it rather than the property that no call site can omit it. The maximum,
+  730, is read off the SDK's own request validation and a test compares the two, since
+  `plaid-python` is not pinned and the number can move under us.
+- 🔴 **A credential-bearing response cannot become an archivable one.**
+  `Endpoint.issues_credential` marks the two endpoints whose body carries a credential, and
+  `FetchedResponse` refuses to exist for such an endpoint — so there is no object to hand the
+  archive. A list of exempt paths beside the archive would be an enumeration standing in for a
+  property, and this project has been burned once already by a rule matching a name where it meant a
+  relationship. `raw_responses` is append-only, so a token written there is written permanently and
+  travels with every backup.
+- 🔴 **A call the far end cannot absorb twice is never retried.** The Critic caught this: the retry
+  channel's safety argument — that the connector persists nothing, so a second attempt has no
+  partial write to interleave against — is about the *local* side only. An exchange spends a
+  single-use public token and mints a durable Item at the aggregator, so a retry after a
+  transport failure either fails on a spent token or enrolls twice. `retry_safe` is now a property
+  of the endpoint, with a control proving reads still retry.
+
+**Capabilities read `available_products`, not `products`.** AC-3.2 pulls investments for any
+connection whose capabilities include them and never for a named institution — and `products`
+answers "what did we already ask for". A discovery reading it would report back this product's own
+request, discover nothing, and pass every test asserting that discovery happened. Measured against a
+live item: `products` is `['transactions']`, `available_products` has fourteen entries.
+
+**The derivers, and the one place this build rounds.** Institutions and accounts converge on their
+natural keys rather than inserting, because a rebuild never empties them — their local ids are what
+every row of history references (AC-6.3), and reassigning them would orphan it. `first_seen_at` is a
+minimum and `last_seen_at` a maximum, so replay order cannot change the result, which is what makes
+the order-independence property a property of the arithmetic rather than of today's `ORDER BY`.
+
+Money never touches a float: bodies are parsed with `parse_float=str`, so an amount arrives as the
+digits the aggregator sent. The exception is deliberate and was the owner's call. Plaid's own
+sandbox institution returns a 401k balance of `23631.9805` USD — canned data, so the aggregator is
+deliberately exercising the case and sub-cent valuations are a production shape. An investment
+`current` is price times quantity, computed rather than transacted, and no brokerage statement
+reports hundredths of a cent, so it is rounded **half-even** (half-up would bias a portfolio upward a
+fraction of a cent at a time, forever), **logged every time**, and the archive keeps the exact
+original. The distinction that makes this legitimate — a *valuation* is not a *ledger amount* — is
+recorded, not assumed.
+
+**The sign convention now has the mechanism it was ratified in-transition without** (issue #9). A
+liability's balance is stored negative whatever sign the source used; several aggregators report a
+card balance as a positive amount owed, and a consumer taking that at face value is wrong by twice
+the debt, silently. `available_minor` and `limit_minor` are the documented exceptions and keep their
+magnitudes — asserted explicitly, or a later change that signed every column alike would look like a
+tidy-up and pass.
+
+**A guard caught its own author, twice.** AC-10.2's credential scan fired on this work's test data,
+which was right and the test data changed. It also fired on a keyword argument forwarding a
+same-named variable in the product code — ordinary Python, and the shape that gets a guard narrowed
+in irritation later — so the exemption is now principled: in Python source an unquoted bare
+identifier is a reference, never a literal. The Critic then found the hole in *that*: an unquoted identifier inside
+a comment or a docstring is text, and text is where a secret gets parked "temporarily". Four edges,
+a control on each.
+
+## 2026-09-07: The connector's error taxonomy, and the retry channel it feeds
+
+<!-- prawduct: scope=connector-v1 -->
+
+**Why:** FR-4 is written in four connection-health states — auth-required, locked,
+institution-down, rate-limit — and until this chunk every aggregator failure reached the
+caller as one `ConnectorError` carrying a sentence. A sync loop cannot honour AC-4.1's
+"one broken connection never aborts another" against a single type, and cannot record
+AC-4.2's error code or compute AC-4.5's data hole from a message.
+
+**What shipped.** `connector/plaid/errors.py` maps the aggregator's vocabulary onto local
+types defined in `connector/__init__.py` — outside the `plaid` subpackage, so catching an
+aggregator failure never requires importing the aggregator. The types are organized by
+**what the caller must do next** rather than by what the aggregator called it: Plaid's own
+`ITEM_ERROR` spans re-link, go-to-your-bank and nothing-to-sync, and a consumer switching on
+it would send the operator somewhere that cannot help them. Every failure carries its
+connection, its code, its request id and the instant it happened. Alongside it,
+backoff-and-retry on the one channel `architecture.md` permits it on (AC-2.6), with the
+clock injected so the suite exercises the real schedule at full speed.
+
+**Three decisions worth reading.**
+
+- **Retryability is a property of each error type, never a list in the retry loop.** A list
+  goes stale the moment someone adds a type without visiting that file, and it fails in both
+  directions: an un-retried transient stops the nightly sync, a retried permanent one hammers
+  the aggregator with a call that cannot work. `retryable` has no base-class default, and
+  `__init_subclass__` refuses at *class creation* a type that never decided. The first version
+  of this used a test walking `__subclasses__()`; the Critic pointed out that walk sees only
+  modules that have been imported, so it would have guaranteed something about the types one
+  test file happens to import — and the case it misses is the second aggregator this package
+  is explicitly shaped for. That test is consolidated away, because the class-creation guard
+  makes it a check that can no longer fail.
+- **`ITEM_ERROR` is deliberately absent from the classification's coarse layer.** Mapping it
+  would be confidently wrong two times in three, and a wrong remedy is worse than a refusal.
+- **An unrecognized code gets its own type, not a neighbour's.** Filing an unknown refusal
+  under "probably transient" hides a connection that will never recover; under "probably
+  terminal" it retires one that only needed a retry. Codes this build *recognizes* but has no
+  FR-4 class for say so in as many words, which is the difference between a gap someone chose
+  and a gap nobody noticed.
+
+**A dependency bug, contained narrowly.** `plaid-python` 44.0.0's `api_client.py` calls
+`e.body.decode('utf-8')` on a body it just set to `None`, so one class of SSL failure leaves
+the SDK as `AttributeError` rather than as anything catchable. It is caught here and
+**re-raised untouched unless the SDK's own exception is standing behind it** — catching
+`AttributeError` around a call would swallow every genuine typo in the module and report it
+as a network problem, so the narrowing has its own negative control. Getting there took two
+probes that disagreed with each other and with the source reading; `api-notes-plaid.md` §9
+records which SSL failures actually reach which path.
+
+**What the Critic caught, and it is the same shape twice.** A `Retry-After` header was
+honoured as a floor with no ceiling, so the aggregator could ask this product to sleep for an
+hour inside one nightly sync — bypassing `max_delay_seconds`, the field whose whole job is
+bounding the wait — and `float("inf")` passed the only guard on it, which `time.sleep` turns
+into an `OverflowError` past the boundary. Both are external input reaching a wait, and the
+docstring one line above promised a bound the code did not enforce: **the prose was right and
+the mechanism was weaker, so the mechanism was raised.** Separately, the response body was
+read outside the exception mapping, so a reset connection escaped as a bare `OSError` from a
+connector whose whole contract is that its failures are typed.
+
+**Two amendments to the plan, both stated rather than absorbed.** The chunk's sandbox test
+asked for `/sandbox/item/reset_login` to drive a real `ITEM_LOGIN_REQUIRED`; that needs an
+enrolled Item, which needs Chunk 03's exchange call, so it moves there. What runs instead is
+still live — invalid credentials reach the same host and come back with the real error shape,
+and the taxonomy now tells a wrong secret from a malformed call against the real server, which
+is the failure VRF-002 item 5 was written to catch. And the declared "error fixtures" now
+exist and are recorded verbatim from real rejections, replacing three hand-written body shapes
+that had drifted into two test modules; the offline suite builds every constructed body from
+that one recorded shape, so a change in the aggregator's error body moves them all together.
+
 ## 2026-09-07: The strategy artifacts, and the two gaps writing them exposed
 
 <!-- prawduct: scope=strategy-artifacts -->

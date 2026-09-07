@@ -162,14 +162,35 @@ def test_a_new_derivation_version_is_recorded_beside_the_old_one(writer: SAConne
     assert list(versions) == [DERIVATION_VERSION, DERIVATION_VERSION + 1]
 
 
-def test_the_shipped_registry_is_empty_until_the_aggregator_client_lands() -> None:
-    # Recorded as a test rather than a comment: it is the reason `store rebuild`
-    # refuses a real archive today, and a deriver registered by accident -- as
-    # an import side effect, say -- would change what a rebuild replays without
-    # changing anything a reader would think to look at.
-    from bankmachine.store.derivation import DERIVERS
+def test_the_registry_has_to_be_passed_and_cannot_be_forgotten() -> None:
+    """No module-level registry to fall back to, and no default to omit.
 
-    assert dict(DERIVERS) == {}
+    There was one, and it became a trap: once the composition moved above this
+    layer the default had exactly one reachable outcome -- `UnknownEndpointError`
+    on the first response. A caller could omit the argument, pass mypy strict and
+    the whole suite, and fail at runtime on the first response of an unattended
+    nightly sync. Same reasoning as `link_token_create`'s history window: a
+    forgetful caller should fail to typecheck.
+    """
+    import inspect
+
+    from bankmachine.store import derivation, rebuild
+
+    assert not hasattr(derivation, "DERIVERS"), (
+        "a module-level registry is back; it can only ever be empty here, because "
+        "populating it would mean `store` importing `connector`"
+    )
+    for function in (
+        derivation.deriver_for,
+        derivation.derive,
+        derivation.apply_response,
+        rebuild.rebuild,
+    ):
+        parameter = inspect.signature(function).parameters["derivers"]
+        assert parameter.default is inspect.Parameter.empty, (
+            f"{function.__name__} lets a caller omit the registry, and the only thing that "
+            f"happens then is a runtime refusal on the first response"
+        )
 
 
 def test_received_at_is_the_derivation_clock(writer: SAConnection) -> None:

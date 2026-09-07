@@ -244,7 +244,7 @@ _DDL_TEMPLATES: tuple[str, ...] = (
     # always set -- an aggregator row names the response it was derived from, an
     # imported row names the import. The CHECK enforces that rather than the
     # code that inserts, because a row with no link is a row whose answer to
-    # "where did this come from" is silence, and Chunk 03's rebuild is written
+    # "where did this come from" is silence, and the rebuild is written
     # against this constraint rather than against a convention.
     """
     CREATE TABLE transactions (

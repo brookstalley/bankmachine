@@ -48,11 +48,42 @@ Derivation Seam — was built in step 1 specifically so step 2 would have someth
   `test_connection_is_the_sole_constructor.py`. A `Protocol` with one implementation was considered
   and rejected: an interface designed against a single known implementation encodes that
   implementation's shape, and the honest version of it cannot be written until a second aggregator
-  exists. **This closes §9.2** — fold the answer back into that section when the plan lands.
+  exists. **This closed §9.2**, and the answer is folded back into that section (2026-09-07).
 - `[DECISION: fixtures are recorded from live sandbox responses, not written from the SDK's models |
   confirmed the owner has sandbox credentials | user can revisit]` Chunk 01's `verify-api` step reads
   `plaid-python`'s source first and *then* probes, because the two disagree in exactly the places
   that matter — a fixture written from a model definition inherits whatever the model got wrong.
+
+- `[DECISION: whether an aggregator failure is worth retrying is a property of its error type,
+  not a list kept in the retry loop | taken during Chunk 02, 2026-09-07 | user can revisit]`
+  `retryable` has no default on `ConnectorError`, and `__init_subclass__` refuses at class
+  creation any subclass that did not declare one. **The alternative was a set of retryable
+  types checked inside `call_with_retry`,** which is how this is usually written and is
+  simpler to read in one place. It was rejected because that set is an enumeration standing in
+  for a property: it goes stale the moment an error type is added by someone who does not
+  think to open that file, and it goes stale *silently*, in whichever direction the omission
+  happens to fall — an un-retried transient stops the nightly sync, a retried permanent one
+  hammers the aggregator with a call that cannot work. The cost of the choice is real and
+  worth stating: every future error type must decide, and a second aggregator's module cannot
+  define one without deciding. That is the intended cost. Recorded as a decision rather than
+  left in prose because it constrains every error type anyone adds from here, and the owner
+  should get the chance to say a plain list would have been fine.
+
+- `[DECISION: an investment valuation is rounded half-even to the currency's minor unit; a ledger
+  amount is still converted exactly or refused | taken by the owner 2026-09-07, during Chunk 04 |
+  user can revisit]` `/accounts/get` returns an investment `current` at whatever precision price
+  times quantity produced — measured: Plaid's own sandbox institution ships a 401k balance of
+  `23631.9805` USD as canned data, which is the aggregator exercising the case deliberately rather
+  than a sandbox artifact. `from_decimal_string` refuses excess precision by design, so the three
+  live options were refuse (no real investment account could be stored at all), round, or widen the
+  column (a migration against frozen DDL). **The owner chose to round**, on the reasoning that an
+  investment `current` is a *valuation* rather than a transacted amount and no brokerage statement
+  reports hundredths of a cent. Half-even because it applies to every valuation on every sync and
+  half-up would bias a portfolio upward a fraction of a cent at a time, forever; logged every time,
+  with the exact original kept in the archive, so a later build that widens the column can
+  re-derive it. **This introduced a domain distinction the requirements did not contain** — a
+  valuation is not a ledger amount — which is recorded as an amendment to `data-model.md`'s sign
+  convention rather than left implicit in the deriver.
 
 **Open assumptions:**
 
@@ -83,7 +114,7 @@ mid-plan.
 Three positions, since a plan handed over without one reads as endorsed:
 
 1. **I would cut the transactions deriver from this plan, and I have.** The obvious reading of "step 2
-   registers into `DERIVERS`" is that step 2 derives everything it can fetch. I think that is wrong:
+   registers the derivers" is that step 2 derives everything it can fetch. I think that is wrong:
    deriving a `/transactions/sync` response is inseparable from the cursor loop, the soft-delete rule
    (AC-2.2) and the pending→posted match (AC-2.3), all of which are FR-2 and build step 4. Splitting
    the deriver from the loop that feeds it means writing the hard half twice. So Chunk 04 registers
@@ -117,9 +148,9 @@ Three positions, since a plan handed over without one reads as endorsed:
 ## Status
 
 - [x] Chunk 01: Walking skeleton — credentials, the contained client, one sandbox response archived
-- [ ] Chunk 02: The error taxonomy and the one retry channel
-- [ ] Chunk 03: Enrollment endpoints — link token, exchange, capability discovery
-- [ ] Chunk 04: Institutions and accounts derivers; rebuild on a real archive
+- [x] Chunk 02: The error taxonomy and the one retry channel
+- [x] Chunk 03: Enrollment endpoints — link token, exchange, capability discovery
+- [x] Chunk 04: Institutions and accounts derivers; rebuild on a real archive
 Context: Plan drawn 2026-09-06, directly after `build-plan-datastore-v1.md` closed and merged as
 `4c7a491`.
 
@@ -138,6 +169,20 @@ item 7 asked that the fixture hold sandbox institutions only, and the sandbox's
 04 is recorded in `api-notes-plaid.md` §7 — the §4 risk below is narrower than written for this one
 endpoint, and unchanged for every other.
 
+**Chunk 02 closed 2026-09-07.** FR-4's four connection-health states are four distinct local
+types organized by what the caller must do next, every failure carries the connection it belongs
+to plus the code and instant a degraded record needs, and backoff-and-retry runs on the one channel
+`architecture.md` permits it on. Whether a failure retries is a property of its own type, refused at
+class creation if undeclared — the `[DECISION:]` above records the plain-list alternative that was
+rejected and what rejecting it costs. Two amendments are stated in the chunk entries below rather
+than absorbed, both because the aggregator would not support the test as drawn.
+
+The review cost two rounds and the first one was worth it: `Retry-After` is a header, and it reached
+`time.sleep` with no ceiling and no finiteness check, so the aggregator could have asked this product
+to hang for an hour inside one nightly sync. The docstring one line above already promised a bound
+the code did not enforce — **the prose was right and the mechanism was weaker, so the mechanism was
+raised.**
+
 `verify-api` paid for itself three times before any client code was written: the SDK deserializes by
 default and would have put a model round-trip in the archive instead of the response (AC-5.1); it
 ships no `py.typed`, which is the strongest argument the containment decision got; and it leaves
@@ -145,9 +190,9 @@ transport failures unwrapped, so an offline machine reported a `urllib3` traceba
 of the Critic — `ApiException.reason` is the HTTP reason phrase, so every rejection read
 `400: Bad Request` until the error body was parsed for the cause.
 
-The datastore layer this plan archives through is complete and green; the `DERIVERS` registry it
-registers into is deliberately empty, and `store rebuild` refuses a real archive until Chunk 04
-fills it. **Next: close VRF-002 when credentials exist, then Chunk 02.**
+The datastore layer this plan archives through is complete and green; there was no deriver to
+register, and `store rebuild` refused a real archive until Chunk 04
+fills it. **Build step 2 is complete.** Next is build step 3, the enrollment flow — and 🔴 its first real connection is where AC-1.2 becomes irreversible and where the granted history window becomes observable for the first time.
 
 ## Scaffolding
 
@@ -195,7 +240,7 @@ src/bankmachine/
 │   └── plaid/             # the ONLY place `plaid` is imported
 │       ├── client.py      # transport, auth, the endpoint wrappers
 │       ├── errors.py      # the error taxonomy (Chunk 02)
-│       └── derivers.py    # registered into store.derivation.DERIVERS (Chunk 04)
+│       └── derivers.py    # composed by bankmachine/derivers.py (Chunk 04)
 └── cli/connector.py       # `bankmachine connector check`
 tests/
 ├── connector/
@@ -277,8 +322,19 @@ relationship (who may import what), not a naming convention.
   something specific rather than being swallowed; unit — backoff retries a rate-limit and a
   not-ready response and gives up loudly, with the clock injected so nothing sleeps; property
   (hypothesis) — no input to the mapper returns `None` or a bare `Exception`, since silence is the one
-  disallowed outcome; sandbox (marked) — `/sandbox/item/reset_login` drives a real
-  `ITEM_LOGIN_REQUIRED` through the taxonomy
+  disallowed outcome; sandbox (marked) — deliberately invalid credentials drive real
+  `INVALID_API_KEYS` and `INVALID_FIELD` refusals through the taxonomy against the live host
+
+  **Amended during the build (2026-09-07), and the amendment is a descope, so it is stated
+  rather than absorbed.** This chunk was drawn asking for `/sandbox/item/reset_login` to drive
+  a real `ITEM_LOGIN_REQUIRED`. That call needs an enrolled Item, an Item needs an access
+  token, and the exchange that mints one is **Chunk 03's** deliverable — so the test as
+  written could not be run in the chunk that asked for it. It moves to Chunk 03, whose
+  `verify-api` step already opens the enrollment endpoints. What replaces it here is not a
+  fake standing in for a live call: invalid credentials reach the same host and come back with
+  the real error shape, so the taxonomy *is* exercised end-to-end against the aggregator, on
+  the two codes that can be provoked without an Item. The item-level half is genuinely
+  deferred, and `api-notes-plaid.md` "Still to verify" carries it
 - **Acceptance criteria:** the four FR-4 error classes each map to a distinct local type carrying the
   connection identifier; a rate-limited call succeeds after backoff rather than failing; a mapped
   failure records what AC-4.5 needs to compute the hole, not just that something broke
@@ -304,11 +360,26 @@ relationship (who may import what), not a naming convention.
   asserted by mypy over a negative fixture) and sends the configured value, not a default; unit — the
   exchange response is **not** archived, by a test naming the exempt endpoints, while `/accounts/get`
   is; unit — capabilities are read from the item's own product list, and no code path branches on an
-  institution's identity; sandbox (marked) — a link token is created and its `days_requested` echoes
-  back at the configured maximum
-- **Acceptance criteria:** a link token opens in Plaid Link and reports the requested window; the
-  access token returned by an exchange reaches the caller and appears in neither the archive nor any
-  log line
+  institution's identity; sandbox (marked) — a link token is created live with the configured
+  maximum and the aggregator accepts it
+
+  **Amended during the build (2026-09-07), by `verify-api` doing its job.** This chunk was drawn
+  asking that the created link token's `days_requested` "echoes back at the configured maximum".
+  It does not: probed live with `days_requested=730`, the response carries exactly `expiration`,
+  `link_token` and `request_id` — nothing about the window, requested or granted
+  (`api-notes-plaid.md` §11). So the echo cannot be asserted, and asserting a weaker thing while
+  keeping the old sentence would be worse than saying this. What *is* checkable here is the value
+  this product sends, on the request object the SDK builds, plus a live call proving 730 is
+  accepted. 🔴 **The granted window stays unobservable until build step 3's first real
+  connection**, which is already the step where AC-1.2 becomes irreversible — and AC-11.8's
+  shortfall cannot be computed before it. No chunk in this plan should be read as having
+  verified the window the aggregator actually grants
+- **Acceptance criteria:** a link token is created live carrying the configured window, and the
+  window it was asked for travels back to the caller *(amended with the Tests line above and for the
+  same reason — the create response does not report the window, so "reports the requested window"
+  described something the endpoint cannot do; what the aggregator actually grants is not observable
+  until build step 3's first real connection)*; the access token returned by an exchange reaches the
+  caller and appears in neither the archive nor any log line
 - **Foreign API:** plaid-python
 - **Visual change:** yes — the link URL is what the operator pastes into a browser at enrollment
 - **Done when:**
@@ -321,7 +392,7 @@ relationship (who may import what), not a naming convention.
 
 ### Chunk 04: Institutions and accounts derivers; rebuild on a real archive
 
-- **Description:** Register the first derivers into `DERIVERS`, so `store rebuild` works end-to-end
+- **Description:** Build the first derivers and compose them into a registry, so `store rebuild` works end-to-end
   over an archive of real responses instead of refusing for want of one. Institutions and accounts are
   the entities transactions will reference, which is what build step 4 needs from this plan. The
   derivers obey the seam's one rule with teeth: no clock, ever.
@@ -329,7 +400,7 @@ relationship (who may import what), not a naming convention.
 - **Artifacts consumed:** `src/bankmachine/store/derivation.py` (the seam's contract),
   `docs/system-requirements.md` FR-5 (AC-5.2, AC-5.3), FR-6 (AC-6.2, AC-6.3)
 - **Deliverables:** new `src/bankmachine/connector/plaid/derivers.py` registered into
-  `DERIVERS`, `DERIVATION_VERSION` and its description updated in
+  the composed registry, `DERIVATION_VERSION` and its description updated in
   `src/bankmachine/store/derivation.py`, hostile fixtures under `tests/connector/fixtures/`
 - **Tests:** unit — money lands as integer minor units and never as a float, and history references
   the local `account_id` rather than the aggregator's (AC-6.3); property (hypothesis) — deriving twice
@@ -346,7 +417,33 @@ relationship (who may import what), not a naming convention.
   1. Acceptance criteria met and tests pass
   2. `uv run python tests/preferences/verify_norms_go_red.py` passes — the raw/rebuild layer changed
   3. Committed, then `/prawduct:critic cumulative` run and blocking findings resolved
-  4. Chunk marked `[x]` in Status, and `system-requirements.md` §9.2 closed with this plan's answer
+  4. Chunk marked `[x]` in Status, and `system-requirements.md` §9.2 closed with this plan's
+     answer — done 2026-09-07, with what enforces each half of the containment recorded there
+
+## What Build Step 3 Inherits
+
+Three obligations that this plan created and cannot discharge. They are written here rather than
+left to be noticed, because each is invisible from the code that will need it.
+
+1. 🔴 **Wire `config.history_days` into `link_token_create`.** The window is resolved,
+   range-checked and documented as an operator knob, and **no call site passes it** — the tests
+   pass literals. The mypy-enforced required argument stops a caller *forgetting* a window; it
+   cannot stop one passing the wrong one. So an enrollment written without this reads as correct,
+   satisfies the guard, silently ignores the operator's configured value, and AC-1.2 makes the
+   result immutable per connection. This plan calls that the most expensive mistake in the system,
+   and this is the one path to it the guard does not close.
+2. 🔴 **The granted history window is observable for the first time at step 3's first real
+   connection.** `/link/token/create` does not report it (`api-notes-plaid.md` §11), so
+   AC-11.8's shortfall — `requested_history_days` minus `granted_history_days` — cannot be
+   computed before then, and nothing in build step 2 verified it.
+3. **Account retirement is not implemented.** `_upsert_account` never sets `lifecycle_status` to
+   `inactive` or writes `closed_date`, so an account that stops appearing in `/accounts/get` stays
+   active with a frozen balance. `data-model.md` § Account lifecycle notes that the coverage report
+   reads exactly those two columns to tell a closure from a hole, so until this lands a closed
+   account will report as a permanent gap. The removal case *is* derivable where the accounts
+   deriver already stands — `/accounts/get` returns the full list per connection — but making it
+   order-independent under replay needs the care `first_seen_at` got, which is why it is recorded
+   as deferred rather than half-built.
 
 ## Early Feedback Milestone
 

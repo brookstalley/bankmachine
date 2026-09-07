@@ -96,14 +96,14 @@ body keys: [display_message, documentation_url, error_code, error_message,
 Wrong credentials, a malformed field and an unsupported country are all `400: Bad Request`.
 Reporting `reason` alone gives the operator no way to tell a rotated secret from a bug in
 this code, and the wrong guess costs a credential rotation that was never the problem — the
-exact failure VRF-002 item 5 is written to catch. `_describe_failure` parses the body for
-`error_code`, `error_message` and `request_id`, and degrades to the status line rather than
-raising when the body is not what it expects.
+exact failure VRF-002 item 5 is written to catch. `connector/plaid/errors.py` parses the
+body for `error_code`, `error_message` and `request_id`, and degrades to the status line
+rather than raising when the body is not what it expects.
 
 Two facts worth keeping from the probe: the body arrives as `str`, because `api_client.py`
 decodes it before re-raising; and that decode is unguarded, so an `ApiException` carrying no
-body — the `status=0` SSL path — would raise `AttributeError` inside the SDK. Not reachable
-through anything Chunk 01 does; **carried to Chunk 02**, which owns the taxonomy.
+body — the `status=0` SSL path — would raise `AttributeError` inside the SDK. **Discharged in
+Chunk 02**, where §9 below establishes which SSL failures actually reach that path.
 
 ### 4. Auth is three header api-keys, and the secret is one of them
 
@@ -168,6 +168,159 @@ rotate versus fix the call — and the aggregator already separates them.
 
 ---
 
+## What Chunk 02 established
+
+### 8. 🔴 The SDK does not enumerate error codes, so the taxonomy cannot be read off it
+
+`plaid/model/plaid_error.py` types `error_code` as a bare `str` and its
+`allowed_values` is empty. `error_type` **is** an enum
+(`plaid/model/plaid_error_type.py`, 25 values) and is used as the taxonomy's
+coarse second layer. The individual codes had to come from elsewhere, and the
+provenance differs per code, so `connector/plaid/errors.py` records it per entry:
+
+- **Observed live** — `INVALID_API_KEYS` (a well-formed client id with a wrong
+  secret) and `INVALID_FIELD` (a malformed client id). Both need no valid
+  credentials, and both are now pinned by `tests/connector/test_sandbox.py`.
+- **Spelled by the SDK elsewhere in its own source** — `ITEM_LOGIN_REQUIRED`,
+  `ITEM_LOCKED`, `INSTITUTION_DOWN`, `INSTITUTION_NOT_RESPONDING`,
+  `ITEM_NOT_SUPPORTED`, `NO_ACCOUNTS`, `ACCESS_NOT_GRANTED` and
+  `INSTITUTION_NO_LONGER_SUPPORTED` appear in
+  `plaid/model/credit_bank_income_error_type.py`, which belongs to a *different*
+  Plaid product. That is evidence the strings are part of the aggregator's
+  vocabulary, and it is **not** proof that these endpoints emit them.
+- **Named by the requirement alone** — `PRODUCT_NOT_READY`, which AC-2.6 needs
+  and which appears nowhere in the installed package *(searched)*. It is the
+  least-evidenced line in the taxonomy and is labelled as such in the source.
+
+`ITEM_ERROR` is deliberately **not** in the type layer: it spans
+`ITEM_LOGIN_REQUIRED` (re-link), `ITEM_LOCKED` (go to your bank) and
+`NO_ACCOUNTS` (nothing to sync). Mapping it to any one of them would be
+confidently wrong most of the time, and a wrong remedy is worse than a refusal.
+
+### 9. 🔴 An SSL failure escapes the SDK as `AttributeError`, from inside the SDK
+
+Two probes, and the first one's answer is not the second one's:
+
+**Probe A — a plain-HTTP server spoken to over `https`.** The failure arrives as
+`urllib3.exceptions.MaxRetryError` (`Caused by SSLError(... WRONG_VERSION_NUMBER)`),
+raised from `urllib3/util/retry.py`. It never reaches `rest.py`'s
+`except urllib3.exceptions.SSLError` clause at all, because urllib3's retry
+machinery has already wrapped it. Chunk 01's existing `urllib3.exceptions.HTTPError`
+arm catches it, so the common certificate failure was already handled.
+
+**Probe B — a bare `urllib3.exceptions.SSLError`, which does reach that clause.**
+`rest.py:211` raises `ApiException(status=0, reason=msg)` with **no**
+`http_resp`, so `ApiException.__init__` sets `body = None`. `api_client.py:204`
+then runs, unguarded:
+
+```python
+except ApiException as e:
+    e.body = e.body.decode('utf-8')
+```
+
+and the call raises `AttributeError: 'NoneType' object has no attribute 'decode'`
+at `api_client.py:204`, with the `ApiException` standing as its `__context__`.
+
+This is a bug in `plaid-python` 44.0.0, and it is contained rather than left to
+surface: `_attempt` catches `AttributeError`, **re-raises it untouched unless the
+SDK's own exception is standing behind it**, and otherwise reports a transport
+failure carrying the original reason. The narrowing is the load-bearing half —
+catching `AttributeError` around a call would swallow every genuine typo in the
+module and report it as a network problem, turning a five-minute fix into a hunt
+for a firewall. `test_an_ordinary_bug_in_this_module_is_not_disguised_as_a_transport_failure`
+is the negative control for exactly that.
+
+**The general lesson, recorded because it cost two probes:** the first probe
+disconfirmed the source reading, and the disconfirmation was itself incomplete.
+Reading `rest.py` said "SSL errors become `ApiException(status=0)`"; probe A said
+"no they do not"; probe B established that *both* are true of different SSL
+failures, and only one of them is the one that matters.
+
+### 10. `Retry-After` is read only in its delay-seconds form
+
+`ApiException.headers` exists on the undecoded path (`http_resp.getheaders()`,
+present on urllib3 2.7.0's `HTTPResponse`) and is `None` when the exception was
+built without a response. The HTTP-date form of `Retry-After` is deliberately
+ignored: parsing it needs the current time, which would make the wait depend on
+this machine's clock agreeing with the aggregator's, and a skewed clock turning a
+two-second wait into an hour is a worse failure than falling back to the computed
+backoff. **Not observed in a live response** — no rate limit was provoked — so
+the parsing is exercised against synthetic headers only.
+
+---
+
+## What Chunk 03's `verify-api` established
+
+### 11. 🔴 `days_requested` is nested, capped at 730 — and the response does not echo it
+
+It lives at `LinkTokenCreateRequest.transactions.days_requested`, inside a
+`LinkTokenTransactions` object rather than on the request itself
+(`link_token_create_request.py` types the field as `LinkTokenTransactions`;
+`link_token_transactions.py` declares `days_requested: (int,)`). The SDK carries
+the documented bounds as validations: **inclusive maximum 730, inclusive minimum
+1**, which is where this product's "documented maximum" comes from rather than
+from a number someone remembered.
+
+🔴 **The create response does not contain it.** Probed live with
+`days_requested=730`: the response keys are exactly `expiration`, `link_token`,
+`request_id`. There is nothing in the reply that says what window was requested,
+let alone what was granted.
+
+That falsifies the plan's Chunk 03 sandbox test as written — "a link token is
+created and its `days_requested` echoes back at the configured maximum" is not a
+thing this endpoint can be asked. What is checkable here is the *request*: the
+value this product sends, asserted on the request object the SDK builds, plus a
+live call proving the aggregator accepts 730. **The granted window is only
+observable after enrollment**, which is build step 3's first real connection —
+already the step flagged as where AC-1.2 becomes irreversible. AC-11.8's
+shortfall (`requested_history_days` minus `granted_history_days`) therefore
+cannot be computed until then, and no earlier chunk should imply otherwise.
+
+### 12. The exchange response carries the access token in its body
+
+`/item/public_token/exchange` answers with exactly `access_token`, `item_id`,
+`request_id` — confirmed both in the SDK's model and against the live sandbox.
+
+This is what turned the archive exemption from a decision into an obligation:
+`store/raw.py` is append-only and a datastore backup travels, so archiving this
+body verbatim would satisfy AC-5.1 by breaking AC-10.1 permanently. **Built in
+Chunk 03**, and keyed on the endpoint rather than on a rule anyone has to
+remember: `Endpoint.issues_credential` marks it, and `FetchedResponse` refuses to
+exist for such an endpoint, so there is no object for the archive to be given.
+
+### 13. Capabilities are four separate product lists, and `products` is not the useful one
+
+`/item/get` returns `item` with `available_products`, `billed_products`,
+`products`, `consent_expiration_time`, `error`, `institution_id`,
+`institution_name`, `item_id`, `update_type`, `webhook` — plus a top-level
+`status`. On a sandbox item created with `transactions`:
+
+- `products` → `['transactions']` (what was asked for)
+- `available_products` → 14 entries including `investments`, `liabilities`,
+  `identity` (what this connection *could* do)
+- `consented_products` → `None` in the sandbox
+
+AC-3.2 requires investments to be pulled for any connection whose recorded
+capabilities include investments, **never for a named institution**. The list
+that answers "could this connection do investments" is `available_products`, not
+`products` — a capability discovery reading `products` would report exactly what
+this product already asked for and never discover anything.
+
+### 14. `/accounts/get` shape, and what Chunk 04's derivers get
+
+14 accounts from `ins_109508`. Each account carries `account_id`, `mask`,
+`name`, `official_name`, `type`, `subtype`, `apy`, `holder_category`, and a
+`balances` object of `available`, `current`, `iso_currency_code`, `limit`,
+`unofficial_currency_code`.
+
+Two things follow for the derivers. `current` and `available` are **floats** in
+JSON, and the schema stores integer minor units — the conversion is the deriver's
+job and is where a float rounding error becomes a wrong balance. And `mask` is
+present here but is documented as nullable, which is one of Chunk 04's hostile
+fixtures rather than a shape the sandbox will hand over on its own.
+
+---
+
 ## What is deliberately unused
 
 The generated response models — the largest part of the package — are not used at all, and
@@ -188,7 +341,17 @@ assumed.
 
 - ~~**The success path has not been probed.**~~ Done 2026-09-06 — see §7. The fixture is
   recorded and `tests/connector/test_sandbox.py` now compares against it rather than skipping.
-- **`days_requested`'s actual location** in the link-token request — Chunk 03's own
-  `verify-api` step, and the highest-stakes parameter in the system (AC-1.2).
-- **What `/item/public_token/exchange` carries**, to make the credential-archive exemption
-  a mechanism rather than the decision `store/raw.py` currently records.
+- ~~**`days_requested`'s actual location**~~ Done — §11. It is nested under
+  `transactions`, capped at 730, and **not echoed by the response**.
+- ~~**What `/item/public_token/exchange` carries**~~ Done — §12. `access_token`,
+  `item_id`, `request_id`. The archive exemption it forced is **built**:
+  `Endpoint.issues_credential` marks the endpoint and `FetchedResponse` refuses
+  to exist for one, so there is no object for the archive to be given.
+- ~~**A real `ITEM_LOGIN_REQUIRED`**~~ Done — driven live through
+  `/sandbox/item/reset_login` in `test_sandbox.py`, once the exchange call
+  existed to mint an Item.
+- **A real rate limit or a real `PRODUCT_NOT_READY`.** Neither was provoked;
+  both are exercised against constructed responses only, and `PRODUCT_NOT_READY`
+  remains the least-evidenced entry in the taxonomy.
+- 🔴 **The granted history window.** Not observable before build step 3's first
+  real connection, so AC-11.8's shortfall cannot be computed until then.

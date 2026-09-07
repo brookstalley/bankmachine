@@ -9,6 +9,7 @@ import pytest
 
 from bankmachine.config import Config
 from bankmachine.logging_setup import (
+    APP_LOGGER,
     REDACTED,
     RedactingFormatter,
     configure_logging,
@@ -130,3 +131,23 @@ def test_configure_logging_writes_to_the_configured_directory(config: Config) ->
     log_file = config.log_dir / "bankmachine.log"
     assert log_file.exists()
     assert "hello" in log_file.read_text(encoding="utf-8")
+
+
+def test_a_dunder_name_is_not_prefixed_twice() -> None:
+    """🔴 `__name__` already starts with this package, and prefixing it doubles it.
+
+    Every module outside `store/` that logs passes `__name__`, and the result
+    was `bankmachine.bankmachine.connector.plaid.errors` -- which still logs,
+    still routes to the same handlers, and reads as a typo in every line it
+    writes. Nothing caught it because the only existing call here was a short
+    label, which exercises the other branch.
+    """
+    assert get_logger("bankmachine.connector.plaid.errors").name == (
+        "bankmachine.connector.plaid.errors"
+    )
+    assert get_logger(APP_LOGGER).name == APP_LOGGER
+    # The control: a short label is still placed under the application root, or
+    # the fix would have been "stop prefixing" rather than "stop double-prefixing".
+    assert get_logger("store.raw").name == "bankmachine.store.raw"
+    # A name that merely starts with the same letters is not the same package.
+    assert get_logger("bankmachinery").name == "bankmachine.bankmachinery"

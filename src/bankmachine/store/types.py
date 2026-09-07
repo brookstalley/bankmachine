@@ -21,7 +21,7 @@ refuses a datetime; `utc_instant` refuses a naive one.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final, NewType
@@ -50,6 +50,38 @@ class MoneyError(ValueError):
 
 class TemporalError(ValueError):
     """A date or an instant was not of the kind the schema requires."""
+
+
+#: Currencies whose minor unit is not 1/100.
+#:
+#: ISO 4217's exponent is 2 for almost everything, and the exceptions are a short
+#: closed list. Enumerating them and defaulting the rest to 2 is safer than the
+#: reverse: a missing 2-decimal currency would refuse an ordinary account, while
+#: a missing *exception* would store a JPY balance 100x too large, silently and
+#: plausibly. The list is what keeps the default honest.
+_MINOR_DIGITS: Final[Mapping[str, int]] = {
+    # Zero-decimal
+    "BIF": 0, "CLP": 0, "DJF": 0, "GNF": 0, "ISK": 0, "JPY": 0, "KMF": 0,
+    "KRW": 0, "PYG": 0, "RWF": 0, "UGX": 0, "UYI": 0, "VND": 0, "VUV": 0,
+    "XAF": 0, "XOF": 0, "XPF": 0,
+    # Three-decimal
+    "BHD": 3, "IQD": 3, "JOD": 3, "KWD": 3, "LYD": 3, "OMR": 3, "TND": 3,
+    # Four-decimal
+    "CLF": 4, "UYW": 4,
+}  # fmt: skip
+
+DEFAULT_MINOR_DIGITS: Final = 2
+
+
+def minor_digits(currency: str) -> int:
+    """How many minor digits a currency has.
+
+    Lives beside the money type rather than in the aggregator's package, because
+    it is a property of the currency: the manual-import path and any second
+    aggregator need the same answer, and a copy of this table is a second answer
+    waiting to disagree with the first.
+    """
+    return int(_MINOR_DIGITS.get(currency.upper(), DEFAULT_MINOR_DIGITS))
 
 
 def minor_units(value: int) -> MinorUnits:

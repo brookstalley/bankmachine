@@ -247,7 +247,7 @@ def content_digest(conn: SAConnection) -> str:
 def rebuild(
     config: Config,
     *,
-    derivers: Mapping[str, Deriver] | None = None,
+    derivers: Mapping[str, Deriver],
     accept_content_change: bool = False,
 ) -> RebuildReport:
     """Reconstruct every raw-derived row from the archive, or change nothing at all.
