@@ -85,6 +85,20 @@ case to fall outside of. Prefer the second form even when the first is true toda
   not a construction, and the rule now turns on whether the call carries connection parameters
   rather than on which file it sits in.
 
+- *2026-09-07, the go-red harness judging its own results.* `verify_norms_go_red.py` decided a
+  mutation had been caught by testing `pytest exited non-zero` — an enumeration standing in for
+  "the named test failed", because pytest exits non-zero on a **collection error** too. A mutation
+  that did not parse therefore printed RED without running anything, and the case passed forever.
+  Two such cases existed; only one was found by review, and the other had been green since it was
+  written. The fix was not to correct the two mutations but to `ast.parse` every mutation before
+  running it, so a non-parsing one is reported INVALID and counted as a survivor. 🔴 **The defect
+  was in the mechanism whose entire job is catching this class**, which is the strongest version of
+  this rule: the check you trust most is the one nothing is checking. Then, one layer down, both
+  repaired cases were *still* green — one targeted lines the test's `os._exit` never reaches, and
+  the other rested on an assertion that could not distinguish the two values it named, because one
+  string embedded the other. **A check that cannot fail hides every problem in its blast radius,
+  not one, and they surface a layer at a time.**
+
 **How to apply:** before recording a guarantee, name the surface that could violate it and check
 that surface exists in the product. If the answer is "a future command someone forgets to add to
 the list" or "any SQL that reaches this handle", the guarantee needs a different mechanism, not a

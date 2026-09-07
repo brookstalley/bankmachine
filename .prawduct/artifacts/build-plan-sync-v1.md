@@ -39,6 +39,7 @@ governed_by:
       - "secrets live only in the OS keychain, and nothing returns one into a log, an exception message or a repr → conforms; the sync loop reads each connection's access token through `get_access_token` and the token never enters a row, a log line or an error"
       - "the aggregator's API is the only network destination → conforms; no new destination"
       - "log redaction happens at the formatter → conforms by inheritance, asserted over a real sync log rather than assumed"
+      - "no tracked file carries a credential-shaped string, and the ignore rules cover data, logs and credential paths → 🔴 engaged rather than inapplicable, and this plan is where the exposure grows. Transaction fixtures are the largest bodies this repo will commit, and a sandbox response body carries `account_id` and `transaction_id` values that are credential-SHAPED without being credentials. Any fixture recorded here is scanned like every other tracked file, and a test vector that trips the guard gets the per-line `credential-shape: test vector` declaration — never a narrowed pattern, because a pattern narrowed to quiet one file stops guarding every file"
   - artifact: operational-spec
     dispositions:
       - "no filesystem path is hardcoded → conforms; this plan adds no path"

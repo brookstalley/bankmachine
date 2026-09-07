@@ -34,6 +34,60 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-07: Enrollment — one institution linked, and the states that exist after the token is spent
+
+<!-- prawduct: scope=enrollment-v1 -->
+
+**Why:** build step 3. The product could reach the aggregator and archive what it said, but it could
+not link an institution, so every table below `connections` had nothing to hang from.
+
+**What shipped.** `bankmachine enroll` prints a hosted enrollment URL, waits while the operator
+completes Link in a browser, and polls for the result — no local web server and no frontend, which
+is what AC-1.1 asks for. `bankmachine connections list` and `connections retire` came with it rather
+than after it, because the cap refusal has to name a command that exists. The connection cap is
+configuration (AC-1.5), retirement keeps every row the connection produced (AC-1.6), and
+re-enrolling converges on one live connection per institution (AC-1.4).
+
+**The window is confirmed before the exchange**, because that is the last moment AC-1.2 is
+reversible. The required argument on `link_token_create` stops a caller *forgetting* a window;
+nothing but a human reading it stops one sending the wrong window, and the result is immutable for
+the life of the connection. The window prints before the URL, since an operator who has already
+opened the browser has stopped reading the terminal.
+
+**AC-1.3 was split, and the schema had been right all along.** It required enrollment to record "the
+history window actually granted", and no response in the enrollment path carries that value —
+verified against the pinned SDK at all three candidates. `core_schema.py` had carried a comment
+saying so since build step 1, so the DDL and the requirement had disagreed from the day both
+existed. **AC-1.3a** homes the granted window where it is first knowable, at the initial backfill,
+and gives null an explicit meaning: *not yet known*, never *no shortfall*.
+
+**Retirement is two-sided.** Setting `retired_at` frees a slot in this product's own cap and does
+nothing at the aggregator, where the Item keeps counting against the plan and keeps billing. So
+retiring calls `/item/remove`, and so does a re-enrollment — Link mints a *new* Item, and
+overwriting `source_connection_id` would otherwise drop the only reference to the old one while this
+side showed one tidy connection and reported success. AC-1.4 says re-enrolling updates rather than
+duplicates; without that call the duplication merely moves to the far end, where nothing here can
+see it.
+
+**The post-exchange window is the part worth remembering.** Past the exchange the aggregator holds an
+Item the operator is billed for, and any local failure leaves them paying for a connection nothing
+here records. The access token reaches the keychain before the first write, so every failure in that
+window can name the item and the credential; the cap race *releases* the Item it just minted, because
+refusing to record a connection while leaving the operator billed for it is not a refusal but a charge.
+
+**What this cost, and what it taught.** Four review rounds. Every substantive defect had one shape —
+an Item that exists at the aggregator, spent and billable, invisible from here — and once that harm
+was named precisely, three more instances of it were findable by looking for the harm rather than for
+bugs. Four separate checks turned out to be claims: a test whose fixture never reached the guard it
+named, a race test that blinded the very check it was testing, a credential-absence assertion reading
+a log capture that collected nothing, and — worst — the go-red harness itself, which judged "caught"
+by pytest's exit code and so counted a mutation that did not even parse. That last one had two
+always-passing cases hiding behind it, one of which had been green since the day it was written.
+
+**Verification queued rather than claimed:** VRF-003 — a Hosted Link session cannot be completed
+programmatically, so whether the printed page reads unambiguously to someone about to make an
+irreversible choice is a human's judgement, not a test's.
+
 ## 2026-09-07: What the cumulative review changed about the derivers
 
 <!-- prawduct: scope=connector-v1 -->
