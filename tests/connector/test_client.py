@@ -23,10 +23,15 @@ from bankmachine.config import Config
 from bankmachine.connector import (
     INSTITUTIONS_GET,
     AggregatorNotConfiguredError,
+    AggregatorRequestError,
     ConnectorError,
     Endpoint,
+    RateLimitedError,
+    ReauthRequiredError,
+    TransportError,
 )
-from bankmachine.connector.plaid.client import PlaidClient, _describe_failure
+from bankmachine.connector.plaid.client import PlaidClient
+from bankmachine.connector.plaid.errors import RetryPolicy
 
 
 class FakeHttpResponse:
@@ -45,8 +50,16 @@ def client_config(config: Config) -> Config:
     return replace(config, plaid_client_id="test-client-id")
 
 
-def _client(config: Config) -> PlaidClient:
-    return PlaidClient(config, "test-secret")
+def _client(config: Config, **kwargs: Any) -> PlaidClient:
+    """A client whose retry channel records instead of waiting.
+
+    Every test here is about one attempt, so the default policy is a single try:
+    a test that accidentally exercised the backoff would spend the schedule's
+    wall time proving something `test_errors.py` already proves properly.
+    """
+    kwargs.setdefault("retry_policy", RetryPolicy(attempts=1))
+    kwargs.setdefault("sleep", lambda seconds: None)
+    return PlaidClient(config, "test-secret", **kwargs)
 
 
 def test_a_missing_client_id_is_refused_before_anything_is_built(config: Config) -> None:
@@ -121,7 +134,7 @@ def test_a_non_bytes_body_is_refused_rather_than_archived(client_config: Config)
 
     with (
         _client(client_config) as client,
-        pytest.raises(ConnectorError, match="expected undecoded"),
+        pytest.raises(AggregatorRequestError, match="expected undecoded"),
     ):
         client._fetch(INSTITUTIONS_GET, invoke, object())
 
@@ -202,6 +215,19 @@ REAL_ERROR_BODY = json.dumps(
 )
 
 
+def _error_body(code: str, *, message: str = "the aggregator refused") -> str:
+    """An error body carrying one code, in the shape the aggregator sends."""
+    return json.dumps(
+        {
+            "display_message": None,
+            "error_code": code,
+            "error_message": message,
+            "error_type": "ITEM_ERROR",
+            "request_id": "476e317baa236b1",
+        }
+    )
+
+
 def test_a_rejected_call_names_the_cause_not_just_the_status(client_config: Config) -> None:
     """`400: Bad Request` is what every rejection looks like from the status alone.
 
@@ -214,32 +240,18 @@ def test_a_rejected_call_names_the_cause_not_just_the_status(client_config: Conf
     def invoke(request: object, **kwargs: Any) -> FakeHttpResponse:
         raise _api_exception(400, "Bad Request", REAL_ERROR_BODY)
 
-    with _client(client_config) as client, pytest.raises(ConnectorError) as caught:
+    with _client(client_config) as client, pytest.raises(AggregatorRequestError) as caught:
         client._fetch(INSTITUTIONS_GET, invoke, object())
 
     message = str(caught.value)
     assert "INVALID_FIELD" in message
+    assert caught.value.error_code == "INVALID_FIELD"
+    assert caught.value.request_id == "476e317baa236b1"
     assert "client_id must be a properly formatted" in message
     assert "476e317baa236b1" in message, (
         "the request id is what makes a failure traceable in the aggregator's dashboard"
     )
     assert "Bad Request" not in message, "the reason phrase should not crowd out the real cause"
-
-
-def test_a_failure_whose_body_makes_no_sense_is_still_reported() -> None:
-    """A description that cannot be built must not replace one bad message with a crash."""
-    for body in (None, b"\x00 not json", "not json either", json.dumps(["a", "list"])):
-        described = _describe_failure(INSTITUTIONS_GET, _api_exception(500, "Server Error", body))
-        assert "/institutions/get" in described
-        assert "500" in described
-
-
-def test_a_body_that_arrives_as_bytes_is_still_described() -> None:
-    """The SDK decodes before re-raising, but only on the path that reaches it."""
-    described = _describe_failure(
-        INSTITUTIONS_GET, _api_exception(400, "Bad Request", REAL_ERROR_BODY.encode())
-    )
-    assert "INVALID_FIELD" in described
 
 
 def test_an_unreachable_aggregator_is_a_sentence_not_a_traceback(
@@ -260,7 +272,7 @@ def test_an_unreachable_aggregator_is_a_sentence_not_a_traceback(
             pool=urllib3.HTTPConnectionPool("127.0.0.1", 9), url="/institutions/get"
         )
 
-    with _client(client_config) as client, pytest.raises(ConnectorError) as caught:
+    with _client(client_config) as client, pytest.raises(TransportError) as caught:
         client._fetch(INSTITUTIONS_GET, invoke, object())
 
     message = str(caught.value)
@@ -280,3 +292,173 @@ def test_the_client_talks_to_the_environment_it_was_configured_for(
 ) -> None:
     with _client(client_config) as client:
         assert client.environment == "sandbox"
+
+
+def test_a_failure_inside_the_sdks_own_error_reporting_is_still_a_sentence(
+    client_config: Config,
+) -> None:
+    """🔴 A bug in `plaid-python` 44.0.0, contained rather than left to surface.
+
+    `rest.py` raises `ApiException(status=0, reason=...)` with no body when a
+    bare `urllib3.exceptions.SSLError` escapes retry wrapping, and
+    `api_client.py` then runs `e.body.decode('utf-8')` on that `None`. Verified
+    by probe: the `AttributeError` is raised at `api_client.py:204` with the
+    `ApiException` as its `__context__`.
+
+    Left unmapped, a certificate problem reports `'NoneType' object has no
+    attribute 'decode'` from a library the operator never chose -- which says
+    nothing about certificates and sends them reading this product's source.
+    """
+
+    def invoke(request: object, **kwargs: Any) -> FakeHttpResponse:
+        try:
+            raise plaid.ApiException(status=0, reason="SSLError\ncertificate verify failed")
+        except plaid.ApiException:
+            # The shape the SDK produces: the AttributeError is raised while the
+            # ApiException is being handled, so it stands as `__context__`.
+            raise AttributeError("'NoneType' object has no attribute 'decode'") from None
+
+    with _client(client_config) as client, pytest.raises(TransportError) as caught:
+        client._fetch(INSTITUTIONS_GET, invoke, object())
+
+    assert "certificate verify failed" in str(caught.value)
+
+
+def test_an_ordinary_bug_in_this_module_is_not_disguised_as_a_transport_failure(
+    client_config: Config,
+) -> None:
+    """The negative control for the containment above.
+
+    Catching `AttributeError` around a call would swallow every genuine typo in
+    this module and report it as a network problem -- turning a five-minute fix
+    into a hunt for a firewall. The narrowing is what makes the catch legitimate,
+    so it needs a test that fails if the narrowing is dropped.
+    """
+
+    def invoke(request: object, **kwargs: Any) -> FakeHttpResponse:
+        raise AttributeError("'PlaidClient' object has no attribute 'instituions_get'")
+
+    with _client(client_config) as client, pytest.raises(AttributeError) as caught:
+        client._fetch(INSTITUTIONS_GET, invoke, object())
+
+    assert "instituions_get" in str(caught.value)
+    assert not isinstance(caught.value, ConnectorError)
+
+
+def test_every_failure_names_the_connection_it_belongs_to(client_config: Config) -> None:
+    """AC-4.1 is a property of the caller's loop, and the loop needs this to honour it.
+
+    Asserted across the three ways a call can fail rather than the one that was
+    easiest to write: a refusal, an unreachable host, and the SDK's own bug all
+    reach different `raise` sites, and a connection id threaded through only the
+    first of them would look correct until the night an institution went down.
+    """
+
+    def refused(request: object, **kwargs: Any) -> FakeHttpResponse:
+        raise _api_exception(400, "Bad Request", _error_body("ITEM_LOGIN_REQUIRED"))
+
+    def unreachable(request: object, **kwargs: Any) -> FakeHttpResponse:
+        raise urllib3.exceptions.MaxRetryError(
+            pool=urllib3.HTTPConnectionPool("127.0.0.1", 9), url="/institutions/get"
+        )
+
+    def sdk_bug(request: object, **kwargs: Any) -> FakeHttpResponse:
+        try:
+            raise plaid.ApiException(status=0, reason="SSLError")
+        except plaid.ApiException:
+            raise AttributeError("'NoneType' object has no attribute 'decode'") from None
+
+    with _client(client_config) as client:
+        for invoke, expected in (
+            (refused, ReauthRequiredError),
+            (unreachable, TransportError),
+            (sdk_bug, TransportError),
+        ):
+            with pytest.raises(expected) as caught:
+                client._fetch(INSTITUTIONS_GET, invoke, object(), connection_id=42)
+            assert caught.value.connection_id == 42, f"{expected.__name__} lost the connection"
+            assert caught.value.endpoint is INSTITUTIONS_GET
+            assert caught.value.failed_at is not None, "AC-4.5 needs the far end of the hole"
+
+
+def test_the_client_actually_retries_a_transient_refusal(client_config: Config) -> None:
+    """The retry channel wired into the real client, not just the helper.
+
+    `test_errors.py` proves `call_with_retry` retries what it should; this proves
+    `_fetch` is routed through it. Both are needed -- a correct helper nothing
+    calls is the failure that looks most like success.
+    """
+    waits: list[float] = []
+    attempts = 0
+
+    def invoke(request: object, **kwargs: Any) -> FakeHttpResponse:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise _api_exception(429, "Too Many Requests", _error_body("RATE_LIMIT_EXCEEDED"))
+        return FakeHttpResponse(b'{"institutions": []}')
+
+    with _client(client_config, retry_policy=RetryPolicy(attempts=4), sleep=waits.append) as client:
+        fetched = client._fetch(INSTITUTIONS_GET, invoke, object())
+
+    assert fetched.body == b'{"institutions": []}'
+    assert attempts == 3
+    assert waits == [1.0, 2.0]
+
+
+def test_the_client_gives_up_loudly_rather_than_retrying_forever(client_config: Config) -> None:
+    def invoke(request: object, **kwargs: Any) -> FakeHttpResponse:
+        raise _api_exception(429, "Too Many Requests", _error_body("RATE_LIMIT_EXCEEDED"))
+
+    with (
+        _client(
+            client_config, retry_policy=RetryPolicy(attempts=2), sleep=lambda s: None
+        ) as client,
+        pytest.raises(RateLimitedError) as caught,
+    ):
+        client._fetch(INSTITUTIONS_GET, invoke, object())
+
+    assert "gave up after 2 attempts" in str(caught.value)
+
+
+def test_a_terminal_refusal_is_not_retried_by_the_client(client_config: Config) -> None:
+    """A connection needing a human is reported now, not after four rounds of hope."""
+    attempts = 0
+
+    def invoke(request: object, **kwargs: Any) -> FakeHttpResponse:
+        nonlocal attempts
+        attempts += 1
+        raise _api_exception(400, "Bad Request", _error_body("ITEM_LOGIN_REQUIRED"))
+
+    with (
+        _client(client_config, retry_policy=RetryPolicy(attempts=4)) as client,
+        pytest.raises(ReauthRequiredError),
+    ):
+        client._fetch(INSTITUTIONS_GET, invoke, object())
+
+    assert attempts == 1
+
+
+def test_no_credential_reaches_a_failure_message(client_config: Config) -> None:
+    """The security-model norm: no secret in a log line, an exception, or a repr.
+
+    An error message is the likeliest place for one to escape, because it is
+    built from whatever was to hand at the worst moment.
+    """
+
+    def invoke(request: object, **kwargs: Any) -> FakeHttpResponse:
+        raise _api_exception(
+            400,
+            "Bad Request",
+            _error_body("INVALID_API_KEYS", message="invalid client_id or secret"),
+        )
+
+    with _client(client_config) as client, pytest.raises(ConnectorError) as caught:
+        client._fetch(INSTITUTIONS_GET, invoke, object())
+
+    rendered = f"{caught.value}{caught.value!r}"
+    assert "test-secret" not in rendered
+    assert "test-client-id" not in rendered
+    # Positive control: the message is not empty, so its silence about the
+    # credentials is a property of the message rather than of there being none.
+    assert "INVALID_API_KEYS" in rendered

@@ -295,10 +295,41 @@ rebuild would need. Verified against the SDK's source, recorded in
 by it, `store/raw.py` defers its credential-archive rule to it, and AC-ARCH.4's
 guard needs it to tell `/institutions/get` from a filesystem path.
 
-**Not built yet:** the error taxonomy and retry channel (Chunk 02), the
-enrollment endpoints and the credential-archive *mechanism* (Chunk 03), and any
-deriver at all (Chunk 04) — `DERIVERS` is still empty, so `store rebuild` still
-refuses a real archive.
+**Failure is part of the contract, and it is typed.** A caller catches a local
+exception from `connector/__init__.py`, never `plaid.ApiException` — the
+taxonomy is defined outside the `plaid` subpackage precisely so that catching an
+aggregator failure does not require importing the aggregator. The types are
+organized by *what the caller must do next* rather than by what the aggregator
+called it, because the aggregator's own `ITEM_ERROR` spans three different
+remedies and a consumer switching on it would send the operator somewhere that
+cannot help them.
+
+Every failure carries `connection_id`, `error_code`, `request_id` and
+`failed_at`. That set is not decoration: AC-4.1's "one broken connection never
+aborts another" is a property of the *caller's* loop, which can only honour it
+if the error says which connection it was; AC-4.2 wants the code recorded; and
+AC-4.5 refuses a degraded record whose data hole cannot be computed, so the
+connector owes the far end of that subtraction even though `last_success_at`
+lives in the datastore.
+
+🔴 **Whether a failure is worth retrying is a property of its type, not a list
+kept in the retry loop.** A list in the loop is an enumeration that goes stale
+the moment an error type is added by someone who does not think to visit that
+file — and it goes stale silently, in whichever direction the omission falls: an
+un-retried transient stops the nightly sync, a retried permanent one hammers the
+aggregator with a call that cannot work. `retryable` has no default on the base
+class, and `test_every_error_type_decides_whether_it_retries` requires each type
+to declare its own.
+
+**The retry channel wraps the HTTP call and nothing else.** `architecture.md`
+permits backoff on exactly this boundary because it is the only one that can
+fail transiently. The connector persists nothing, so there is no write inside
+the retried boundary to interleave a second attempt against — which is what
+makes retrying safe here and would not make it safe anywhere downstream.
+
+**Not built yet:** the enrollment endpoints and the credential-archive
+*mechanism* (Chunk 03), and any deriver at all (Chunk 04) — `DERIVERS` is still
+empty, so `store rebuild` still refuses a real archive.
 
 ## Test Levels
 

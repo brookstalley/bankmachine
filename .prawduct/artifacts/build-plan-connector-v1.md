@@ -277,8 +277,19 @@ relationship (who may import what), not a naming convention.
   something specific rather than being swallowed; unit — backoff retries a rate-limit and a
   not-ready response and gives up loudly, with the clock injected so nothing sleeps; property
   (hypothesis) — no input to the mapper returns `None` or a bare `Exception`, since silence is the one
-  disallowed outcome; sandbox (marked) — `/sandbox/item/reset_login` drives a real
-  `ITEM_LOGIN_REQUIRED` through the taxonomy
+  disallowed outcome; sandbox (marked) — deliberately invalid credentials drive real
+  `INVALID_API_KEYS` and `INVALID_FIELD` refusals through the taxonomy against the live host
+
+  **Amended during the build (2026-09-07), and the amendment is a descope, so it is stated
+  rather than absorbed.** This chunk was drawn asking for `/sandbox/item/reset_login` to drive
+  a real `ITEM_LOGIN_REQUIRED`. That call needs an enrolled Item, an Item needs an access
+  token, and the exchange that mints one is **Chunk 03's** deliverable — so the test as
+  written could not be run in the chunk that asked for it. It moves to Chunk 03, whose
+  `verify-api` step already opens the enrollment endpoints. What replaces it here is not a
+  fake standing in for a live call: invalid credentials reach the same host and come back with
+  the real error shape, so the taxonomy *is* exercised end-to-end against the aggregator, on
+  the two codes that can be provoked without an Item. The item-level half is genuinely
+  deferred, and `api-notes-plaid.md` "Still to verify" carries it
 - **Acceptance criteria:** the four FR-4 error classes each map to a distinct local type carrying the
   connection identifier; a rate-limited call succeeds after backoff rather than failing; a mapped
   failure records what AC-4.5 needs to compute the hole, not just that something broke

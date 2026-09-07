@@ -41,6 +41,8 @@ SHELL = pathlib.Path("src/bankmachine/cli/sync.py")
 SECRETS = pathlib.Path("src/bankmachine/secrets.py")
 CLI_CONNECTOR = pathlib.Path("src/bankmachine/cli/connector.py")
 CONNECTOR_CLIENT = pathlib.Path("src/bankmachine/connector/plaid/client.py")
+CONNECTOR_PACKAGE = pathlib.Path("src/bankmachine/connector/__init__.py")
+CONNECTOR_ERRORS = pathlib.Path("src/bankmachine/connector/plaid/errors.py")
 NORMS = "tests/store/test_connection_norms.py"
 SCHEMA = "tests/store/test_schema.py"
 SOLE_CONSTRUCTOR = "tests/preferences/test_connection_is_the_sole_constructor.py"
@@ -51,6 +53,7 @@ SECRETS_TESTS = "tests/test_secrets.py"
 CONTAINED = "tests/preferences/test_connector_is_contained.py"
 CONNECTOR_CLI_TESTS = "tests/cli/test_connector_commands.py"
 CONNECTOR_TESTS = "tests/connector/test_client.py"
+ERROR_TESTS = "tests/connector/test_errors.py"
 
 #: (description, file, text to replace, replacement, the test that must go red)
 CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
@@ -274,10 +277,10 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-5.1: the connector cannot reach the datastore, so it cannot normalize first",
         CONNECTOR_CLIENT,
-        "from bankmachine.store.types import now_utc",
+        "from bankmachine.store.types import",
         (
             "from bankmachine.store.engine import writer_connection  # noqa: F401\n"
-            "from bankmachine.store.types import now_utc"
+            "from bankmachine.store.types import"
         ),
         f"{CONTAINED}::test_the_connector_cannot_reach_the_datastore",
     ),
@@ -295,6 +298,45 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "    if False:",
         f"{CONNECTOR_CLI_TESTS}::"
         "test_check_refuses_a_missing_datastore_before_reaching_the_aggregator",
+    ),
+    (
+        "FR-4: every error type decides for itself whether it retries",
+        CONNECTOR_PACKAGE,
+        """    there costs a rotation that was never needed.
+    \"\"\"
+
+    retryable = True""",
+        """    there costs a rotation that was never needed.
+    \"\"\"""",
+        f"{ERROR_TESTS}::test_every_error_type_decides_whether_it_retries",
+    ),
+    (
+        "FR-4: the retry loop asks the exception rather than keeping its own list",
+        CONNECTOR_ERRORS,
+        "            if not type(exc).retryable:",
+        "            if type(exc) is not RateLimitedError:",
+        f"{ERROR_TESTS}::test_the_retry_loop_asks_the_type_rather_than_keeping_its_own_list",
+    ),
+    (
+        "FR-4: an error type too coarse to name a remedy is not classified by it",
+        CONNECTOR_ERRORS,
+        '    "INSTITUTION_ERROR": InstitutionUnavailableError,',
+        '    "ITEM_ERROR": ReauthRequiredError,\n'
+        '    "INSTITUTION_ERROR": InstitutionUnavailableError,',
+        f"{ERROR_TESTS}::test_item_error_is_not_classified_by_its_type",
+    ),
+    (
+        "AC-2.6: a not-yet-ready backfill backs off instead of failing",
+        CONNECTOR_PACKAGE,
+        """    explicit that this is backoff-and-retry rather than failure.
+    \"\"\"
+
+    retryable = True""",
+        """    explicit that this is backoff-and-retry rather than failure.
+    \"\"\"
+
+    retryable = False""",
+        f"{ERROR_TESTS}::test_a_transient_refusal_succeeds_after_backoff",
     ),
 ]
 

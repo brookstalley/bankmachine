@@ -27,7 +27,7 @@ from the aggregator.
 
 from __future__ import annotations
 
-import json
+import time
 from collections.abc import Callable
 from typing import Any, Final
 
@@ -41,11 +41,22 @@ from bankmachine.config import Config
 from bankmachine.connector import (
     INSTITUTIONS_GET,
     AggregatorNotConfiguredError,
+    AggregatorRequestError,
     ConnectorError,
     Endpoint,
     FetchedResponse,
+    TransportError,
 )
-from bankmachine.store.types import now_utc
+from bankmachine.connector.plaid.errors import (
+    RetryPolicy,
+    Sleeper,
+    call_with_retry,
+    classify,
+    describe,
+    parse_error_body,
+    parse_retry_after,
+)
+from bankmachine.store.types import UtcInstant, now_utc
 
 #: How long a single aggregator call may take before it is abandoned. The
 #: aggregator is the one channel that can fail transiently, and a call with no
@@ -75,52 +86,6 @@ def _host_for(environment: str) -> str:
         ) from None
 
 
-def _describe_failure(endpoint: Endpoint, exc: plaid.ApiException) -> str:
-    """What actually went wrong, in one line.
-
-    🔴 **`reason` is the HTTP reason phrase and says nothing.** Wrong credentials,
-    a malformed field and an unsupported country all arrive as
-    `400: Bad Request`; the cause lives in the response body, which the SDK
-    attaches to the exception and decodes to `str` before re-raising *(both
-    verified by probing the real sandbox host with deliberately invalid
-    credentials: `error_type=INVALID_REQUEST`, `error_code=INVALID_FIELD`,
-    `error_message='client_id must be a properly formatted, non-empty string'`)*.
-
-    An operator reading `400: Bad Request` has no way to tell a rotated secret
-    from a bug in this code, and the wrong guess costs them a credential
-    rotation that was never the problem. The `request_id` is included because it
-    is what makes a failure traceable in the aggregator's own dashboard.
-
-    The body is parsed defensively: a failure that cannot be described must
-    still be reported, so an unrecognized body degrades to the status line
-    rather than replacing one bad message with an exception.
-    """
-    status = f"{endpoint} failed with status {exc.status}"
-    body = exc.body
-    if isinstance(body, bytes | bytearray):
-        body = body.decode("utf-8", errors="replace")
-    if not isinstance(body, str):
-        return f"{status}: {exc.reason}"
-    try:
-        payload = json.loads(body)
-    except json.JSONDecodeError:
-        return f"{status}: {exc.reason}"
-    if not isinstance(payload, dict):
-        return f"{status}: {exc.reason}"
-
-    code = payload.get("error_code") or payload.get("error_type")
-    message = payload.get("error_message") or payload.get("display_message")
-    request_id = payload.get("request_id")
-
-    described = status
-    if code:
-        described += f" ({code})"
-    described += f": {message or exc.reason}"
-    if request_id:
-        described += f" [request_id {request_id}]"
-    return described
-
-
 class PlaidClient:
     """An authenticated client for one environment.
 
@@ -134,6 +99,9 @@ class PlaidClient:
         secret: str,
         *,
         timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        retry_policy: RetryPolicy | None = None,
+        sleep: Sleeper = time.sleep,
+        now: Callable[[], UtcInstant] = now_utc,
     ) -> None:
         if not config.plaid_client_id:
             raise AggregatorNotConfiguredError(
@@ -142,6 +110,13 @@ class PlaidClient:
             )
         self._environment = config.environment
         self._timeout_seconds = timeout_seconds
+        self._retry_policy = RetryPolicy() if retry_policy is None else retry_policy
+        # Injected so the suite exercises the real backoff decisions at full
+        # speed. A test that had to wait out the schedule would be rewritten to
+        # a one-attempt policy, and the schedule -- the part with a bug in it --
+        # would stop being tested at all.
+        self._sleep = sleep
+        self._now = now
         configuration = plaid.Configuration(
             host=_host_for(config.environment),
             api_key={"clientId": config.plaid_client_id, "secret": secret},
@@ -175,13 +150,42 @@ class PlaidClient:
         request: Any,
         *,
         request_context: str | None = None,
+        connection_id: int | None = None,
     ) -> FetchedResponse:
         """Make one call and return what came back, undecoded.
 
         `received_at` is stamped from the clock here because this is the moment
         the system learned the thing, and it is the value every deriver is
         required to use instead of consulting a clock of its own.
+
+        `connection_id` travels into every failure raised from here. AC-4.1's
+        "one broken connection never aborts another" is a property of the
+        caller's loop, and a loop can only honour it if the error it catches
+        says which connection it belongs to.
         """
+        return call_with_retry(
+            lambda: self._attempt(
+                endpoint,
+                invoke,
+                request,
+                request_context=request_context,
+                connection_id=connection_id,
+            ),
+            policy=self._retry_policy,
+            sleep=self._sleep,
+            now=self._now,
+        )
+
+    def _attempt(
+        self,
+        endpoint: Endpoint,
+        invoke: Callable[..., Any],
+        request: Any,
+        *,
+        request_context: str | None,
+        connection_id: int | None,
+    ) -> FetchedResponse:
+        """One call, with every way it can fail turned into a local type."""
         try:
             raw = invoke(
                 request,
@@ -189,9 +193,7 @@ class PlaidClient:
                 _request_timeout=self._timeout_seconds,
             )
         except plaid.ApiException as exc:
-            # Classified into the connection-health taxonomy in Chunk 02. What
-            # this build owes already is a message that names the cause.
-            raise ConnectorError(_describe_failure(endpoint, exc)) from exc
+            raise self._refusal(endpoint, exc, connection_id) from exc
         except urllib3.exceptions.HTTPError as exc:
             # The SDK wraps only SSL errors *(verified by probing an unreachable
             # host: a refused connection escapes as urllib3.MaxRetryError)*, so
@@ -200,23 +202,74 @@ class PlaidClient:
             # failure rather than an aggregator one, because the aggregator did
             # not answer -- and that distinction is what stops someone rotating a
             # secret that was never the problem.
-            raise ConnectorError(
+            raise TransportError(
                 f"{endpoint} could not reach the aggregator at the {self._environment} "
-                f"host: {type(exc).__name__}"
+                f"host: {type(exc).__name__}",
+                endpoint=endpoint,
+                connection_id=connection_id,
+                failed_at=self._now(),
+            ) from exc
+        except AttributeError as exc:
+            # 🔴 A bug in the SDK, contained here because it surfaces as a
+            # traceback from a library the operator never chose. `rest.py` raises
+            # `ApiException(status=0, reason=...)` with no body when a bare
+            # `urllib3.exceptions.SSLError` escapes retry wrapping, and
+            # `api_client.py` then runs `e.body.decode('utf-8')` on that `None`
+            # *(both verified by probe: the AttributeError is raised at
+            # api_client.py:204 with the ApiException as its `__context__`)*.
+            #
+            # The narrowing is the point. Catching `AttributeError` around a call
+            # would swallow every genuine typo in this module, so this re-raises
+            # untouched unless the SDK's own exception is standing behind it.
+            if not isinstance(exc.__context__, plaid.ApiException):
+                raise
+            raise TransportError(
+                f"{endpoint} failed inside the aggregator SDK while it was reporting a "
+                f"transport error of its own: {exc.__context__.reason}",
+                endpoint=endpoint,
+                connection_id=connection_id,
+                failed_at=self._now(),
             ) from exc
         try:
             body = raw.data
         finally:
             raw.release_conn()
         if not isinstance(body, bytes):  # pragma: no cover -- urllib3 returns bytes
-            raise ConnectorError(
-                f"{endpoint} returned {type(body).__name__}, expected undecoded bytes"
+            raise AggregatorRequestError(
+                f"{endpoint} returned {type(body).__name__}, expected undecoded bytes",
+                endpoint=endpoint,
+                connection_id=connection_id,
+                failed_at=self._now(),
             )
         return FetchedResponse(
             endpoint=endpoint,
             body=body,
-            received_at=now_utc(),
+            received_at=self._now(),
             request_context=request_context,
+        )
+
+    def _refusal(
+        self,
+        endpoint: Endpoint,
+        exc: plaid.ApiException,
+        connection_id: int | None,
+    ) -> ConnectorError:
+        """The local exception one aggregator refusal becomes.
+
+        Built rather than raised so the `raise ... from exc` at the call site
+        keeps the SDK's exception as the cause -- the classification is this
+        product's reading of the failure, and the original stays reachable for
+        anyone who disagrees with it.
+        """
+        detail = parse_error_body(exc.body)
+        return classify(exc.status, detail)(
+            describe(endpoint, exc.status, exc.reason, detail),
+            endpoint=endpoint,
+            connection_id=connection_id,
+            error_code=detail.error_code,
+            request_id=detail.request_id,
+            failed_at=self._now(),
+            retry_after_seconds=parse_retry_after(exc.headers),
         )
 
     def institutions_get(

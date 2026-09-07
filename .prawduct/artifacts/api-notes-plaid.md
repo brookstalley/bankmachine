@@ -96,14 +96,14 @@ body keys: [display_message, documentation_url, error_code, error_message,
 Wrong credentials, a malformed field and an unsupported country are all `400: Bad Request`.
 Reporting `reason` alone gives the operator no way to tell a rotated secret from a bug in
 this code, and the wrong guess costs a credential rotation that was never the problem — the
-exact failure VRF-002 item 5 is written to catch. `_describe_failure` parses the body for
-`error_code`, `error_message` and `request_id`, and degrades to the status line rather than
-raising when the body is not what it expects.
+exact failure VRF-002 item 5 is written to catch. `connector/plaid/errors.py` parses the
+body for `error_code`, `error_message` and `request_id`, and degrades to the status line
+rather than raising when the body is not what it expects.
 
 Two facts worth keeping from the probe: the body arrives as `str`, because `api_client.py`
 decodes it before re-raising; and that decode is unguarded, so an `ApiException` carrying no
-body — the `status=0` SSL path — would raise `AttributeError` inside the SDK. Not reachable
-through anything Chunk 01 does; **carried to Chunk 02**, which owns the taxonomy.
+body — the `status=0` SSL path — would raise `AttributeError` inside the SDK. **Discharged in
+Chunk 02**, where §9 below establishes which SSL failures actually reach that path.
 
 ### 4. Auth is three header api-keys, and the secret is one of them
 
@@ -168,6 +168,87 @@ rotate versus fix the call — and the aggregator already separates them.
 
 ---
 
+## What Chunk 02 established
+
+### 8. 🔴 The SDK does not enumerate error codes, so the taxonomy cannot be read off it
+
+`plaid/model/plaid_error.py` types `error_code` as a bare `str` and its
+`allowed_values` is empty. `error_type` **is** an enum
+(`plaid/model/plaid_error_type.py`, 25 values) and is used as the taxonomy's
+coarse second layer. The individual codes had to come from elsewhere, and the
+provenance differs per code, so `connector/plaid/errors.py` records it per entry:
+
+- **Observed live** — `INVALID_API_KEYS` (a well-formed client id with a wrong
+  secret) and `INVALID_FIELD` (a malformed client id). Both need no valid
+  credentials, and both are now pinned by `tests/connector/test_sandbox.py`.
+- **Spelled by the SDK elsewhere in its own source** — `ITEM_LOGIN_REQUIRED`,
+  `ITEM_LOCKED`, `INSTITUTION_DOWN`, `INSTITUTION_NOT_RESPONDING`,
+  `ITEM_NOT_SUPPORTED`, `NO_ACCOUNTS`, `ACCESS_NOT_GRANTED` and
+  `INSTITUTION_NO_LONGER_SUPPORTED` appear in
+  `plaid/model/credit_bank_income_error_type.py`, which belongs to a *different*
+  Plaid product. That is evidence the strings are part of the aggregator's
+  vocabulary, and it is **not** proof that these endpoints emit them.
+- **Named by the requirement alone** — `PRODUCT_NOT_READY`, which AC-2.6 needs
+  and which appears nowhere in the installed package *(searched)*. It is the
+  least-evidenced line in the taxonomy and is labelled as such in the source.
+
+`ITEM_ERROR` is deliberately **not** in the type layer: it spans
+`ITEM_LOGIN_REQUIRED` (re-link), `ITEM_LOCKED` (go to your bank) and
+`NO_ACCOUNTS` (nothing to sync). Mapping it to any one of them would be
+confidently wrong most of the time, and a wrong remedy is worse than a refusal.
+
+### 9. 🔴 An SSL failure escapes the SDK as `AttributeError`, from inside the SDK
+
+Two probes, and the first one's answer is not the second one's:
+
+**Probe A — a plain-HTTP server spoken to over `https`.** The failure arrives as
+`urllib3.exceptions.MaxRetryError` (`Caused by SSLError(... WRONG_VERSION_NUMBER)`),
+raised from `urllib3/util/retry.py`. It never reaches `rest.py`'s
+`except urllib3.exceptions.SSLError` clause at all, because urllib3's retry
+machinery has already wrapped it. Chunk 01's existing `urllib3.exceptions.HTTPError`
+arm catches it, so the common certificate failure was already handled.
+
+**Probe B — a bare `urllib3.exceptions.SSLError`, which does reach that clause.**
+`rest.py:211` raises `ApiException(status=0, reason=msg)` with **no**
+`http_resp`, so `ApiException.__init__` sets `body = None`. `api_client.py:204`
+then runs, unguarded:
+
+```python
+except ApiException as e:
+    e.body = e.body.decode('utf-8')
+```
+
+and the call raises `AttributeError: 'NoneType' object has no attribute 'decode'`
+at `api_client.py:204`, with the `ApiException` standing as its `__context__`.
+
+This is a bug in `plaid-python` 44.0.0, and it is contained rather than left to
+surface: `_attempt` catches `AttributeError`, **re-raises it untouched unless the
+SDK's own exception is standing behind it**, and otherwise reports a transport
+failure carrying the original reason. The narrowing is the load-bearing half —
+catching `AttributeError` around a call would swallow every genuine typo in the
+module and report it as a network problem, turning a five-minute fix into a hunt
+for a firewall. `test_an_ordinary_bug_in_this_module_is_not_disguised_as_a_transport_failure`
+is the negative control for exactly that.
+
+**The general lesson, recorded because it cost two probes:** the first probe
+disconfirmed the source reading, and the disconfirmation was itself incomplete.
+Reading `rest.py` said "SSL errors become `ApiException(status=0)`"; probe A said
+"no they do not"; probe B established that *both* are true of different SSL
+failures, and only one of them is the one that matters.
+
+### 10. `Retry-After` is read only in its delay-seconds form
+
+`ApiException.headers` exists on the undecoded path (`http_resp.getheaders()`,
+present on urllib3 2.7.0's `HTTPResponse`) and is `None` when the exception was
+built without a response. The HTTP-date form of `Retry-After` is deliberately
+ignored: parsing it needs the current time, which would make the wait depend on
+this machine's clock agreeing with the aggregator's, and a skewed clock turning a
+two-second wait into an hour is a worse failure than falling back to the computed
+backoff. **Not observed in a live response** — no rate limit was provoked — so
+the parsing is exercised against synthetic headers only.
+
+---
+
 ## What is deliberately unused
 
 The generated response models — the largest part of the package — are not used at all, and
@@ -190,5 +271,10 @@ assumed.
   recorded and `tests/connector/test_sandbox.py` now compares against it rather than skipping.
 - **`days_requested`'s actual location** in the link-token request — Chunk 03's own
   `verify-api` step, and the highest-stakes parameter in the system (AC-1.2).
+- **A real `ITEM_LOGIN_REQUIRED`**, via `/sandbox/item/reset_login`. It needs an
+  enrolled Item, which needs the exchange call, so it moved from Chunk 02 to
+  Chunk 03 — see that plan's amendment note.
+- **A real rate limit or a real `PRODUCT_NOT_READY`.** Neither was provoked;
+  both are exercised against constructed responses only.
 - **What `/item/public_token/exchange` carries**, to make the credential-archive exemption
   a mechanism rather than the decision `store/raw.py` currently records.
