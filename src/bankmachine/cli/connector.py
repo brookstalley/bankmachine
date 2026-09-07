@@ -99,9 +99,7 @@ def cmd_check(config: Config, args: argparse.Namespace) -> int:
     secret = get_plaid_secret(config)
 
     with PlaidClient(config, secret) as client:
-        fetched = client.institutions_get(
-            count=CHECK_PAGE_SIZE, offset=0, country_codes=countries
-        )
+        fetched = client.institutions_get(count=CHECK_PAGE_SIZE, offset=0, country_codes=countries)
 
     with writer_connection(config) as conn:
         stored = record_response(

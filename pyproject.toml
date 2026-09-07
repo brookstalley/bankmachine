@@ -28,12 +28,30 @@ dev = [
     "hypothesis>=6",
     "mypy>=1.11",
     "pytest>=8",
-    "ruff>=0.6",
+    # Floor raised from >=0.6 on 2026-09-07: the tree is formatted against 0.16's
+    # rules, and 0.6 formats several files differently. A floor that predates the
+    # formatting it is meant to reproduce invites a churn diff on any fresh resolve.
+    "ruff>=0.16",
 ]
 
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
+
+[tool.ruff.format]
+# Ruff formats Python code blocks inside Markdown, and this repository's
+# artifacts quote foreign source VERBATIM as evidence -- `api-notes-plaid.md`
+# §2 reproduces the aggregator SDK's own `api_client.py`, redundant parentheses
+# and all, because the whole point of the quote is what the vendor's code
+# actually says. Reformatting it would edit a quotation into something the SDK
+# does not contain, and the decision resting on it (`_preload_content=False`,
+# AC-5.1) would cite evidence that had been silently tidied.
+#
+# Scoped to the formatter rather than to `[tool.ruff]` because the formatter is the
+# only half that reaches Markdown at all: `ruff check` on a `.md` path reports
+# "No Python files found" and lints nothing (measured, ruff 0.16.6). Excluding
+# here says exactly what is true and nothing more.
+exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "SIM"]

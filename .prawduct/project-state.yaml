@@ -196,6 +196,7 @@ product_definition:
       - "Keychain-backed secrets, SQLCipher at rest, redacted logs, no telemetry (§6)"
       - "launchd scheduling with missed-window recovery and logging (AC-ARCH.2)"
       - "`sync shell` — authenticated SQLCipher REPL, built in step 1 as the debugging affordance for every later step"
+      - "`store backup` — an operator-invoked verified encrypted copy taken under the writer lock. In v1 because the datastore key cannot be recovered once lost and the daily balance series is the one class of data no re-sync rebuilds; SCHEDULING it is not (see `later`)."
       - "The §7 verification gate, run and published"
     accommodate:
       - "Plaid webhooks — leave a clean seam, do not build (needs a public endpoint)"
@@ -204,7 +205,8 @@ product_definition:
       - "Institutions and accounts not yet known, added and removed over time"
     later:
       - "Retiring the incumbent aggregator once the verification gate passes"
-      - "Multi-machine or backup-restore automation"
+      - "Backup SCHEDULING, retention, and a rehearsed restore procedure — the manual `store backup` command is v1 (above); nothing runs it on a timer, and restore has never been exercised end to end"
+      - "Multi-machine operation"
     never:
       - item: "Any write path to Plaid or an institution"
         rationale: "Read-only permanently. A pipeline that can move money has a different risk class."
@@ -802,8 +804,48 @@ artifact_manifest:
       version: 1
       depends_on: ["System requirements"]
       # Home of AC-ARCH.7 and of this product's first ratified norms (Direction section).
-      # The template's usual upstreams (product brief, data model, security model, NFRs) do not
-      # exist as separate artifacts here; their content is in docs/system-requirements.md.
+      # Written before the rest of the strategy set; those upstreams now exist (below) and
+      # reconcile TO this artifact -- they cite its norms and restate none of them.
+
+    # The strategy-class set, authored 2026-09-06 in dependency order (data model -> NFRs ->
+    # security -> API contract -> observability -> operational spec). Reconciled from
+    # docs/system-requirements.md and the shipped schema, not interviewed. Which of them home
+    # ratified norms is recorded once, in the NORM REGISTRY block below -- not enumerated here,
+    # because a list in a second place goes stale the moment another artifact homes one.
+    - name: "Data model"
+      file_path: .prawduct/artifacts/data-model.md
+      version: 1
+      depends_on: ["System requirements", "Architecture"]
+      # Describes tables that ALREADY EXIST. Migration 002's DDL is frozen and never changes;
+      # where this artifact and that DDL disagree, the DDL is right and the artifact is a bug.
+    - name: "Non-functional requirements"
+      file_path: .prawduct/artifacts/nonfunctional-requirements.md
+      version: 1
+      depends_on: ["System requirements"]
+      # Targets are stated, not measured -- the MCP surface is build step 7.
+    - name: "Security model"
+      file_path: .prawduct/artifacts/security-model.md
+      version: 1
+      depends_on: ["System requirements", "Data model", "Architecture"]
+      # Carries the threat model, including what is deliberately NOT defended against.
+      # Records one owed test: AC-10.2's git ls-files scan for token-shaped strings.
+    - name: "API contract"
+      file_path: .prawduct/artifacts/api-contract.md
+      version: 1
+      depends_on: ["System requirements", "Data model", "Security model"]
+      # Two surfaces: the MCP tools (specified, step 7) and the CLI (partially built).
+      # Home of the declared surface inventory and the `Retention:` rule the Critic reads.
+    - name: "Observability strategy"
+      file_path: .prawduct/artifacts/observability-strategy.md
+      version: 1
+      depends_on: ["System requirements", "Non-functional requirements", "API contract"]
+      # The observability surface and the product surface are the same thing (get_pipeline_health).
+    - name: "Operational specification"
+      file_path: .prawduct/artifacts/operational-spec.md
+      version: 1
+      depends_on: ["Non-functional requirements", "Security model", "Observability strategy"]
+      # Scheduling (step 8) is specified, not built. Records the backup gap as the highest-value
+      # operational work outstanding -- the one failure mode with no remedy.
 
 # =============================================================================
 # BUILD STATE
@@ -1134,3 +1176,25 @@ distribution: plugin
 # path is markdown-first and sets this later, at scrub/cutover.
 # `/prawduct:backlog` routes on this scalar.
 backlog_service_repo: brookstalley/bankmachine
+
+# =============================================================================
+# NORM REGISTRY
+# =============================================================================
+# Seeds the Norm Health sweep baseline. Leads with the date deliberately.
+#
+# 17 norms ratified across four artifacts, homed in their `## Direction`
+# sections with pointer rows in project-preferences.md's Enforcement table.
+# The four datastore-access norms in architecture.md were ratified earlier
+# (2026-09-05) and are unchanged by this pass.
+#
+# Sixteen are `steady-state`. ONE is `in-transition`: the operator-POV sign
+# convention in data-model.md, which names brookstalley/bankmachine#9 as its
+# tracking item. It was ratified in-transition rather than steady-state because
+# nothing tests it yet and the connector that must obey it is mid-build --
+# recorded here because a registry that hides its one unfinished norm is
+# reporting health it has not got.
+#
+# Two norms bind a surface that does not exist (the MCP tool layer, build step
+# 7), on this repo's own precedent: architecture.md's norms were also born
+# before their code.
+norm_registry_ratified: 2026-09-07 — 17 norms across data-model, security-model, api-contract and operational-spec; 16 steady-state, 1 in-transition (#9)

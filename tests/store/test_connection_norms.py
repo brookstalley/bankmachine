@@ -203,8 +203,9 @@ def test_the_measured_unreadable_edge_is_not_reported_as_a_bad_key(
     initialized_config.datastore_path.with_suffix(".db-shm").unlink(missing_ok=True)
     directory.chmod(0o555)
     try:
-        with pytest.raises(connection.DatastoreUnreadableError) as excinfo, reader(
-            initialized_config
+        with (
+            pytest.raises(connection.DatastoreUnreadableError) as excinfo,
+            reader(initialized_config),
         ):
             pass
     finally:

@@ -110,9 +110,7 @@ def test_the_endpoint_exemption_is_narrow() -> None:
     exempt = {
         node.value
         for node in ast.walk(module)
-        if isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and id(node) in declared
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) in declared
     }
     assert exempt == {"/institutions/get", "/accounts/get"}
     assert "/Users/someone/store.db" not in exempt

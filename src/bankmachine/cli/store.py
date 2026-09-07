@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from bankmachine.config import Config
 from bankmachine.logging_setup import get_logger
@@ -13,6 +14,7 @@ from bankmachine.secrets import (
     get_datastore_key,
 )
 from bankmachine.store import connection
+from bankmachine.store.backup import BackupReport, back_up
 from bankmachine.store.migrations import migrate
 from bankmachine.store.rebuild import RebuildReport, rebuild
 
@@ -59,6 +61,26 @@ def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
         ),
     )
     rebuild_command.set_defaults(handler=cmd_rebuild)
+
+    backup = commands.add_parser(
+        "backup",
+        help="write a verified, consistent, encrypted copy of the datastore",
+        description=(
+            "Takes the exclusive writer lock, writes a single-file copy with the WAL "
+            "folded in, then opens that copy with the same key and checks it. A "
+            "plain `cp` of the datastore silently loses whatever is still in the "
+            "WAL, and copying all three files is only consistent if nothing is "
+            "mid-commit. Never overwrites an existing file. The copy is encrypted "
+            "and is USELESS WITHOUT THE KEY -- back the key up separately."
+        ),
+    )
+    backup.add_argument(
+        "destination",
+        type=Path,
+        metavar="PATH",
+        help="where to write the copy; must not already exist",
+    )
+    backup.set_defaults(handler=cmd_backup)
 
 
 def cmd_init(config: Config, _args: argparse.Namespace) -> int:
@@ -168,3 +190,28 @@ def _print_rebuild(report: RebuildReport) -> None:
         # Reached only under --accept-content-change; without it the rebuild
         # raises and this line is never printed against an unexplained change.
         print("content:                 CHANGED at an unchanged derivation version, accepted")
+
+
+def cmd_backup(config: Config, args: argparse.Namespace) -> int:
+    report = back_up(config, args.destination)
+    _print_backup(config, report)
+    return 0
+
+
+def _print_backup(config: Config, report: BackupReport) -> None:
+    print(f"source:          {report.source_path}")
+    print(f"backup:          {report.destination}")
+    print(f"bytes:           {report.bytes_written}")
+    print(f"schema version:  {report.schema_version}")
+    print("verified:        yes -- reopened with the datastore key, integrity_check ok")
+    # Loud, every time, and not conditional on anything. The key is the half of
+    # a backup that has no other source: an aggregator secret can be re-read
+    # from the vendor's dashboard, a datastore key cannot be re-read from
+    # anywhere. A copy without it is noise that looks like a backup.
+    logger.warning(
+        "this copy is encrypted and is USELESS WITHOUT THE DATASTORE KEY, which lives in "
+        "keychain %s/%s and cannot be recovered if lost -- back the key up separately, "
+        "somewhere that survives both this disk and this keychain",
+        config.keychain_service,
+        config.keychain_account,
+    )

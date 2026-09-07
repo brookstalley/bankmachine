@@ -12,8 +12,9 @@ It is a data pipeline. It does no budgeting, forecasting, categorization or advi
 
 **Status: build step 1 of ten is complete, and step 2 has begun** (`docs/system-requirements.md`
 §8). The encrypted datastore, its two connection roles, the core schema, the raw-response archive
-with a rebuild that verifies its own output, and `sync shell` — an authenticated SQL prompt, since
-page encryption breaks ordinary SQL tooling — all exist and are tested. The aggregator client's
+with a rebuild that verifies its own output, `store backup` (a verified single-file encrypted copy
+taken under the writer lock), and `sync shell` — an authenticated SQL prompt, since page encryption
+breaks ordinary SQL tooling — all exist and are tested. The aggregator client's
 walking skeleton has since landed and been run against the real sandbox: `bankmachine connector
 check` makes one authenticated call and archives the answer verbatim. **There is still no financial
 data to read** — nothing enrolls an account or fetches a transaction yet, so `store init` gives you

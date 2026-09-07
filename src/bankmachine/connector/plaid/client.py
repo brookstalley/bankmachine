@@ -239,7 +239,6 @@ class PlaidClient:
             self._api.institutions_get,
             request,
             request_context=(
-                f"count={count} offset={offset} "
-                f"country_codes={','.join(country_codes)}"
+                f"count={count} offset={offset} country_codes={','.join(country_codes)}"
             ),
         )

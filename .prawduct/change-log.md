@@ -34,6 +34,180 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-07: The strategy artifacts, and the two gaps writing them exposed
+
+<!-- prawduct: scope=strategy-artifacts -->
+
+**Why:** `/prawduct:doctor` reported the coverage chain stuck at layer 1 — six expected
+strategy-class artifacts had never been created. They are now written, in the dependency
+order the planning guide sets: data model, non-functional requirements, security model, API
+contract, observability strategy, operational spec. This was **reconciliation, not
+invention**: `docs/system-requirements.md` and `project-state.yaml` already held nearly all
+of it, and what the artifacts add is the shape — each criterion sitting next to the decision
+that motivated it and the code or test that discharges it. Each marks what is *built* versus
+*specified*, because four of the six describe surfaces that do not exist yet.
+
+**Writing them surfaced two real gaps, and both are closed here rather than filed.**
+
+🔴 **AC-10.2 was never implemented.** The criterion asks for a test that greps a fresh
+`git ls-files` for token-shaped strings; what existed was `check-no-personal-data.sh`, which
+hunts *roster* tokens supplied by `deployment/`. **Neither subsumes the other** — a roster
+name is not token-shaped, and a leaked access token names no institution, so a stray
+credential matching no institution walked past every guard in the repository.
+`tests/preferences/test_no_credentials_tracked.py` closes it: `git check-ignore` per AC-10.2
+clause with a negative control that `.env.example` stays tracked, plus a shape scan for
+access-token prefixes, 64-hex key runs, and labelled credentials with a real value.
+
+Its one exemption is a **per-line declaration, not a file skip list**, and the distinction is
+the design. A skip list exempts the *next* real secret to land in that file and nobody
+decides anything; the marker `credential-shape: test vector` exempts one line and appears in
+the diff of whoever adds it. It is used once, on the redaction test's own fixtures, which
+must carry real credential shapes or they prove nothing. A test asserts the marker does not
+spill onto neighbouring lines — **it caught exactly that bug while being written.**
+
+🔴 **There was no backup at all**, against a datastore key that cannot be recovered once lost
+and a `balances_daily` series no re-sync can rebuild. `bankmachine store backup` now writes a
+verified, consistent, single-file encrypted copy.
+
+**The measurements that shaped it, none of which came from documentation.** `VACUUM INTO`
+from a read-role handle **fails** under `PRAGMA query_only=ON` (`SQLITE_READONLY`) *and
+leaves a zero-byte file at the destination* — a file indistinguishable from a backup until
+the day it is needed, which is the single most dangerous artifact this command could
+produce. So the copy is taken from the writer factory, which is also the right answer for an
+unrelated reason: it holds the exclusive lock, so consistency is a consequence of the lock
+rather than of timing. The copy folds the WAL in — measured against a source holding a 2 MB
+hot WAL, whose 300 rows all appear in the copy while a plain `cp store.db` is short of every
+one of them. That comparison is a **negative control in the test**, so the command is known
+to differ from `cp` rather than assumed to.
+
+The tests also caught a defect in the first draft: `back_up` leaked a raw driver
+`OperationalError` instead of a named `StoreError`, so the CLI would have printed a
+traceback where every other failure in this repository prints a sentence.
+
+**17 norms ratified** (`norm_registry_ratified: 2026-09-07`), homed in the `## Direction`
+sections of the four artifacts that govern them, with pointer rows in
+`project-preferences.md`. Sixteen are steady-state. **One is `in-transition` on purpose:**
+the operator-POV sign convention, tracked by `#9`. Nothing tests it, and the connector that
+must obey it is mid-build — and the failure it guards against has no symptom, since an
+aggregator reporting a card balance as a positive amount owed makes a consumer wrong *by
+twice the debt*, silently and plausibly. Ratifying it steady-state with no mechanism would
+have been the aspirational failure the lifecycle exists to prevent.
+
+Two norms bind the **not-yet-built** MCP surface — read-only, and freshness-plus-warnings on
+every response. That follows this repo's own precedent: `architecture.md`'s four norms were
+also born before their code, and the point is that step 7 is *built to* them rather than
+discovering them.
+
+Where a norm has no mechanism, the Enforcement row says `Critic` and names nothing. Two data
+norms are recorded that way deliberately — the schema makes "never overwrite a source value"
+and "never hard-delete" *possible* to obey, not *impossible* to break, and naming a
+constraint that does not constrain would overstate the guarantee.
+
+**AC-10.4 got a mechanism too:** `test_only_the_connector_reaches_the_network.py` asserts
+nothing outside `connector/` imports a network transport — verified red by planting an
+`httpx` import, then green. Its limit is recorded in the norm rather than left implied: it
+cannot see a subprocess shelling out to `curl`, nor a dependency phoning home.
+
+**What the cumulative Critic caught, and it was worth the round.** 0 blocking, 14 warnings,
+8 notes across three reviewers, who converged independently on one theme: `store backup`
+shipped ahead of its own governance. The fixes, in this same bundle:
+
+🔴 **A test that could not fail.** `test_it_leaves_no_zero_byte_file_when_it_cannot_write`
+chmod'd the parent to `0o500` and then asserted the destination did not exist — true
+*before* `back_up` ran, in a directory nothing can create a file in. Worse, the guarantee
+it claimed to check was **inherited from `VACUUM INTO`**, not enforced by this module,
+whose own docstring records a measured failure that leaves a zero-byte file. Both halves
+are fixed: the failure path now unlinks the destination itself, and the test reproduces
+the real hazard in a *writable* directory by swapping the writer factory for the read-role
+one. A negative control neutralizes the cleanup and confirms the driver genuinely does
+leave debris — so the unlink is pinned rather than decorative. This is exactly the
+vacuous-fixture failure the test-evidence prompt names, written by the same hand that
+quoted it.
+
+🔴 **The credential guard exempted its own file.** `if path == Path(__file__): continue` —
+a file-level skip list, in the module whose docstring argues against file-level skip lists,
+covering the one file where a credential-shaped literal looks normal to a reviewer. It now
+scans itself and declares its own vectors per line, like any other file.
+
+**`BackupDestinationExistsError` was raised for a missing parent directory** — a misnomer
+that sends the operator looking for a file that is not there. Split into
+`BackupDestinationUnusableError`; the remedies are opposite.
+
+**`store backup` was graded `stable` on the day it was written**, against the inventory's
+own criterion (*shipped and depended on*), while mid-build `connector` commands sat at
+`experimental` — and the `Retention:` rule defers removal of a stable member to a major.
+Now `experimental`, with the reasoning recorded.
+
+**The append-only norm claimed `Test` for a mechanism that does not enforce it.** A
+composite primary key rejects a duplicate INSERT but permits `UPDATE`, `DELETE` and upsert
+— and AC-2.4's idempotency requirement is precisely what will tempt the sync writer toward
+`ON CONFLICT DO UPDATE`. Recorded `Critic` with the partial structure named, matching the
+discipline the same bundle applied to the source-overwrite and hard-delete norms. Claiming
+`Test` would have had the janitor sweep read it as machine-checked, and the guard for the
+one series no re-sync can rebuild would never have been written.
+
+**Two coherence defects in the records themselves:** `project-state.yaml` asserted the new
+artifacts declare no `## Direction` section thirty lines above a registry saying the 17
+norms are homed in those sections; and `operational-spec.md` re-homed architecture.md's
+implicit-creation norm while both files recorded that nothing was restated. One rule now
+has one home — operational-spec keeps the backup half and cites architecture for the
+datastore half. `architecture.md`'s canonical command table, which declares itself
+canonical precisely so a command set is not restated in four places, has regained the three
+commands it was missing.
+
+Also added: the `store backup` CLI surface had no test at all (four now), and the backup
+path wrote no log record, so an unattended failure left only an exit code.
+
+**The verify pass then caught what the first round of fixes had left.** Three residuals,
+all of the same shape — a claim with nothing behind it. `operational-spec.md` now states
+as a *guarantee* that the failure message says which happened, so the message and the log
+records are asserted (`match=` on the raise, `caplog` on both paths) rather than left as
+prose a refactor can drop while staying green. The failure paths themselves were silent:
+an unattended run left a "backup starting" line and then nothing, which reads exactly like
+a run still in progress. And `README.md`'s "what exists today" paragraph still omitted
+`store backup`, so the three command lists the canonical table exists to keep in agreement
+were still disagreeing — the point of that table is that a command set restated in four
+places is four places to disagree.
+
+**One reviewer observation was wrong and is recorded as such rather than acted on.** It
+reported that the R-13 disposition claimed here does not exist; running the command again
+returned `supersedes disp:...:R-13:1`, so version 1 was on record all along. The manifest's
+`prior_dispositions` evidently does not carry the full set. Checked rather than believed,
+because a fix applied to a defect that is not there is a change with no reason.
+
+**Accepted rather than fixed**, recorded as dispositions: the fourth copy of the AST import
+scanner (extraction would edit three tests this bundle does not touch), and `data-model.md`
+being a third uncompared description of the frozen DDL — a real drift risk that wants a
+construction of its own, now tracked as `#11`. *(The absent parent requirement for
+`store backup` was on this list until the PR review; it was fixed rather than accepted, and
+leaving it here would have had the entry contradict itself two paragraphs later.)*
+
+**The PR reviewer then caught the scope trace.** `store backup` had no parent
+requirement anywhere: `docs/system-requirements.md` carries no backup criterion, and
+`project-state.yaml`'s `scope.later` said *"Multi-machine or backup-restore automation"* —
+which reads as deferring backup out of v1 entirely, in the bundle that ships it. The
+capability was properly reached and consumed; only the trace was missing. `scope.v1` now
+names the manual command and says why it is v1, and `later` is sharpened to the half that
+genuinely is deferred: scheduling, retention, and a rehearsed restore.
+
+It also measured a sentence in `pyproject.toml` that was simply false. The
+`[tool.ruff.format]` rationale said *"`ruff check` still lints these files"* — it does not:
+`ruff check` on a `.md` path reports "No Python files found" and lints nothing (confirmed
+against the 0.16.6 this commit pins). The exclude is right and load-bearing; the sentence
+explaining *why it is scoped to the formatter* was wrong, which is the sentence a reader
+checks first. Replaced with the measured reason.
+
+And three deferrals that existed only as prose are now filed — `#10` (schedule the backup,
+rehearse the restore), `#11` (`data-model.md` is a third uncompared description of the
+frozen DDL), `#12` (`verify_norms_go_red` does not know the three newest norms). The § Owed
+table claimed its gaps were "filed rather than rediscovered" while the highest-value one had
+no item; it now cites `#10`. `#11` and `#12` are not operational gaps and correctly do not
+appear there.
+
+**Still open, and named rather than quietly carried:** nothing *schedules* the backup, and
+the key is still backed up by hand — the command cannot do that half without defeating the
+keychain. Restore has no runbook and has not been rehearsed end to end by a human.
+
 ## 2026-09-06: VRF-002 discharged — the connector's live half, and what the sandbox really serves
 
 <!-- prawduct: scope=connector-v1 -->
