@@ -586,7 +586,7 @@ def test_an_unreadable_store_still_reports_whether_the_tool_takes_a_window(
     }, tool
     # The `partial` warning is what explains the emptiness here; a window caveat
     # would be a second voice saying the same thing about a different subject.
-    assert _window_kinds(wire) == [], tool
+    assert _request_kinds(wire) == [], tool
     assert any(w["kind"] == "partial" for w in wire["warnings"]), tool
 
 
@@ -1312,20 +1312,25 @@ def test_the_advertised_bounds_match_the_enforced_ones() -> None:
 # --------------------------------------------------------------------------
 
 
-def _window_kinds(wire: dict[str, Any]) -> list[str]:
+def _request_kinds(wire: dict[str, Any]) -> list[str]:
     """🔴 The request-scoped warnings only, compared as a whole list.
 
-    Never a substring test: the two kinds share a `window_` prefix, and
-    `learnings.md` records two occasions where `in` passed against the value the
-    assertion was written to exclude. Filtering to the request-scoped kinds and
-    comparing the list also pins ABSENCE, which is the half that catches a
-    warning firing on every response — the defect these two exist to fix.
+    Never a substring test: `window_starts_before_coverage` and
+    `window_extends_past_coverage` share a prefix, and `learnings.md` records two
+    occasions where `in` passed against the value the assertion was written to
+    exclude. Filtering to the request-scoped kinds and comparing the list also
+    pins ABSENCE, which is the half that catches a warning firing on every
+    response — the defect these kinds exist to fix.
+
+    🔴 Keyed on what the vocabulary DECLARES request-scoped, not on how the kinds
+    are spelled. Deriving the set from a shared `window_` prefix worked only
+    while every request-scoped kind was about a window: `rows_truncated` is
+    request-scoped and carries no such prefix, so a prefix filter would have
+    silently exempted it from every absence assertion below — and absence is the
+    half these assertions exist for.
     """
-    # 🔴 DERIVED from the vocabulary, never re-listed here. A hand-kept copy
-    # would silently exempt a third request-scoped kind from every absence
-    # assertion below -- and absence is the half these assertions exist for.
-    request_scoped = {k for k in query.WARNING_KINDS if k.startswith("window_")}
-    assert request_scoped, "the window kinds vanished from the vocabulary"
+    request_scoped = set(query.REQUEST_SCOPED_KINDS)
+    assert request_scoped, "the request-scoped kinds vanished from the vocabulary"
     return [w["kind"] for w in wire["warnings"] if w["kind"] in request_scoped]
 
 
@@ -1345,7 +1350,7 @@ def test_a_windowed_answer_states_the_window_it_covered(
         "structuredContent"
     ]
 
-    assert _window_kinds(wire) == ["window_starts_before_coverage"], tool
+    assert _request_kinds(wire) == ["window_starts_before_coverage"], tool
     assert wire["effective_window"]["requested"]["since"] == "2024-01-01"
     assert wire["effective_window"]["effective"]["since"] == today
     assert wire["effective_window"]["effective"]["until"] == today
@@ -1367,7 +1372,7 @@ def test_a_window_inside_coverage_carries_no_window_warning(
 
     wire = _call(initialized_config, tool, {"since": today, "until": today})["structuredContent"]
 
-    assert _window_kinds(wire) == [], tool
+    assert _request_kinds(wire) == [], tool
     assert wire["effective_window"]["effective"] == {"since": today, "until": today}
 
 
@@ -1384,7 +1389,7 @@ def test_a_future_window_says_so_rather_than_reading_as_a_quiet_period(
     )["structuredContent"]
 
     assert wire["rows"] == []
-    assert _window_kinds(wire) == ["window_extends_past_today"]
+    assert _request_kinds(wire) == ["window_extends_past_coverage"]
     assert wire["effective_window"]["effective"] == {"since": None, "until": None}
 
 
@@ -1406,7 +1411,7 @@ def test_an_empty_answer_outside_coverage_is_told_apart_from_a_zero(
     )["structuredContent"]
 
     assert wire["rows"] == []
-    assert _window_kinds(wire) == ["window_starts_before_coverage"]
+    assert _request_kinds(wire) == ["window_starts_before_coverage"]
     assert wire["effective_window"]["effective"] == {"since": None, "until": None}
 
 
@@ -1423,7 +1428,7 @@ def test_an_unwindowed_tool_reports_no_window_at_all(initialized_config: Config,
     wire = _call(initialized_config, tool)["structuredContent"]
 
     assert "effective_window" not in wire, tool
-    assert _window_kinds(wire) == [], tool
+    assert _request_kinds(wire) == [], tool
 
 
 def test_the_two_windowed_tools_describe_the_window_in_one_shared_sentence() -> None:
@@ -1444,3 +1449,181 @@ def test_the_two_windowed_tools_describe_the_window_in_one_shared_sentence() -> 
         assert mcp._WINDOW_NOTE in text, name
     for name, text in described.items():
         assert "ABSENT rather than zero" in text, name
+
+
+# --------------------------------------------------------------------------
+# Truncation, read as a consumer reads it — over the wire, not off the object
+# --------------------------------------------------------------------------
+
+
+def _seed_many(config: Config, count: int) -> None:
+    """`count` transactions on distinct dates, so the cap has something to hide.
+
+    The shared `_seed` above writes three, which cannot truncate under any limit
+    a caller is allowed to send — so the case this chunk exists to fix is
+    unreachable from it.
+    """
+    now = now_utc()
+    _seed(config)
+    added = [
+        {
+            "account_id": "acct-1",
+            "transaction_id": f"bulk-{index}",
+            "amount": "5.00",
+            "iso_currency_code": "USD",
+            "date": str(now.date() - timedelta(days=index)),
+            "authorized_date": None,
+            "pending": False,
+            "pending_transaction_id": None,
+            "name": f"Bulk {index}",
+            "merchant_name": None,
+            "personal_finance_category": {
+                "primary": "GENERAL_MERCHANDISE",
+                "detailed": "GENERAL_MERCHANDISE",
+            },
+        }
+        for index in range(count)
+    ]
+    with writer_connection(config) as conn:
+        apply_response(
+            conn,
+            connection_id=1,
+            endpoint=TRANSACTIONS_SYNC.path,
+            body=json.dumps(
+                {
+                    "accounts": [],
+                    "added": added,
+                    "modified": [],
+                    "removed": [],
+                    "next_cursor": "cursor-2",
+                    "has_more": False,
+                    "transactions_update_status": "HISTORICAL_UPDATE_COMPLETE",
+                    "request_id": "req-bulk",
+                }
+            ).encode(),
+            received_at=now,
+            derivers=ALL_DERIVERS,
+        )
+
+
+def test_a_capped_answer_says_so_in_the_payload_a_consumer_reads(
+    initialized_config: Config,
+) -> None:
+    """🔴 The defect, over the wire: an answer that hit the cap must stop reading as complete.
+
+    Measured harm — the documented default of 100 silently dropped ~16 months of
+    one account's history, and summing what came back understated a two-year
+    total by roughly 40% with nothing in the response saying so. A consumer sees
+    only this payload, so the correction has to be in it.
+    """
+    _seed_many(initialized_config, 130)
+
+    wire = _call(initialized_config, "query_transactions", {"limit": 10})["structuredContent"]
+
+    assert wire["truncation"]["returned"] == 10
+    assert wire["truncation"]["matching"] == 133
+    assert wire["truncation"]["truncated"] is True
+    assert len(wire["rows"]) == 10, "the block disagrees with the rows beside it"
+    assert _request_kinds(wire) == ["rows_truncated"]
+    detail = next(w["detail"] for w in wire["warnings"] if w["kind"] == "rows_truncated")
+    assert "123 are missing" in detail
+
+
+def test_a_complete_answer_says_it_is_complete(initialized_config: Config) -> None:
+    """The reverse half. A block that read `truncated: true` always would say nothing."""
+    _seed(initialized_config)
+
+    wire = _call(initialized_config, "query_transactions")["structuredContent"]
+
+    assert wire["truncation"] == {"returned": 3, "matching": 3, "truncated": False}
+    assert _request_kinds(wire) == []
+
+
+def test_the_aggregate_carries_no_truncation_block_over_the_wire(
+    initialized_config: Config,
+) -> None:
+    """🔴 `api-contract.md` fixes aggregates as unpaginated, and absence is how that is said."""
+    _seed_many(initialized_config, 130)
+
+    wire = _call(initialized_config, "spending_summary")["structuredContent"]
+
+    assert "truncation" not in wire
+    assert _request_kinds(wire) == []
+
+
+@pytest.mark.parametrize("tool", ["list_accounts", "get_pipeline_health"])
+def test_an_uncapped_tool_carries_no_truncation_block_over_the_wire(
+    initialized_config: Config, tool: str
+) -> None:
+    """Absence says "this tool returns everything it found"."""
+    _seed(initialized_config)
+
+    wire = _call(initialized_config, tool)["structuredContent"]
+
+    assert "truncation" not in wire, tool
+
+
+def test_the_window_scoped_count_rides_beside_the_store_wide_one(
+    initialized_config: Config,
+) -> None:
+    """🔴 A new coverage key, never the old one narrowed.
+
+    `coverage.transactions` is store-wide, and a consumer still reading it after
+    a silent window-scoping would get a wrong answer rather than an error — the
+    repurpose `api-contract.md` forbids in red.
+    """
+    _seed_many(initialized_config, 130)
+    today = now_utc().date()
+
+    wire = _call(
+        initialized_config,
+        "query_transactions",
+        {"since": str(today - timedelta(days=4)), "limit": query.MAX_ROWS},
+    )["structuredContent"]
+
+    assert wire["coverage"]["transactions"] == 133
+    assert wire["coverage"]["transactions_in_effective_window"] == 8
+    assert wire["truncation"]["matching"] == 8
+
+
+def test_the_capped_tool_describes_its_cap_and_the_aggregate_does_not() -> None:
+    """AC-9.4: a tool description states its conventions.
+
+    The note belongs to `query_transactions` alone — saying it on the aggregate
+    would describe a cap that tool does not have.
+    """
+    described = {d["name"]: d["description"] for d in mcp._tool_definitions()}
+
+    assert mcp._TRUNCATION_NOTE in described["query_transactions"]
+    for name in ("spending_summary", "list_accounts", "get_pipeline_health"):
+        assert mcp._TRUNCATION_NOTE not in described[name], name
+
+
+@pytest.mark.parametrize(
+    ("tool", "expects_truncation"),
+    [("query_transactions", True), ("spending_summary", False), ("list_accounts", False)],
+)
+def test_an_unreadable_store_still_reports_whether_the_tool_is_capped(
+    config: Config, tool: str, expects_truncation: bool
+) -> None:
+    """🔴 The capped-tool key, pinned over the wire and not only on the object.
+
+    The sibling of the `effective_window` test above, and it exists because that
+    one had to be written after the fact: the old shape and the new one passed
+    every AC-ARCH.3 assertion identically, since each of them runs against an
+    initialized store. `_unusable` is the construction site where a key is
+    easiest to drop, and dropping this one would tell a consumer that
+    `query_transactions` returns everything it finds — a false statement about
+    the tool, made precisely when the datastore cannot be read.
+    """
+    assert not config.datastore_path.exists()
+
+    wire = _call(config, tool)["structuredContent"]
+
+    if not expects_truncation:
+        assert "truncation" not in wire, tool
+        return
+
+    assert wire["truncation"] == {"returned": 0, "matching": 0, "truncated": False}
+    assert _request_kinds(wire) == [], tool
+    assert any(w["kind"] == "partial" for w in wire["warnings"]), tool

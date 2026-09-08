@@ -263,6 +263,62 @@ uncommitted code that is running and is not in that commit.
 deferred) is about letting consumers negotiate a contract, and it stands unchanged — including its
 revisit trigger. What `build` answers is "which code answered me", which belongs with `as_of`.
 
+### A capped answer says how much it left behind (#17)
+
+🔴 **Every capped tool carries `truncation`** — `{returned, matching, truncated}` — and a tool that
+returns everything it finds carries no such key at all. Absence means "this tool is not capped", so a
+consumer branching on the key gets a true answer either way. `query_transactions` is the only capped
+tool today; aggregates carry no block, because the row cap does not apply to them.
+
+**`returned` is the count of rows actually in the payload**, derived from the rows themselves rather
+than from the caller's `limit` — a `limit` above the hard cap is clamped, so the two are not the same
+number. **`matching` is the count the request selects**, over the same predicates and the same tables
+as the row query. **`truncated` is `returned < matching`**, derived rather than stored: a third
+number can disagree with the other two, and a derived one cannot.
+
+🔴 **The measured harm this closes.** An acceptance round found the documented default of `limit: 100`
+silently dropping ~16 months of one account's history, and a caller summing a two-year card total
+understating it by roughly 40% — with a payload that read as a complete answer throughout. `rows`
+alone cannot say it, because "100 rows" is a believable complete answer.
+
+**A truncated answer also raises `rows_truncated`**, because a structured field is not where a
+consumer looks when the numbers seem wrong. The caveat names the shortfall and a remedy the caller
+can actually follow — at the cap, raising `limit` is not one, so the sentence offers narrowing the
+window instead of advice that its own `returned` contradicts.
+
+🔴 **`matching` and the rows are two snapshots, and the contract says which way that resolves.**
+The read handle is opened in autocommit — `store/connection.py`: *"every statement is its own
+snapshot"* — and the scheduled sync writer soft-deletes transactions while the MCP reader may be
+mid-query. So a row counted in the first statement and removed before the second makes the count come
+back *below* the rows already in hand. **That is a data condition, not an error:** `matching` floors
+at `returned`, because those rows were observed to match and reporting fewer would contradict the
+payload beside them; `truncated` is then false, which is true, since nothing is being hidden. The
+skew is not smoothed away — `counted_during_change` announces it, so a consumer comparing two calls
+seconds apart knows a write landed between them. **Refusing to answer here would be the wrong
+trade**: it would turn a harmless skew into a failed tool call, which the Direction above forbids in
+as many words.
+
+**Cost, measured rather than assumed** — full method, caveats and the figures below in
+`.prawduct/artifacts/mcp-count-latency-2026-09-08.md`, which records that these are single-process
+warm-cache medians on one developer machine rather than a portable benchmark (2026-09-08, synthetic
+stores, 14 accounts over 24 months):
+the `matching` count runs at roughly the cost of the row query itself — ~1ms at 10k rows, ~89ms at
+200k — and a full `query_transactions` call lands at ~18ms / ~435ms respectively, inside the ~1s
+target in `nonfunctional-requirements.md` with room to spare at volumes well beyond a real 24-month
+store. **`matching` therefore ships exact**; the approximate-count fallback that was held in reserve
+is not needed and is not built.
+
+### Window-scoped coverage rides beside the store-wide figure, never replacing it
+
+🔴 **`coverage.transactions` stays store-wide.** A windowed answer gains a *sibling*,
+`coverage.transactions_in_effective_window`, counted over the effective bounds and never narrowed by
+`account_id` — per-account coverage is its own change (#19), and shipping half of it here would leave
+that work amending a field this one just added. Narrowing `coverage.transactions` in place would be
+the repurpose the evolution rules forbid: a consumer still reading it would get a wrong answer rather
+than an error. The sibling is present on exactly the answers that carry `effective_window`, including
+when the datastore cannot be read, so the key set a consumer branches on never depends on the store's
+health.
+
 ### Coverage is reported per account, never per institution (AC-9.5)
 
 One institution may hold many accounts with different coverage windows, and an institution-level
@@ -279,6 +335,7 @@ Manually imported rows are distinguishable from aggregator-sourced rows in **eve
 | Raw-row cap | 🔴 **~500 rows, hard** (AC-9.1) — a contract term, not a tuning knob |
 | Pagination | Cursor-based, opaque |
 | Aggregates | Unpaginated — bounded by the grouping, not by row count |
+| Hitting the cap | Never silent — `truncation` carries `returned`/`matching`/`truncated`, and `rows_truncated` warns |
 
 The cap is what keeps the sub-second target in `nonfunctional-requirements.md` reachable, and it is
 what stops a caller driving unbounded cost (OWASP API4).
@@ -312,10 +369,12 @@ three-week-old hole in the data and answer confidently.
 | `partial` | A contributing account has bounded history |
 | `rule-applied` | An account rule filtered rows from this aggregate |
 | `window_starts_before_coverage` | The window asked for reaches back past the first covered date |
-| `window_extends_past_today` | The window asked for reaches past the covered end — today, or the last transaction when that is later |
+| `window_extends_past_coverage` | The window asked for reaches past the covered end — today, or the last transaction when that is later |
+| `rows_truncated` | The request matched more rows than the cap returned, and the answer holds only the newest of them |
+| `counted_during_change` | A write landed between the row read and the count read, so the two describe moments a fraction apart |
 
-🔴 **The last two are REQUEST-scoped; the first five are CONNECTION-scoped, and the distinction is
-the reason they exist.** A connection-scoped warning describes the standing state of the pipeline,
+🔴 **The four window/row kinds are REQUEST-scoped; the connection kinds above them are
+CONNECTION-scoped, and the distinction is the reason they exist.** A connection-scoped warning describes the standing state of the pipeline,
 so it rides every response equally — measurement found the `gapped` notice arriving
 character-for-character identical on a window wholly inside coverage, a window wholly outside it, a
 future window, and a query for an account that does not exist. It is therefore true and useless: it
@@ -325,6 +384,13 @@ on actually crosses the boundary it names, so its presence is information and **
 
 Added additively under the evolution rules below (new warning codes need no version bump; consumers
 must tolerate a code they do not recognize), so AC-9.3's list — itself a minimum — is unamended.
+
+🔴 **`window_extends_past_coverage` was briefly named `window_extends_past_today`, and the rename
+happened before any consumer could depend on it.** The old name states the wrong bound: the covered
+end is today *or the last transaction when that is later*, so the name was stale by one word while
+the detail text beside it was accurate. Renaming a shipped warning code is a breaking change under
+the evolution rules below, which is exactly why it was done while the surface was still unreleased
+rather than left to become permanent. The pair now names one boundary concept from its two ends.
 
 These are the **minimum** distinctions, not the maximum. 🔴 AC-8.3: any aggregate that applied a rule
 **must say so** — an exclusion can never be silently forgotten during analysis.

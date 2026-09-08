@@ -2,7 +2,7 @@
 
 🔴 Assertions here compare warning kinds by EQUALITY on the whole list, never by
 `in` on a joined string. `window_starts_before_coverage` and
-`window_extends_past_today` share a `window_` prefix, and `learnings.md` records
+`window_extends_past_coverage` share a `window_` prefix, and `learnings.md` records
 two separate occasions where substring containment let an assertion pass against
 the value it was written to exclude. Comparing the list also pins the ABSENCE of
 a warning, which is the half that catches a resolver firing on every call — the
@@ -128,7 +128,7 @@ def test_a_start_before_coverage_is_named_and_clamped() -> None:
 def test_an_end_after_today_is_named_and_clamped() -> None:
     window = _resolve(date(2026, 8, 1), date(2027, 12, 31))
 
-    assert _kinds(window) == ["window_extends_past_today"]
+    assert _kinds(window) == ["window_extends_past_coverage"]
     assert window.effective_since == date(2026, 8, 1)
     assert window.effective_until == TODAY
     # Whole phrases. The loose forms ("after 2026-09-08") stayed green through a
@@ -151,7 +151,7 @@ def test_crossing_both_boundaries_names_both_and_in_a_fixed_order() -> None:
 
     assert _kinds(window) == [
         "window_starts_before_coverage",
-        "window_extends_past_today",
+        "window_extends_past_coverage",
     ]
     assert window.effective_since == EARLIEST
     assert window.effective_until == TODAY
@@ -222,7 +222,7 @@ def test_a_window_entirely_before_coverage_reports_no_effective_window() -> None
 def test_a_window_entirely_in_the_future_reports_no_effective_window() -> None:
     window = _resolve(date(2027, 1, 1), date(2027, 12, 31))
 
-    assert _kinds(window) == ["window_extends_past_today"]
+    assert _kinds(window) == ["window_extends_past_coverage"]
     assert window.covers_nothing is True
 
 
@@ -355,7 +355,7 @@ def test_as_of_is_read_as_a_calendar_date_at_exactly_one_site() -> None:
     )
 
     assert window.effective_until == date(2026, 9, 8)
-    assert _kinds(window) == ["window_extends_past_today"]
+    assert _kinds(window) == ["window_extends_past_coverage"]
 
 
 # --------------------------------------------------------------------------
@@ -457,7 +457,7 @@ def test_the_covered_end_follows_the_data_when_a_row_is_dated_after_today() -> N
     window = _resolve(None, date(2026, 12, 31), coverage=COVERAGE_WITH_FUTURE_ROWS)
 
     assert window.effective_until == date(2026, 12, 25)
-    assert _kinds(window) == ["window_extends_past_today"]
+    assert _kinds(window) == ["window_extends_past_coverage"]
     assert window.caveats[0].detail == (
         "you asked until 2026-12-31, but this store holds nothing after 2026-12-25, "
         "so this answer covers through 2026-12-25"

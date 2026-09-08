@@ -151,6 +151,27 @@ case to fall outside of. Prefer the second form even when the first is true toda
   windows are empty, so it does not inherit one. Note the shape of the failure — the enumeration
   was in the *test matrix*, not in the code, which is the same decay this rule names one layer up.
 
+- *2026-09-08, the truncation guard, and the sharpest form of this rule yet — because the check that
+  failed was **mine**, and it failed silently.* The guard compared the WHERE clause of the row query
+  against the WHERE clause of the count, to catch the two being built from different predicates. It
+  extracted each by `statement.partition(" WHERE ")`. SQLAlchemy compiles with newlines
+  (`count_1 \nFROM transactions \nWHERE ...`), so the separator never matched, the extraction
+  returned `""` for **both** sides, and `"" == ""` agreed with everything. It passed its first run
+  and it passed every mutation aimed at it; only the *survival* of a mutation another test should
+  not have caught exposed it.
+  🔴 **A test that derives what it compares — parsing, extracting, filtering, transforming — has a
+  second point of failure, and that one fails OPEN.** A loose comparison is the known trap; this is
+  its quieter sibling, where the comparison is strict equality and the *operands* are empty. Nothing
+  distinguishes "these two agree" from "I found neither". The defense is one line: **every
+  extraction asserts it found what it was looking for**, before anything is compared. The repo
+  already had this right one function away — `_window_kinds` guards its derived set with `assert
+  request_scoped, "the window kinds vanished from the vocabulary"`, for exactly this reason — and I
+  did not carry it to the new extraction I wrote beside it.
+  *(Two further defects in the same chunk were found by neither the matrix nor 22 mutations, but by
+  reading reachable inputs by hand: a caveat advising a caller to raise `limit` past a cap it had
+  already hit, and a windowed answer that dropped a coverage key only when the datastore was
+  unreadable. Both reconfirm the rule above rather than extending it.)*
+
 **How to apply:** before recording a guarantee, name the surface that could violate it and check
 that surface exists in the product. **And for every check you write, break the thing it names and
 watch it fail** — a green first run is the moment to distrust, not the moment to move on. Where a
@@ -161,7 +182,9 @@ firmer sentence. And when a rule matches on a *name* — a column name, a filena
 ask what relationship the name is standing in for, and match on that instead. **When the thing
 under test has a stateable invariant, write the invariant as well as the cases** — the cases check
 your model, and only the invariant checks the model itself; where a property-based library is
-available, that is what it is for. Related:
+available, that is what it is for. **And when a check derives its own operands, make the derivation
+assert it succeeded** — an extraction that can quietly return nothing turns a strict comparison into
+a tautology, and the green it produces is indistinguishable from the green you wanted. Related:
 [[review-coverage]] — both are the same family, a check whose bad news never arrives.
 
 ---

@@ -1,0 +1,803 @@
+"""What a capped answer says about the rows it did not return.
+
+🔴 **The invariants come first in this file, and that ordering is the point.**
+`learnings.md` records the window resolver surviving nine mutations against a
+hand-built boundary matrix while three real bugs stayed live: a matrix is
+written by the same mind, at the same sitting, from the same mental model as the
+code, so it reproduces the code's blind spot. The escape is to assert the RULE
+rather than enumerate instances — `truncated` iff `returned < matching` cannot be
+written from a mental model of which requests truncate, so it does not inherit
+one.
+
+The matrix below the invariants is still worth having; it is just not the part
+that catches the case nobody thought of.
+
+Assertions compare warning kinds by equality on the whole list, never by `in` on
+a joined string: `rows_truncated` sits in a vocabulary beside two kinds sharing a
+`window_` prefix, and substring containment cannot tell near-neighbours apart.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Iterator
+from datetime import date, timedelta
+from typing import Any
+
+import pytest
+from hypothesis import given
+from hypothesis import strategies as st
+from sqlalchemy import event, func, select
+from sqlalchemy.engine import Engine
+
+from bankmachine import query
+from bankmachine.config import Config
+from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC
+from bankmachine.derivers import ALL_DERIVERS
+from bankmachine.query import MAX_ROWS, Truncation
+from bankmachine.store.derivation import apply_response
+from bankmachine.store.engine import reader_connection, writer_connection
+from bankmachine.store.schema import connections, institutions, transactions
+from bankmachine.store.types import now_utc
+
+# --------------------------------------------------------------------------
+# The invariants — written before the matrix, and the reason for the ordering
+# --------------------------------------------------------------------------
+
+#: Any two row counts where the answer is possible at all. `returned > matching`
+#: is excluded here because it is not a truncation, it is a contradiction, and it
+#: has its own test one function down.
+_POSSIBLE = st.integers(min_value=0, max_value=10_000).flatmap(
+    lambda matching: st.tuples(st.integers(min_value=0, max_value=matching), st.just(matching))
+)
+
+
+@given(counts=_POSSIBLE)
+def test_truncated_is_true_exactly_when_rows_are_missing(counts: tuple[int, int]) -> None:
+    """The whole contract of the block, as a rule rather than as examples.
+
+    A caller branches on `truncated` and never re-derives it, so a `truncated`
+    that disagreed with its own two numbers would be believed over them.
+    """
+    returned, matching = counts
+    truncation = Truncation.over(returned=returned, counted=matching)
+
+    assert truncation.truncated == (returned < matching)
+    assert truncation.returned <= truncation.matching
+
+
+@given(counts=_POSSIBLE)
+def test_a_caveat_rides_every_truncated_answer_and_no_complete_one(counts: tuple[int, int]) -> None:
+    """🔴 The generalisation of this work cycle's defect: a missing row that says nothing.
+
+    Stated as an iff in both directions on purpose. The forward half is the
+    defect being fixed — rows silently absent. The reverse half is the defect the
+    FIX would introduce: a caveat on a complete answer fires on every response,
+    and measurement already showed what that does to a reader. A warning that is
+    always there is one nobody reads, which is how the `gapped` notice became
+    invisible.
+    """
+    returned, matching = counts
+    truncation = Truncation.over(returned=returned, counted=matching)
+
+    kinds = [c.kind for c in truncation.caveats]
+
+    assert kinds == (["rows_truncated"] if truncation.truncated else [])
+
+
+@given(counts=_POSSIBLE)
+def test_the_caveat_never_quotes_a_figure_the_block_beside_it_denies(
+    counts: tuple[int, int],
+) -> None:
+    """The prose and the structured field cannot contradict each other.
+
+    The window resolver's own bug was a sentence claiming coverage beside an
+    `effective` of null. This is the same class one field over: the sentence
+    quotes three numbers, and a consumer reads the sentence precisely when the
+    numbers look wrong.
+    """
+    returned, matching = counts
+    truncation = Truncation.over(returned=returned, counted=matching)
+
+    for caveat in truncation.caveats:
+        assert f"{matching} transactions match" in caveat.detail
+        assert f"newest {returned} are returned" in caveat.detail
+        assert f"{matching - returned} are missing" in caveat.detail
+
+
+@given(
+    returned=st.integers(min_value=1, max_value=1000),
+    removed=st.integers(min_value=1, max_value=1000),
+)
+def test_a_count_that_lags_the_rows_is_reconciled_rather_than_refused(
+    returned: int, removed: int
+) -> None:
+    """🔴 A write landing mid-answer is a data condition, not an impossible one.
+
+    The read handle is opened in autocommit — `store/connection.py`: "every
+    statement is its own snapshot" — so the row query and the count are two
+    snapshots, and the scheduled sync writer soft-deletes transactions while the
+    MCP reader may be mid-query. A row counted in the first statement and removed
+    before the second makes the count come back *below* the rows already in hand.
+
+    An earlier version of this code called that impossible and raised. It is
+    reachable, and raising would have refused a perfectly good question because a
+    nightly sync landed mid-query — turning a harmless skew into a failed tool
+    call, which is exactly what `api-contract.md` § Direction forbids.
+
+    `matching` floors at `returned` because those rows were observed to match;
+    reporting fewer would contradict the payload beside it. Nothing is hidden:
+    the skew rides out as its own caveat.
+    """
+    counted = max(0, returned - removed)
+    truncation = Truncation.over(returned=returned, counted=counted)
+
+    assert truncation.matching == returned, "a count below the rows contradicts the payload"
+    assert truncation.truncated is False, "no rows are being hidden when the count lags"
+    assert truncation.counted_during_change is True
+    assert [c.kind for c in truncation.caveats] == ["counted_during_change"]
+
+
+def test_a_count_that_matches_or_exceeds_the_rows_reports_no_change() -> None:
+    """The reverse half: the ordinary case must not raise the skew warning.
+
+    A caveat that fired on every answer would be the invariant `gapped` notice
+    all over again — measurement already showed what that does to a reader.
+    """
+    for returned, counted in ((0, 0), (3, 3), (100, 144), (500, 500)):
+        truncation = Truncation.over(returned=returned, counted=counted)
+
+        assert truncation.counted_during_change is False, (returned, counted)
+        assert "counted_during_change" not in [c.kind for c in truncation.caveats]
+
+
+@given(counts=_POSSIBLE)
+def test_the_remedy_is_one_the_caller_can_actually_follow(counts: tuple[int, int]) -> None:
+    """🔴 A sentence that tells a caller to raise `limit` past a cap it already hit.
+
+    Found by hand-probing reachable inputs, not by a mutation: at the ceiling the
+    caveat read "the newest 500 are returned ... raise `limit` (at most 500)",
+    which is unusable advice sitting beside a payload that contradicts it. That
+    is precisely the shape this work cycle exists to remove — a well-formed,
+    plausible sentence whose own numbers deny it — and every test passed while it
+    was there.
+
+    Stated as a rule over the whole space rather than at the two boundary values,
+    because the boundary is the thing most likely to move.
+    """
+    returned, matching = counts
+    truncation = Truncation.over(returned=returned, counted=matching)
+
+    for caveat in truncation.caveats:
+        offers_a_bigger_limit = "raise `limit`" in caveat.detail
+        assert offers_a_bigger_limit == (returned < MAX_ROWS), (
+            f"returned={returned} against a ceiling of {MAX_ROWS}: "
+            f"{'offered' if offers_a_bigger_limit else 'withheld'} a limit the caller "
+            f"{'cannot' if offers_a_bigger_limit else 'could'} use"
+        )
+
+
+def test_the_remedy_names_the_ceiling_the_code_enforces() -> None:
+    """A ceiling written into a sentence decays; this one is derived.
+
+    `learnings.md` records a recorded fingerprint (`limit:9999` → "at most
+    1000") falsified within a day by a commit moving the ceiling to 500. The
+    caveat tells a caller what to raise `limit` to, so it must read the same
+    constant the query clamps against.
+    """
+    detail = Truncation.over(returned=1, counted=2).caveats[0].detail
+
+    assert f"at most {MAX_ROWS}" in detail
+
+
+# --------------------------------------------------------------------------
+# The guard: the row query and the count are built from ONE predicate list
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def captured_sql() -> Iterator[list[str]]:
+    """Every statement the engine actually executes, in order.
+
+    🔴 Captured from the real execution rather than rebuilt in the test. A guard
+    that constructed the two statements itself would compare the test's idea of
+    the predicates with itself and agree forever — `learnings.md` § *Two
+    descriptions, compared*: an oracle derived from the thing it checks teaches
+    nothing.
+    """
+    statements: list[str] = []
+
+    def _capture(
+        _conn: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        statements.append(statement)
+
+    event.listen(Engine, "before_cursor_execute", _capture)
+    try:
+        yield statements
+    finally:
+        event.remove(Engine, "before_cursor_execute", _capture)
+
+
+def _normalized(statement: str) -> str:
+    """One line, single-spaced.
+
+    🔴 Normalize BEFORE splitting, never after. SQLAlchemy compiles with
+    newlines — `count_1 \nFROM transactions \nWHERE ...` — so partitioning the
+    raw text on `" WHERE "` matches nothing and silently yields an empty string
+    for every input. That is how the first version of this guard passed every
+    mutation applied to it: it compared "" with "" and agreed. A parse that can
+    fail open is worse than no parse, which is why both extractors below refuse
+    to return an empty result.
+    """
+    return " ".join(statement.split())
+
+
+def _where_of(statement: str) -> str:
+    _, marker, tail = _normalized(statement).partition(" WHERE ")
+    assert marker, f"no WHERE clause found in: {statement}"
+    # `ORDER BY`/`LIMIT` belong to the row query alone and are not predicates.
+    for terminator in (" ORDER BY ", " LIMIT "):
+        tail = tail.partition(terminator)[0]
+    assert tail, f"empty WHERE clause parsed from: {statement}"
+    return tail
+
+
+def _from_of(statement: str) -> str:
+    head, _, _ = _normalized(statement).partition(" WHERE ")
+    _, marker, tail = head.partition(" FROM ")
+    assert marker and tail, f"no FROM clause found in: {statement}"
+    return tail
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"since": date(2026, 1, 1)},
+        {"until": date(2026, 6, 30)},
+        {"account_id": 1},
+        {"since": date(2026, 1, 1), "until": date(2026, 6, 30), "account_id": 1},
+    ],
+)
+def test_the_count_and_the_row_query_select_from_the_same_predicates(
+    seeded_config: Config, captured_sql: list[str], arguments: dict[str, Any]
+) -> None:
+    """🔴 The failure this chunk is most likely to ship, and it would be silent.
+
+    Two statements that must agree, edited by different hands at different times:
+    a filter added to the rows and forgotten in the count reports a `matching`
+    that is too large and a `truncated` that is a lie — a precise wrong number,
+    which is worse than the vague one this chunk removes. This asserts they were
+    built from one list by reading what the engine actually ran.
+
+    Parametrized across the filter combinations because a single unfiltered call
+    cannot discriminate the rule: with no `WHERE` beyond the soft-delete clause,
+    a divergent builder and a correct one emit the same SQL.
+    """
+    query.list_transactions(seeded_config, **arguments)
+
+    # 🔴 The count is taken as the first one AFTER the row query, not the first
+    # in the run. `_coverage` issues its own counts over `transactions` a moment
+    # later, and one of them carries only the soft-delete clause — which happens
+    # to equal the row query's WHERE when no filter is set, so a looser search
+    # could pass here by comparing the wrong statement against itself.
+    rows_at = next(i for i, sql in enumerate(captured_sql) if "transactions.description" in sql)
+    count_at = next(i for i, sql in enumerate(captured_sql) if i > rows_at and "count(*)" in sql)
+    rows_sql, count_sql = captured_sql[rows_at], captured_sql[count_at]
+
+    assert _where_of(count_sql) == _where_of(rows_sql), (
+        "the count and the row query were built from different predicates"
+    )
+    assert _from_of(count_sql) == _from_of(rows_sql), (
+        "the count and the row query read different tables, so one can admit a row the other drops"
+    )
+
+
+# --------------------------------------------------------------------------
+# The store, and the invariant asserted over every request it can answer
+# --------------------------------------------------------------------------
+
+#: Two accounts, so an `account_id` filter has something to exclude — a fixture
+#: holding one instance of a shape cannot discriminate a rule about the shape.
+#: 140 transactions, so the DOCUMENTED DEFAULT of 100 truncates: that default is
+#: the measured harm this chunk exists to remove, and a fixture smaller than it
+#: could not reproduce it.
+_DAYS = 70
+_PER_DAY = 2
+_TOTAL = _DAYS * _PER_DAY
+
+
+def _accounts_body() -> bytes:
+    return json.dumps(
+        {
+            "accounts": [
+                {
+                    "account_id": f"acct-{n}",
+                    "name": name,
+                    "mask": f"000{n}",
+                    "type": "depository" if n == 1 else "credit",
+                    "subtype": "checking" if n == 1 else "credit card",
+                    "balances": {
+                        "current": "110.94",
+                        "available": "100.00",
+                        "limit": None,
+                        "iso_currency_code": "USD",
+                    },
+                }
+                for n, name in ((1, "Platypus Checking"), (2, "Platypus Card"))
+            ],
+            "item": {"item_id": "item-truncation"},
+            "request_id": "req-accounts",
+        }
+    ).encode()
+
+
+def _sync_body(last_day: date) -> bytes:
+    """`_TOTAL` transactions spread backwards over `_DAYS` days, alternating accounts.
+
+    Dates are spread rather than piled on one day so that a window bounds a
+    COUNT rather than selecting all or nothing — a fixture dated entirely today
+    cannot tell a window-scoped count from a store-wide one.
+    """
+    added = []
+    for index in range(_TOTAL):
+        day = last_day - timedelta(days=index // _PER_DAY)
+        added.append(
+            {
+                "account_id": f"acct-{(index % 2) + 1}",
+                "transaction_id": f"t{index}",
+                "amount": "10.00",
+                "iso_currency_code": "USD",
+                "date": str(day),
+                "authorized_date": None,
+                "pending": False,
+                "pending_transaction_id": None,
+                "name": f"Merchant {index}",
+                "merchant_name": None,
+                "personal_finance_category": {
+                    "primary": "GENERAL_MERCHANDISE",
+                    "detailed": "GENERAL_MERCHANDISE",
+                },
+            }
+        )
+    return json.dumps(
+        {
+            "accounts": [],
+            "added": added,
+            "modified": [],
+            "removed": [],
+            "next_cursor": "cursor-1",
+            "has_more": False,
+            "transactions_update_status": "HISTORICAL_UPDATE_COMPLETE",
+            "request_id": "req-sync",
+        }
+    ).encode()
+
+
+@pytest.fixture
+def seeded_config(initialized_config: Config) -> Config:
+    """A store with more transactions than the default limit returns.
+
+    🔴 Derived through the real derivers rather than hand-inserted, for the
+    reason `tests/test_mcp.py` records: the schema enforces provenance with a
+    CHECK, so hand-built rows either encode an assumption about that constraint
+    or fail on it, and either way stop reflecting what the product writes.
+    """
+    now = now_utc()
+    with writer_connection(initialized_config) as conn:
+        institution_pk = conn.execute(
+            institutions.insert().values(
+                source_institution_id="ins_109508",
+                name="First Platypus Bank",
+                first_seen_at=now,
+                last_seen_at=now,
+            )
+        ).inserted_primary_key
+        assert institution_pk is not None
+        conn.execute(
+            connections.insert().values(
+                institution_id=int(institution_pk[0]),
+                source_connection_id="item-truncation",
+                credential_ref="connection:sandbox:item-truncation",
+                capabilities="[]",
+                requested_history_days=730,
+                granted_history_days=730,
+                status="active",
+                last_success_at=now,
+                enrolled_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        for endpoint, body in (
+            (ACCOUNTS_GET.path, _accounts_body()),
+            (TRANSACTIONS_SYNC.path, _sync_body(now.date())),
+        ):
+            apply_response(
+                conn,
+                connection_id=1,
+                endpoint=endpoint,
+                body=body,
+                received_at=now,
+                derivers=ALL_DERIVERS,
+            )
+    return initialized_config
+
+
+def _oracle_count(
+    config: Config,
+    *,
+    since: date | None,
+    until: date | None,
+    account_id: int | None,
+) -> int:
+    """The matching count, derived independently of the code under test.
+
+    🔴 Written against the table directly rather than through
+    `_transaction_filters`. Sharing the builder would make this agree with the
+    implementation by construction and detect nothing, which is precisely the
+    self-derived oracle `learnings.md` warns produces a test that "would have
+    agreed with itself forever".
+    """
+    clauses: list[Any] = [transactions.c.removed_at.is_(None)]
+    if since is not None:
+        clauses.append(transactions.c.posted_date >= since)
+    if until is not None:
+        clauses.append(transactions.c.posted_date <= until)
+    if account_id is not None:
+        clauses.append(transactions.c.account_id == account_id)
+    with reader_connection(config) as conn:
+        return int(
+            conn.execute(
+                select(func.count()).select_from(transactions).where(*clauses)
+            ).scalar_one()
+        )
+
+
+def test_the_truncation_invariant_holds_over_every_request_this_store_can_answer(
+    seeded_config: Config,
+) -> None:
+    """🔴 The rule, over the whole reachable input space rather than over chosen cases.
+
+    The grid supplies the inputs; the assertions are invariants, so a
+    combination nobody predicted fails here without anyone having predicted it.
+    Four rules, each of which has a way to be violated silently:
+
+    - `returned` equals the rows actually in the payload (not the limit asked for)
+    - `matching` equals an independently derived count
+    - `truncated` iff rows are missing
+    - a `rows_truncated` warning rides every truncated answer and no complete one
+    """
+    today = now_utc().date()
+    boundaries = [
+        None,
+        today,
+        today - timedelta(days=_DAYS // 2),
+        today - timedelta(days=_DAYS * 2),
+    ]
+    # Around the cap, at the documented default, at the contract ceiling, and
+    # 🔴 on both sides of the clamp `list_transactions` applies to `limit`
+    # itself. Without a limit ABOVE `MAX_ROWS`, `returned` read off the caller's
+    # `limit` rather than off the rows is indistinguishable from the truth —
+    # every value inside the clamp's range makes the two agree.
+    limits = [0, 1, 2, _PER_DAY, 100, _TOTAL - 1, _TOTAL, _TOTAL + 1, MAX_ROWS, MAX_ROWS + 50]
+
+    checked = 0
+    for since in boundaries:
+        for until in boundaries:
+            if since is not None and until is not None and until < since:
+                continue
+            for account_id in (None, 1, 2):
+                for limit in limits:
+                    answer = query.list_transactions(
+                        seeded_config,
+                        since=since,
+                        until=until,
+                        account_id=account_id,
+                        limit=limit,
+                    )
+                    where = f"since={since} until={until} account={account_id} limit={limit}"
+                    truncation = answer.truncation
+                    assert truncation is not None, where
+
+                    assert truncation.returned == len(answer.rows), where
+                    assert truncation.matching == _oracle_count(
+                        seeded_config, since=since, until=until, account_id=account_id
+                    ), where
+                    assert truncation.truncated == (len(answer.rows) < truncation.matching), where
+
+                    kinds = [
+                        w.kind for w in answer.warnings if w.kind in query.REQUEST_SCOPED_KINDS
+                    ]
+                    assert ("rows_truncated" in kinds) == truncation.truncated, where
+                    checked += 1
+
+    assert checked > 100, "the grid collapsed; it is no longer exercising the invariant"
+
+
+def test_a_capped_answer_returns_the_limit_and_says_how_many_it_left_behind(
+    seeded_config: Config,
+) -> None:
+    """The measured harm, stated as the acceptance criterion states it.
+
+    An acceptance round found the documented default of 100 silently dropping
+    ~16 months of one account's history, with a caller summing the result
+    understating a two-year total by roughly 40%.
+    """
+    answer = query.list_transactions(seeded_config, limit=100)
+    assert answer.truncation is not None
+
+    assert answer.truncation.returned == 100
+    assert answer.truncation.matching == _TOTAL
+    assert answer.truncation.truncated is True
+    assert answer.truncation.matching > answer.truncation.returned
+
+
+def test_an_untruncated_answer_reports_false_and_equal_counts(seeded_config: Config) -> None:
+    """The regression the plan names: a complete answer must read as complete."""
+    answer = query.list_transactions(seeded_config, limit=MAX_ROWS)
+    assert answer.truncation is not None
+
+    assert answer.truncation.truncated is False
+    assert answer.truncation.returned == answer.truncation.matching == _TOTAL
+    assert [w.kind for w in answer.warnings if w.kind in query.REQUEST_SCOPED_KINDS] == []
+
+
+def test_a_narrow_window_stops_truncating_what_a_wide_one_truncated(
+    seeded_config: Config,
+) -> None:
+    """🔴 `truncated` responds to the WINDOW, not only to `limit`.
+
+    The same limit against two windows must give different answers, or the count
+    is being taken over the store rather than over the request — which is the
+    bug that would make `matching` a restatement of `coverage.transactions`.
+    """
+    today = now_utc().date()
+
+    wide = query.list_transactions(seeded_config, limit=20)
+    narrow = query.list_transactions(seeded_config, since=today - timedelta(days=4), limit=20)
+
+    assert wide.truncation is not None and narrow.truncation is not None
+    assert wide.truncation.truncated is True
+    assert narrow.truncation.truncated is False
+    assert narrow.truncation.matching == 5 * _PER_DAY
+
+
+def test_the_two_counts_agree_when_nothing_narrows_them(seeded_config: Config) -> None:
+    """🔴 `matching` and the window-scoped coverage figure must not silently disagree.
+
+    They are computed by different statements over different from-clauses —
+    `matching` joins `accounts`, the coverage count reads `transactions` alone —
+    so an unfiltered request is where a divergence would show as two numbers a
+    consumer cannot reconcile. They agree because `transactions.account_id` is a
+    NOT NULL foreign key, which means the inner join can never drop a row. That
+    reasoning rests on the schema, so it is pinned here rather than trusted: a
+    migration making the column nullable breaks this test rather than the
+    payload.
+    """
+    answer = query.list_transactions(seeded_config, limit=MAX_ROWS)
+
+    assert answer.truncation is not None
+    assert answer.truncation.matching == answer.coverage["transactions_in_effective_window"]
+
+
+def test_an_account_filter_narrows_matching_rather_than_only_the_rows(
+    seeded_config: Config,
+) -> None:
+    """A count taken before the account filter would report the store's total."""
+    both = query.list_transactions(seeded_config, limit=MAX_ROWS)
+    one = query.list_transactions(seeded_config, account_id=1, limit=MAX_ROWS)
+
+    assert both.truncation is not None and one.truncation is not None
+    assert one.truncation.matching == _TOTAL // 2
+    assert one.truncation.matching < both.truncation.matching
+
+
+# --------------------------------------------------------------------------
+# The coverage sibling — a new key, never a narrowing of the old one
+# --------------------------------------------------------------------------
+
+
+def test_the_window_scoped_count_is_a_sibling_and_leaves_the_store_wide_one_alone(
+    seeded_config: Config,
+) -> None:
+    """🔴 The single easiest mistake in this plan, pinned.
+
+    `api-contract.md` forbids repurposing a field in red: a consumer still
+    reading `coverage.transactions` after it silently became window-scoped gets a
+    wrong answer rather than an error. So the window-scoped figure is a NEW key,
+    and this asserts the two are different numbers for a window that excludes
+    part of the store.
+    """
+    today = now_utc().date()
+
+    answer = query.list_transactions(seeded_config, since=today - timedelta(days=4), limit=MAX_ROWS)
+
+    assert answer.coverage["transactions"] == _TOTAL, (
+        "the store-wide count was narrowed to the window — the repurpose the contract forbids"
+    )
+    assert answer.coverage["transactions_in_effective_window"] == 5 * _PER_DAY
+
+
+def test_the_window_scoped_count_ignores_the_account_filter(seeded_config: Config) -> None:
+    """Coverage is a fact about the store, and per-account coverage is its own issue (#19).
+
+    Half of it shipped here would leave that work amending a field this chunk
+    just added.
+    """
+    answer = query.list_transactions(seeded_config, account_id=1, limit=MAX_ROWS)
+
+    assert answer.coverage["transactions_in_effective_window"] == _TOTAL
+    assert answer.truncation is not None
+    assert answer.truncation.matching == _TOTAL // 2
+
+
+def test_an_unwindowed_tool_reports_no_window_scoped_count(seeded_config: Config) -> None:
+    """The key's absence means "this tool takes no window", exactly as `effective_window`'s does."""
+    answer = query.list_accounts(seeded_config)
+
+    assert answer.effective_window is None
+    assert "transactions_in_effective_window" not in answer.coverage
+    assert answer.coverage["transactions"] == _TOTAL
+
+
+def test_a_window_covering_nothing_counts_nothing_and_says_why(seeded_config: Config) -> None:
+    """A zero that is explained, which is the whole subject of this work cycle.
+
+    The count is genuinely zero, and the caveat beside it is what stops the zero
+    reading as "you had no transactions".
+    """
+    answer = query.list_transactions(
+        seeded_config, since=date(2020, 1, 1), until=date(2020, 12, 31)
+    )
+
+    assert answer.effective_window is not None
+    assert answer.effective_window.covers_nothing
+    assert answer.coverage["transactions_in_effective_window"] == 0
+    assert [w.kind for w in answer.warnings if w.kind in query.REQUEST_SCOPED_KINDS] == [
+        "window_starts_before_coverage"
+    ]
+
+
+# --------------------------------------------------------------------------
+# Where the block must NOT appear
+# --------------------------------------------------------------------------
+
+
+def test_an_aggregate_carries_no_truncation_block(seeded_config: Config) -> None:
+    """🔴 `api-contract.md` fixes aggregates as unpaginated, bounded by the grouping.
+
+    A truncation block on a spending summary would describe a cap it does not
+    have, and `truncated: false` on every response is the invariant warning
+    measurement already showed a reader learns to skip.
+    """
+    answer = query.spending_by_category(seeded_config)
+
+    assert answer.truncation is None
+    assert "truncation" not in answer.to_wire()
+
+
+@pytest.mark.parametrize("tool", ["list_accounts", "pipeline_health"])
+def test_an_uncapped_tool_carries_no_truncation_block(seeded_config: Config, tool: str) -> None:
+    """Absence says "this tool returns everything it found", and here that is true."""
+    answer = getattr(query, tool)(seeded_config)
+
+    assert answer.truncation is None
+    assert "truncation" not in answer.to_wire()
+
+
+@pytest.mark.parametrize("tool", ["list_transactions", "spending_by_category"])
+def test_an_unreadable_store_does_not_move_the_windowed_wire_shape(
+    config: Config, tool: str
+) -> None:
+    """🔴 The key set a consumer branches on must not depend on the store's health.
+
+    Chunk 01 shipped a blocking finding of exactly this shape — a fix that
+    changed the unreadable-store wire shape with nothing pinning it, invisible
+    because every other assertion ran against an initialized store. So the
+    windowed coverage sibling is asserted here, where it is easiest to forget:
+    a consumer branching on the key would otherwise read "this tool takes no
+    window" precisely when the datastore cannot be read.
+    """
+    answer = getattr(query, tool)(config)
+
+    assert answer.effective_window is not None, tool
+    assert answer.coverage["transactions_in_effective_window"] == 0, tool
+    assert answer.coverage["transactions"] == 0, tool
+
+
+def test_an_unreadable_store_reports_no_window_sibling_for_an_unwindowed_tool(
+    config: Config,
+) -> None:
+    """The other half: absence still means "this tool takes no window"."""
+    answer = query.list_accounts(config)
+
+    assert answer.effective_window is None
+    assert "transactions_in_effective_window" not in answer.coverage
+
+
+def test_a_capped_tool_still_reports_the_block_when_the_store_cannot_be_read(
+    config: Config,
+) -> None:
+    """🔴 The key's presence is a fact about the TOOL, not about the store.
+
+    Omitting it here would say `query_transactions` returns everything it finds —
+    a false statement about the tool — and a consumer branching on the key would
+    take the wrong branch precisely when the datastore is unreadable. The zeroes
+    are true, and the `partial` warning says what they mean.
+    """
+    answer = query.list_transactions(config)
+
+    assert answer.truncation is not None
+    assert answer.truncation.returned == 0
+    assert answer.truncation.matching == 0
+    assert answer.truncation.truncated is False
+    assert [w.kind for w in answer.warnings] == ["partial"]
+
+
+def test_a_row_removed_between_the_two_reads_answers_rather_than_failing(
+    seeded_config: Config,
+) -> None:
+    """🔴 The concurrency R-1 named, forced through the real query path.
+
+    Not a unit test of `Truncation.over` — those are above. This drives
+    `list_transactions` while a writer commits a soft-delete *between* the row
+    query and the count, which is the interleaving the architecture actually
+    permits: the read handle is autocommit, so the two statements are two
+    snapshots, and the scheduled sync soft-deletes rows while the MCP reader may
+    be mid-query.
+
+    An earlier version raised here, on a docstring claiming the case could not
+    happen. It can, and the answer a caller gets must still be an answer.
+    """
+    removed: list[int] = []
+
+    def _remove_one_row_mid_answer(
+        _conn: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        # Fire once, immediately after the row query and before the count.
+        if removed or "transactions.description" not in statement:
+            return
+        with writer_connection(seeded_config) as writer:
+            target = writer.execute(
+                select(transactions.c.transaction_id)
+                .where(transactions.c.removed_at.is_(None))
+                .order_by(transactions.c.posted_date.desc())
+                .limit(1)
+            ).scalar_one()
+            writer.execute(
+                transactions.update()
+                .where(transactions.c.transaction_id == target)
+                .values(removed_at=now_utc())
+            )
+        removed.append(int(target))
+
+    event.listen(Engine, "after_cursor_execute", _remove_one_row_mid_answer)
+    try:
+        answer = query.list_transactions(seeded_config, limit=MAX_ROWS)
+    finally:
+        event.remove(Engine, "after_cursor_execute", _remove_one_row_mid_answer)
+
+    assert removed, "the interleaving never happened, so this test proved nothing"
+    assert answer.truncation is not None
+
+    # The answer exists at all — the point of the finding.
+    assert answer.truncation.returned == len(answer.rows) == _TOTAL
+    # The count came back one short; `matching` floors at the rows observed.
+    assert answer.truncation.matching == _TOTAL
+    assert answer.truncation.truncated is False, "no rows are hidden when the count lags"
+    assert answer.truncation.counted_during_change is True
+    assert "counted_during_change" in [w.kind for w in answer.warnings], (
+        "the skew was smoothed away instead of announced"
+    )

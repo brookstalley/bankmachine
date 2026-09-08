@@ -138,38 +138,51 @@ latency question, which Chunk 02 answers as a build step rather than a precondit
 ## Status
 
 - [x] Chunk 01: `Window` — the clamp a windowed tool cannot skip, and the two warnings that announce it
-- [ ] Chunk 02: `returned` / `matching` / `truncated`, so a capped answer stops reading as a complete one
+- [x] Chunk 02: `returned` / `matching` / `truncated`, so a capped answer stops reading as a complete one
 - [ ] Chunk 03: cursor pagination, so truncation is escapable rather than only visible
 
-Context: Chunk 01 built and reviewed 2026-09-08 on `feature/mcp-effective-window`,
-branched from `develop` at `a4e78e5`. Suite green (`prawduct-hook test-status`), ruff and mypy strict clean,
-verified against the real sandbox store (August 2026 still reports 1,114,946 minor units
-across 8 categories, matching the independently recorded acceptance figure to the unit —
-the reportorial-clamp assumption held). Critic `rev-20260908T202159Z-baff728e` returned 1
-blocking, 4 warnings, 4 notes; all five blocking/warning findings fixed, three notes
-accepted with reasons, one (missing mutation evidence) discharged by recording it in the
-change-log. Two `verify-resolutions` rounds followed: `rev-20260908T203846Z-71ffd854`
-verified all five fixed and raised **one new blocking finding** — my own R-4 fix changed
-the unreadable-store wire shape and nothing pinned it, since every other
-`effective_window` assertion runs against an initialized store — and
-`rev-20260908T204841Z-a92ec80c` closed at 0 blocking, 0 findings.
+Context: Chunks 01 and 02 built and reviewed 2026-09-08 on `feature/mcp-effective-window`,
+branched from `develop` at `a4e78e5`. Suite green (`prawduct-hook test-status`), ruff and mypy
+strict clean, verified against the real sandbox store — the A1 case the plan predicted reproduces
+exactly (account 4 over 2024-01-01..2026-12-31 returns `{returned: 100, matching: 144, truncated:
+true}`), and August 2026 still reports 1,114,946 minor units across 8 categories, identical to the
+figure Chunk 01 recorded, so Chunk 02 moved no number either.
 
-🔴 **Two design corrections were made before code and one after; all three are written into
-this plan rather than left in the transcript.** `mcp.py` cannot resolve a window (coverage
-lives behind the reader connection), so the guarantee moved to a required keyword on
-`_answer` and is now stated at the strength it actually holds. And `effective_until` takes
-the LATER of today and the last transaction, not bare today — the row predicate uses the
-caller's unclamped `until`, so a forward-dated row would otherwise be returned outside the
-window its own answer claims. The sandbox cannot express that case.
+**Chunk 02's Done-when 2 is discharged on evidence, and it closes the plan's one open measurement.**
+`.prawduct/artifacts/mcp-count-latency-2026-09-08.md`: each count costs roughly what the row query
+costs — ~1ms at 10k rows, ~89ms at 200k — with a full `query_transactions` call at ~18ms and ~435ms
+against the ~1s target. **`matching` ships exact; the approximate-count fallback held in reserve is
+not built.** The midpoint governance checkpoint is therefore closed.
 
-Next: Chunk 02. Carry forward that the hypothesis invariant in
-`tests/test_query_window.py` is what found two of this chunk's four bugs — Chunk 02's
-`matching`/`returned`/`truncated` has an invariant of exactly the same kind
-(`returned <= matching`, and `truncated` iff `returned < matching`), and it should be
-written as a property before the hand matrix, not after it. The peer acceptance session is
-NOT dispatched during this plan's chunks — it is relaunched and briefed once, after
-Chunk 03, because its MCP server is a subprocess it cannot restart (#25) and each
-mid-plan round would spend that relaunch on a build about to change.
+🔴 **The Critic's blocking finding on Chunk 02 was the best of the chunk, and it falsified a claim
+this plan's author wrote.** `Truncation` raised on `returned > matching` under a docstring calling
+that unreachable. It is reachable: the read handle is autocommit — `store/connection.py`, "every
+statement is its own snapshot" — so the row query and the count are two snapshots, and the nightly
+sync soft-deletes exactly the recent rows a default query returns. The *untruncated* case is where it
+bites, since `returned == matching` there and one removal suffices. Resolved by treating it as the
+data condition it is: `Truncation.over()` floors `matching` at `returned`, `truncated` reads false
+because nothing is hidden, and a new `counted_during_change` warning announces the skew. A test
+forces the interleaving through the real query path rather than pinning it only at the unit level.
+
+🔴 **A wider consequence is FILED, NOT FIXED — #27, and it is the owner's call before Chunk 03.**
+One `Answer` is assembled from 8+ statements, each its own snapshot, so this is not a property of
+Chunk 02's counts. Two things reach further: **Chunk 01's guarantee that "every returned row lies
+inside `effective_window`" holds against the COVERAGE snapshot rather than the ROW snapshot** (a soft
+delete between the reads moves `earliest_transaction` forward and can clamp `effective_since` past a
+row already returned), and **`as_of` postdates the rows.** The fix is a per-answer read snapshot,
+which departs from a documented norm with a stated reason and changes read semantics for every query
+— a recorded decision, not a chunk-level one. The counter-argument is on #27: `query.py` is open
+during this plan, so Chunk 03 is the last cheap moment on this branch.
+
+Next: Chunk 03, the plan's `cumulative-final`. Carry forward that the invariant-before-matrix
+discipline has now paid three chunks running — 26 mutations were all caught in Chunk 02 and two real
+defects still came from hand-probing reachable inputs. 03's invariants are *every row appears exactly
+once across a paged walk* and *the last page carries no `next_cursor`*. Its Done-when also carries
+the one step most likely to be skipped: **ask which existing tests now short-circuit**, because 03
+changes control flow through the statement builder and mutation testing is structurally blind to
+that. The peer acceptance session is still NOT dispatched during this plan's chunks — relaunched and
+briefed once, after Chunk 03 (#25) — but if #25 is fixed the budget argument disappears and a round
+per chunk becomes cheap.
 
 ## Scaffolding
 
@@ -189,7 +202,7 @@ the only one that can show a field is present, correctly named, and says somethi
 `learnings.md` § *Guarantees by construction* sets the bar for the tests themselves:
 **break the thing each check names and watch it fail.** Two specific traps apply here and
 are called out in the chunks — assert whole phrases rather than `in`, because
-`window_starts_before_coverage` and `window_extends_past_today` share a prefix with each
+`window_starts_before_coverage` and `window_extends_past_coverage` share a prefix with each
 other and `partial` is a substring of nothing but sits beside `gapped` in a list that is
 easy to assert loosely; and after Chunk 03 changes control flow through the statement
 builder, ask which existing tests now short-circuit.

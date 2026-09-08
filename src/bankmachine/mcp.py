@@ -71,10 +71,21 @@ _INTERNAL_ERROR = -32603
 _WINDOW_NOTE = (
     "The window you ask for is CLAMPED to what the store can answer over, and the result "
     "says so: `effective_window` carries the window requested beside the window actually "
-    "covered, and a `window_starts_before_coverage` or `window_extends_past_today` warning "
+    "covered, and a `window_starts_before_coverage` or `window_extends_past_coverage` warning "
     "names the boundary crossed. Absent those warnings, the window you asked for is the "
     "window you got. Read it before treating an empty result as a zero -- outside coverage, "
     "data is ABSENT rather than zero."
+)
+
+#: 🔴 On `query_transactions` alone. `spending_summary` is an aggregate, fixed
+#: unpaginated by `api-contract.md` and bounded by its grouping, so saying this
+#: there would describe a cap it does not have.
+_TRUNCATION_NOTE = (
+    "This tool is CAPPED. `truncation` carries `matching` (how many rows the request "
+    "selects), `returned` (how many came back) and `truncated`. 🔴 When `truncated` is true "
+    "the rows are the NEWEST ones only, so summing or counting them describes what came "
+    "back rather than the window you asked about -- a `rows_truncated` warning says by how "
+    "much. Narrow the window or raise `limit`."
 )
 
 
@@ -104,7 +115,10 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "`merchant` is the AGGREGATOR'S guess at a merchant name, unvalidated and "
                 "often absent or wrong -- it reads 'FUN' for a purchase whose description is "
                 "'SparkFun'. Do not roll up or match on `merchant` without saying it may be "
-                "wrong, and prefer `description` when the two disagree. " + _WINDOW_NOTE
+                "wrong, and prefer `description` when the two disagree. "
+                + _WINDOW_NOTE
+                + " "
+                + _TRUNCATION_NOTE
             ),
             "inputSchema": {
                 "type": "object",
