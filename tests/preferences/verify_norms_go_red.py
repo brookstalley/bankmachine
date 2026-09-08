@@ -439,6 +439,22 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         f"{ENROLLMENT_TESTS}::test_a_polled_session_can_never_become_an_archivable_response",
     ),
     (
+        "the MCP boundary: a date argument is parsed, never forwarded raw",
+        MCP,
+        # `until`, not `since`: the test's negative case is an `until` bound in
+        # 2020, so dropping `since` would leave it green.
+        'until = _calendar_date(arguments, "until")',
+        "until = None",
+        f"{MCP_TESTS}::test_a_transaction_window_filters_rather_than_failing",
+    ),
+    (
+        "the MCP boundary: the argument bag is typed object, so narrowing cannot be skipped",
+        MCP,
+        "arguments: dict[str, object]) -> query.Answer:",
+        "arguments: dict[str, Any]) -> query.Answer:",
+        f"{MCP_TESTS}::test_the_dispatch_bag_is_typed_object_so_narrowing_cannot_be_skipped",
+    ),
+    (
         "AC-3.2: an item with nothing left to add is read, not refused",
         CONNECTOR_CLIENT,
         "        if not isinstance(listed, list):",

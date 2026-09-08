@@ -25,7 +25,7 @@ write whatever SQL reaches it.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
@@ -49,6 +49,14 @@ from bankmachine.store.types import UtcInstant, now_utc
 #: stale. A day and a half: the scheduled job runs nightly, so one missed run is
 #: not yet a story and two consecutive ones are.
 STALE_AFTER = timedelta(hours=36)
+
+#: The most rows any single query returns. 🔴 **A contract term, not a tuning
+#: knob** -- `api-contract.md` fixes it at ~500 under AC-9.1,
+#: `nonfunctional-requirements.md` makes it what keeps the sub-second target
+#: reachable, and `security-model.md` names it as the mitigation for
+#: unrestricted resource consumption (OWASP API4). Raising it is an amendment to
+#: all three, not an edit here.
+MAX_ROWS = 500
 
 #: The warning vocabulary the API contract fixes. Named here as a tuple rather
 #: than left to string literals at each site, because a warning nobody spells the
@@ -362,8 +370,8 @@ def list_accounts(config: Config) -> Answer:
 def list_transactions(
     config: Config,
     *,
-    since: str | None = None,
-    until: str | None = None,
+    since: date | None = None,
+    until: date | None = None,
     account_id: int | None = None,
     limit: int = 100,
 ) -> Answer:
@@ -388,7 +396,7 @@ def list_transactions(
             .select_from(transactions.join(accounts))
             .where(transactions.c.removed_at.is_(None))
             .order_by(transactions.c.posted_date.desc(), transactions.c.transaction_id.desc())
-            .limit(max(1, min(limit, 1000)))
+            .limit(max(1, min(limit, MAX_ROWS)))
         )
         if since is not None:
             statement = statement.where(transactions.c.posted_date >= since)
@@ -415,7 +423,7 @@ def list_transactions(
 
 
 def spending_by_category(
-    config: Config, *, since: str | None = None, until: str | None = None
+    config: Config, *, since: date | None = None, until: date | None = None
 ) -> Answer:
     """🔴 An aggregate, which is the shape AC-4.2 asks the tool surface to prefer.
 

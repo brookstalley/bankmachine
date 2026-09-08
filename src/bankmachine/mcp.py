@@ -28,6 +28,7 @@ import argparse
 import json
 import sys
 from collections.abc import Callable, Iterator
+from datetime import date
 from typing import IO, Any
 
 from bankmachine import query
@@ -83,15 +84,29 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "description": (
                 "Transactions in a date window, newest first. Amounts are INTEGER MINOR "
                 "UNITS and signed from the account holder's point of view: money leaving is "
-                "negative, money arriving is positive. Removed transactions are excluded."
+                "negative, money arriving is positive. Removed transactions are excluded. "
+                "🔴 `description` is the institution's own string and is authoritative; "
+                "`merchant` is the AGGREGATOR'S guess at a merchant name, unvalidated and "
+                "often absent or wrong -- it reads 'FUN' for a purchase whose description is "
+                "'SparkFun'. Do not roll up or match on `merchant` without saying it may be "
+                "wrong, and prefer `description` when the two disagree."
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "since": {"type": "string", "description": "inclusive start, YYYY-MM-DD"},
                     "until": {"type": "string", "description": "inclusive end, YYYY-MM-DD"},
-                    "account_id": {"type": "integer"},
-                    "limit": {"type": "integer", "default": 100},
+                    "account_id": {"type": "integer", "minimum": 1},
+                    "limit": {
+                        "type": "integer",
+                        "default": 100,
+                        "minimum": 1,
+                        "maximum": query.MAX_ROWS,
+                        "description": (
+                            "rows returned, at most "
+                            f"{query.MAX_ROWS}; asking for more is refused, not trimmed"
+                        ),
+                    },
                 },
                 "additionalProperties": False,
             },
@@ -127,19 +142,144 @@ def _tool_definitions() -> list[dict[str, Any]]:
     ]
 
 
-def _dispatch_tool(config: Config, name: str, arguments: dict[str, Any]) -> query.Answer:
+def _tool_names() -> frozenset[str]:
+    """The advertised tool names, derived once from the one definition list."""
+    return frozenset(definition["name"] for definition in _tool_definitions())
+
+
+def _permitted_arguments(name: str) -> frozenset[str]:
+    """The keys one tool advertises. Derived, never restated.
+
+    `additionalProperties: False` is published on every tool, so a caller is
+    entitled to be told when it sends a key that is not there. Read back off
+    `_tool_definitions()` rather than listed again here, because a second list
+    is one that stops matching the first.
+    """
+    for definition in _tool_definitions():
+        if definition["name"] == name:
+            schema: dict[str, Any] = definition["inputSchema"]
+            properties: dict[str, Any] = schema.get("properties", {})
+            return frozenset(properties)
+    return frozenset()
+
+
+class BadArgumentError(ValueError):
+    """A tool argument the caller can correct, reported so that it can.
+
+    Not a JSON-RPC error: the schema declares `since` a *string*, and
+    "August 2024" is one -- what it violates is the YYYY-MM-DD form the
+    description asks for, which no schema here states. So this is the tool
+    reporting on its input, and it rides `isError` where a model will read it
+    and try again, rather than a protocol code a client tends to surface as a
+    hard failure.
+    """
+
+
+def _calendar_date(arguments: dict[str, object], field: str) -> date | None:
+    """One JSON argument, narrowed to the type the query layer accepts.
+
+    🔴 JSON has no date. Every date crossing this boundary arrives as text and
+    must be parsed HERE -- the query layer binds it to a `CalendarDate` column
+    that refuses anything else, and AC-6.4 keeps dates and instants apart on
+    purpose, so a datetime string is refused rather than silently truncated.
+    """
+    raw = arguments.get(field)
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise BadArgumentError(
+            f"{field} must be a date as a YYYY-MM-DD string, got {type(raw).__name__}"
+        )
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        raise BadArgumentError(
+            f"{field} must be a calendar date in YYYY-MM-DD form, got {raw!r}"
+        ) from None
+
+
+def _whole_number(
+    arguments: dict[str, object],
+    field: str,
+    default: int | None,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int | None:
+    """Same narrowing for the integer arguments, and for the same reason.
+
+    `int(...)` on whatever arrived would turn a caller's mistake into a
+    `ValueError` from deep inside the dispatch table, which reaches the client
+    as a stack-shaped string instead of a sentence naming the field.
+    """
+    raw = arguments.get(field)
+    if raw is None:
+        return default
+    # bool is an int in Python, and `true` is a JSON value a caller can send.
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise BadArgumentError(f"{field} must be a whole number, got {type(raw).__name__}")
+    if minimum is not None and raw < minimum:
+        # 🔴 Refused, not clamped. A silent clamp answers a question nobody
+        # asked: `limit: 0` served one row, which reads as a plausible complete
+        # answer to a narrow question -- worse than an obviously wrong hundred.
+        raise BadArgumentError(f"{field} must be at least {minimum}, got {raw}")
+    if maximum is not None and raw > maximum:
+        raise BadArgumentError(f"{field} must be at most {maximum}, got {raw}")
+    return raw
+
+
+def _window(arguments: dict[str, object]) -> tuple[date | None, date | None]:
+    """Both bounds, refused together if they contradict each other.
+
+    🔴 An `until` before its `since` selects nothing, and "nothing" is a
+    believable answer to a spending question -- so a transposed pair, which is
+    an ordinary slip, returns a confident zero rather than a complaint. There is
+    no window it could mean, so there is nothing to guess at.
+    """
+    since = _calendar_date(arguments, "since")
+    until = _calendar_date(arguments, "until")
+    if since is not None and until is not None and until < since:
+        raise BadArgumentError(
+            f"until ({until.isoformat()}) is before since ({since.isoformat()}), "
+            f"so the window selects nothing. Did the two get swapped?"
+        )
+    return since, until
+
+
+def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> query.Answer:
+    """🔴 `arguments` is `dict[str, object]`, not `dict[str, Any]`, and that is load-bearing.
+
+    Under `Any` every value here flows into the query layer unchallenged and
+    mypy strict says nothing -- which is exactly how raw JSON strings reached a
+    `CalendarDate` column and broke every windowed question the server could be
+    asked. Typed as `object`, a value that has not been narrowed cannot be
+    passed at all, so the checker refuses the mistake rather than a test having
+    to notice it. Do not widen this back.
+    """
+    unknown = sorted(set(arguments) - _permitted_arguments(name))
+    if unknown:
+        # 🔴 Silently dropping one is the dangerous outcome, not a strict one:
+        # a misspelled `since` returns the ALL-TIME aggregate, which is
+        # indistinguishable from the window that was asked for.
+        raise BadArgumentError(
+            f"{name} has no argument {', '.join(repr(key) for key in unknown)}. It accepts: "
+            f"{', '.join(sorted(_permitted_arguments(name))) or 'no arguments'}"
+        )
+    # Narrowed once, ahead of the handler table: referenced inside the lambdas
+    # these would re-parse on every call, and a refusal would be raised twice.
+    since, until = _window(arguments)
+    limit = _whole_number(arguments, "limit", 100, minimum=1, maximum=query.MAX_ROWS)
+    account_id = _whole_number(arguments, "account_id", None, minimum=1)
     handlers: dict[str, Callable[..., query.Answer]] = {
         "list_accounts": lambda: query.list_accounts(config),
         "query_transactions": lambda: query.list_transactions(
             config,
-            since=arguments.get("since"),
-            until=arguments.get("until"),
-            account_id=arguments.get("account_id"),
-            limit=int(arguments.get("limit", 100)),
+            since=since,
+            until=until,
+            account_id=account_id,
+            limit=limit if limit is not None else 100,
         ),
-        "spending_summary": lambda: query.spending_by_category(
-            config, since=arguments.get("since"), until=arguments.get("until")
-        ),
+        "spending_summary": lambda: query.spending_by_category(config, since=since, until=until),
         "get_pipeline_health": lambda: query.pipeline_health(config),
     }
     handler = handlers.get(name)
@@ -213,23 +353,39 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
         arguments = params.get("arguments") or {}
         if not isinstance(name, str) or not isinstance(arguments, dict):
             return _error(message_id, _INVALID_REQUEST, "tools/call needs a name and arguments")
+        if name not in _tool_names():
+            # Resolved BEFORE the call, so that a `KeyError` raised anywhere
+            # BENEATH the query layer is not answered "no tool named
+            # 'spending_summary'" -- which is a false statement about a tool
+            # that exists, delivered as a protocol error nobody can act on.
+            return _error(message_id, _METHOD_NOT_FOUND, f"no tool named {name!r}")
         try:
             answer = _dispatch_tool(config, name, arguments)
-        except KeyError:
-            return _error(message_id, _METHOD_NOT_FOUND, f"no tool named {name!r}")
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- see below
+        except BadArgumentError as exc:
+            # Ahead of the broad catch. The message is the caller's to act on,
+            # so it is rendered without the exception class name -- and it is
+            # safe to send verbatim because this product wrote every word of it.
+            logger.info("tool %s refused an argument: %s", name, exc)
+            return _tool_error(message_id, "invalid_argument", str(exc))
+        except Exception:  # prawduct:allow prawduct/broad-except -- see below
             # 🔴 Broad, because this is the boundary between this product and a
             # client that must not be left hanging: an unhandled exception here
             # would close the pipe mid-session and the operator would see their
             # tool "disappear" rather than fail. Reported as a tool error on the
-            # success channel, which is what `isError` is for, and logged in full.
+            # success channel, which is what `isError` is for.
+            #
+            # 🔴 The exception NEVER crosses the boundary. `api-contract.md`
+            # § Error Model: no stack traces and no internal identifiers. A
+            # SQLAlchemy error stringifies to the failing SELECT and its bound
+            # parameters -- which is the schema, and the operator's own money,
+            # handed to whatever is reading. The detail goes to the log, where
+            # redaction applies; the caller gets a code and a remedy.
             logger.exception("tool %s failed", name)
-            return _result(
+            return _tool_error(
                 message_id,
-                {
-                    "content": [{"type": "text", "text": f"{type(exc).__name__}: {exc}"}],
-                    "isError": True,
-                },
+                "internal_error",
+                f"{name} could not be answered. The failure has been logged; "
+                f"`bankmachine store status` reports whether the datastore is readable.",
             )
         wire = answer.to_wire()
         return _result(
@@ -248,6 +404,24 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
         return _result(message_id, {})
 
     return _error(message_id, _METHOD_NOT_FOUND, f"unsupported method {method!r}")
+
+
+def _tool_error(message_id: Any, code: str, remedy: str) -> dict[str, Any]:
+    """A tool failure, as `api-contract.md` § Error Model specifies it.
+
+    A stable code so a consumer can branch -- `invalid_argument` is worth
+    retrying with a corrected call, `internal_error` is not -- and a remedy
+    sentence for the human. Both forms, because a client that renders only text
+    would otherwise show an empty failure.
+    """
+    return _result(
+        message_id,
+        {
+            "content": [{"type": "text", "text": remedy}],
+            "structuredContent": {"error": {"code": code, "message": remedy}},
+            "isError": True,
+        },
+    )
 
 
 def _result(message_id: Any, result: dict[str, Any]) -> dict[str, Any]:

@@ -34,6 +34,135 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-08: Refuse the argument you cannot honour, instead of clamping it quietly
+
+<!-- prawduct: scope=sync-v1 -->
+
+**Why:** a second session driving the tools blind found that the previous round's `limit` fix had
+replaced one silent answer with another, and that three more inputs returned a confident empty
+result. Its framing is the one worth keeping: a clamp answers a question nobody asked.
+
+**What changed:**
+
+- 🔴 **`limit: 0` was served as one row.** The previous fix stopped it meaning 100; it then meant 1,
+  which is *worse* — a single row reads as a plausible complete answer to a narrow question, where a
+  hundred looked obviously wrong. Out-of-range values are refused now, not clamped, which is the
+  rule the unknown-key refusal already follows.
+- 🔴 **The row ceiling is declared, enforced, and set to the number the contract fixes.** It was an
+  unnamed `1000` inside a `min()`, so a caller asking for 9999 silently got a page. Naming it
+  surfaced that 1000 was never the contracted value: `api-contract.md` fixes the raw-row cap at
+  ~500 under AC-9.1 ("a contract term, not a tuning knob"), `nonfunctional-requirements.md` makes
+  it what keeps the sub-second target reachable, and `security-model.md` names it as the declared
+  mitigation for unrestricted resource consumption (OWASP API4). `MAX_ROWS` is 500, quoted in the
+  refusal and advertised in the `inputSchema`. One line of `security-model.md` had drifted to say
+  1000 — a description tracking the code rather than the norm — and is reconciled.
+  *(A tester read the absence of a visible cap as there being none; the cap existed, but nothing
+  said so, which is the same defect from the caller's side.)*
+- 🔴 **A window whose `until` precedes its `since` is refused.** It selects nothing, and "you spent
+  nothing" is an entirely ordinary thing for a month to be — so the one slip a real person makes,
+  swapping two bounds, returned a believable wrong answer. There is no window a transposed pair
+  could mean, so there is nothing to guess at.
+- `account_id` below 1 is refused; row ids start at 1, so 0 and negatives can only be a mistake.
+- The window and both integers are narrowed **once**, ahead of the handler table. Referenced inside
+  the lambdas they would re-parse per call and raise a refusal twice.
+
+**A test was removed rather than kept**: `test_a_limit_of_zero_is_not_silently_a_hundred` asserted
+that `limit: 0` serves one row. That premise is superseded — 0 is refused now, which is strictly
+stricter — and the guarantee it protected is carried by a range test covering 0, negatives and the
+ceiling together.
+
+**Verified, and not fixed, because neither is ours:** `merchant_name: "FUN"` for `SparkFun` is what
+the aggregator sends (`name` and `merchant_name` both read from the archived body); so is the
+`GUSTO PAY` row whose description says "Credit" while its `amount` and its own
+`personal_finance_category` both say money leaving. Sandbox fixture data, faithfully stored.
+
+## 2026-09-08: The exception stops crossing the boundary, and a misspelled bound stops lying
+
+<!-- prawduct: scope=sync-v1 -->
+
+**Why:** the Critic found the fix above had left the leak it named. The change-log entry called out
+a `StatementError` carrying the SELECT as the defect, and the new test pinned `"SELECT" not in
+message` — but only on the date path. Every other failure still rendered
+`f"{type(exc).__name__}: {exc}"` onto `isError`.
+
+**What changed:**
+
+- 🔴 **No exception crosses the boundary.** `api-contract.md` § Error Model: no stack traces, no
+  internal identifiers. A SQLAlchemy error stringifies to the failing SELECT *and its bound
+  parameters* — the schema and the operator's own money, handed to whatever is reading. The detail
+  goes to the log, where redaction applies; the caller gets a stable code and a remedy sentence,
+  which is what that section specifies and what nothing implemented.
+- 🔴 **A test asserted the forbidden behaviour**, again:
+  `test_a_failing_tool_reports_an_error_without_closing_the_session` asserted the raw exception
+  message reached the client. Rewritten against the contract, and its fixture now raises a message
+  containing `SELECT` so the assertion has something real to catch. Second instance in one day of a
+  test pinning a defect; the first was AC-3.2's capability read.
+- **`additionalProperties: False` is advertised on all four tools and was enforced on none.** A
+  misspelled `sinceX` was silently dropped and `spending_summary` returned the ALL-TIME aggregate —
+  byte-identical to the windowed answer the caller thought it had asked for. Unknown keys are now
+  refused, naming **every** offending key at once and what the tool accepts, with the permitted set
+  read back off `_tool_definitions()` rather than restated.
+- **Four review observations closed in the same branch.** `limit=... or 100` was truthiness on an
+  int, so `limit: 0` served the hundred-row default instead of the one row the query layer's
+  `max(1, ...)` clamp defines. The refusal named only the first unrecognized key though it had
+  sorted them all. The tool-name set was built three times in one call path, and the membership half
+  of the dispatch guard was dead once the name began being resolved before dispatch. And an
+  assertion read `"since" in message` against a message containing `'sinceX'` — a substring that
+  could never fail, now an exact set.
+- **`except KeyError` wrapped the handler call**, so a `KeyError` from anywhere beneath the query
+  layer was answered `no tool named 'spending_summary'` as JSON-RPC -32601 — a false statement about
+  a tool that exists. The tool name is resolved before the call now.
+- Tool errors carry a stable code: `invalid_argument` is worth retrying with a corrected call,
+  `internal_error` is not. A consumer could not previously tell those apart.
+- `limit` was narrowed eagerly for all four tools, ahead of the unknown-tool check, with an
+  unreachable fallback. Moved to where it is used.
+
+**Verified through the live MCP channel**, which is what found the original defect and what the
+recorded suite evidence could not speak to: an unknown key returns `invalid_argument` naming it, and
+a real window returns rows.
+
+## 2026-09-08: Every windowed question was unanswerable, and the checker was told to say so
+
+<!-- prawduct: scope=sync-v1 -->
+
+**Why:** `spending_summary` and `query_transactions` failed on *any* `since` or `until` with
+`StatementError: (TemporalError) a calendar date must be a date, got str`. That is every question
+the MCP server exists to answer. Found by a second session driving the tools; reproduced here
+before anything was changed.
+
+**What changed:**
+
+- **Dates are parsed at the MCP boundary.** JSON has no date type, so `since`/`until` arrive as
+  text and were passed straight to a `CalendarDate` column that refuses anything but a `date`.
+  🔴 The `inputSchema` was never wrong — it advertises a string, and a string is what arrives; the
+  gap was purely the missing narrowing at dispatch.
+- **`query.list_transactions` and `spending_by_category` were annotated `since: str | None`** while
+  their bodies required a `date`. The annotation was the lie that made the call site look correct.
+  They take `date | None` now.
+- 🔴 **`_dispatch_tool`'s argument bag is `dict[str, object]`, not `dict[str, Any]`.** This is the
+  mechanism, not tidiness: under `Any` every JSON value flows into the query layer unchallenged and
+  mypy strict is silent, which is exactly how this shipped. Typed `object`, an unnarrowed value
+  cannot be passed at all — and the checker immediately found the same latent defect in `limit`
+  (`int()` on whatever arrived) and `account_id` (forwarded unchecked). Both are narrowed now, with
+  `bool` refused for `limit` because a JSON `true` is an `int` in Python and would have meant 1.
+- **A malformed date now reads as a sentence**: `since must be a calendar date in YYYY-MM-DD form,
+  got 'August 2024'` on `isError`, where a model can correct itself — not a `StatementError`
+  carrying a SELECT. Deliberately not a JSON-RPC error code: the schema declares a *string* and
+  "August 2024" is one, so this is the tool reporting on its input rather than a protocol violation.
+- **Ten tests where there were none.** No existing test called either tool with a date at all —
+  every one passed `{}`. The window tests assert *discrimination* (a window that excludes the data
+  returns empty while one that includes it returns rows), because a parse that silently produced
+  the wrong date would satisfy "it did not error". Two go-red cases (114 total).
+
+🔴 **The positive control earned its place.** The mypy-snippet test named its files `narrowed.py`
+and `unnarrowed.py` — and `"narrowed.py" in line` matches both, so the control matched the negative
+file. Same containment trap recorded in `learnings.md` hours earlier, third instance in one day.
+The files are renamed so neither contains the other; a cleverer match would have left the trap.
+
+**Also corrected:** the mypy test pins `query.py`'s signature, not `_dispatch_tool`'s bag — widening
+the bag back to `Any` leaves it green, because the snippets declare their own signature. The
+annotation is pinned by its own test, and the docstring no longer claims otherwise.
+
 ## 2026-09-08: Capabilities are both product lists, and AC-3.2 stops inverting
 
 <!-- prawduct: scope=sync-v1 -->
