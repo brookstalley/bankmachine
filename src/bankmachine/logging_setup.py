@@ -68,6 +68,25 @@ class RedactingFormatter(logging.Formatter):
         return redact(super().format(record))
 
 
+class _NotAlreadyOnStderr(logging.Filter):
+    """Keeps records off stderr that the caller has already written there itself.
+
+    🔴 **The stderr handler and the file handler want different things, and
+    without this only one of them can be right.** The CLI prints its own
+    `bankmachine: <message>` line for a human, and separately needs the failure
+    in the log file so a scheduled run leaves a durable record. Logging normally
+    puts a second, timestamped copy of the same sentence on stderr directly under
+    the first -- so making the file honest made the terminal worse.
+
+    A record marked `file_only` is one whose author has taken responsibility for
+    the stderr copy. It is not a general severity filter: everything else,
+    including the startup banner, still reaches both.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not getattr(record, "file_only", False)
+
+
 def configure_logging(config: Config, *, level: int = logging.INFO) -> None:
     """Attach a redacting stderr handler, and a file handler when the log dir is usable.
 
@@ -86,6 +105,7 @@ def configure_logging(config: Config, *, level: int = logging.INFO) -> None:
 
     stream = logging.StreamHandler(sys.stderr)
     stream.setFormatter(formatter)
+    stream.addFilter(_NotAlreadyOnStderr())
     root.addHandler(stream)
 
     try:

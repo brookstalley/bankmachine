@@ -119,7 +119,7 @@ Raw-row access exists but is paginated and hard-capped.
 | `net_worth` | Assets minus liabilities over time, investments included | yes |
 | `list_holdings` | Current investment positions with cost basis where available | yes |
 | `find_recurring` | Detected recurring charges with cadence, amount drift, last-seen | yes |
-| `get_coverage_report` | Per account: first and last transaction date, gaps > 7 days, source breakdown | yes |
+| `get_coverage_report` | Per account: first and last transaction date, gaps against the account's own cadence, source breakdown | yes |
 
 Every tool is safe and idempotent, trivially — nothing writes.
 

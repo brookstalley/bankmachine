@@ -34,6 +34,46 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-08: The log can tell a failed run from a quiet one, and two claims stop being unchecked
+
+<!-- prawduct: scope=observability -->
+
+**Why:** A scheduled sync leaves one durable trace — the log file — and it recorded a failure and a
+run with nothing to do identically. For a product whose named primary failure mode is silent
+staleness, those two looking alike in the record is the defect, not a tidiness gap.
+
+**What changed:**
+
+- `run()` now writes a log record beside the stderr sentence on every failure arm, so the file a
+  launchd job writes to can distinguish outcomes. Unexpected exceptions gain a traceback in the file
+  and still propagate untouched — the exit status and the interactive traceback are unchanged.
+- The record is marked file-only. `configure_logging` attaches a stderr handler, so logging beside a
+  `print` would have put a second timestamped copy of every failure under the first: making the file
+  honest would have made the terminal worse. A filter keeps the two destinations telling different
+  readers what each needs.
+- 🔴 A refusal is not recorded as a failure. `EnrollmentError` subclasses carry `EXIT_UNHEALTHY` for
+  "ran and found a problem" — the roster is full, the operator walked away — and recording those at
+  ERROR would conflate exactly the two outcomes this work exists to separate.
+- `requires-python` narrowed from `>=3.11` to `>=3.14`, which is the only interpreter anything here
+  runs on. The floor was a promise to every installer that no run had ever tested. Two tests hold it:
+  one against the pinned interpreter, one against the syntax the source actually needs — the second
+  because moving both numbers down together would satisfy the first and still break the package.
+- `verify_norms_go_red` gained the three breaks it was missing: a credential-shaped literal in a
+  tracked file (AC-10.2), a network import outside `connector/` (AC-10.4), and a backup overwriting
+  its destination. AC-10.4's red run had previously been established by hand-planting an `httpx`
+  import and removing it — the one-off that harness exists to replace.
+- `ruff`'s `target-version` is now pinned rather than inferred. Raising the packaging floor had made
+  the formatter rewrite `except (A, B):` into PEP 758's `except A, B:`: a field about installation
+  was silently deciding how the source is written.
+
+**Also recorded, and larger than this entry:** the six open MCP issues are one defect — a
+well-formed answer that does not state its own scope, on six axes — and are planned as one work
+cycle in `.prawduct/artifacts/discovery-mcp-answer-scope.md`. Measurement against the real fixture
+falsified AC-9.1's "gaps >7 days" rule, which is amended here to measure against each account's own
+cadence.
+
+**Closes:** #4, #7, #12.
+
 ## 2026-09-08: A mistyped account id stops getting a confident empty answer
 
 <!-- prawduct: scope=sync-v1 -->

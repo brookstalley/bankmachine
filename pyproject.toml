@@ -3,7 +3,11 @@ name = "bankmachine"
 version = "0.1.0"
 description = "Read-only local-first personal finance datastore and MCP server. It never moves money."
 readme = "README.md"
-requires-python = ">=3.11"
+# Matches `.python-version`, because that is the only interpreter anything here
+# runs on. A lower floor would be a promise to every installer that no run has
+# ever tested. Widen it when a CI matrix exercises the range, not before —
+# `tests/preferences/test_python_floor_is_exercised.py` holds the two together.
+requires-python = ">=3.14"
 dependencies = [
     "keyring>=25",
     "plaid-python>=44.0.0",
@@ -37,6 +41,14 @@ dev = [
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
+# 🔴 Pinned deliberately, and NOT tracking `requires-python`. Ruff infers this
+# from the packaging floor when unset, which lets a claim about INSTALLATION
+# silently rewrite source: raising that floor to 3.14 had the formatter turn
+# `except (A, B):` into PEP 758's `except A, B:` — valid there, and
+# indistinguishable from a Python 2 bug to everyone who meets it. This value
+# decides which syntax the formatter may EMIT, so it is set to the newest level
+# whose output still reads plainly, and it does not move when the floor does.
+target-version = "py313"
 
 [tool.ruff.format]
 # Ruff formats Python code blocks inside Markdown, and this repository's

@@ -20,6 +20,12 @@ snapshot release before the prompt returns. They are the same shape as the
 rest: each is a refusal, so each fails silently and in the direction of looking
 finished if its check ever stops firing.
 
+The three security guarantees are here for a sharper reason than completeness.
+AC-10.4's red run was originally verified by hand-planting an `httpx` import and
+removing it again -- the exact one-off this file exists to replace, and one
+nobody can repeat without reconstructing it from memory. AC-10.2 and the
+backup-destination refusal were in the same state.
+
 Each case restores the file it edited, including on failure.
 """
 
@@ -69,6 +75,16 @@ SYNC_RUN_TESTS = "tests/cli/test_sync_run.py"
 QUERY = pathlib.Path("src/bankmachine/query.py")
 MCP = pathlib.Path("src/bankmachine/mcp.py")
 MCP_TESTS = "tests/test_mcp.py"
+BACKUP = pathlib.Path("src/bankmachine/store/backup.py")
+BACKUP_TESTS = "tests/store/test_backup.py"
+CREDENTIALS_TESTS = "tests/preferences/test_no_credentials_tracked.py"
+NETWORK_TESTS = "tests/preferences/test_only_the_connector_reaches_the_network.py"
+
+#: A datastore key is 64 hex characters, so anything of that shape is a
+#: credential to AC-10.2's scanner. Repeating one word keeps it unmistakably
+#: synthetic to a human while still matching, which matters because this string
+#: is written into a tracked file for the length of one subprocess.
+FAKE_KEY_SHAPED = "deadbeef" * 8
 
 #: (description, file, text to replace, replacement, the test that must go red)
 CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
@@ -902,6 +918,27 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         '        held = "<redacted>" if self.public_token is not None else None',
         "        held = self.public_token",
         f"{ENROLLMENT_TESTS}::test_no_enrollment_credential_reaches_a_repr",
+    ),
+    (
+        "AC-10.2: a credential-shaped literal in a tracked file is caught",
+        SECRETS,
+        "KEY_BYTES = 32",
+        f'KEY_BYTES = 32\n_PARKED_HERE_BRIEFLY = "{FAKE_KEY_SHAPED}"',
+        f"{CREDENTIALS_TESTS}::test_no_tracked_file_carries_a_token_shaped_string",
+    ),
+    (
+        "AC-10.4: a network import outside connector/ is caught",
+        QUERY,
+        "from dataclasses import dataclass, field",
+        "import ssl\n\nfrom dataclasses import dataclass, field",
+        f"{NETWORK_TESTS}::test_nothing_outside_the_connector_can_reach_the_network",
+    ),
+    (
+        "backup destination: an existing file is never overwritten",
+        BACKUP,
+        "    if destination.exists():",
+        "    if False:",
+        f"{BACKUP_TESTS}::test_it_refuses_an_existing_destination",
     ),
 ]
 

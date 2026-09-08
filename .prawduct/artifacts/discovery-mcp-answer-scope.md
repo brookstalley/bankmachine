@@ -124,6 +124,92 @@ needs a rate source, a rate date policy, and somewhere to store that decision �
 
 ---
 
+## Measured evidence
+
+Measured 2026-09-08 by an independent session driving the MCP surface with no source access, on
+build `87570c3` — code-identical to `develop` (the only intervening commit touches one artifact
+file, nothing under `src/` or `tests/`). Full record and every call:
+`.prawduct/artifacts/mcp-fact-find-ac91.md` on `testing/current`.
+
+### 🔴 AC-9.1's "gaps > 7 days" is the wrong instrument, and this is a spec defect
+
+`get_coverage_report` is specified as *"Per account: first and last transaction date, gaps >7 days,
+source breakdown."* Measured against real cadence, a fixed 7-day threshold produces **~146 findings
+and zero signal**, because this data is monthly by nature:
+
+| Account | Intervals | Over 7 days | Min interval |
+|---|---|---|---|
+| CD, Money Market | 23 each | 100% | 30 days |
+| Saving | 48 | 50% | 5 days |
+| Checking, Credit Card | — | ~100 more from intra-cycle gaps | 11–14 days |
+
+A monthly account is *silent for 30 days by design*. Reporting that as a coverage gap trains the
+reader to ignore the field — the same failure `warnings` already has (#16), arriving by a different
+route.
+
+**The informative quantity is trailing silence measured against the account's own cadence**, not
+against a constant. On the same data that yields: Checking 0d, Saving 2d, Credit Card 12d, CD 28d,
+Money Market 28d. The last two are 28 days silent on a 30-day cycle — genuinely borderline, and the
+only thing in the whole fixture worth surfacing.
+
+**Ruled 2026-09-08 (owner): measure against the account's own cadence.** `get_coverage_report`
+derives a per-account threshold from the account's median interval and reports trailing silence
+against it. The amendment is written into `docs/system-requirements.md` under both **AC-9.1** and
+**AC-11.1** — the gate and the tool must hold the same threshold, or the tool's output is
+unauditable against the gate that checks it. `api-contract.md`'s tool table is amended to match.
+
+Worth keeping: AC-11.1 already carried the principle the constant violated — *"genuine no-activity
+periods are fine but must be identified as such."* A monthly account's 30-day silence is exactly
+that, and the 7-day rule was reporting it as a gap. The requirement contradicted itself, and only
+measurement made that visible.
+
+### 🔴 `cashflow_summary` has no fixture for its most important branch
+
+There is **no income in this dataset**, and the one payroll-shaped row is signed as an outflow:
+`ACH Electronic CreditGUSTO PAY 123456`, description says *Credit*, amount **−585,000**, category
+`TRANSFER_OUT`, 24 occurrences, $140,400 — the largest single flow in the sandbox, recorded as money
+leaving.
+
+Measured inflows over full coverage are only: TRAVEL 24 txns / $12,000 (United Airlines refunds) and
+`TRANSFER_IN` 25 txns / $105.50 (interest). Against outflow of 339 txns / $267,692.77.
+
+Three consequences that C4 must be designed around:
+
+1. **A sign-keyed split reports income $12,105.50 against spending $267,692.77** — precise,
+   plausible, and a pure fixture artefact.
+2. **Its largest "income" line would be airline refunds**, so any sign-keyed split labels refunds as
+   earnings. That is the same class as #18's `LOAN_PAYMENTS` problem: the sign is right and the
+   meaning is not.
+3. **Real income is zero rows**, so the branch that matters most ships untested — the same shape as
+   #21's unreachable refusal path.
+
+This is the strongest argument yet for the no-netting ruling: a heuristic built and "verified"
+against this fixture would be verified against nothing.
+
+### The rest, confirmed or corrected
+
+- **#21 — every account and all ~272 retrieved rows are USD.** The refusal path is **unreachable**
+  with this fixture; it ships on inspection alone. Assumption above is confirmed, not resolved.
+- **#19 account axis — nine of fourteen accounts return zero rows (64%).** Per-account counts sum to
+  388, matching `coverage.transactions`. There is no per-account coverage in any payload, so
+  establishing this took one call per account.
+- **#19 field axis — merchant null confirmed at 89.94% of outflow by value**, and the correction
+  worth carrying: **49.74% by row count**. The row figure is the flattering one, the one a naive
+  check produces, and it is nearly half the value figure — because the null-merchant rows are the
+  big ones (GUSTO 585,000; AUTOPAY 207,850; CD DEPOSIT 100,000). **Report both bases or the field is
+  misleading in the safe direction.**
+- **Category null is 0.00%** on both bases — zero of 388. The field axis for `category` needs no
+  work; scope removed from C2. (`category_is_override` is false on all 388, so that path has no
+  fixture either — a separate gap, not this cycle's.)
+- **#17 — measured truncation at the default limit:** 4-day window 0% dropped, 31-day 0%, 365-day
+  **49.0%** (100 of 196), full coverage **74.2%** (100 of 388). And the decisive part: a consumer
+  **cannot detect any of it**. The peer recovered the true counts only by exploiting
+  `spending_summary` being uncapped and solving two mixed categories uniquely — and that route
+  cannot reach inflows at all, since `spending_summary` filters `amount_minor < 0`. **#17 must ship
+  a total or a cursor; a larger default would not fix it.**
+
+---
+
 ## Chunks
 
 Ordered by dependency. Each ends with `/prawduct:critic chunk`.
@@ -136,7 +222,10 @@ window-scoped transaction counts, `returned` / `matching` / `truncated`, and cur
 **C2 — the account and field axes.** Account lifecycle onto `list_accounts` (see the entanglement
 above), per-account coverage, `get_coverage_report` built, the three-way distinction between *no
 such account* / *account with no coverage* / *account genuinely quiet in this window*, and
-field-population figures for `merchant` and `category`. → closes #19.
+merchant-population figures on **both** bases (by row and by value — measurement shows they differ
+by nearly 2×, and the row figure is the flattering one).
+The gap threshold is **per-account, from the median interval** (ruled; AC-9.1 and AC-11.1 amended),
+so C2 is unblocked. Category population is out: measured 0.00% null. → closes #19.
 
 **C3 — classification.** `flow_class` of `external_spend` / `internal_transfer` / `debt_service` on
 every `spending_summary` row, plus `total_external_spend`. Precedent to follow: `balance_class` on
@@ -159,10 +248,16 @@ failed.
 
 ## Deliberately left filed, with the reason
 
-Three of `mcp-production-readiness.md`'s preconditions are **not** in this work cycle, because none
-of them can be exercised against the sandbox — they need production data or a real settlement cycle.
+Three concerns from `mcp-production-readiness.md` are **not** in this work cycle, because none of
+them can be exercised against the sandbox — they need production data or a real settlement cycle.
 Building against the fixture would produce code whose only test is a fixture that cannot express the
 failure.
+
+⚠️ **Two of the three are numbered preconditions (5 and 7); the third is not.** Multi-connection
+warnings comes from the readiness doc's "Where my confidence comes from" prose, not its numbered
+list — and precondition **6** (closed/retired accounts) is *in* scope, folded into C2 by the
+entanglement above. The numbered list and the prose disagree about how many preconditions that
+document holds, so cite them by name rather than by number.
 
 - **Pending transactions.** `pending` is `false` on all 388 sandbox rows, so the field's behaviour
   has never run. Two untested risks: a pending row counted, then counted again when it posts under a
@@ -173,8 +268,10 @@ failure.
   disagree. `warnings` is already the weak part of the payload; with five connections a consumer
   cannot tell which institution a gap is in.
 
-🔴 These must be **filed as backlog items**, not left in this document — an assessment artifact is
-not a tracker, and the readiness doc has already carried four unfiled preconditions once.
+Filed 2026-09-08 as **#22** (pending-transaction semantics), **#23** (sign convention on a real
+inflow) and **#24** (warnings cannot name which connection is degraded), each carrying the shared
+deferral reason so a later reader does not mistake deferral for oversight. An assessment artifact is
+not a tracker, and this one had already carried four unfiled preconditions once.
 
 ---
 
@@ -199,5 +296,11 @@ not a tracker, and the readiness doc has already carried four unfiled preconditi
 `data-model.md`), the rulings are recorded, and the evidence is measured rather than inferred.
 
 **Medium** on C4 — `cashflow_summary` is specified only as "income vs. outflow by month," and what
-counts as income is exactly the question #20 declined to answer. The C4 build plan must state its
-own interpretation rather than inherit the phrase.
+counts as income is exactly the question #20 declined to answer. Measurement made this worse rather
+than better: the fixture has zero income, its one payroll-shaped row is signed as an outflow, and
+its largest inflow is airline refunds. **A sign-keyed split is therefore both the obvious
+implementation and demonstrably wrong**, and no test against this fixture would catch it. The C4
+build plan must state its own interpretation of income explicitly, and say what it cannot verify.
+
+C2's one open requirement — the gap threshold — was ruled and written into the requirements
+document, so no chunk is blocked on a decision.

@@ -31,7 +31,7 @@ import json
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Final, TypeVar
+from typing import Final
 
 from bankmachine.connector import (
     AggregatorNotConfiguredError,
@@ -302,14 +302,12 @@ class RetryPolicy:
 
 _log = get_logger(__name__)
 
-T = TypeVar("T")
-
 #: What the retry loop waits with, injected so tests exercise the real decisions
 #: at full speed instead of a mock of them.
 Sleeper = Callable[[float], None]
 
 
-def call_with_retry(
+def call_with_retry[T](
     call: Callable[[], T],
     *,
     policy: RetryPolicy,
