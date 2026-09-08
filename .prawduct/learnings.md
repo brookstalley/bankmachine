@@ -284,9 +284,19 @@ the author date untouched while the commit joins the branch much later. Reading 
 latter produces a confident, specific, wrong answer about ordering — and reflog or
 `git log --format=%cd` on the branch is the thing that actually answers it.
 
-**The cheap instrument is a fingerprint**: call the live surface for a string or value known to
-differ between the two candidate builds, and read which one comes back. It costs one call and it
-settles what an argument cannot.
+**Best: make the surface report its own build.** As of `6532659` every MCP response carries
+`build.commit`, captured once at process start, so the question is answered by one field on any
+call before any testing begins. 🔴 **Prefer this over every technique below** — a fingerprint infers
+the build from a value that happens to differ, and it silently stops working the moment that value
+changes for an unrelated reason.
+
+**Fallback, for a surface that does not self-report**: fingerprint it — call for a string or value
+known to differ between the two candidate builds, and read which one comes back. It costs one call
+and settles what an argument cannot. 🔴 **A recorded fingerprint decays.** The one written down for
+this repo (`limit:9999` → "at most 1000") was falsified within a day by `8c92131` moving the
+ceiling to 500, and a later reader following it would have matched against a string the build no
+longer emits — reading the mismatch as evidence of a *newer* build than they had. If you must
+record one, record what it discriminated and when, never as a standing check.
 
 **Why this one bites:** the wrong answer is a *pass*. A stale build that still behaves correctly on
 everything except the fix under test reports green, and green is what you were hoping for. The
