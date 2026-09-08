@@ -164,15 +164,27 @@ data condition it is: `Truncation.over()` floors `matching` at `returned`, `trun
 because nothing is hidden, and a new `counted_during_change` warning announces the skew. A test
 forces the interleaving through the real query path rather than pinning it only at the unit level.
 
-🔴 **A wider consequence is FILED, NOT FIXED — #27, and it is the owner's call before Chunk 03.**
+🔴 **A wider consequence is FILED, NOT FIXED — #27, and the owner has RULED on it (2026-09-08).**
 One `Answer` is assembled from 8+ statements, each its own snapshot, so this is not a property of
-Chunk 02's counts. Two things reach further: **Chunk 01's guarantee that "every returned row lies
-inside `effective_window`" holds against the COVERAGE snapshot rather than the ROW snapshot** (a soft
-delete between the reads moves `earliest_transaction` forward and can clamp `effective_since` past a
-row already returned), and **`as_of` postdates the rows.** The fix is a per-answer read snapshot,
-which departs from a documented norm with a stated reason and changes read semantics for every query
-— a recorded decision, not a chunk-level one. The counter-argument is on #27: `query.py` is open
-during this plan, so Chunk 03 is the last cheap moment on this branch.
+Chunk 02's counts. What reaches further: **Chunk 01's guarantee that "every returned row lies inside
+`effective_window`" holds against the COVERAGE snapshot rather than the ROW snapshot** — a soft
+delete of the store's oldest row between the reads moves `earliest_transaction` forward and can push
+`effective_since` past a row already returned — and the three transaction counts are three reads at
+three times. **The wording is now corrected** in `query.py`, `api-contract.md` and
+`tests/test_query_window.py` to state the conditional version, which was the defect: an overclaim,
+not a malfunction.
+
+**Ruling: #27 is low priority and does NOT ride Chunk 03.** An earlier draft of this block argued 03
+was "the last cheap moment"; that was withdrawn. Keyset pagination is *designed* to be correct across
+snapshots — which is why this plan chose it over offset — so 03 gains nothing from a read
+transaction, and 03's review is this branch's `cumulative-final`, which should not carry two
+unrelated risk surfaces. The fix also departs from a documented norm in `store/connection.py` and
+needs its own ruling first.
+
+🔴 **`as_of` is NOT part of #27, and an earlier draft of this block wrongly said it was.** It is
+captured after the rows, so `today` — and therefore `covered_end` — can only widen relative to what
+the rows saw, and a wider window still contains them. Capturing it *first* would be the hazardous
+direction. Do not "fix" the ordering.
 
 Next: Chunk 03, the plan's `cumulative-final`. Carry forward that the invariant-before-matrix
 discipline has now paid three chunks running — 26 mutations were all caught in Chunk 02 and two real

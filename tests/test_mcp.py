@@ -939,16 +939,51 @@ def test_the_instructions_name_every_field_the_envelope_actually_carries(
 
     Asserted against the real envelope rather than a second hand-written list,
     because a second list is one that stops matching the first.
+
+    🔴 **Over the UNION of every tool's envelope, never one sample.** This read
+    `list_accounts` alone, which is the one tool carrying neither
+    `effective_window` nor `truncation` — so two whole chunks added two envelope
+    keys and four warning kinds and this guard passed unchanged, while the only
+    text a consuming agent reads at handshake actively denied they existed. A
+    check that samples one instance of the thing it generalises over is a check
+    whose bad news never arrives, which is the trap `learnings.md` records twice.
     """
     _seed(initialized_config)
-    envelope = _call(initialized_config, "list_accounts")["structuredContent"]
     instructions = mcp._instructions(initialized_config)
+
+    envelope: set[str] = set()
+    for definition in mcp._tool_definitions():
+        envelope |= set(_call(initialized_config, definition["name"])["structuredContent"])
+    assert {"effective_window", "truncation"} <= envelope, (
+        "the union lost the windowed/capped keys, so this guard is back to sampling"
+    )
 
     missing = sorted(key for key in envelope if f"`{key}`" not in instructions)
 
     assert not missing, (
         f"the envelope carries {missing} but the instructions never name them; "
         f"an agent reading only the instructions does not know they exist"
+    )
+
+
+def test_the_instructions_name_every_warning_kind_the_vocabulary_defines(
+    initialized_config: Config,
+) -> None:
+    """🔴 The kinds are the half an agent is told to branch on, and they were short by four.
+
+    The envelope guard above pins FIELDS. Nothing pinned KINDS, so the four
+    request-scoped kinds this cycle added were absent from the handshake text
+    while `warnings` was the thing that text tells the reader to check first.
+    Derived from the vocabulary rather than from a second list here, for the
+    reason the vocabulary exists at all.
+    """
+    instructions = mcp._instructions(initialized_config)
+
+    missing = sorted(k for k in query.WARNING_KINDS if f"`{k}`" not in instructions)
+
+    assert not missing, (
+        f"the vocabulary defines {missing} but the instructions never name them; "
+        f"an agent told to read `warnings` cannot act on a kind it was never given"
     )
 
 

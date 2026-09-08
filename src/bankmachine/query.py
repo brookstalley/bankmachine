@@ -168,7 +168,21 @@ class Window:
     @property
     def covers_nothing(self) -> bool:
         """True when the request and the covered span do not overlap at all."""
-        return self.effective_since is None or self.effective_until is None
+        return self.covered_bounds() is None
+
+    def covered_bounds(self) -> tuple[date, date] | None:
+        """The effective bounds when there are any, else `None`.
+
+        🔴 The same question as `covers_nothing`, asked so the answer NARROWS.
+        A property cannot narrow `date | None` for a caller, so every site
+        needing the bounds was rewriting the null check by hand — two hand-written
+        copies of a predicate this type already models is how the two stop
+        agreeing. Returning the pair makes `covers_nothing` the derived one and
+        gives callers bounds a type checker will hold them to.
+        """
+        if self.effective_since is None or self.effective_until is None:
+            return None
+        return (self.effective_since, self.effective_until)
 
     def to_wire(self) -> dict[str, Any]:
         return {
@@ -731,6 +745,10 @@ def _covered_rows(conn: SAConnection, *, since: date, until: date) -> int:
     -- the clamp only ever removes dates the store has no rows for -- so the
     choice costs nothing and ties the number to the window the answer names.
 
+    Composed from `_transaction_filters`, like every other reader of this table:
+    the promise that a filter added later reaches every reader is worth nothing
+    if a reader rebuilds the predicates by hand.
+
     🔴 **Takes two `date`s, never the `Window`.** A window covering nothing has
     null bounds, and SQLAlchemy's comparison operators accept `Any` -- so passing
     the window in would let a `None` bound reach the predicate with mypy raising
@@ -744,11 +762,7 @@ def _covered_rows(conn: SAConnection, *, since: date, until: date) -> int:
         conn.execute(
             select(func.count())
             .select_from(transactions)
-            .where(
-                transactions.c.removed_at.is_(None),
-                transactions.c.posted_date >= since,
-                transactions.c.posted_date <= until,
-            )
+            .where(*_transaction_filters(since=since, until=until, account_id=None))
         ).scalar_one()
     )
 
@@ -781,8 +795,7 @@ def _answer(
             as_of=now,
         )
     )
-    covered_since = None if window is None else window.effective_since
-    covered_until = None if window is None else window.effective_until
+    covered = None if window is None else window.covered_bounds()
     if window is not None:
         # 🔴 A SIBLING, never a narrowing of `coverage["transactions"]`, which
         # keeps its store-wide meaning. `api-contract.md` forbids repurposing a
@@ -795,9 +808,7 @@ def _answer(
             # silent one: the caveat that made the bounds null is already in
             # `window.caveats` and rides the warnings below.
             "transactions_in_effective_window": (
-                0
-                if covered_since is None or covered_until is None
-                else _covered_rows(conn, since=covered_since, until=covered_until)
+                0 if covered is None else _covered_rows(conn, since=covered[0], until=covered[1])
             ),
         }
     return Answer(
@@ -1116,17 +1127,21 @@ def spending_by_category(
                 func.count().label("count"),
                 func.sum(transactions.c.amount_minor).label("total"),
             )
+            # 🔴 The shared predicates, plus this tool's own. Rebuilding the
+            # soft-delete and window clauses by hand here is how "there is only
+            # one place to add a filter" quietly becomes three: a maintainer
+            # adding a predicate at the named single place would get it in the
+            # rows and the count and silently NOT here, and two tools would then
+            # disagree about which rows exist — a precise wrong number, not an
+            # error. The outflow clause rides on top because it is what makes
+            # this tool a SPENDING question rather than a transaction one.
             .where(
-                transactions.c.removed_at.is_(None),
+                *_transaction_filters(since=since, until=until, account_id=None),
                 transactions.c.amount_minor < 0,
             )
             .group_by("category")
             .order_by(func.sum(transactions.c.amount_minor))
         )
-        if since is not None:
-            statement = statement.where(transactions.c.posted_date >= since)
-        if until is not None:
-            statement = statement.where(transactions.c.posted_date <= until)
         rows = [
             {
                 "category": r[0],

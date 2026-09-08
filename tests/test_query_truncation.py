@@ -28,6 +28,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 from sqlalchemy import event, func, select
+from sqlalchemy.dialects.sqlite import dialect as sqlite_dialect
 from sqlalchemy.engine import Engine
 
 from bankmachine import query
@@ -297,6 +298,72 @@ def test_the_count_and_the_row_query_select_from_the_same_predicates(
     assert _from_of(count_sql) == _from_of(rows_sql), (
         "the count and the row query read different tables, so one can admit a row the other drops"
     )
+
+
+def _shared_predicate_texts(*, since: date, until: date) -> list[str]:
+    """The predicate fragments every reader must carry, read off the one list itself.
+
+    Derived from `_transaction_filters` rather than retyped, so a filter added
+    there joins this assertion without anyone remembering to widen it — the same
+    reason the production readers compose from it.
+    """
+    # 🔴 Compiled against the SQLite dialect, so the fragments carry the same `?`
+    # placeholders the engine emits. Compiling with literal binds produces
+    # `posted_date >= '2026-08-04'`, which matches no executed statement and would
+    # make every assertion below fail for the wrong reason — or, had the
+    # comparison been laxer, pass for one.
+    return [
+        str(clause.compile(dialect=sqlite_dialect()))
+        for clause in query._transaction_filters(since=since, until=until, account_id=None)
+    ]
+
+
+def test_every_reader_of_transactions_shares_the_one_predicate_list(
+    seeded_config: Config, captured_sql: list[str]
+) -> None:
+    """🔴 The promise is "one place to add a filter", so every reader must use it.
+
+    `_transaction_filters` was introduced for `list_transactions`'s two
+    statements, and for a while that was all it covered: `spending_by_category`
+    and `_covered_rows` each rebuilt the soft-delete and window clauses by hand,
+    so there were three places to add a filter and the docstring's promise held
+    only for the pair it was written about. A maintainer adding a predicate at
+    the named single place would get it in the rows and the count and silently
+    not in the other two — two tools disagreeing about which rows exist, which is
+    a precise wrong number rather than an error.
+
+    Asserted by reading the SQL the engine actually ran, across the READERS
+    rather than across one tool's argument shapes.
+
+    🔴 The window is chosen INSIDE the fixture's data on purpose. A window the
+    store cannot cover makes `_covered_rows` short-circuit before it runs, so the
+    reader this test exists to catch would never appear in the captured SQL and
+    the test would pass while checking one fewer reader than it names.
+    """
+    today = now_utc().date()
+    since, until = today - timedelta(days=_DAYS // 2), today
+    fragments = _shared_predicate_texts(since=since, until=until)
+
+    query.list_transactions(seeded_config, since=since, until=until, limit=MAX_ROWS)
+    query.spending_by_category(seeded_config, since=since, until=until)
+
+    windowed = [
+        sql
+        for sql in captured_sql
+        if "transactions" in sql and "posted_date >=" in sql and "posted_date <=" in sql
+    ]
+    # The row query, its count, one coverage count per windowed call, and the
+    # aggregate. Asserted as a floor so an added reader cannot slip past.
+    assert len(windowed) >= 5, (
+        f"expected at least 5 windowed reads of `transactions` across the two calls; "
+        f"saw {len(windowed)} — a reader is missing, or one short-circuited"
+    )
+    for sql in windowed:
+        where = _where_of(sql)
+        for fragment in fragments:
+            assert fragment in where, (
+                f"a reader rebuilt its predicates by hand: {fragment!r} missing from {where}"
+            )
 
 
 # --------------------------------------------------------------------------
