@@ -131,3 +131,32 @@ def test_the_default_config_path_follows_xdg(tmp_path: Path) -> None:
     assert default_config_path({"XDG_CONFIG_HOME": str(tmp_path)}) == (
         tmp_path / APP_NAME / "config.toml"
     )
+
+
+def test_a_connection_cap_that_is_not_an_integer_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Named, like every other malformed setting, so the operator knows which one."""
+    monkeypatch.setenv("BANKMACHINE_CONNECTION_CAP", "ten")
+
+    with pytest.raises(ConfigError) as raised:
+        load_config()
+
+    assert "connection_cap" in str(raised.value)
+
+
+def test_a_connection_cap_below_one_is_refused_not_clamped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cap of zero refuses every enrollment including the first.
+
+    Which is indistinguishable, from the operator's side, from the product being
+    broken. Refusing the value names the setting instead — the same reason
+    `history_days` is refused rather than clamped.
+    """
+    monkeypatch.setenv("BANKMACHINE_CONNECTION_CAP", "0")
+
+    with pytest.raises(ConfigError) as raised:
+        load_config()
+
+    assert "at least 1" in str(raised.value)

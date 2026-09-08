@@ -190,9 +190,12 @@ because a datastore backup travels and a credential inside it travels with it.
 
 🔴 **The archive exemption is a property of the endpoint, not a list kept beside
 the archive.** `Endpoint.issues_credential` marks the endpoints whose *response
-body* carries a credential — today `/link/token/create` and
-`/item/public_token/exchange`, the latter verified live as returning
-`access_token`, `item_id`, `request_id`. `FetchedResponse.__post_init__` refuses
+body* carries a credential — today `POST /link/token/create`,
+`POST /link/token/get` and `POST /item/public_token/exchange`. The last is
+verified live as returning `access_token`, `item_id`, `request_id`; the middle
+one was added with hosted enrollment, because a *finished* Link session's body
+carries the `public_token` — the same single-use value the exchange spends, and
+therefore the same reason its body may never reach an append-only store. `FetchedResponse.__post_init__` refuses
 to exist for such an endpoint, and `store.raw` derives everything it persists
 from one of those — so a credential-bearing body cannot be archived by any
 caller, including one written years from now by someone who never read
@@ -389,8 +392,8 @@ credential-archive mechanism; and the institutions and accounts derivers, so
 `store rebuild` now runs end-to-end over a real archive.
 
 **Built 2026-09-07 (build step 3):** the enrollment flow — the CLI, idempotency,
-the connection cap and retirement. **Not built yet:** the transactions deriver,
-which lands with its cursor loop in build step 4.
+the connection cap and retirement. **Built 2026-09-08 (build step 4):** the
+transactions deriver and its cursor loop, `bankmachine sync run`.
 
 ## Test Levels
 

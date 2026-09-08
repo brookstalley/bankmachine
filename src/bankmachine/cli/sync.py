@@ -44,6 +44,7 @@ import contextlib
 import sys
 from typing import Final, Protocol
 
+from bankmachine.cli import sync_run
 from bankmachine.config import Config
 from bankmachine.logging_setup import redact
 from bankmachine.store import connection
@@ -109,6 +110,8 @@ def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
         ),
     )
     shell.set_defaults(handler=cmd_shell)
+
+    sync_run.add_arguments(commands)
 
 
 def cmd_shell(config: Config, _args: argparse.Namespace) -> int:

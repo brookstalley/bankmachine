@@ -18,9 +18,10 @@ breaks ordinary SQL tooling — all exist and are tested. The aggregator client'
 walking skeleton has since landed and been run against the real sandbox: `bankmachine connector
 check` makes one authenticated call and archives the answer verbatim. Enrollment has since landed:
 `bankmachine enroll` prints a hosted URL, waits while you complete it in a browser, and records the
-connection — with `bankmachine connections list` and `connections retire` alongside it. **There are
-still no transactions to read**: fetching them is the next step, so an enrolled connection gives you
-its institution and accounts and nothing below them yet, and `sync shell` lets you look. See `docs/system-requirements.md` for what is being built
+connection — with `bankmachine connections list` and `connections retire` alongside it, and
+`bankmachine sync run` fetches each connection's accounts and transactions. `sync shell` is how you
+look at any of it: page encryption breaks ordinary SQL tooling, so the datastore has its own
+authenticated prompt. See `docs/system-requirements.md` for what is being built
 and `docs/build-vs-adopt-investigation.md` for why it is being built rather than adopted.
 
 ## What it is not

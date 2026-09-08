@@ -63,6 +63,9 @@ ENROLL_CLI_TESTS = "tests/cli/test_enroll.py"
 DERIVER_TESTS = "tests/connector/test_derivers.py"
 CONNECTOR_DERIVERS = pathlib.Path("src/bankmachine/connector/plaid/derivers.py")
 SYNC_CURSOR_TESTS = "tests/connector/test_sync_cursor.py"
+TXN_TESTS = "tests/connector/test_transaction_derivers.py"
+SYNC_RUN = pathlib.Path("src/bankmachine/cli/sync_run.py")
+SYNC_RUN_TESTS = "tests/cli/test_sync_run.py"
 
 #: (description, file, text to replace, replacement, the test that must go red)
 CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
@@ -398,7 +401,9 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "the derivation seam: no deriver reads the clock",
         CONNECTOR_DERIVERS,
+        '        "lifecycle_status": "active",\n        "source": "aggregator",\n'
         '        "updated_at": response.received_at,',
+        '        "lifecycle_status": "active",\n        "source": "aggregator",\n'
         '        "updated_at": __import__("bankmachine.store.types", fromlist=["x"]).now_utc(),',
         f"{DERIVER_TESTS}::test_no_deriver_reads_the_clock",
     ),
@@ -654,6 +659,85 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "        raise DerivationError(\n"
         '            f"raw response {response.raw_response_id} ({TRANSACTIONS_SYNC})',
         f"{SYNC_CURSOR_TESTS}::test_a_page_archived_against_no_connection_is_refused",
+    ),
+    (
+        "the sign convention: a purchase reported positive is stored negative",
+        CONNECTOR_DERIVERS,
+        "    return negate(exact)",
+        "    return exact",
+        f"{TXN_TESTS}::test_a_purchase_reported_positive_is_stored_negative",
+    ),
+    (
+        "AC-2.3: a posting transaction updates the pending row, never duplicates it",
+        CONNECTOR_DERIVERS,
+        "    if pending_source_id is None:\n        return None",
+        "    if True:\n        return None",
+        f"{TXN_TESTS}::test_a_posting_transaction_updates_the_pending_row",
+    ),
+    (
+        "AC-2.2: a removed transaction is soft-deleted, never hard-deleted",
+        CONNECTOR_DERIVERS,
+        "        .values(removed_at=response.received_at, updated_at=response.received_at)",
+        "        .values(updated_at=response.received_at)",
+        f"{TXN_TESTS}::test_a_removed_transaction_is_soft_deleted",
+    ),
+    (
+        "AC-2.2: a transaction sent again after removal is present again",
+        CONNECTOR_DERIVERS,
+        "            removed_at=None,\n            **values,",
+        "            **values,",
+        f"{TXN_TESTS}::test_a_transaction_removed_then_sent_again_is_present_again",
+    ),
+    (
+        "AC-6.2: a ledger amount is converted exactly or refused, never rounded",
+        CONNECTOR_DERIVERS,
+        "        exact = from_decimal_string(amount, exponent=minor_digits(currency))",
+        "        exact = to_minor(amount, currency, \"a transaction\", response)",
+        f"{TXN_TESTS}::test_an_amount_with_sub_cent_precision_is_refused_not_rounded",
+    ),
+    (
+        "AC-2.1: a transaction for an unknown account is refused, not skipped",
+        CONNECTOR_DERIVERS,
+        "    if not isinstance(source_account_id, str) or source_account_id not in known:",
+        "    if False:",
+        f"{TXN_TESTS}::test_a_transaction_for_an_unknown_account_is_refused",
+    ),
+    (
+        "AC-2.6: NOT_READY is read before has_more, or an empty sync reports success",
+        SYNC_RUN,
+        "                if status == NOT_READY:",
+        "                if False:",
+        f"{SYNC_RUN_TESTS}::"
+        "test_a_not_ready_first_page_is_not_reported_as_a_successful_empty_sync",
+    ),
+    (
+        "AC-2.1: each page resumes from the cursor the datastore committed",
+        SYNC_RUN,
+        "                cursor = _cursor_for(config, connection_id)",
+        "                cursor = None",
+        f"{SYNC_RUN_TESTS}::test_each_page_resumes_from_the_cursor_the_last_one_stored",
+    ),
+    (
+        "AC-4.1: one connection's failure never aborts another",
+        SYNC_RUN,
+        "        return _degrade(config, outcome, type(exc).__name__, str(exc))",
+        "        raise",
+        f"{SYNC_RUN_TESTS}::test_one_connection_failing_does_not_stop_the_others",
+    ),
+    (
+        "AC-2.1: accounts are refreshed before transactions are paged",
+        SYNC_RUN,
+        "            accounts_page = client.accounts_get(",
+        "            accounts_page = None  # type: ignore[assignment]\n            _unused(",
+        f"{SYNC_RUN_TESTS}::test_every_run_refreshes_accounts_before_paging_transactions",
+    ),
+    (
+        "AC-1.6: a retirement whose removal never confirmed is retried, not reported done",
+        CLI_CONNECTIONS,
+        "        if not _credential_survives(config, row.credential_ref):",
+        "        if True:",
+        f"{ENROLL_CLI_TESTS}::"
+        "test_retrying_a_retirement_whose_removal_never_confirmed_actually_retries",
     ),
     (
         "AC-10.1: a public token never reaches a repr",

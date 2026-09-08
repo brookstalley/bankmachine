@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from datetime import date
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any, Final
 
@@ -59,6 +60,7 @@ from bankmachine.store.schema import (
     connections,
     institutions,
     sync_state,
+    transactions,
 )
 from bankmachine.store.types import (
     CalendarDate,
@@ -313,6 +315,8 @@ def derive_transactions_sync(
     if not isinstance(next_cursor, str) or not next_cursor:
         return
 
+    _apply_transaction_changes(conn, response, context)
+
     existing = conn.execute(
         select(sync_state.c.connection_id).where(
             sync_state.c.connection_id == response.connection_id,
@@ -343,6 +347,286 @@ def derive_transactions_sync(
             last_error_at=None,
             updated_at=response.received_at,
         )
+    )
+
+
+def _parse_calendar(value: object, what: str, response: RawResponse) -> CalendarDate:
+    """`YYYY-MM-DD` from the aggregator into a calendar date, or refuse.
+
+    🔴 A transaction date is a **calendar fact from the institution**, not an
+    instant. Treating it as one introduces silent off-by-one-day errors at period
+    boundaries -- exactly where period-over-period comparison lives, which is this
+    product's headline query.
+    """
+    if not isinstance(value, str) or not value:
+        raise DerivationError(
+            f"raw response {response.raw_response_id} ({response.endpoint}) has no {what}"
+        )
+    try:
+        return calendar_date(date.fromisoformat(value))
+    except ValueError as exc:
+        raise DerivationError(
+            f"raw response {response.raw_response_id} ({response.endpoint}) has {what} "
+            f"{value!r}, which is not a calendar date"
+        ) from exc
+
+
+def _operator_signed_amount(
+    amount: object, currency: str, response: RawResponse
+) -> MinorUnits:
+    """🔴 The aggregator's sign, inverted to the operator's point of view.
+
+    *Measured* (`api-notes-plaid.md` §17): a merchant purchase on a depository
+    account arrives as a **positive** `amount` -- money leaving. `data-model.md`
+    § Direction stores a positive `amount_minor` as money moving *into* an
+    account, so every amount is negated on the way in. Taking the aggregator's
+    sign at face value would be wrong **by twice the amount on every spend row**,
+    silently and plausibly, because each number is well-formed and every sum
+    completes.
+
+    `from_decimal_string`, not `to_minor`: a transaction is a **ledger amount**
+    and is converted exactly or refused. `to_minor` rounds, and it exists for
+    investment valuations, which are price times quantity rather than a sum of
+    money that moved.
+    """
+    if not isinstance(amount, str) or not amount:
+        raise DerivationError(
+            f"raw response {response.raw_response_id} ({response.endpoint}) has a "
+            f"transaction with no amount; the column is NOT NULL and a placeholder "
+            f"would be this system inventing a number and recording it as the source's"
+        )
+    try:
+        exact = from_decimal_string(amount, exponent=minor_digits(currency))
+    except MoneyError as exc:
+        # Wrapped so the refusal names the response, like every other refusal
+        # here. A bare `MoneyError` says an amount was unrepresentable and not
+        # which page it came from -- and a page is what an operator can re-fetch.
+        raise DerivationError(
+            f"raw response {response.raw_response_id} ({response.endpoint}) has transaction "
+            f"amount {amount!r} in {currency}, which cannot be represented exactly in minor "
+            f"units: {exc}. A ledger amount is converted exactly or refused -- rounding one "
+            f"loses a fraction of a cent per row, which reconciles to nothing"
+        ) from exc
+    return negate(exact)
+
+
+def _category(payload: object, key: str) -> str | None:
+    """One half of `personal_finance_category`, as the source sent it.
+
+    Kept as sent. `category_override` is where local intent goes, because
+    overwriting a source value destroys the ability to re-derive from the archive.
+    """
+    if not isinstance(payload, dict):
+        return None
+    return _optional(payload.get(key))
+
+
+def _account_ids(conn: SAConnection, connection_id: int) -> dict[str, int]:
+    """This connection's accounts, by the aggregator's id for them.
+
+    Read once per page rather than per transaction: a page is up to a hundred
+    rows and they cluster on a handful of accounts.
+    """
+    rows = conn.execute(
+        select(accounts.c.source_account_id, accounts.c.account_id).where(
+            accounts.c.connection_id == connection_id,
+            accounts.c.source_account_id.is_not(None),
+        )
+    ).all()
+    return {str(row[0]): int(row[1]) for row in rows}
+
+
+def _apply_transaction_changes(
+    conn: SAConnection, response: RawResponse, context: DerivationContext
+) -> None:
+    """`added`, `modified` and `removed`, in the one transaction the cursor rides.
+
+    🔴 **Nothing here issues a DELETE.** AC-2.2 soft-deletes: a removed
+    transaction keeps its row and gains a `removed_at`, because a transaction
+    that vanished is a fact about the source, and a row that vanished with it
+    leaves nothing to reconcile against.
+    """
+    assert response.connection_id is not None  # the caller refused None already
+    payload = _payload(response)
+    known = _account_ids(conn, response.connection_id)
+
+    for entry in _entries(payload, "added", response):
+        _write_transaction(conn, entry, response, context, known, existing_ok=False)
+    for entry in _entries(payload, "modified", response):
+        _write_transaction(conn, entry, response, context, known, existing_ok=True)
+    for entry in _entries(payload, "removed", response):
+        _mark_removed(conn, entry, response, known)
+
+
+def _entries(payload: dict[str, Any], key: str, response: RawResponse) -> list[dict[str, Any]]:
+    """One change list. Absent and empty are the same thing; a wrong type is not.
+
+    A page that carried a malformed list would otherwise be treated as a page
+    with no changes -- and a sync that silently applied nothing would advance its
+    cursor past the transactions it skipped.
+    """
+    value = payload.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise DerivationError(
+            f"raw response {response.raw_response_id} ({response.endpoint}) has {key} as "
+            f"{type(value).__name__}, not a list"
+        )
+    entries: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise DerivationError(
+                f"raw response {response.raw_response_id} ({response.endpoint}) has a "
+                f"{key} entry that is not an object"
+            )
+        entries.append(item)
+    return entries
+
+
+def _local_account(
+    entry: dict[str, Any], known: dict[str, int], response: RawResponse
+) -> int:
+    """The local account a transaction hangs from, or a refusal naming the gap.
+
+    🔴 Refused rather than skipped. A transaction whose account this system has
+    not derived yet means the accounts for this connection are older than its
+    transactions -- and silently dropping the row would let the cursor advance
+    past it, so it would never be offered again.
+    """
+    source_account_id = entry.get("account_id")
+    if not isinstance(source_account_id, str) or source_account_id not in known:
+        raise DerivationError(
+            f"raw response {response.raw_response_id} ({response.endpoint}) has a "
+            f"transaction for account {source_account_id!r}, which this connection has no "
+            f"row for. Accounts are derived before transactions; syncing them in the other "
+            f"order would advance the cursor past rows with nowhere to go"
+        )
+    return known[source_account_id]
+
+
+def _write_transaction(
+    conn: SAConnection,
+    entry: dict[str, Any],
+    response: RawResponse,
+    context: DerivationContext,
+    known: dict[str, int],
+    *,
+    existing_ok: bool,
+) -> None:
+    """One added or modified transaction, converged on its source identity.
+
+    🔴 **The pending→posted transition is a match, not an insert.** A posting
+    transaction arrives with a NEW `transaction_id` and the pending row's id in
+    `pending_transaction_id`; AC-2.3 requires it to update that row rather than
+    duplicate it. The row keeps its local `transaction_id`, so anything already
+    pointing at it -- a category override, a rule -- survives the transition.
+    """
+    account_id = _local_account(entry, known, response)
+    source_transaction_id = _required(entry.get("transaction_id"), "a transaction id", response)
+    currency = _required(entry.get("iso_currency_code"), "a transaction currency", response)
+    pending_source_id = _optional(entry.get("pending_transaction_id"))
+    category = entry.get("personal_finance_category")
+
+    values: dict[str, Any] = {
+        "account_id": account_id,
+        "source_transaction_id": source_transaction_id,
+        "source_pending_transaction_id": pending_source_id,
+        "pending": 1 if entry.get("pending") else 0,
+        "posted_date": _parse_calendar(entry.get("date"), "a transaction date", response),
+        "authorized_date": (
+            None
+            if entry.get("authorized_date") is None
+            else _parse_calendar(entry.get("authorized_date"), "an authorized date", response)
+        ),
+        "amount_minor": _operator_signed_amount(entry.get("amount"), currency, response),
+        "currency": currency,
+        "description": _required(entry.get("name"), "a transaction description", response),
+        "merchant_name": _optional(entry.get("merchant_name")),
+        "source_category_primary": _category(category, "primary"),
+        "source_category_detailed": _category(category, "detailed"),
+        "source": "aggregator",
+        "raw_response_id": response.raw_response_id,
+        "derivation_version_id": context.derivation_version_id,
+        "updated_at": response.received_at,
+    }
+
+    row_id = _existing_transaction(conn, account_id, source_transaction_id, pending_source_id)
+    if row_id is None:
+        if existing_ok:
+            # A `modified` entry for a row this system has never seen. Inserted
+            # rather than refused: a rebuild replays pages in archive order, and
+            # a modification whose original page predates the archive is exactly
+            # what that produces.
+            _log.info(
+                "raw response %s modified a transaction with no local row; inserting it",
+                response.raw_response_id,
+            )
+        conn.execute(insert(transactions).values(first_seen_at=response.received_at, **values))
+        return
+    conn.execute(
+        update(transactions).where(transactions.c.transaction_id == row_id).values(
+            # 🔴 `removed_at` is cleared: a transaction the source removed and
+            # then sent again is present again, and a stale removal stamp would
+            # keep it out of every sum while its row said otherwise.
+            removed_at=None,
+            **values,
+        )
+    )
+
+
+def _existing_transaction(
+    conn: SAConnection,
+    account_id: int,
+    source_transaction_id: str,
+    pending_source_id: str | None,
+) -> int | None:
+    """The row this change belongs to: its own, or the pending one it posts.
+
+    Its own identity is checked first. A posting transaction carries both -- a new
+    id of its own and the pending id it replaces -- and once it has been applied
+    the row answers to the new id, so a replay must find it there rather than
+    matching the pending id a second time and inserting.
+    """
+    row = conn.execute(
+        select(transactions.c.transaction_id).where(
+            transactions.c.account_id == account_id,
+            transactions.c.source_transaction_id == source_transaction_id,
+        )
+    ).one_or_none()
+    if row is not None:
+        return int(row[0])
+    if pending_source_id is None:
+        return None
+    pending_row = conn.execute(
+        select(transactions.c.transaction_id).where(
+            transactions.c.account_id == account_id,
+            transactions.c.source_transaction_id == pending_source_id,
+        )
+    ).one_or_none()
+    return None if pending_row is None else int(pending_row[0])
+
+
+def _mark_removed(
+    conn: SAConnection, entry: dict[str, Any], response: RawResponse, known: dict[str, int]
+) -> None:
+    """A soft delete. The row stays; it gains a removal stamp.
+
+    A `removed` entry carries only `transaction_id` and `account_id` *(measured,
+    §16)*, which is all a soft delete needs. A removal naming a row this system
+    does not have is not an error -- a rebuild replays removals whose original
+    page predates the archive, and there is nothing to do about it.
+    """
+    source_transaction_id = _required(entry.get("transaction_id"), "a removed id", response)
+    account_id = _local_account(entry, known, response)
+    conn.execute(
+        update(transactions)
+        .where(
+            transactions.c.account_id == account_id,
+            transactions.c.source_transaction_id == source_transaction_id,
+            transactions.c.removed_at.is_(None),
+        )
+        .values(removed_at=response.received_at, updated_at=response.received_at)
     )
 
 

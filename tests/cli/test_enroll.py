@@ -820,7 +820,8 @@ def test_retiring_an_unknown_connection_exits_one_and_says_how_to_look(
     cli_env: Config, offline_client: type[FakeClient], capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert run(["connections", "retire", "999"]) == 1
-    assert "connections list" in capsys.readouterr().out
+    # stderr: failures go there, matching the sibling messages in `enroll`.
+    assert "connections list" in capsys.readouterr().err
 
 
 def test_listing_hides_retired_connections_unless_asked(
@@ -862,7 +863,12 @@ def test_an_unreachable_aggregator_leaves_the_retirement_and_says_so(
     assert run(["connections", "retire", "1"]) == 1
 
     assert _rows(cli_env, connections)[0]._mapping["retired_at"] is not None
-    assert "may still be billing" in capsys.readouterr().out
+    err = capsys.readouterr().err
+    assert "may still be billing" in err
+    # 🔴 It names the item. The log cannot -- a production id is an opaque 37-char
+    # run the formatter blanks -- and `connections list` cannot either, because
+    # the connection is retired. This line is the only place it is ever visible.
+    assert ITEM_ID in err
     # The credential survives, because it is the only handle left to that item.
     assert get_access_token(cli_env, cli_env.connection_keychain_account(ITEM_ID))
 
@@ -1139,7 +1145,7 @@ def test_an_unreadable_credential_leaves_retirement_standing_and_says_so(
     assert run(["connections", "retire", "1"]) == 1
 
     assert _rows(cli_env, connections)[0]._mapping["retired_at"] is not None
-    assert "may still be billing" in capsys.readouterr().out
+    assert "may still be billing" in capsys.readouterr().err
 
 
 def test_a_production_length_item_id_is_redacted_from_the_log(
@@ -1196,3 +1202,62 @@ def test_a_timeout_below_the_floor_is_refused_before_the_aggregator(
 
     assert raised.value.code == 2  # argparse's own usage exit
     assert FakeClient.instances == [], "a bad argument must not reach the aggregator"
+
+
+def test_retrying_a_retirement_whose_removal_never_confirmed_actually_retries(
+    cli_env: Config,
+    offline_client: type[FakeClient],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """🔴 The retry the message promises, which used to be unreachable.
+
+    A re-run hit `if row.retired_at is not None:` first, printed "was already
+    retired" and exited 0 -- so the Item kept billing while the operator was told
+    it had worked. The surviving credential is what distinguishes "retired and
+    confirmed" from "retired and never confirmed": `release_at_aggregator` deletes
+    it only after the far end agrees.
+    """
+    assert run(["enroll", "--yes"]) == 0
+
+    def refuse(*args: Any, **kwargs: Any) -> None:
+        raise TransportError("the aggregator is unreachable", endpoint=ITEM_REMOVE)
+
+    # Saved and restored explicitly rather than with `monkeypatch.undo()`, which
+    # would also revert this fixture's env vars -- and the run would then resolve
+    # the OPERATOR'S real datastore path instead of the temporary one.
+    original = FakeClient.item_remove
+    monkeypatch.setattr(FakeClient, "item_remove", refuse)
+    assert run(["connections", "retire", "1"]) == 1
+    capsys.readouterr()
+
+    # The network comes back.
+    monkeypatch.setattr(FakeClient, "item_remove", original)
+    FakeClient.removed_tokens = []
+
+    assert run(["connections", "retire", "1"]) == 0
+
+    assert FakeClient.removed_tokens == [f"{ACCESS_TOKEN}-{ITEM_ID}"], (
+        "the retry never happened, so the item is still billing"
+    )
+    assert "no longer billing" in capsys.readouterr().out
+
+
+def test_a_confirmed_retirement_reports_already_retired_and_retries_nothing(
+    cli_env: Config, offline_client: type[FakeClient], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The other half: once the credential is gone, there is nothing left to do.
+
+    Without this, "retry when the credential survives" would be satisfied by code
+    that retried unconditionally -- calling the aggregator on every re-run of a
+    connection that was cleanly retired months ago.
+    """
+    assert run(["enroll", "--yes"]) == 0
+    assert run(["connections", "retire", "1"]) == 0
+    FakeClient.removed_tokens = []
+    capsys.readouterr()
+
+    assert run(["connections", "retire", "1"]) == 0
+
+    assert FakeClient.removed_tokens == []
+    assert "was already retired" in capsys.readouterr().out

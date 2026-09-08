@@ -189,7 +189,7 @@ owner's roster decision.
 ## Status
 
 - [x] Chunk 01 — The cursor boundary, and what a crash leaves
-- [ ] Chunk 02 — Added, modified, removed, and the pending that becomes posted
+- [x] Chunk 02 — Added, modified, removed, and the pending that becomes posted
 - [ ] Chunk 03 — What the aggregator actually granted
 
 ## Context

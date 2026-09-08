@@ -21,6 +21,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import plaid
 import pytest
 import urllib3.exceptions
 
@@ -30,10 +31,13 @@ from bankmachine.connector import (
     INSTITUTIONS_GET,
     ITEM_GET,
     ITEM_PUBLIC_TOKEN_EXCHANGE,
+    ITEM_REMOVE,
     LINK_TOKEN_CREATE,
     LINK_TOKEN_GET,
+    TRANSACTIONS_SYNC,
     AccessGrant,
     AggregatorNotConfiguredError,
+    ConnectorError,
     CredentialBearingResponseError,
     Endpoint,
     FetchedResponse,
@@ -1040,3 +1044,88 @@ def test_a_polled_session_can_never_become_an_archivable_response() -> None:
             received_at=now_utc(),
             request_context=None,
         )
+
+
+# --------------------------------------------------------------------------
+# The client methods themselves, at the request object the SDK builds
+# --------------------------------------------------------------------------
+
+
+def test_a_first_sync_sends_no_cursor_and_a_resumed_one_sends_it(
+    client_config: Config,
+) -> None:
+    """🔴 A dropped cursor re-fetches all history on every run.
+
+    And it surfaces as a rate limit rather than as a wrong answer, so nothing in
+    the data would ever look wrong. Asserted on the request the SDK builds,
+    because that is what gets sent.
+    """
+    invoke = _answering({"added": [], "next_cursor": "c1", "has_more": False})
+
+    with _client(client_config) as client:
+        client._api.transactions_sync = invoke
+        client.transactions_sync("fake-access-token-for-tests", cursor=None)
+        first = invoke.captured["request"]
+        client.transactions_sync("fake-access-token-for-tests", cursor="cursor-1")
+        resumed = invoke.captured["request"]
+
+    # A first sync must not send a cursor at all -- an empty string is a value,
+    # and the aggregator would reject it rather than treat it as "from the start".
+    assert not hasattr(first, "cursor") or first.cursor is None
+    assert resumed.cursor == "cursor-1"
+
+
+def test_a_sync_page_is_archivable_because_it_carries_no_credential(
+    client_config: Config,
+) -> None:
+    """Transactions, not tokens -- so the bytes reach the archive verbatim."""
+    invoke = _answering({"added": [], "next_cursor": "c1", "has_more": False})
+
+    with _client(client_config) as client:
+        client._api.transactions_sync = invoke
+        fetched = client.transactions_sync("fake-access-token-for-tests", cursor=None)
+
+    assert fetched.endpoint is TRANSACTIONS_SYNC
+    assert b"next_cursor" in fetched.body
+
+
+def test_an_item_removal_goes_through_the_clients_error_mapping(
+    client_config: Config,
+) -> None:
+    """🔴 Only a fake had ever executed this method.
+
+    `self._api.item_remove` resolves inside the client's own frame; a wrong
+    attribute name would escape as `AttributeError` from `release_at_aggregator`,
+    whose entire contract is that it never raises. That is the same class of
+    escape this branch already fixed once for `SecretsError`, and a fake that
+    replaces the method cannot see it.
+    """
+    invoke = _answering({"request_id": "req-removed"})
+
+    with _client(client_config) as client:
+        client._api.item_remove = invoke
+        fetched = client.item_remove("fake-access-token-for-tests", connection_id=7)
+
+    assert fetched.endpoint is ITEM_REMOVE
+    assert invoke.captured["request"].access_token == "fake-access-token-for-tests"
+
+
+def test_an_aggregator_rejection_of_a_removal_is_a_connector_error(
+    client_config: Config, error_body: Callable[..., str]
+) -> None:
+    """Which is what makes `release_at_aggregator`'s catch sufficient.
+
+    It catches `ConnectorError`; if a rejection arrived as something else, the
+    never-raises contract would be false and the caller's committed retirement
+    would unwind.
+    """
+    rejection = plaid.ApiException(status=400, reason="Bad Request")
+    rejection.body = error_body(error_code="ITEM_NOT_FOUND")
+
+    def refuse(request: Any, **kwargs: Any) -> None:
+        raise rejection
+
+    with _client(client_config) as client:
+        client._api.item_remove = refuse
+        with pytest.raises(ConnectorError):
+            client.item_remove("fake-access-token-for-tests")

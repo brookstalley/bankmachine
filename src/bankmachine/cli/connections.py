@@ -17,6 +17,7 @@ row with a live Item is a charge nobody can see.
 from __future__ import annotations
 
 import argparse
+import sys
 from dataclasses import dataclass
 
 from sqlalchemy import select, update
@@ -52,6 +53,14 @@ class ConnectionRow:
     status: str
     retired_at: UtcInstant | None
     credential_ref: str
+    source_connection_id: str
+    """The aggregator's own id for this connection.
+
+    Carried because it is the only handle an operator has to an Item that is
+    still billing after a failed removal: the log redacts it (a production id is
+    an opaque 37-character run) and a retired connection does not appear in
+    `connections list`.
+    """
 
 
 def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -124,13 +133,37 @@ def cmd_retire(config: Config, args: argparse.Namespace) -> int:
     with reader_connection(config) as conn:
         row = _one_connection(conn, connection_id)
     if row is None:
-        print(f"bankmachine: no connection {connection_id}. `bankmachine connections list` shows")
+        print(
+            f"bankmachine: no connection {connection_id}. `bankmachine connections list` shows "
+            f"what is enrolled",
+            file=sys.stderr,
+        )
         return EXIT_UNHEALTHY
     if row.retired_at is not None:
-        # Not an error: the operator asked for a state the system is already in,
-        # and reporting failure would invite them to try something more drastic.
-        print(f"connection {connection_id} ({row.institution_name}) was already retired")
-        return EXIT_OK
+        # 🔴 Already retired locally does NOT mean finished. `release_at_aggregator`
+        # deletes the credential only after the far end confirms, so a credential
+        # that is still there is the persisted record of a divergence: this side
+        # decided the Item should not exist and never got told it does not.
+        #
+        # Without this the retry `cmd_retire` promises is unreachable -- a re-run
+        # would print "already retired" and exit 0 while the Item kept billing,
+        # which is worse than not offering the retry at all.
+        if not _credential_survives(config, row.credential_ref):
+            print(f"connection {connection_id} ({row.institution_name}) was already retired")
+            return EXIT_OK
+        print(
+            f"connection {connection_id} ({row.institution_name}) is retired here, but its "
+            f"removal at the aggregator was never confirmed. Retrying"
+        )
+        if release_at_aggregator(config, row.credential_ref, connection_id=connection_id):
+            print("  removed at the aggregator; it is no longer billing")
+            return EXIT_OK
+        print(
+            f"  still could not reach the aggregator. Item {row.source_connection_id} may "
+            f"still be billing; run this again when the network is back",
+            file=sys.stderr,
+        )
+        return EXIT_UNHEALTHY
 
     credential_ref = row.credential_ref
     now = now_utc()
@@ -145,12 +178,38 @@ def cmd_retire(config: Config, args: argparse.Namespace) -> int:
 
     print(f"retired connection {connection_id} ({row.institution_name}); its history is kept")
     if not removed:
+        # 🔴 stderr, and it names the item. The convention is that failures go to
+        # stderr, and the log cannot carry the id: a production item id is a ~37
+        # character opaque run, which the formatter blanks. `connections list`
+        # cannot show it either -- the connection is retired. So the one place the
+        # operator can ever see which item is still billing is this line.
         print(
-            "  the aggregator was not reached, so the connection may still be billing there. "
-            "Re-run this command to retry the removal",
+            f"  the aggregator was not reached, so item {row.source_connection_id} may still "
+            f"be billing there. Run `bankmachine connections retire {connection_id}` again to "
+            f"retry the removal",
+            file=sys.stderr,
         )
         return EXIT_UNHEALTHY
     return EXIT_OK
+
+
+def _credential_survives(config: Config, credential_ref: str) -> bool:
+    """Whether this connection's access token is still in the keychain.
+
+    The marker for "we decided the far-end Item should not exist and never
+    confirmed it": the credential is deleted only once removal succeeds, so its
+    presence outlives a failed removal and nothing else has to be written down.
+    A keychain that cannot be read is treated as "still there", because retrying
+    a removal that already happened costs an ITEM_NOT_FOUND and skipping one that
+    did not costs a bill.
+    """
+    try:
+        get_access_token(config, credential_ref)
+    except AccessTokenMissingError:
+        return False
+    except SecretsError:
+        return True
+    return True
 
 
 def release_at_aggregator(
@@ -238,6 +297,7 @@ def connection_rows(conn: SAConnection, *, include_retired: bool) -> list[Connec
             connections.c.status,
             connections.c.retired_at,
             connections.c.credential_ref,
+            connections.c.source_connection_id,
         )
         .select_from(connections.join(institutions))
         .order_by(connections.c.enrolled_at)
@@ -252,6 +312,7 @@ def connection_rows(conn: SAConnection, *, include_retired: bool) -> list[Connec
             status=str(row[3]),
             retired_at=row[4],
             credential_ref=str(row[5]),
+            source_connection_id=str(row[6]),
         )
         for row in conn.execute(statement).all()
     ]

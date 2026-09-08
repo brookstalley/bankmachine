@@ -33,7 +33,7 @@ from bankmachine.cli.connections import (
 )
 from bankmachine.cli.exit_codes import EXIT_ERROR, EXIT_OK, EXIT_UNHEALTHY
 from bankmachine.config import Config
-from bankmachine.connector import LinkSession, LinkToken
+from bankmachine.connector import LinkSession, LinkToken, MalformedResponseError
 from bankmachine.connector.plaid.client import (
     DEFAULT_HOSTED_URL_LIFETIME_SECONDS,
     PlaidClient,
@@ -60,11 +60,15 @@ def source_institution_id_of(item_body: bytes) -> str:
     """
     try:
         return institution_ref_of(item_body)[0]
-    except Exception:  # prawduct:allow prawduct/broad-except -- see the docstring
-        # Deliberately swallowed and deliberately not logged: this runs while
-        # building the message for a failure the operator needs to see, and a
-        # second exception here would replace it. The consequence is bounded to a
-        # placeholder in one line, and the real error still carries its cause.
+    except MalformedResponseError:
+        # Narrow, because that is the only thing `institution_ref_of` raises: it
+        # parses a body and refuses a shape it cannot read. A broad catch here
+        # would also swallow a programming error in the line above, which is
+        # exactly the failure that should reach a traceback.
+        #
+        # Swallowed and not logged, deliberately: this runs while building the
+        # message for a failure the operator needs to see, and a second exception
+        # would replace it. The cost is a placeholder in one line.
         return "unreadable"
 
 
