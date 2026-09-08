@@ -34,6 +34,44 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-08: The exception stops crossing the boundary, and a misspelled bound stops lying
+
+<!-- prawduct: scope=sync-v1 -->
+
+**Why:** the Critic found the fix above had left the leak it named. The change-log entry called out
+a `StatementError` carrying the SELECT as the defect, and the new test pinned `"SELECT" not in
+message` — but only on the date path. Every other failure still rendered
+`f"{type(exc).__name__}: {exc}"` onto `isError`.
+
+**What changed:**
+
+- 🔴 **No exception crosses the boundary.** `api-contract.md` § Error Model: no stack traces, no
+  internal identifiers. A SQLAlchemy error stringifies to the failing SELECT *and its bound
+  parameters* — the schema and the operator's own money, handed to whatever is reading. The detail
+  goes to the log, where redaction applies; the caller gets a stable code and a remedy sentence,
+  which is what that section specifies and what nothing implemented.
+- 🔴 **A test asserted the forbidden behaviour**, again:
+  `test_a_failing_tool_reports_an_error_without_closing_the_session` asserted the raw exception
+  message reached the client. Rewritten against the contract, and its fixture now raises a message
+  containing `SELECT` so the assertion has something real to catch. Second instance in one day of a
+  test pinning a defect; the first was AC-3.2's capability read.
+- **`additionalProperties: False` is advertised on all four tools and was enforced on none.** A
+  misspelled `sinceX` was silently dropped and `spending_summary` returned the ALL-TIME aggregate —
+  byte-identical to the windowed answer the caller thought it had asked for. Unknown keys are now
+  refused, naming the offending key and what the tool accepts, with the permitted set read back off
+  `_tool_definitions()` rather than restated.
+- **`except KeyError` wrapped the handler call**, so a `KeyError` from anywhere beneath the query
+  layer was answered `no tool named 'spending_summary'` as JSON-RPC -32601 — a false statement about
+  a tool that exists. The tool name is resolved before the call now.
+- Tool errors carry a stable code: `invalid_argument` is worth retrying with a corrected call,
+  `internal_error` is not. A consumer could not previously tell those apart.
+- `limit` was narrowed eagerly for all four tools, ahead of the unknown-tool check, with an
+  unreachable fallback. Moved to where it is used.
+
+**Verified through the live MCP channel**, which is what found the original defect and what the
+recorded suite evidence could not speak to: an unknown key returns `invalid_argument` naming it, and
+a real window returns rows.
+
 ## 2026-09-08: Every windowed question was unanswerable, and the checker was told to say so
 
 <!-- prawduct: scope=sync-v1 -->

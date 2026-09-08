@@ -423,10 +423,17 @@ def test_a_failing_tool_reports_an_error_without_closing_the_session(
 
     The operator would see their tool "disappear" rather than fail, which is
     indistinguishable from a broken install. `isError` is the channel for this.
+
+    🔴 And the exception itself does not cross the boundary. This test used to
+    assert that it DID -- `"the datastore went away" in text` -- which pinned
+    the behaviour `api-contract.md` § Error Model forbids: no stack traces and
+    no internal identifiers. It matters most for the failure it was written
+    against: a SQLAlchemy error stringifies to the failing SELECT and its bound
+    parameters, so the leak is the schema plus the operator's own money.
     """
 
     def explode(*args: Any, **kwargs: Any) -> None:
-        raise RuntimeError("the datastore went away")
+        raise RuntimeError("SELECT secret FROM vault -- the datastore went away")
 
     monkeypatch.setattr(query, "list_accounts", explode)
 
@@ -444,8 +451,15 @@ def test_a_failing_tool_reports_an_error_without_closing_the_session(
         ],
     )
 
-    assert replies[1]["result"]["isError"] is True
-    assert "the datastore went away" in replies[1]["result"]["content"][0]["text"]
+    result = replies[1]["result"]
+    assert result["isError"] is True
+    text = result["content"][0]["text"]
+    assert "the datastore went away" not in text, "the raw exception message crossed the boundary"
+    assert "SELECT" not in text, "the failing query crossed the boundary"
+    assert "RuntimeError" not in text, "an internal identifier crossed the boundary"
+    # Still a usable failure: a stable code to branch on and a remedy to act on.
+    assert result["structuredContent"]["error"]["code"] == "internal_error"
+    assert "store status" in text
     # The session survived: the client can still use the server.
     assert "tools" in replies[2]["result"]
 
@@ -838,3 +852,51 @@ def test_the_dispatch_bag_is_typed_object_so_narrowing_cannot_be_skipped() -> No
         f"the dispatch bag is annotated {annotation!r}. Widened to Any, an unparsed JSON "
         f"value reaches the query layer and mypy strict says nothing."
     )
+
+
+def test_an_argument_the_tool_does_not_advertise_is_refused(initialized_config: Config) -> None:
+    """🔴 A misspelled bound must not quietly become no bound at all.
+
+    Every tool publishes `additionalProperties: False`, and until this was
+    enforced an unknown key was dropped: `{"sinceX": "2024-09-09"}` returned the
+    ALL-TIME aggregate, which is byte-identical to the windowed answer the
+    caller believed it had asked for. Nothing in the response said which it was.
+    """
+    _seed(initialized_config)
+
+    result = _call(initialized_config, "spending_summary", {"sinceX": "2024-09-09"})
+
+    assert result["isError"] is True
+    message = result["content"][0]["text"]
+    assert "sinceX" in message, "the refusal does not name the argument it rejected"
+    assert "since" in message and "until" in message, "the refusal does not say what is accepted"
+    assert result["structuredContent"]["error"]["code"] == "invalid_argument"
+
+
+def test_the_permitted_arguments_are_read_from_the_advertised_schema() -> None:
+    """Derived, not restated — a second list is one that stops matching the first."""
+    for definition in mcp._tool_definitions():
+        advertised = frozenset(definition["inputSchema"].get("properties", {}))
+
+        assert mcp._permitted_arguments(definition["name"]) == advertised
+
+
+def test_a_keyerror_beneath_the_query_layer_is_not_reported_as_an_unknown_tool(
+    initialized_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 It said "no tool named 'spending_summary'" — a false statement about a real tool.
+
+    The unknown-tool guard used to wrap the handler CALL, so any `KeyError`
+    raised inside the query layer surfaced as JSON-RPC -32601. A consumer acting
+    on that would stop calling a tool that exists and works.
+    """
+
+    def explode(*args: Any, **kwargs: Any) -> None:
+        raise KeyError("a column the deriver expected")
+
+    monkeypatch.setattr(query, "spending_by_category", explode)
+
+    result = _call(initialized_config, "spending_summary")
+
+    assert result["isError"] is True
+    assert result["structuredContent"]["error"]["code"] == "internal_error"

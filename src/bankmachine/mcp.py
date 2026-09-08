@@ -128,6 +128,22 @@ def _tool_definitions() -> list[dict[str, Any]]:
     ]
 
 
+def _permitted_arguments(name: str) -> frozenset[str]:
+    """The keys one tool advertises. Derived, never restated.
+
+    `additionalProperties: False` is published on every tool, so a caller is
+    entitled to be told when it sends a key that is not there. Read back off
+    `_tool_definitions()` rather than listed again here, because a second list
+    is one that stops matching the first.
+    """
+    for definition in _tool_definitions():
+        if definition["name"] == name:
+            schema: dict[str, Any] = definition["inputSchema"]
+            properties: dict[str, Any] = schema.get("properties", {})
+            return frozenset(properties)
+    return frozenset()
+
+
 class BadArgumentError(ValueError):
     """A tool argument the caller can correct, reported so that it can.
 
@@ -189,7 +205,15 @@ def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> q
     passed at all, so the checker refuses the mistake rather than a test having
     to notice it. Do not widen this back.
     """
-    limit = _whole_number(arguments, "limit", 100)
+    unknown = sorted(set(arguments) - _permitted_arguments(name))
+    if unknown and name in {d["name"] for d in _tool_definitions()}:
+        # 🔴 Silently dropping one is the dangerous outcome, not a strict one:
+        # a misspelled `since` returns the ALL-TIME aggregate, which is
+        # indistinguishable from the window that was asked for.
+        raise BadArgumentError(
+            f"{name} has no argument {unknown[0]!r}. It accepts: "
+            f"{', '.join(sorted(_permitted_arguments(name))) or 'no arguments'}"
+        )
     handlers: dict[str, Callable[..., query.Answer]] = {
         "list_accounts": lambda: query.list_accounts(config),
         "query_transactions": lambda: query.list_transactions(
@@ -197,7 +221,7 @@ def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> q
             since=_calendar_date(arguments, "since"),
             until=_calendar_date(arguments, "until"),
             account_id=_whole_number(arguments, "account_id", None),
-            limit=limit if limit is not None else 100,
+            limit=_whole_number(arguments, "limit", 100) or 100,
         ),
         "spending_summary": lambda: query.spending_by_category(
             config,
@@ -277,33 +301,39 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
         arguments = params.get("arguments") or {}
         if not isinstance(name, str) or not isinstance(arguments, dict):
             return _error(message_id, _INVALID_REQUEST, "tools/call needs a name and arguments")
+        if name not in {definition["name"] for definition in _tool_definitions()}:
+            # Resolved BEFORE the call, so that a `KeyError` raised anywhere
+            # BENEATH the query layer is not answered "no tool named
+            # 'spending_summary'" -- which is a false statement about a tool
+            # that exists, delivered as a protocol error nobody can act on.
+            return _error(message_id, _METHOD_NOT_FOUND, f"no tool named {name!r}")
         try:
             answer = _dispatch_tool(config, name, arguments)
-        except KeyError:
-            return _error(message_id, _METHOD_NOT_FOUND, f"no tool named {name!r}")
         except BadArgumentError as exc:
-            # Ahead of the broad catch, and rendered WITHOUT the exception class
-            # name: the caller is being told how to fix its own call, and
-            # "BadArgumentError: " in front of the sentence is noise to the only
-            # reader who can act on it.
+            # Ahead of the broad catch. The message is the caller's to act on,
+            # so it is rendered without the exception class name -- and it is
+            # safe to send verbatim because this product wrote every word of it.
             logger.info("tool %s refused an argument: %s", name, exc)
-            return _result(
-                message_id,
-                {"content": [{"type": "text", "text": str(exc)}], "isError": True},
-            )
-        except Exception as exc:  # prawduct:allow prawduct/broad-except -- see below
+            return _tool_error(message_id, "invalid_argument", str(exc))
+        except Exception:  # prawduct:allow prawduct/broad-except -- see below
             # 🔴 Broad, because this is the boundary between this product and a
             # client that must not be left hanging: an unhandled exception here
             # would close the pipe mid-session and the operator would see their
             # tool "disappear" rather than fail. Reported as a tool error on the
-            # success channel, which is what `isError` is for, and logged in full.
+            # success channel, which is what `isError` is for.
+            #
+            # 🔴 The exception NEVER crosses the boundary. `api-contract.md`
+            # § Error Model: no stack traces and no internal identifiers. A
+            # SQLAlchemy error stringifies to the failing SELECT and its bound
+            # parameters -- which is the schema, and the operator's own money,
+            # handed to whatever is reading. The detail goes to the log, where
+            # redaction applies; the caller gets a code and a remedy.
             logger.exception("tool %s failed", name)
-            return _result(
+            return _tool_error(
                 message_id,
-                {
-                    "content": [{"type": "text", "text": f"{type(exc).__name__}: {exc}"}],
-                    "isError": True,
-                },
+                "internal_error",
+                f"{name} could not be answered. The failure has been logged; "
+                f"`bankmachine store status` reports whether the datastore is readable.",
             )
         wire = answer.to_wire()
         return _result(
@@ -322,6 +352,24 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
         return _result(message_id, {})
 
     return _error(message_id, _METHOD_NOT_FOUND, f"unsupported method {method!r}")
+
+
+def _tool_error(message_id: Any, code: str, remedy: str) -> dict[str, Any]:
+    """A tool failure, as `api-contract.md` § Error Model specifies it.
+
+    A stable code so a consumer can branch -- `invalid_argument` is worth
+    retrying with a corrected call, `internal_error` is not -- and a remedy
+    sentence for the human. Both forms, because a client that renders only text
+    would otherwise show an empty failure.
+    """
+    return _result(
+        message_id,
+        {
+            "content": [{"type": "text", "text": remedy}],
+            "structuredContent": {"error": {"code": code, "message": remedy}},
+            "isError": True,
+        },
+    )
 
 
 def _result(message_id: Any, result: dict[str, Any]) -> dict[str, Any]:
