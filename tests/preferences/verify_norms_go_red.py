@@ -443,8 +443,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         MCP,
         # `until`, not `since`: the test's negative case is an `until` bound in
         # 2020, so dropping `since` would leave it green.
-        'until=_calendar_date(arguments, "until"),\n            account_id=',
-        "until=None,\n            account_id=",
+        'until = _calendar_date(arguments, "until")',
+        "until = None",
         f"{MCP_TESTS}::test_a_transaction_window_filters_rather_than_failing",
     ),
     (

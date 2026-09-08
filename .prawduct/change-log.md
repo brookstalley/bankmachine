@@ -34,6 +34,43 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-08: Refuse the argument you cannot honour, instead of clamping it quietly
+
+<!-- prawduct: scope=sync-v1 -->
+
+**Why:** a second session driving the tools blind found that the previous round's `limit` fix had
+replaced one silent answer with another, and that three more inputs returned a confident empty
+result. Its framing is the one worth keeping: a clamp answers a question nobody asked.
+
+**What changed:**
+
+- 🔴 **`limit: 0` was served as one row.** The previous fix stopped it meaning 100; it then meant 1,
+  which is *worse* — a single row reads as a plausible complete answer to a narrow question, where a
+  hundred looked obviously wrong. Out-of-range values are refused now, not clamped, which is the
+  rule the unknown-key refusal already follows.
+- **The row ceiling is declared and enforced at the boundary.** `query.MAX_ROWS` (1000) was an
+  unnamed literal inside a `min()`, so a caller asking for 9999 silently got a page. It is named
+  where it is enforced and quoted in the refusal. *(A tester read the absence of a visible cap as
+  there being none; the cap existed, but nothing said so, which is the same defect from the
+  caller's side.)*
+- 🔴 **A window whose `until` precedes its `since` is refused.** It selects nothing, and "you spent
+  nothing" is an entirely ordinary thing for a month to be — so the one slip a real person makes,
+  swapping two bounds, returned a believable wrong answer. There is no window a transposed pair
+  could mean, so there is nothing to guess at.
+- `account_id` below 1 is refused; row ids start at 1, so 0 and negatives can only be a mistake.
+- The window and both integers are narrowed **once**, ahead of the handler table. Referenced inside
+  the lambdas they would re-parse per call and raise a refusal twice.
+
+**A test was removed rather than kept**: `test_a_limit_of_zero_is_not_silently_a_hundred` asserted
+that `limit: 0` serves one row. That premise is superseded — 0 is refused now, which is strictly
+stricter — and the guarantee it protected is carried by a range test covering 0, negatives and the
+ceiling together.
+
+**Verified, and not fixed, because neither is ours:** `merchant_name: "FUN"` for `SparkFun` is what
+the aggregator sends (`name` and `merchant_name` both read from the archived body); so is the
+`GUSTO PAY` row whose description says "Credit" while its `amount` and its own
+`personal_finance_category` both say money leaving. Sandbox fixture data, faithfully stored.
+
 ## 2026-09-08: The exception stops crossing the boundary, and a misspelled bound stops lying
 
 <!-- prawduct: scope=sync-v1 -->

@@ -184,7 +184,14 @@ def _calendar_date(arguments: dict[str, object], field: str) -> date | None:
         ) from None
 
 
-def _whole_number(arguments: dict[str, object], field: str, default: int | None) -> int | None:
+def _whole_number(
+    arguments: dict[str, object],
+    field: str,
+    default: int | None,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int | None:
     """Same narrowing for the integer arguments, and for the same reason.
 
     `int(...)` on whatever arrived would turn a caller's mistake into a
@@ -197,7 +204,32 @@ def _whole_number(arguments: dict[str, object], field: str, default: int | None)
     # bool is an int in Python, and `true` is a JSON value a caller can send.
     if isinstance(raw, bool) or not isinstance(raw, int):
         raise BadArgumentError(f"{field} must be a whole number, got {type(raw).__name__}")
+    if minimum is not None and raw < minimum:
+        # 🔴 Refused, not clamped. A silent clamp answers a question nobody
+        # asked: `limit: 0` served one row, which reads as a plausible complete
+        # answer to a narrow question -- worse than an obviously wrong hundred.
+        raise BadArgumentError(f"{field} must be at least {minimum}, got {raw}")
+    if maximum is not None and raw > maximum:
+        raise BadArgumentError(f"{field} must be at most {maximum}, got {raw}")
     return raw
+
+
+def _window(arguments: dict[str, object]) -> tuple[date | None, date | None]:
+    """Both bounds, refused together if they contradict each other.
+
+    🔴 An `until` before its `since` selects nothing, and "nothing" is a
+    believable answer to a spending question -- so a transposed pair, which is
+    an ordinary slip, returns a confident zero rather than a complaint. There is
+    no window it could mean, so there is nothing to guess at.
+    """
+    since = _calendar_date(arguments, "since")
+    until = _calendar_date(arguments, "until")
+    if since is not None and until is not None and until < since:
+        raise BadArgumentError(
+            f"until ({until.isoformat()}) is before since ({since.isoformat()}), "
+            f"so the window selects nothing. Did the two get swapped?"
+        )
+    return since, until
 
 
 def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> query.Answer:
@@ -219,20 +251,21 @@ def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> q
             f"{name} has no argument {', '.join(repr(key) for key in unknown)}. It accepts: "
             f"{', '.join(sorted(_permitted_arguments(name))) or 'no arguments'}"
         )
+    # Narrowed once, ahead of the handler table: referenced inside the lambdas
+    # these would re-parse on every call, and a refusal would be raised twice.
+    since, until = _window(arguments)
+    limit = _whole_number(arguments, "limit", 100, minimum=1, maximum=query.MAX_ROWS)
+    account_id = _whole_number(arguments, "account_id", None, minimum=1)
     handlers: dict[str, Callable[..., query.Answer]] = {
         "list_accounts": lambda: query.list_accounts(config),
         "query_transactions": lambda: query.list_transactions(
             config,
-            since=_calendar_date(arguments, "since"),
-            until=_calendar_date(arguments, "until"),
-            account_id=_whole_number(arguments, "account_id", None),
-            limit=_limit if (_limit := _whole_number(arguments, "limit", 100)) is not None else 100,
+            since=since,
+            until=until,
+            account_id=account_id,
+            limit=limit if limit is not None else 100,
         ),
-        "spending_summary": lambda: query.spending_by_category(
-            config,
-            since=_calendar_date(arguments, "since"),
-            until=_calendar_date(arguments, "until"),
-        ),
+        "spending_summary": lambda: query.spending_by_category(config, since=since, until=until),
         "get_pipeline_health": lambda: query.pipeline_health(config),
     }
     handler = handlers.get(name)

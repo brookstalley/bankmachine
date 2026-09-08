@@ -50,6 +50,11 @@ from bankmachine.store.types import UtcInstant, now_utc
 #: not yet a story and two consecutive ones are.
 STALE_AFTER = timedelta(hours=36)
 
+#: The most rows any single query returns. A ceiling rather than a preference:
+#: a caller that asks for everything is usually an agent with a context window,
+#: and one oversized answer ends the conversation it was meant to inform.
+MAX_ROWS = 1000
+
 #: The warning vocabulary the API contract fixes. Named here as a tuple rather
 #: than left to string literals at each site, because a warning nobody spells the
 #: same way twice is a warning a consumer cannot branch on.
@@ -388,7 +393,7 @@ def list_transactions(
             .select_from(transactions.join(accounts))
             .where(transactions.c.removed_at.is_(None))
             .order_by(transactions.c.posted_date.desc(), transactions.c.transaction_id.desc())
-            .limit(max(1, min(limit, 1000)))
+            .limit(max(1, min(limit, MAX_ROWS)))
         )
         if since is not None:
             statement = statement.where(transactions.c.posted_date >= since)

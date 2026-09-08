@@ -920,17 +920,48 @@ def test_every_unrecognized_argument_is_named_at_once(initialized_config: Config
     assert "sinceX" in message and "untilX" in message
 
 
-def test_a_limit_of_zero_is_not_silently_a_hundred(initialized_config: Config) -> None:
-    """`or 100` is truthiness on an int, and 0 is a number a caller can send.
+def test_a_limit_outside_the_servable_range_is_refused_not_clamped(
+    initialized_config: Config,
+) -> None:
+    """🔴 A clamp answers a question nobody asked, and says nothing about it.
 
-    The query layer clamps with `max(1, min(limit, 1000))`, so 0 means one row.
-    Reading it as "unset" instead hands back a hundred -- a different answer to
-    the question that was asked, with nothing saying so.
+    `limit: 0` served one row, which reads as a plausible complete answer to a
+    narrow question — worse than the obviously-wrong hundred it replaced. Above
+    the ceiling is the same problem pointed the other way: a caller asking for
+    everything gets a page and no word that it is one.
     """
     _seed(initialized_config)
 
-    rows = _call(initialized_config, "query_transactions", {"limit": 0})["structuredContent"][
-        "rows"
-    ]
+    for value in (0, -5, query.MAX_ROWS + 1):
+        result = _call(initialized_config, "query_transactions", {"limit": value})
 
-    assert len(rows) == 1, "limit=0 was read as unset and served the default page"
+        assert result["isError"] is True, f"limit={value} was answered rather than refused"
+        assert result["structuredContent"]["error"]["code"] == "invalid_argument"
+        assert "limit" in result["content"][0]["text"]
+
+
+def test_a_window_whose_end_precedes_its_start_is_refused(initialized_config: Config) -> None:
+    """🔴 The slip a person actually makes, whose wrong answer is believable.
+
+    Swapping the two bounds selects nothing, and "you spent nothing" is an
+    entirely ordinary thing for a month to be. There is no window a transposed
+    pair could mean, so there is nothing to guess at and nothing to clamp to.
+    """
+    _seed(initialized_config)
+
+    for tool in ("spending_summary", "query_transactions"):
+        result = _call(initialized_config, tool, {"since": "2026-07-31", "until": "2026-07-01"})
+
+        assert result["isError"] is True, f"{tool} answered a backwards window"
+        assert result["structuredContent"]["error"]["code"] == "invalid_argument"
+        assert "swapped" in result["content"][0]["text"]
+
+
+def test_an_account_id_below_one_is_refused(initialized_config: Config) -> None:
+    """Row ids start at 1, so 0 and negatives name nothing and can only be a mistake."""
+    _seed(initialized_config)
+
+    result = _call(initialized_config, "query_transactions", {"account_id": 0})
+
+    assert result["isError"] is True
+    assert "account_id" in result["content"][0]["text"]
