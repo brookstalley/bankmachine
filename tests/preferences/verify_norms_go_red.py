@@ -770,6 +770,21 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         f"{SYNC_RUN_TESTS}::test_a_run_that_hits_the_page_ceiling_says_it_stopped_short",
     ),
     (
+        "AC-1.3a: the granted window is measured only once history is complete",
+        SYNC_RUN,
+        "    if outcome.historical_complete:",
+        "    if True:",
+        f"{SYNC_RUN_TESTS}::"
+        "test_the_granted_window_is_not_computed_before_the_backfill_completes",
+    ),
+    (
+        "AC-11.8: a shortfall against the requested window is recorded, not swallowed",
+        SYNC_RUN,
+        "    if requested is not None and granted < int(requested):",
+        "    if False:",
+        f"{SYNC_RUN_TESTS}::test_a_shortfall_against_the_requested_window_is_reported",
+    ),
+    (
         "AC-10.1: a public token never reaches a repr",
         CONNECTOR_PACKAGE,
         '        held = "<redacted>" if self.public_token is not None else None',

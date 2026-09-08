@@ -614,3 +614,90 @@ def test_a_bounded_run_resumes_from_where_it_stopped(
 
     assert FakeClient.calls[0] == "c2", "the resumed run refetched from the beginning"
     assert len(_txn_rows(cli_env)) == 3
+
+
+# --------------------------------------------------------------------------
+# AC-1.3a / AC-11.8 — the granted window, measurable for the first time
+# --------------------------------------------------------------------------
+
+
+def _granted(config: Config) -> int | None:
+    with reader_connection(config) as conn:
+        value = conn.execute(select(connections.c.granted_history_days)).scalar_one()
+    return None if value is None else int(value)
+
+
+def test_the_granted_window_is_not_computed_before_the_backfill_completes(
+    cli_env: Config,
+) -> None:
+    """🔴 The confidently-wrong number this whole gate exists to prevent.
+
+    At INITIAL_UPDATE_COMPLETE the backfill is still arriving, so the oldest
+    transaction present is the oldest one *so far*. Measuring there records a
+    shortfall that does not exist — well-formed, plausible, and wrong — and
+    AC-11.8 would then report a gap against history the operator actually has.
+    """
+    FakeClient.pages = [
+        _page(added=[_txn("t1")], next_cursor="c1", status="INITIAL_UPDATE_COMPLETE")
+    ]
+
+    assert run(["sync", "run"]) == 0
+
+    assert _granted(cli_env) is None, "a window was measured against a backfill in flight"
+
+
+def test_the_granted_window_is_recorded_once_history_is_complete(cli_env: Config) -> None:
+    """AC-1.3a: null stops meaning "not yet known" only at this point."""
+    old = "2025-09-08"
+    entry = _txn("t1")
+    entry["date"] = old
+    FakeClient.pages = [
+        _page(added=[entry], next_cursor="c1", status="HISTORICAL_UPDATE_COMPLETE")
+    ]
+
+    assert run(["sync", "run"]) == 0
+
+    granted = _granted(cli_env)
+    assert granted is not None
+    # A year of history, give or take the day the test runs on.
+    assert 360 <= granted <= 372, granted
+    with reader_connection(cli_env) as conn:
+        start = conn.execute(select(sync_state.c.history_start_date)).scalar_one()
+    assert str(start) == old
+
+
+def test_a_shortfall_against_the_requested_window_is_reported(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """🔴 AC-11.8: a shortfall is a recorded gap, never a returned window read as complete.
+
+    The connection asked for 730 days and got about one year. That difference is
+    the operator's one chance to act — widening it means re-linking (AC-1.2), and
+    they will not get another prompt.
+    """
+    entry = _txn("t1")
+    entry["date"] = "2025-09-08"
+    FakeClient.pages = [
+        _page(added=[entry], next_cursor="c1", status="HISTORICAL_UPDATE_COMPLETE")
+    ]
+
+    assert run(["sync", "run"]) == 0
+
+    out = capsys.readouterr().out
+    assert "gap" in out
+    assert "re-linking" in out
+
+
+def test_a_connection_with_no_transactions_leaves_the_window_unmeasured(
+    cli_env: Config,
+) -> None:
+    """Zero would claim a measurement nobody made.
+
+    Nothing was granted that can be counted, and a zero here would show as a
+    730-day shortfall on an account that simply has no activity.
+    """
+    FakeClient.pages = [_page(next_cursor="c1", status="HISTORICAL_UPDATE_COMPLETE")]
+
+    assert run(["sync", "run"]) == 0
+
+    assert _granted(cli_env) is None

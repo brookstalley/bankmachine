@@ -25,7 +25,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.engine import Connection as SAConnection
 
 from bankmachine.cli.exit_codes import EXIT_OK, EXIT_UNHEALTHY
@@ -38,8 +38,14 @@ from bankmachine.logging_setup import get_logger
 from bankmachine.secrets import SecretsError, get_access_token, get_plaid_secret
 from bankmachine.store.connection import DatastoreMissingError, inspect
 from bankmachine.store.derivation import DerivationError, apply_response
-from bankmachine.store.engine import reader_connection, writer_connection
-from bankmachine.store.schema import connections, institutions, sync_state
+from bankmachine.store.engine import reader_connection, transaction, writer_connection
+from bankmachine.store.schema import (
+    accounts,
+    connections,
+    institutions,
+    sync_state,
+    transactions,
+)
 from bankmachine.store.types import UtcInstant, now_utc
 
 logger = get_logger("cli.sync_run")
@@ -79,6 +85,8 @@ class ConnectionOutcome:
     reason: str | None = None
     still_materializing: bool = False
     historical_complete: bool = False
+    granted_history_days: int | None = None
+    history_shortfall_days: int | None = None
 
 
 @dataclass(slots=True)
@@ -283,8 +291,79 @@ def _sync_one(
     except (ConnectorError, DerivationError) as exc:
         return _degrade(config, outcome, type(exc).__name__, str(exc))
 
+    if outcome.historical_complete:
+        _record_granted_window(config, connection_id, outcome)
     _record_success(config, connection_id)
     return outcome
+
+
+def _record_granted_window(
+    config: Config, connection_id: int, outcome: ConnectionOutcome
+) -> None:
+    """🔴 AC-1.3a: what the aggregator ACTUALLY granted, measurable for the first time.
+
+    **Only at `HISTORICAL_UPDATE_COMPLETE`, and that gate is the whole point.**
+    At `INITIAL_UPDATE_COMPLETE` the backfill is still arriving, so the oldest
+    transaction present is the oldest one *so far* -- computing the window there
+    records a shortfall that does not exist. It would be a well-formed, plausible,
+    wrong number, which is the failure class this product was built to prevent,
+    and AC-11.8 would then report a gap against history the operator actually has.
+
+    The window is measured from the oldest transaction the connection returned to
+    the day it was measured. A connection with no transactions at all leaves it
+    null: nothing was granted that can be counted, and zero would claim a
+    measurement nobody made.
+    """
+    with reader_connection(config) as conn:
+        oldest = conn.execute(
+            select(func.min(transactions.c.posted_date))
+            .select_from(transactions.join(accounts))
+            .where(accounts.c.connection_id == connection_id)
+        ).scalar_one_or_none()
+        requested = conn.execute(
+            select(connections.c.requested_history_days).where(
+                connections.c.connection_id == connection_id
+            )
+        ).scalar_one_or_none()
+    if oldest is None:
+        logger.info(
+            "connection %d completed its backfill with no transactions, so there is no "
+            "granted window to measure",
+            connection_id,
+        )
+        return
+
+    now = now_utc()
+    granted = (now.date() - oldest).days
+    with writer_connection(config) as conn, transaction(conn):
+        conn.execute(
+            update(connections)
+            .where(connections.c.connection_id == connection_id)
+            .values(granted_history_days=granted, updated_at=now)
+        )
+        conn.execute(
+            update(sync_state)
+            .where(
+                sync_state.c.connection_id == connection_id,
+                sync_state.c.domain == TRANSACTIONS_DOMAIN,
+            )
+            .values(history_start_date=oldest, updated_at=now)
+        )
+
+    outcome.granted_history_days = granted
+    if requested is not None and granted < int(requested):
+        # AC-11.8: the shortfall is recorded as a known gap rather than the
+        # returned window being treated as complete. Logged as well as stored,
+        # because the operator's one chance to act on it -- re-linking with a
+        # different expectation -- is now.
+        outcome.history_shortfall_days = int(requested) - granted
+        logger.warning(
+            "connection %d granted %d days of history against %d requested: a %d-day gap",
+            connection_id,
+            granted,
+            int(requested),
+            outcome.history_shortfall_days,
+        )
 
 
 def _persist(config: Config, fetched: FetchedResponse, connection_id: int) -> None:
@@ -391,6 +470,12 @@ def _report(run: RunOutcome) -> None:
                 f"  {outcome.connection_id}  {outcome.institution_name}: "
                 f"{outcome.pages} {pages} applied{more}"
             )
+            if outcome.history_shortfall_days:
+                print(
+                    f"       🔴 {outcome.granted_history_days} days of history granted "
+                    f"against what was requested — a {outcome.history_shortfall_days}-day "
+                    f"gap. It cannot be widened without re-linking (AC-1.2)"
+                )
     degraded = sum(1 for o in run.outcomes if o.degraded)
     if degraded:
         print(f"\n{degraded} of {len(run.outcomes)} connections could not be synced")
