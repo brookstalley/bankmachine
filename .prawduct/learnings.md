@@ -320,6 +320,19 @@ argument for a live rule living in both places rather than only in its home.
   verification half at all — correctly, since a clean pass would have been read as confirming a fix
   it could not have exercised. After the operator relaunched it, the same call returned 500 and the
   round proceeded.
+- 🔴 *2026-09-08, the sharpest form: a stale tree generated work for a human out of a closed
+  decision.* The testing session's briefing fired the governance advisory about `change-log.md`
+  exceeding a 100KB ceiling, and it relayed that to the operator as a decision they needed to make.
+  The operator had settled it hours earlier — `b48ff1d` raised the ceiling to 150KB and recorded why
+  trimming was unavailable. The briefing read `oversized_file_threshold_kb: 100` from the worktree's
+  own `project-state.yaml` while `develop` said `150`. Verified: `git show
+  testing/current:.prawduct/project-state.yaml` gives 100, `develop` gives 150, and
+  `testing/current` is 11 behind with 0 ahead.
+  **Why this instance beats the inert one below: it fails OUTWARD, at a person, and it looks like
+  diligence.** A session that cannot reach a rule is silent and harms only itself; a session
+  reasoning from stale governance actively asks a human to re-decide something they closed, and the
+  ask is indistinguishable from good practice. The tell is not in the question's wording — it is
+  that the tree asking it was old.
 - *2026-09-08, the rule about the rule.* The testing session pointed out that the amended guidance
   above was not reachable from its worktree at all: `testing/current` sits at `f6e81f2`, and both the
   original rule and its amendment landed on `develop` afterwards. Verified — `git show
