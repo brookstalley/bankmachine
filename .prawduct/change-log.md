@@ -107,6 +107,21 @@ reports whether the datastore is readable". A false statement about a caller mis
 outcome `InvertedWindowError` exists to prevent. Reasoned by the Critic from the exception surface,
 then reproduced, then fixed and pinned by a case that survives a future iterative JSON decoder.
 
+**The same defect class was one layer out, in code this branch never touched, and it is fixed
+here too.** `_read_messages` caught only `json.JSONDecodeError` around its `json.loads`, so a
+deeply nested JSON-RPC frame ended `serve()` outright — the operator's tool disappearing
+mid-session, which is what `cmd_mcp` exists to prevent, arriving one frame in rather than at
+startup. Reproduced, then fixed. A second review pass then named the *adjacent* door: the bytes are
+decoded by the **read**, one step before any parsing, so invalid UTF-8 raised `UnicodeDecodeError`
+during iteration and escaped the same way. 🔴 **Worth recording as a pattern rather than as two
+bugs: the class search was run and stopped at `json.loads`.** The read is now guarded too, and
+because reporting-and-continuing is only right while the stream advances, a consecutive-failure
+ceiling sits beside it — a hung server is less diagnosable than a dead one, and removing that
+ceiling makes the test suite hang rather than fail, which is the shape the ceiling is there for.
+The counter resets on every good read: counting a session's lifetime rather than a run would end a
+long-lived session on its third bad frame ever. That reset survived its first mutation, because no
+test recovered more than once; there is now one that does.
+
 **Verified against the real sandbox store**, not only the fixture: account 4 over
 2024-01-01..2026-12-31 still returns 100 of 144 truncated, and now pages to 144 distinct rows in two
 pages, the last carrying no cursor and no `rows_truncated` warning. August 2026 still reports

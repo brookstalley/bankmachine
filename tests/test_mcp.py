@@ -15,7 +15,7 @@ import subprocess
 import sys
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import IO, Any, cast
 from unittest import mock
 
 import pytest
@@ -256,6 +256,156 @@ def test_an_unparseable_line_is_answered_rather_than_ignored(initialized_config:
 
     reply = json.loads(stdout.getvalue())
     assert reply["error"]["code"] == -32700
+
+
+def _undecodable() -> UnicodeDecodeError:
+    """What a read raises when the bytes behind it are not UTF-8."""
+    return UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+
+class _ScriptedStream:
+    """A stream serving a fixed sequence of reads, raising where the script says.
+
+    🔴 A stub rather than a real `TextIOWrapper`, because the property under test
+    is *the session continues*, and whether a real decoder can advance past bad
+    bytes is CPython's business rather than this server's. The last test in this
+    group covers the real decoder for the half that does reach an operator.
+
+    Deliberately not a `StringIO` subclass: the read loop calls `readline` and
+    nothing else, so the smallest object that can be wrong in the right way is a
+    plain one, and inheriting would let a method nobody named answer for it.
+    """
+
+    def __init__(self, *script: str | UnicodeDecodeError) -> None:
+        self._script = list(script)
+
+    def readline(self) -> str:
+        if not self._script:
+            return ""
+        item = self._script.pop(0)
+        if isinstance(item, UnicodeDecodeError):
+            raise item
+        return item
+
+
+class _NeverDecodes:
+    """A stream that never advances and never ends — the case the ceiling exists for."""
+
+    def readline(self) -> str:
+        raise _undecodable()
+
+
+def _as_stream(stub: _ScriptedStream | _NeverDecodes) -> IO[str]:
+    """The stub, at the type `serve` declares. `readline` is the whole surface used."""
+    return cast("IO[str]", stub)
+
+
+def _ping(message_id: int) -> str:
+    return json.dumps({"jsonrpc": "2.0", "id": message_id, "method": "ping", "params": {}}) + "\n"
+
+
+def _replies(stdout: io.StringIO) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
+
+
+def test_a_frame_that_is_not_utf8_is_answered_and_the_session_survives(
+    initialized_config: Config,
+) -> None:
+    """🔴 The decode failure one step EARLIER than the parse, through the adjacent door.
+
+    The bytes are decoded by the READ, before any JSON is looked at, so the
+    parse guards cannot reach it — and an uncaught `UnicodeDecodeError` ends
+    `serve()` exactly as the nested-frame case did, with the operator's tool
+    vanishing mid-session and nothing said.
+
+    The second reply is the assertion that carries the weight: a loop that
+    reported the bad frame and then stopped would satisfy the first half, and
+    the symptom a person reports is the disappearance rather than the refusal.
+    """
+    stdout = io.StringIO()
+
+    mcp.serve(
+        initialized_config,
+        stdin=_as_stream(_ScriptedStream(_undecodable(), _ping(2))),
+        stdout=stdout,
+    )
+
+    replies = _replies(stdout)
+    assert len(replies) == 2, "the session ended instead of carrying on past the bad frame"
+    assert replies[0]["error"]["code"] == mcp._PARSE_ERROR
+    assert replies[0]["error"]["message"] == "could not read a message: it is not valid UTF-8"
+    assert replies[1]["id"] == 2 and replies[1]["result"] == {}
+
+
+def test_the_give_up_ceiling_counts_consecutive_failures_not_lifetime_ones(
+    initialized_config: Config,
+) -> None:
+    """🔴 The word "consecutive" in the ceiling, which nothing else pins.
+
+    A counter that never reset would end a long-lived session on its third bad
+    frame ever — three failures spread over hours, each one recovered from — and
+    the operator would see the tool disappear for no reason they could connect
+    to anything. The ceiling exists to stop a spin, not to ration a session.
+
+    Written after a mutation survived: removing the reset left every other test
+    in this group green, because none of them recovered more than once.
+    """
+    stdout = io.StringIO()
+    script: list[str | UnicodeDecodeError] = []
+    for message_id in range(mcp._MAX_UNDECODABLE_FRAMES + 2):
+        script += [_undecodable(), _ping(message_id)]
+
+    mcp.serve(initialized_config, stdin=_as_stream(_ScriptedStream(*script)), stdout=stdout)
+
+    replies = _replies(stdout)
+    answered = [r["id"] for r in replies if "result" in r]
+    assert answered == list(range(mcp._MAX_UNDECODABLE_FRAMES + 2)), (
+        "the session gave up part-way, so the failure counter is counting a lifetime "
+        "rather than a run"
+    )
+
+
+def test_a_stream_that_never_decodes_is_given_up_on_rather_than_spun_on(
+    initialized_config: Config,
+) -> None:
+    """🔴 The one outcome worse than the bug above: a server that hangs.
+
+    Reporting and carrying on is right only while the stream advances. Measured
+    behaviour is that a real one reports EOF after a decode failure, so the loop
+    ends on its own — but a stream that neither advanced nor ended would be spun
+    on forever, and a hung server is less diagnosable than a dead one.
+    """
+    stdout = io.StringIO()
+
+    mcp.serve(initialized_config, stdin=_as_stream(_NeverDecodes()), stdout=stdout)
+
+    replies = _replies(stdout)
+    assert len(replies) == mcp._MAX_UNDECODABLE_FRAMES
+    assert all(r["error"]["code"] == mcp._PARSE_ERROR for r in replies)
+
+
+def test_a_real_stream_of_invalid_bytes_does_not_take_the_server_down(
+    initialized_config: Config,
+) -> None:
+    """The same case against the real decoder rather than the stubs above.
+
+    The stubs prove the loop takes a recovery when one is offered; this proves
+    the thing that actually reaches an operator — invalid bytes on a real
+    `TextIOWrapper` — is answered rather than raised. What that decoder does
+    with the frames BEHIND the bad one is CPython's business, so nothing here
+    asserts it.
+    """
+    stdout = io.StringIO()
+
+    mcp.serve(
+        initialized_config,
+        stdin=io.TextIOWrapper(io.BytesIO(b"\xff\xfe not utf-8\n"), encoding="utf-8"),
+        stdout=stdout,
+    )
+
+    replies = _replies(stdout)
+    assert replies, "the server raised instead of answering"
+    assert replies[0]["error"]["message"] == "could not read a message: it is not valid UTF-8"
 
 
 def test_a_frame_nested_too_deeply_is_answered_and_the_session_survives(

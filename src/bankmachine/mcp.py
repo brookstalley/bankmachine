@@ -560,8 +560,40 @@ def serve(config: Config, *, stdin: IO[str], stdout: IO[str]) -> int:
     return EXIT_OK
 
 
+#: How many consecutive undecodable frames the read loop reports before it gives
+#: up. 🔴 A floor under an assumption, not a tuning knob: reporting and carrying
+#: on is right if the stream advances, and measurement says it does — after a
+#: decode failure it reports EOF. If some stream neither advanced nor ended,
+#: carrying on would spin, and a HUNG server is less diagnosable than a dead
+#: one, which is the only outcome worse than the bug this guard sits beside.
+_MAX_UNDECODABLE_FRAMES = 3
+
+
 def _read_messages(stdin: IO[str], stdout: IO[str]) -> Iterator[dict[str, Any]]:
-    for line in stdin:
+    undecodable = 0
+    while True:
+        try:
+            line = stdin.readline()
+        except UnicodeDecodeError:
+            # 🔴 The decode happens in the READ, one step before this function's
+            # own parsing, so the `try` further down cannot reach it — and an
+            # uncaught one escapes this generator and ends `serve()`, which is
+            # the operator's tool disappearing mid-session. Same outcome as an
+            # undecodable JSON body, through the adjacent door: found by review
+            # naming the class after only the `json.loads` half of it was fixed.
+            undecodable += 1
+            _write(
+                stdout,
+                _error(None, _PARSE_ERROR, "could not read a message: it is not valid UTF-8"),
+            )
+            if undecodable >= _MAX_UNDECODABLE_FRAMES:
+                return
+            continue
+        undecodable = 0
+        if not line:
+            # End of stream. The client closed the pipe, which is how a session
+            # ends normally.
+            return
         line = line.strip()
         if not line:
             continue
