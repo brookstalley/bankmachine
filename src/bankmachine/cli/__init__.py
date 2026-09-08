@@ -8,6 +8,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from bankmachine import mcp as mcp_commands
 from bankmachine.cli import connections as connections_commands
 from bankmachine.cli import connector as connector_commands
 from bankmachine.cli import enroll as enroll_commands
@@ -42,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     connector_commands.add_arguments(subparsers)
     enroll_commands.add_arguments(subparsers)
     connections_commands.add_arguments(subparsers)
+    mcp_commands.add_arguments(subparsers)
     sync_commands.add_arguments(subparsers)
     return parser
 

@@ -66,6 +66,9 @@ SYNC_CURSOR_TESTS = "tests/connector/test_sync_cursor.py"
 TXN_TESTS = "tests/connector/test_transaction_derivers.py"
 SYNC_RUN = pathlib.Path("src/bankmachine/cli/sync_run.py")
 SYNC_RUN_TESTS = "tests/cli/test_sync_run.py"
+QUERY = pathlib.Path("src/bankmachine/query.py")
+MCP = pathlib.Path("src/bankmachine/mcp.py")
+MCP_TESTS = "tests/test_mcp.py"
 
 #: (description, file, text to replace, replacement, the test that must go red)
 CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
@@ -783,6 +786,56 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "    if requested is not None and granted < int(requested):",
         "    if False:",
         f"{SYNC_RUN_TESTS}::test_a_shortfall_against_the_requested_window_is_reported",
+    ),
+    (
+        "the MCP envelope: every answer names the environment it came from",
+        QUERY,
+        '            "environment": self.environment,',
+        '            "environment": "unknown",',
+        f"{MCP_TESTS}::test_every_answer_names_the_environment_it_came_from",
+    ),
+    (
+        "AC-11.8: a history shortfall rides the success path as a warning",
+        QUERY,
+        "        elif _is_short(granted, requested):",
+        "        elif False:",
+        f"{MCP_TESTS}::test_a_shortfall_rides_the_success_path_as_a_warning",
+    ),
+    (
+        "AC-1.3a: an unmeasured window is not reported as no shortfall",
+        QUERY,
+        "        if granted is None and last_success is not None:",
+        "        if False:",
+        f"{MCP_TESTS}::test_an_unmeasured_window_is_reported_differently_from_no_shortfall",
+    ),
+    (
+        "AC-4.2: spending sums outflow only, never net movement",
+        QUERY,
+        "                transactions.c.amount_minor < 0,",
+        "                transactions.c.amount_minor != 0,",
+        f"{MCP_TESTS}::test_spending_sums_outflow_only_and_reports_magnitudes",
+    ),
+    (
+        "MCP: the client's protocol version is honoured when recognized",
+        MCP,
+        "            if isinstance(requested, str) and requested in SUPPORTED_PROTOCOL_VERSIONS",
+        "            if False",
+        f"{MCP_TESTS}::test_the_clients_protocol_version_is_honoured_when_recognized",
+    ),
+    (
+        "AC-2.1: the derivation transaction rolls back a cursor it already wrote",
+        ENGINE,
+        '        conn.exec_driver_sql("ROLLBACK")',
+        '        conn.exec_driver_sql("COMMIT")',
+        f"{SYNC_CURSOR_TESTS}::"
+        "test_a_cursor_written_then_abandoned_does_not_survive_the_transaction",
+    ),
+    (
+        "AC-2.1: a bounded run does not stamp last_success_at",
+        SYNC_RUN,
+        "    _record_success(config, connection_id, complete=not outcome.stopped_short)",
+        "    _record_success(config, connection_id, complete=True)",
+        f"{SYNC_RUN_TESTS}::test_a_bounded_run_does_not_claim_the_connection_is_up_to_date",
     ),
     (
         "AC-10.1: a public token never reaches a repr",

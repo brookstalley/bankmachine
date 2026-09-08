@@ -24,6 +24,7 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from sqlalchemy import func, select, update
 from sqlalchemy.engine import Connection as SAConnection
@@ -293,7 +294,12 @@ def _sync_one(
 
     if outcome.historical_complete:
         _record_granted_window(config, connection_id, outcome)
-    _record_success(config, connection_id)
+    # 🔴 A run stopped by the page ceiling has NOT finished, and stamping it
+    # `active` with a fresh `last_success_at` would tell every later reader --
+    # the freshness warning in `query.py` most of all -- that this connection is
+    # up to date. It is not: `has_more` was still true. The status is what a
+    # consumer trusts, so it must not claim more than the run did.
+    _record_success(config, connection_id, complete=not outcome.stopped_short)
     return outcome
 
 
@@ -436,19 +442,29 @@ def _degrade(
     return outcome
 
 
-def _record_success(config: Config, connection_id: int) -> None:
+def _record_success(config: Config, connection_id: int, *, complete: bool) -> None:
+    """Clear the error state, and stamp `last_success_at` only on a complete run.
+
+    🔴 The two halves are separated deliberately. A bounded run really did clear
+    whatever was wrong -- it fetched pages successfully -- so leaving the
+    connection `degraded` would be false. But `last_success_at` is what the
+    freshness warning reads, and advancing it on a run that stopped mid-history
+    would report a connection as current when it is behind.
+    """
     now: UtcInstant = now_utc()
+    values: dict[str, Any] = {
+        "status": "active",
+        "last_error_code": None,
+        "last_error_at": None,
+        "updated_at": now,
+    }
+    if complete:
+        values["last_success_at"] = now
     with writer_connection(config) as conn:
         conn.execute(
             update(connections)
             .where(connections.c.connection_id == connection_id)
-            .values(
-                status="active",
-                last_success_at=now,
-                last_error_code=None,
-                last_error_at=None,
-                updated_at=now,
-            )
+            .values(**values)
         )
 
 

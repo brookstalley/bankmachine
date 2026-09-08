@@ -172,7 +172,8 @@ contact.
   | `connections list` | reader | step 3 — **built** 2026-09-07 |
   | `connections retire` | writer (network) | step 3 — **built** 2026-09-07; local retirement plus `POST /item/remove` |
   | `repair` | writer | step 6 |
-  | `sync run` | writer | step 4 |
+  | `sync run` | writer (network) | step 4 — **built** 2026-09-08 |
+  | `mcp` | reader | step 7 — **built** 2026-09-08; stdio JSON-RPC, read-only |
   | `import` | writer | step 10 |
 
   `sync shell` was planned as the one command whose role is a choice rather than a property of the

@@ -208,6 +208,16 @@ supply.
 
 `connections.credential_ref` holds **a keychain lookup handle, never a token** (`data-model.md`).
 
+Hosted enrollment added three more credential-shaped values, all enforced in code before they were
+written down here — recorded now so the classification matches what the mechanism already treats as
+secret. A **link token** authorizes an enrollment session against this product's account; a **public
+token** is single-use but mints a durable Item, so it is a credential for the moment it exists; an
+**access token** reads one connection forever. All three ride response bodies whose endpoints are
+declared `issues_credential`, so `FetchedResponse` refuses to exist for them and none can reach the
+append-only archive. The **hosted enrollment URL** is deliberately NOT in this class: the operator
+has to read it off their terminal to use it, and a session someone is being asked to complete is not
+a secret being kept from them.
+
 ### Encryption at rest
 
 🔴 **AC-ARCH.5 — SQLCipher Community Edition, page-level AES-256 with per-page HMAC**, the whole file

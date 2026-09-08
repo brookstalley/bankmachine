@@ -300,9 +300,12 @@ def derive_transactions_sync(
     and storing it would mean either "start from the beginning" or, worse,
     overwriting a good cursor with nothing.
 
-    Transaction rows are not written here yet -- they are the next chunk. The
-    boundary is built and proved first, because every plausible implementation of
-    this endpoint satisfies or violates both acceptance criteria at this one seam.
+    Transaction rows are written here too, and the ordering is not incidental:
+    the rows go in before the cursor, so a row that cannot be written stops the
+    cursor from moving past the page it came from. That is a positional
+    guarantee, and the transaction is what makes it a real one -- a cursor
+    already written is rolled back with everything else, which is asserted
+    separately from the ordering because the two fail differently.
     """
     if response.connection_id is None:
         raise DerivationError(

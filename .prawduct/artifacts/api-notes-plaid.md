@@ -443,6 +443,51 @@ loses exactness at the first hop.
 
 ---
 
+## The MCP surface
+
+### 18. 🔴 The official SDK is a web stack, and this server speaks over stdio
+
+Measured 2026-09-08, in a throwaway venv rather than by recall: `uv pip install mcp` resolves to
+**29 packages** — `mcp` and `mcp-types` plus 27 transitive, including `uvicorn`, `starlette`,
+`sse-starlette`, `httpx2`, `httpcore2`, `cryptography`, `opentelemetry-api`, `pyjwt` and
+`python-multipart`. This product currently has **five direct dependencies and four transitive**.
+
+🔴 **Adopting it would put an HTTP server and an HTTP client into the dependency graph of a
+read-only local tool** whose ratified norm is *"the aggregator's API is the only network
+destination; nothing outside `connector/` may reach a network transport"*
+(`security-model.md` § Direction). That norm's own recorded limit is that the import scan cannot
+see a dependency phoning home on its own — so the mechanism that enforces it is weakest exactly
+where a web stack would be added. Taking the SDK is therefore not a neutral convenience; it is a
+decision that stresses the norm's weakest seam, for transports this product does not use.
+
+**So the stdio transport is implemented directly, and the norm is conformed to rather than
+departed from.** `[DECISION: the MCP server speaks JSON-RPC over stdio without the official SDK |
+the SDK's value is its HTTP/SSE transports, session management and spec tracking, and this server
+uses none of the first two; 29 packages against 9, including uvicorn and starlette, is a poor trade
+for a local read-only tool, and the surface actually needed — `initialize`, `tools/list`,
+`tools/call`, `notifications/initialized` — is small enough to read | user can revisit if the
+handshake proves brittle in practice]`
+
+**The honest cost of that decision**, stated rather than discovered later: the SDK tracks
+protocol-version changes and negotiation edge cases, and a hand-rolled handshake can be subtly
+wrong in a way that fails at connection time rather than in a test. The mitigation is that the wire
+format below was read from the SDK's own type definitions rather than remembered, and the handshake
+is exercised end to end.
+
+**The wire format, read from `mcp.types` 2.2.0:**
+
+- `LATEST_PROTOCOL_VERSION` is `2026-07-28`; `DEFAULT_NEGOTIATED_VERSION` is `2025-03-26`. A server
+  echoes back a version the client can speak, so **the client's requested version is honoured when
+  recognized** rather than the server's newest being asserted.
+- `InitializeResult` serializes as `protocolVersion`, `capabilities`, `serverInfo`, `instructions`
+  — camelCase on the wire, snake_case in the SDK's Python. Getting this wrong is the most likely
+  hand-rolling error, which is why it is recorded here rather than inferred.
+- `Tool` serializes as `name`, `title`, `description`, `inputSchema`, `annotations`.
+- `CallToolResult` serializes as `content`, `structuredContent`, `isError`.
+- `ServerCapabilities` carries `tools`, `resources`, `prompts`, `logging`, `completions`.
+
+---
+
 ## What is deliberately unused
 
 The generated response models — the largest part of the package — are not used at all, and

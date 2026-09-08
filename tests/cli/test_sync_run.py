@@ -701,3 +701,33 @@ def test_a_connection_with_no_transactions_leaves_the_window_unmeasured(
     assert run(["sync", "run"]) == 0
 
     assert _granted(cli_env) is None
+
+
+def test_a_bounded_run_does_not_claim_the_connection_is_up_to_date(
+    cli_env: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 `last_success_at` is what the freshness warning reads.
+
+    A run stopped by the page ceiling has NOT finished — `has_more` was still
+    true — so advancing that stamp would tell every later reader the connection
+    is current while it sits mid-history. The error state IS cleared, because the
+    run really did fetch successfully; the two halves are separate for that
+    reason.
+    """
+    monkeypatch.setattr("bankmachine.cli.sync_run.MAX_PAGES_PER_RUN", 1)
+    FakeClient.pages = [_page(added=[_txn("t1")], next_cursor="c1", has_more=True)]
+
+    assert run(["sync", "run"]) == 0
+
+    row = _connection_row(cli_env)
+    assert row["last_success_at"] is None, "a run that stopped short claimed to be up to date"
+    assert row["status"] == "active", "the run succeeded at what it did do"
+
+
+def test_a_complete_run_does_stamp_the_success(cli_env: Config) -> None:
+    """The mirror half, without which the rule above is satisfied by never stamping."""
+    FakeClient.pages = [_page(added=[_txn("t1")], next_cursor="c1")]
+
+    assert run(["sync", "run"]) == 0
+
+    assert _connection_row(cli_env)["last_success_at"] is not None

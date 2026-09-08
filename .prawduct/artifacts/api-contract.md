@@ -140,14 +140,16 @@ The product's headline goal is not "answer the question" but "answer it, or say 
 | `enroll` | Link one institution and record the connection | yes (datastore + keychain + network) |
 | `connections list` | Show enrolled connections and slots used | no |
 | `connections retire` | Stop syncing a connection, keep its history, remove it at the aggregator | yes (datastore + keychain + network) |
+| `sync run` | Fetch each connection's accounts and transactions since its cursor | yes (datastore + network) |
+| `mcp` | Serve the datastore to an MCP client over stdio — 🔴 read-only | no |
 
 🔴 **The three-way exit code is carried on the exception, not decided by the caller.** A refusal type
 declares its own code — a full roster and an abandoned enrollment are both `1` — and the base class
 defaults to `2`, so a new refusal that forgets produces the safe answer rather than silently claiming
 the command ran and found a problem.
 
-**Specified, not yet built** (steps 4–10): `sync run`, `sync repair` (update-mode re-auth), `import`,
-and the §7 verification-gate runner. Their
+**Specified, not yet built** (steps 5–10): `sync repair` (update-mode re-auth), `import`, and the
+§7 verification-gate runner. Their
 names are not fixed by this document; their *contract obligations* below are.
 
 🔴 **`sync shell` is built in step 1, not step 9** — deliberately. Page encryption is what breaks

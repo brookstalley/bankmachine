@@ -290,3 +290,86 @@ def test_a_rebuild_replays_to_the_same_cursor(enrolled: Config) -> None:
     rebuild(enrolled, derivers=ALL_DERIVERS)
 
     assert _cursor(enrolled) == CURSOR_TWO
+
+
+def test_a_failed_row_write_leaves_the_cursor_where_it_was(enrolled: Config) -> None:
+    """🔴 Chunk 01's Done-when 1, and it was not delivered until now.
+
+    The atomicity was purely POSITIONAL — rows are written before the cursor, so
+    reordering two statements would have shipped green. Both refusal tests
+    asserted only the message. This drives the failure the plan named: the row
+    write fails, and the cursor must not have moved.
+
+    It only became exercisable in Chunk 02, when there were rows to fail at.
+    """
+    _apply(enrolled, _page(next_cursor=CURSOR_ONE))
+    assert _cursor(enrolled) == CURSOR_ONE
+
+    # A transaction for an account this connection has no row for: the deriver
+    # refuses it, and the refusal has to take the cursor down with it.
+    body = json.dumps(
+        {
+            "added": [
+                {
+                    "account_id": "acct-never-derived",
+                    "transaction_id": "t1",
+                    "amount": "12.00",
+                    "iso_currency_code": "USD",
+                    "date": "2026-09-07",
+                    "pending": False,
+                    "name": "Anything",
+                }
+            ],
+            "modified": [],
+            "removed": [],
+            "next_cursor": CURSOR_TWO,
+            "has_more": False,
+        }
+    ).encode()
+
+    with pytest.raises(DerivationError):
+        _apply(enrolled, body)
+
+    assert _cursor(enrolled) == CURSOR_ONE, (
+        "the cursor advanced past a page whose rows were never written, so those "
+        "transactions are gone: the next run resumes after them"
+    )
+
+
+def test_a_cursor_written_then_abandoned_does_not_survive_the_transaction(
+    enrolled: Config,
+) -> None:
+    """🔴 The rollback itself, which the sibling test does NOT exercise.
+
+    In the shipped deriver the rows are written before the cursor, so a failing
+    row write means the cursor line never runs — the guarantee holds
+    *positionally*, and turning the transaction's ROLLBACK into a COMMIT leaves
+    that test green. Reordering two statements would ship it.
+
+    This drives the mechanism instead: a deriver that writes the cursor and then
+    raises. If the transaction did not roll back, the cursor would survive a
+    derivation that failed — and the next run would resume past a page whose rows
+    were never written.
+    """
+    _apply(enrolled, _page(next_cursor=CURSOR_ONE))
+
+    def write_then_fail(conn: Any, response: Any, context: Any) -> None:
+        from bankmachine.connector.plaid.derivers import derive_transactions_sync
+
+        derive_transactions_sync(conn, response, context)
+        raise DerivationError("something went wrong after the cursor moved")
+
+    with writer_connection(enrolled) as conn, pytest.raises(DerivationError):
+        apply_response(
+            conn,
+            connection_id=1,
+            endpoint=TRANSACTIONS_SYNC.path,
+            body=_page(next_cursor=CURSOR_TWO),
+            received_at=now_utc(),
+            derivers={TRANSACTIONS_SYNC.path: write_then_fail},
+        )
+
+    assert _cursor(enrolled) == CURSOR_ONE, (
+        "the cursor survived a derivation that failed, so the transaction is not "
+        "protecting it — only the order the statements happen to be written in"
+    )
