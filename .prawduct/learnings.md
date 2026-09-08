@@ -216,3 +216,33 @@ commit. The cost of getting this wrong is not a failed run — a failed run woul
 it announces itself. It is a *successful* run of something else against source that was briefly a
 lie, and that result looks exactly like a real one. Related: [[review-coverage]] and
 [[guarantees-by-construction]] — the same family again, a check whose bad news never arrives.
+
+---
+
+## `ruff check` clean says nothing about `ruff format`
+
+**When you verify formatting, run `ruff format --check` — because `ruff check` and the formatter
+are two different halves, and this repo's norm (`project-preferences.md`: `Formatting: ruff
+format`) is the half `ruff check` never reaches.**
+
+The two get conflated because "ruff is clean" is how the result gets reported and remembered. It
+is not a claim about layout at all: `ruff check` runs the lint rules in `[tool.ruff.lint]`, and
+none of `E, F, I, N, UP, B, SIM` is the formatter. A file can be hand-wrapped into a shape the
+formatter would rewrite and stay clean forever.
+
+**A reformat can break the go-red harness, and that is not a reason to skip either one.**
+`verify_norms_go_red.py` mutates by literal `str.replace`, so its anchors are exact source text,
+including the line breaks the formatter owns. Reformatting a mutated file moves anchors out from
+under it. The harness reports this as `SKIP … anchor no longer present` and counts the case as a
+survivor rather than printing RED — which is the right shape, and is the only reason the coupling
+is cheap. **Prefer an anchor that names a whole expression or keyword argument over one that spans
+a formatter-chosen line break**: the former survives rewrapping, the latter is a hostage to it.
+
+**Instances:**
+
+- *2026-09-08, merging `feature/sync-v1`.* Seven files had drifted, five written on the branch,
+  across two build steps that both reported "ruff clean" at every close — because both had run
+  `ruff check` and neither had run `--check` on the formatter. Fixing the drift collapsed a
+  wrapped conditional in `cli/enroll.py` onto one line and broke the anchor for AC-1.4's
+  converging-re-run case; the harness caught it on the next run and the anchor was rewritten to
+  name the keyword argument instead.
