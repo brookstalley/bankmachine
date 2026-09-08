@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 from collections.abc import Iterator
 from datetime import timedelta
 from typing import Any
@@ -684,7 +685,11 @@ def test_a_shortfall_against_the_requested_window_is_reported(
     assert run(["sync", "run"]) == 0
 
     out = capsys.readouterr().out
-    assert "gap" in out
+    # The rendered phrase, not the bare word "gap": that substring survived the
+    # line reading `a 8-day gap`, which is wrong for every shortfall of 8, 11, 18
+    # or 80 days. Matched as a pattern rather than a literal because the granted
+    # window is measured against the real clock, so the number moves by a day.
+    assert re.search(r"a gap of \d+ days", out), out
     assert "re-linking" in out
 
 

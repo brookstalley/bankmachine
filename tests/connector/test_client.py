@@ -544,4 +544,8 @@ def test_an_item_missing_either_list_is_refused_rather_than_half_answered(missin
     with pytest.raises(MalformedResponseError) as caught:
         capabilities_of(json.dumps(body).encode())
 
-    assert missing in str(caught.value)
+    # The whole phrase, not the bare field name: "products" is a SUBSTRING of
+    # "available_products", so `missing in message` passes for the products case
+    # even when the message names the other list -- which is the one thing this
+    # test says the message has to get right.
+    assert f"without a {missing} list" in str(caught.value)

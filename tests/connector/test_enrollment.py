@@ -461,7 +461,9 @@ def test_no_access_token_reaches_the_request_context(client_config: Config) -> N
 
 #: Shaped from a real `/item/get` reply for a sandbox item enrolled with
 #: `transactions` alone: `products` lists what was asked for, and
-#: `available_products` the fourteen things the connection could actually do.
+#: `available_products` what the connection has not been asked for yet. Neither
+#: is the whole of what it can do -- the aggregator makes them mutually
+#: exclusive, so capabilities are their union.
 ITEM_BODY = json.dumps(
     {
         "item": {
@@ -521,7 +523,21 @@ def test_an_item_without_a_capability_list_is_refused_rather_than_read_as_empty(
     for them -- which is a data hole nothing reports, in a product whose named
     failure mode is exactly that.
     """
-    for body in (b"{}", b'{"item": {}}', b'{"item": {"available_products": "not a list"}}'):
+    bodies = (
+        b"{}",
+        b'{"item": {}}',
+        # Each list guarded separately, and each body carries the OTHER list
+        # well-formed. Capabilities read both fields in turn, so a body missing
+        # the first never reaches the second's guard -- and the case meant to
+        # cover a non-list `available_products` would prove nothing about it.
+        # Left unguarded, a string iterates character by character into the
+        # capability set.
+        b'{"item": {"products": [], "available_products": "not a list"}}',
+        b'{"item": {"products": "not a list", "available_products": []}}',
+        b'{"item": {"available_products": []}}',
+        b'{"item": {"products": []}}',
+    )
+    for body in bodies:
         with pytest.raises(MalformedResponseError):
             capabilities_of(body)
 
