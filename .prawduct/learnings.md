@@ -265,3 +265,45 @@ a formatter-chosen line break**: the former survives rewrapping, the latter is a
   wrapped conditional in `cli/enroll.py` onto one line and broke the anchor for AC-1.4's
   converging-re-run case; the harness caught it on the next run and the anchor was rewritten to
   name the keyword argument instead.
+
+---
+
+## Ask the running process what it is running
+
+**When a claim is about which code a live process is executing, get the answer FROM THAT PROCESS —
+because your inference from the repository is strictly weaker evidence, and it fails in exactly the
+case that matters: when something has moved underneath you.**
+
+A repository tells you what is on disk. A running process tells you what it loaded, which is a
+different question whenever the two could have diverged — a server started before a merge, a client
+holding a subprocess it launched at connect time, a worktree pinned by a path argument, an import
+cached in a session that has not restarted.
+
+**Author dates are not landed dates.** A rebase, a cherry-pick, or a `filter-branch` rewrite leaves
+the author date untouched while the commit joins the branch much later. Reading the former as the
+latter produces a confident, specific, wrong answer about ordering — and reflog or
+`git log --format=%cd` on the branch is the thing that actually answers it.
+
+**The cheap instrument is a fingerprint**: call the live surface for a string or value known to
+differ between the two candidate builds, and read which one comes back. It costs one call and it
+settles what an argument cannot.
+
+**Why this one bites:** the wrong answer is a *pass*. A stale build that still behaves correctly on
+everything except the fix under test reports green, and green is what you were hoping for. The
+verification harness acquires the same defect as the system under test, and nothing in the output
+says so.
+
+**Instances:**
+
+- *2026-09-08, MCP acceptance round 4.* I told a peer testing session its MCP server was serving the
+  merged build, deriving "the tree has not moved since you connected" from the merge commit's author
+  date of 11:32. The previous day's `filter-branch` had split author from landed dates; the merge
+  reached `develop` after the peer connected at ~10:51. The peer called `query_transactions` with
+  `limit: 9999`, got the pre-merge ceiling of 1000 rather than the merged 500, and refused to run the
+  verification half at all — correctly, since a clean pass would have been read as confirming a fix
+  it could not have exercised. After the operator relaunched it, the same call returned 500 and the
+  round proceeded.
+- *Same session, standing hazard.* The MCP server is a subprocess the client launches, so it runs
+  whatever existed at connect time, and `--directory` pins which checkout it serves regardless of
+  where the client sits. Both are now in `README.md` under "Wire it to an MCP client", because the
+  gap between "I changed the code" and "the thing under test changed" is invisible from the client.
