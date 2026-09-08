@@ -111,7 +111,7 @@ def _git(*arguments: str) -> str | None:
 
 @lru_cache(maxsize=1)
 def build_identity() -> BuildIdentity:
-    """The running build. Computed on first call, then frozen for the process.
+    """The running build, captured at import by the call at the foot of this module.
 
     🔴 `dirty` is `None` -- not `False` -- whenever the commit is unknown. `False`
     asserts the tree matches its commit, and a build we could not identify

@@ -66,4 +66,19 @@ to end over stdio, and `/prawduct:critic` has run.
 
 ## Status
 
-- [ ] Chunk 1
+- [x] Chunk 1 — reviewed (`rev-20260908T182846Z-2e593bb3`), all six findings fixed;
+  resolutions verified (`rev-20260908T184013Z-eacec31f`, 0 blocking, 0 findings).
+
+### Accepted, not dropped
+
+🔴 **Every CLI invocation now pays the import-time git capture.** `cli/__init__.py` imports `mcp`,
+which imports `query`, which imports `build_id` — so `bankmachine store status` runs two git
+subprocesses it has no use for. **Measured 2026-09-08: 37.8 ms of a 573 ms invocation (~6.6%)**,
+with a 4 s worst case on a wedged git, bounded by the 2 s per-call timeout and logged.
+
+Accepted rather than fixed: 38 ms against a local checkout does not justify a structural change
+made after a review closed. **The remedy is known if CLI latency ever matters** — move the
+module-level `_ = build_identity()` into the `mcp` command's entry point. The requirement is that
+the SERVER capture before it serves, not that every process capture at import, so warming it at
+server start satisfies the reason exactly while removing the cost everywhere else. The test that
+holds this would move with it, from import-time to server-start.

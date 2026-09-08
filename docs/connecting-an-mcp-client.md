@@ -82,7 +82,16 @@ whether it found nothing or could read nothing.
 
 ## 🔴 Reading the answers
 
-Every response carries `environment`, `as_of`, `coverage` and `warnings`. **Read the warnings before
+`build` says which code answered you. The server is a subprocess your client launches, so it runs
+whatever existed at connect time — after changing the code, restart the client session and check
+that `commit` moved. A null `commit` means the build could not be identified (not a checkout, or git
+unavailable), and `dirty` is then null too, never false. `dirty: true` means the running code has
+uncommitted changes, so the commit alone does not describe it.
+
+
+Every response carries `environment`, `as_of`, `build`, `coverage`, `warnings` and `rows`. The
+server's own `instructions` are the authority on that list — a test holds them against a live
+envelope, so they cannot fall behind the wire; this page is a copy and can. **Read the warnings before
 drawing a conclusion**: an answer can be perfectly well-formed and still be computed over incomplete
 data, and that is the failure this product exists to prevent.
 
