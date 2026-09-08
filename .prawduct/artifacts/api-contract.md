@@ -20,9 +20,12 @@ versioning decision, and stability tiers.
 **Dependency note.** The template's usual product-brief upstream does not exist as a separate
 artifact; §0 and §5 of `docs/system-requirements.md` carry that content.
 
-**Build status.** 🔴 The **CLI partially exists** (`store`, `connector`, `sync shell` — build steps 1
-and 2). The **MCP surface does not exist yet** (build step 7). This contract is therefore
-*specification* for one surface and *description* for the other, and each operation below says which.
+**Build status** *(2026-09-08)*. The **CLI exists** through build step 4 — `store`, `connector`,
+`sync shell`, `enroll`, `connections`, `sync run`, `mcp`. The **MCP surface exists in first slice**:
+four of the ten tools below are implemented and six are specification only, recorded as a dated
+descope under the tool table. This contract is therefore *description* for most of the CLI, *both*
+for the four shipped tools, and *specification* for the remaining six — and each operation below
+says which.
 Writing it now is the point: introducing an error model or a versioning handle after consumers exist
 is a breaking change.
 
@@ -96,7 +99,7 @@ codes are a machine contract**, not just operator ergonomics.
 
 ## Operations
 
-### MCP tool surface — the ten tools (§5) · *specified, not yet built*
+### MCP tool surface — the ten tools (§5) · *four built, six specified*
 
 🔴 **Read-only. No mutation tools. No exceptions.** (Vetting a comparable server surfaced 19 mutation
 tools including `delete_transaction` with no undo. Not reproducing that.)
@@ -120,13 +123,38 @@ Raw-row access exists but is paginated and hard-capped.
 
 Every tool is safe and idempotent, trivially — nothing writes.
 
+> **Amendment (2026-09-08, build step 7's first slice).** 🔴 **Four of these ten ship; six do not
+> yet.** Built: `get_pipeline_health`, `list_accounts`, `query_transactions`, `spending_summary`.
+> Not built: `cashflow_summary`, `balance_history`, `net_worth`, `list_holdings`, `find_recurring`,
+> `get_coverage_report`.
+>
+> Recorded as a descope rather than left to be noticed, because the same commit updated the README
+> and `architecture.md` to say the MCP surface was "built and serving" — which is true of a surface
+> and not of *this* surface, and a reader comparing the two would have found the contract claiming
+> ten and the code answering four with nothing saying which was current.
+>
+> **Two of the six are not ordinary omissions.** `get_coverage_report` is half the verification
+> surface this document names two paragraphs above — the product's headline goal is "answer it, or
+> say why you should not", and the coverage half of that is missing. `list_holdings` waits on build
+> step 5, which has not started. The other four are analysis conveniences whose data is already in
+> the datastore.
+>
+> **What the shipped four do not yet carry**, also descoped rather than silently unimplemented:
+> `query_transactions` is specified paginated with category, amount-range and merchant filters and
+> currently offers a date range, an account and a hard cap; `spending_summary` is specified with
+> merchant and account breakdowns and period-over-period comparison and currently aggregates by
+> category over one window.
+>
+> The `experimental` tier permits these changes without a version bump. It does not permit them
+> going unrecorded, which is what this amendment exists to prevent.
+
 🔴 **Two of these ten are the verification surface, not the analysis surface.** `get_pipeline_health`
 and `get_coverage_report` exist so the analyst agent can **establish completeness *before* answering**.
 The product's headline goal is not "answer the question" but "answer it, or say why you should not."
 
 ### CLI — the operator surface
 
-**Built (steps 1–2):**
+**Built:**
 
 | Command | Purpose | Mutating |
 |---|---|---|
@@ -137,9 +165,19 @@ The product's headline goal is not "answer the question" but "answer it, or say 
 | `connector check` | Verify aggregator credentials and reachability | no |
 | `connector set-secret` | Write the aggregator secret to the keychain | yes (keychain) |
 | `sync shell` | 🔴 Authenticated SQLCipher REPL — read-role handle | no |
+| `enroll` | Link one institution and record the connection | yes (datastore + keychain + network) |
+| `connections list` | Show enrolled connections and slots used | no |
+| `connections retire` | Stop syncing a connection, keep its history, remove it at the aggregator | yes (datastore + keychain + network) |
+| `sync run` | Fetch each connection's accounts and transactions since its cursor | yes (datastore + network) |
+| `mcp` | Serve the datastore to an MCP client over stdio — 🔴 read-only | no |
 
-**Specified, not yet built** (steps 3–10): enrollment (`link`/`enroll`), `sync run`, `sync repair`
-(update-mode re-auth), `import`, connection retirement, and the §7 verification-gate runner. Their
+🔴 **The three-way exit code is carried on the exception, not decided by the caller.** A refusal type
+declares its own code — a full roster and an abandoned enrollment are both `1` — and the base class
+defaults to `2`, so a new refusal that forgets produces the safe answer rather than silently claiming
+the command ran and found a problem.
+
+**Specified, not yet built** (steps 5–10): `sync repair` (update-mode re-auth), `import`, and the
+§7 verification-gate runner. Their
 names are not fixed by this document; their *contract obligations* below are.
 
 🔴 **`sync shell` is built in step 1, not step 9** — deliberately. Page encryption is what breaks
@@ -297,9 +335,12 @@ Retention: additive-first; removal of a `stable` member defers to a major versio
 The public contract, declared rather than inferred. Members not listed are internal and carry no
 promise. `experimental` means *this may break* — removing one is the policy working, not a violation.
 
-**MCP tools** — all `experimental` until build step 7 ships them and the §7 verification gate passes;
-they are specified here but nothing implements them yet, so promising stability would be a promise
-about code that does not exist:
+**MCP tools** — all `experimental` until the §7 verification gate passes. As of 2026-09-08 four of
+the ten are implemented (`get_pipeline_health`, `list_accounts`, `query_transactions`,
+`spending_summary`) and six are still specification only; see the amendment under the tool table
+above for what is descoped and why. `experimental` therefore means two different things in this
+list, and the distinction is worth keeping in view: for the shipped four it means *this may break*,
+and for the other six it means *this does not exist yet*:
 
 - `get_pipeline_health` — experimental
 - `list_accounts` — experimental

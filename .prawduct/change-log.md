@@ -34,6 +34,125 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-08: Transaction sync, and the first MCP slice — the product can be asked questions
+
+<!-- prawduct: scope=sync-v1 -->
+
+**Why:** build step 4, and the first slice of step 7. Enrollment gave the product a connection;
+this gives it data, and a way to be asked about it.
+
+**What shipped.** `bankmachine sync run` pages each connection's changes since its cursor, applying
+additions, modifications and removals, and `bankmachine mcp` serves the result to an MCP client over
+stdio, read-only. Verified end to end against Plaid's sandbox rather than only fixtures: 14
+accounts, 50 transactions, 14 daily balances, and real aggregates answering real questions.
+
+🔴 **The probe reshaped the loop before a line of it was written.** A `NOT_READY` reply carries
+`has_more: false` *and* an empty cursor, so the obvious `while has_more:` terminates on the first
+sync of every new connection and records a **successful run with zero transactions**. Nothing
+raises; `last_success_at` gets stamped; the account reports no activity. That is a successful
+response computed over data that has not materialized — this product's named primary failure mode —
+and the trap is that the naive loop satisfies AC-2.1's *"loop until the source reports no more
+pages"* literally while being wrong. The status is read before `has_more`.
+
+**The cursor commits with the rows because it is derived from the same body**, not because a caller
+remembered to wrap them. AC-2.1 and AC-2.5 are one requirement stated twice, and every
+implementation satisfies or violates both at that seam.
+
+🔴 **AC-11.8 earned itself on the first real sync.** The connection requested 730 days of history
+and the aggregator granted **90** — a 640-day gap, reported rather than the returned window being
+read as complete. It is measured only at `HISTORICAL_UPDATE_COMPLETE`, because at
+`INITIAL_UPDATE_COMPLETE` the backfill is still arriving and the number would be plausible, well
+formed and wrong.
+
+**Every MCP answer carries its own caveats and its own environment.** `query.Answer` cannot be
+constructed without warnings — they are computed in the same call as the rows — because the consumer
+is an agent that cannot see a caveat which is not in the payload. And a flag selects while the
+envelope confesses: a server pointed at sandbox and one pointed at real money are otherwise
+identical in their output, so the environment rides every response and the server's own title.
+
+**No `mcp` dependency**, and that is a decision (`api-notes-plaid.md` §18). The official SDK resolves
+to 29 packages including uvicorn, starlette and httpx2 — an HTTP server *and* client stack — against
+five direct dependencies and a ratified norm that the aggregator is the only network destination.
+That norm's own recorded limit is that the import scan cannot see a dependency phoning home, so
+adopting the SDK would load the mechanism exactly where it is weakest, for transports this server
+does not use. The wire format was read from the SDK's own types instead.
+
+**Four of the ten specified tools ship**, recorded as a dated descope rather than left to be
+discovered by comparing a contract claiming ten against code answering four.
+
+**What this cost, and the pattern in it.** Five review rounds. The recurring defect was not in the
+code but in the checks: **six times a test asserted something it did not exercise.** A fixture that
+never reached the guard it named; a race test that blinded the check it was testing; a
+credential-absence assertion reading a capture that collected nothing; the go-red harness itself,
+which counted a mutation that did not parse as caught, hiding two always-passing cases; a
+cursor-atomicity claim that held positionally, so turning `ROLLBACK` into `COMMIT` left the suite
+green; and a test whose docstring said *"the server refused to start"* which never called the
+function that refused. The last one guarded a requirement I had implemented **backwards** —
+AC-ARCH.3 says the MCP server starts against a missing datastore and reports it, and I made it
+refuse, then documented the refusal as a feature.
+
+**And the bug no test found at all**: `parse_float=str` keeps decimals as text but leaves JSON
+*integers* as `int`, so a whole-dollar amount arrives as `500`. Every fixture used a fractional
+amount. 505 tests passed while the first real sandbox sync refused every whole-dollar transaction it
+fetched. Running the product is not a formality.
+
+**Verification queued rather than claimed:** VRF-004 — every tool is tested and the warnings are in
+every payload, but no test can say whether an *agent* reads them.
+
+## 2026-09-07: Enrollment — one institution linked, and the states that exist after the token is spent
+
+<!-- prawduct: scope=enrollment-v1 -->
+
+**Why:** build step 3. The product could reach the aggregator and archive what it said, but it could
+not link an institution, so every table below `connections` had nothing to hang from.
+
+**What shipped.** `bankmachine enroll` prints a hosted enrollment URL, waits while the operator
+completes Link in a browser, and polls for the result — no local web server and no frontend, which
+is what AC-1.1 asks for. `bankmachine connections list` and `connections retire` came with it rather
+than after it, because the cap refusal has to name a command that exists. The connection cap is
+configuration (AC-1.5), retirement keeps every row the connection produced (AC-1.6), and
+re-enrolling converges on one live connection per institution (AC-1.4).
+
+**The window is confirmed before the exchange**, because that is the last moment AC-1.2 is
+reversible. The required argument on `link_token_create` stops a caller *forgetting* a window;
+nothing but a human reading it stops one sending the wrong window, and the result is immutable for
+the life of the connection. The window prints before the URL, since an operator who has already
+opened the browser has stopped reading the terminal.
+
+**AC-1.3 was split, and the schema had been right all along.** It required enrollment to record "the
+history window actually granted", and no response in the enrollment path carries that value —
+verified against the pinned SDK at all three candidates. `core_schema.py` had carried a comment
+saying so since build step 1, so the DDL and the requirement had disagreed from the day both
+existed. **AC-1.3a** homes the granted window where it is first knowable, at the initial backfill,
+and gives null an explicit meaning: *not yet known*, never *no shortfall*.
+
+**Retirement is two-sided.** Setting `retired_at` frees a slot in this product's own cap and does
+nothing at the aggregator, where the Item keeps counting against the plan and keeps billing. So
+retiring calls `/item/remove`, and so does a re-enrollment — Link mints a *new* Item, and
+overwriting `source_connection_id` would otherwise drop the only reference to the old one while this
+side showed one tidy connection and reported success. AC-1.4 says re-enrolling updates rather than
+duplicates; without that call the duplication merely moves to the far end, where nothing here can
+see it.
+
+**The post-exchange window is the part worth remembering.** Past the exchange the aggregator holds an
+Item the operator is billed for, and any local failure leaves them paying for a connection nothing
+here records. The access token reaches the keychain before the first write, so every failure in that
+window can name the item and the credential; the cap race *releases* the Item it just minted, because
+refusing to record a connection while leaving the operator billed for it is not a refusal but a charge.
+
+**What this cost, and what it taught.** Four review rounds. Every substantive defect had one shape —
+an Item that exists at the aggregator, spent and billable, invisible from here — and once that harm
+was named precisely, three more instances of it were findable by looking for the harm rather than for
+bugs. Four separate checks turned out to be claims: a test whose fixture never reached the guard it
+named, a race test that blinded the very check it was testing, a credential-absence assertion reading
+a log capture that collected nothing, and — worst — the go-red harness itself, which judged "caught"
+by pytest's exit code and so counted a mutation that did not even parse. That last one had two
+always-passing cases hiding behind it, one of which had been green since the day it was written.
+
+**Verification queued rather than claimed:** VRF-003 — a Hosted Link session cannot be completed
+programmatically, so whether the printed page reads unambiguously to someone about to make an
+irreversible choice is a human's judgement, not a test's.
+
 ## 2026-09-07: What the cumulative review changed about the derivers
 
 <!-- prawduct: scope=connector-v1 -->

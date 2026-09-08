@@ -350,7 +350,7 @@ relationship (who may import what), not a naming convention.
   CLI, idempotency, the connection cap — is build step 3; this chunk builds only the calls it will
   make, and the credential-handling rules they need.
 - **Depends on:** Chunk 02
-- **Artifacts consumed:** `docs/system-requirements.md` FR-1 (AC-1.2, AC-1.3), AC-3.2;
+- **Artifacts consumed:** `docs/system-requirements.md` FR-1 (AC-1.2, AC-1.3, AC-1.3a), AC-3.2;
   `.prawduct/artifacts/boundary-patterns.md` Credential Seam
 - **Deliverables:** `/link/token/create`, `/item/public_token/exchange`, `/item/get` and
   `/accounts/get` wrappers in `src/bankmachine/connector/plaid/client.py`; the configured history

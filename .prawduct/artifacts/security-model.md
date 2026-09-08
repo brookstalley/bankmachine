@@ -198,12 +198,25 @@ Two properties worth recording:
   parameters could drift** between the process that created the datastore and the one that opens it.
 - **Malformed keys are rejected loudly, and the value is never in the message.** A malformed key is
   still a key, and exception text reaches logs.
-- **The two missing-secret errors are deliberately distinct types** because their remedies share
+- **The three missing-secret errors are deliberately distinct types** because their remedies share
   nothing: 🔴 **a datastore key cannot be recovered once lost**, while an aggregator secret is always
   re-readable from the vendor's own dashboard. See "Backup & Recovery" in `operational-spec.md` — this
-  is the sharpest operational hazard in the product.
+  is the sharpest operational hazard in the product. The third is a **connection's access token**,
+added with enrollment: it cannot be pasted from anywhere, and its only remedy is to re-enrol that
+one institution — an operator action against a single connection rather than a credential to
+supply.
 
 `connections.credential_ref` holds **a keychain lookup handle, never a token** (`data-model.md`).
+
+Hosted enrollment added three more credential-shaped values, all enforced in code before they were
+written down here — recorded now so the classification matches what the mechanism already treats as
+secret. A **link token** authorizes an enrollment session against this product's account; a **public
+token** is single-use but mints a durable Item, so it is a credential for the moment it exists; an
+**access token** reads one connection forever. All three ride response bodies whose endpoints are
+declared `issues_credential`, so `FetchedResponse` refuses to exist for them and none can reach the
+append-only archive. The **hosted enrollment URL** is deliberately NOT in this class: the operator
+has to read it off their terminal to use it, and a session someone is being asked to complete is not
+a secret being kept from them.
 
 ### Encryption at rest
 
@@ -391,5 +404,9 @@ act someone performs and a reviewer can see. It is used once today, on the redac
 fixtures, which must carry real credential shapes or they prove nothing. A test asserts the marker
 does not spill onto neighbouring lines; it caught that exact bug while being written.
 
-The MCP-surface controls (row caps, inventory) cannot be verified until build step 7 creates the
-surface.
+The MCP-surface controls are partly verifiable now that the first slice exists. **Verified:** the
+surface is read-only by construction — every tool reads through a `mode=ro` handle, and a test
+asserts the tool inventory contains no mutating verb. `query_transactions` is hard-capped at 1000
+rows. **Not yet verifiable:** the caps and inventory of the six tools that are specification only,
+and whether an analyst client actually *reads* the warnings every answer carries (queued as
+VRF-004 — no test can settle it).

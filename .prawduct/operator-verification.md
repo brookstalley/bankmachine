@@ -223,3 +223,66 @@ response is production's own catalogue. It stands as written for accounts and
 transactions, which do come from the fictional institutions.
 
 **Verified:** 2026-09-06
+
+## VRF-003 — the hosted enrollment flow reads correctly to a human
+
+**Chunk:** enrollment-v1 Chunk 02 · **Raised:** 2026-09-07 · **Status:** pending
+
+**Why a human:** the offline suite fakes the aggregator, and a Hosted Link session
+cannot be completed programmatically — `/sandbox/public_token/create` bypasses Link
+entirely, so it mints a public token without creating a session `/link/token/get`
+would ever report. What no test here can speak to is whether the printed page reads
+unambiguously to someone about to make an irreversible choice.
+
+**To verify**, with sandbox credentials in place:
+
+    uv run bankmachine store init
+    uv run bankmachine enroll
+
+Then, at a terminal (not piped — the confirmation prompt is skipped when stdin is
+not a tty):
+
+1. 🔴 **The history-window line appears BEFORE the URL, and reads as a warning.**
+   An operator who has already opened the browser has stopped reading the terminal,
+   and this is the last moment AC-1.2 is reversible. Confirm the number shown is the
+   window you intend.
+2. Answering anything but `y` links nothing and exits 1.
+3. The printed URL opens a working Link session. Use Plaid's sandbox credentials
+   (`user_good` / `pass_good`) and pick any institution.
+4. While the browser is open, the terminal says it is waiting — it does not look hung.
+5. On completion the command reports the institution, the requested window, and
+   **"granted history: not yet known"**. 🔴 Confirm that line cannot be misread as
+   "we got what we asked for"; that misreading is what AC-1.3a exists to prevent.
+6. Re-run `bankmachine enroll` against the same institution: it reports an *updated*
+   connection rather than a new one, and `bankmachine store shell` shows one row.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-003`
+
+## VRF-004 — the MCP surface answers usefully in a real client
+
+**Chunk:** the MCP surface · **Raised:** 2026-09-08 · **Status:** pending
+
+**Why a human:** every tool is tested and driven end to end over stdio, but no test can say whether
+an *agent* can use these answers to reason correctly. What is unverified is the judgement layer:
+whether the tool descriptions steer a model away from the mistakes the data invites, and whether the
+warnings are read rather than skipped.
+
+**To verify**, with the sandbox datastore populated (`enroll`, then `sync run`):
+
+1. Add the server to the client using the config in `docs/connecting-an-mcp-client.md`. Confirm it
+   appears as `bankmachine (sandbox)` — the environment is in the title so two configured servers
+   can be told apart at a glance.
+2. Ask *"what did I spend on food?"*. 🔴 Confirm the answer **mentions the 90-day history limit**.
+   The `gapped` warning is in the payload; what is untested is whether a model uses it. If it
+   answers with a total and no caveat, the tool descriptions are not doing their job — that is a
+   finding about the wording, not about the data.
+3. Ask *"how far back does my data go?"*. Confirm it distinguishes *absent* from *zero*.
+4. Ask something the data cannot answer — *"what will I spend next month?"* — and confirm it
+   declines rather than extrapolating from 90 days.
+5. Stop `sync run` for two days, or edit `last_success_at` back, and confirm a `stale` warning
+   changes how the answer is phrased.
+6. 🔴 Point a second server at `production` with no datastore. Confirm it **starts**, appears in the
+   client, and that `get_pipeline_health` explains the absence (AC-ARCH.3) rather than the tool
+   silently not appearing.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-004`

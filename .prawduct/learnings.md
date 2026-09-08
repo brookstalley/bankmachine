@@ -85,8 +85,38 @@ case to fall outside of. Prefer the second form even when the first is true toda
   not a construction, and the rule now turns on whether the call carries connection parameters
   rather than on which file it sits in.
 
+- *2026-09-07, the go-red harness judging its own results.* `verify_norms_go_red.py` decided a
+  mutation had been caught by testing `pytest exited non-zero` — an enumeration standing in for
+  "the named test failed", because pytest exits non-zero on a **collection error** too. A mutation
+  that did not parse therefore printed RED without running anything, and the case passed forever.
+  Two such cases existed; only one was found by review, and the other had been green since it was
+  written. The fix was not to correct the two mutations but to `ast.parse` every mutation before
+  running it, so a non-parsing one is reported INVALID and counted as a survivor. 🔴 **The defect
+  was in the mechanism whose entire job is catching this class**, which is the strongest version of
+  this rule: the check you trust most is the one nothing is checking. Then, one layer down, both
+  repaired cases were *still* green — one targeted lines the test's `os._exit` never reaches, and
+  the other rested on an assertion that could not distinguish the two values it named, because one
+  string embedded the other. **A check that cannot fail hides every problem in its blast radius,
+  not one, and they surface a layer at a time.**
+
+- *2026-09-08, seven in one work cycle.* Across build steps 3 and 4 I wrote seven checks that did
+  not exercise what they named: a fixture whose bad entry sat where the search never reached it; a
+  race test that patched the very check it was testing; a credential-absence assertion reading a
+  `caplog` that collected nothing; a go-red mutation that did not parse, so pytest failed at
+  COLLECTION and printed RED forever; a cursor-atomicity claim that held **positionally**, so
+  turning the transaction's `ROLLBACK` into a `COMMIT` left the suite green; a test whose docstring
+  said *"the server refused to start"* that never called the function which refused; and a mutation
+  aimed one line away from the branch its test reads. Every one passed on first run. 🔴 **The
+  through-line is not carelessness about behaviour — it is that when writing a check, attention goes
+  to the behaviour wanted and not to the path the check traverses to reach it.** Two of them were
+  guarding requirements I had implemented backwards, which is exactly when a check is least likely
+  to be examined and most needed.
+
 **How to apply:** before recording a guarantee, name the surface that could violate it and check
-that surface exists in the product. If the answer is "a future command someone forgets to add to
+that surface exists in the product. **And for every check you write, break the thing it names and
+watch it fail** — a green first run is the moment to distrust, not the moment to move on. Where a
+mutation harness exists, point one at the branch the assertion actually reads; where it does not,
+edit the source, run the test, and put the source back. If the answer is "a future command someone forgets to add to
 the list" or "any SQL that reaches this handle", the guarantee needs a different mechanism, not a
 firmer sentence. And when a rule matches on a *name* — a column name, a filename, a function name —
 ask what relationship the name is standing in for, and match on that instead. Related:
@@ -154,3 +184,35 @@ nothing ever reports that it could have run.
   *success* response shape, which is what derivers get written against. Splitting the plan's
   acceptance criteria into the half that could be met and the half that could not is what made the
   remainder a gate instead of a mood.
+
+---
+
+## The norm harness sabotages the working tree, so nothing else may read it
+
+**When `verify_norms_go_red.py` is running, do not run the suite, dispatch a review, or commit —
+it edits source files in place to prove each assertion goes red, so for the length of the run the
+working tree contains code nobody wrote. Anything that reads the tree during that window reads
+sabotage and reports it as fact.**
+
+The harness is the mechanism behind [[two-descriptions-compared]] — it removes a mechanism and
+checks that a named test notices. Removing the mechanism means *writing the broken version to
+disk*, running one test, and putting it back. Fifty-five times. The tree is correct before and
+after and wrong in between, which is the shape that makes it invisible: every check of the file
+afterwards agrees with what you meant.
+
+**Instances:**
+
+- *2026-09-07, Chunk 01 of enrollment.* A Critic review was dispatched while the harness ran. Its
+  first two dispatches were unreviewable and it said so: one manifest caught `store/rebuild.py`
+  holding the harness's sabotage — `_points_at` returning `True` unconditionally — and
+  `connector/plaid/client.py` transiently holding `finished = None`, which was the *mutation* of a
+  line I had just written rather than the line. **A review of either snapshot would have produced
+  confident, well-argued findings about code that does not exist in any commit.** The Critic
+  retried until the tree was stable, which is the only reason this was caught rather than acted on.
+
+**How to apply:** treat the harness as an exclusive lock on the working tree. Run it alone, wait
+for "all N norm breaks were caught", and only then run the suite, dispatch a review, or stage a
+commit. The cost of getting this wrong is not a failed run — a failed run would be fine, because
+it announces itself. It is a *successful* run of something else against source that was briefly a
+lie, and that result looks exactly like a real one. Related: [[review-coverage]] and
+[[guarantees-by-construction]] — the same family again, a check whose bad news never arrives.

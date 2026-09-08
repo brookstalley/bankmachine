@@ -63,6 +63,12 @@ one leans on:
   AC-1.2, build step 3). 🔴 The requested window **cannot be raised after enrollment** without
   removing and re-linking. Verify the granted window on **one** connection before enrolling any
   other; getting it wrong means re-linking all of them.
+  🔴 **The granted window is not visible at enrollment, and the wait is the point.** No response in
+  the enrollment path reports it (engine AC-1.3a), so `granted_history_days` is **null on a
+  freshly enrolled connection** and is filled once the first backfill reveals the oldest
+  transaction actually returned. **Null means not yet known — never "we got what we asked for".**
+  Reading it as satisfied is the one mistake this requirement exists to prevent, and it is
+  available precisely at the moment an impatient operator would enroll the rest.
 - **`DAC-1.3` — connections that are broken rather than closed.** A dead connection to a live
   account is enrolled fresh, not written off.
 - **`DAC-1.4` — which connections need which capabilities.** Recorded as per-connection
@@ -152,7 +158,7 @@ to configuration or an adapter. A row that cannot is a gap in `system-requiremen
 | Deployment requirement | Satisfied by | Engine change needed? |
 |---|---|---|
 | DAC-1.1 enrollment order | operator runbook / config ordering | no |
-| DAC-1.2 window verification on first connection | build-step discipline + AC-1.3 recording granted window | no |
+| DAC-1.2 window verification on first connection | build-step discipline + AC-1.3a recording the granted window at first backfill (AC-1.3 records the requested one at enrollment) | no |
 | DAC-1.4 per-connection capabilities | capabilities discovered at enrollment (AC-3.2) | no |
 | DAC-2.x file-import institutions | import adapter + config (FR-7, AC-7.2, AC-7.5) | no |
 | DAC-3.x account rules | `account_rules` row + rule type (FR-8) | no |

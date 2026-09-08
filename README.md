@@ -10,16 +10,27 @@ independently establish that the underlying data is complete and fresh before it
 
 It is a data pipeline. It does no budgeting, forecasting, categorization or advice.
 
-**Status: build step 1 of ten is complete, and step 2 has begun** (`docs/system-requirements.md`
-§8). The encrypted datastore, its two connection roles, the core schema, the raw-response archive
-with a rebuild that verifies its own output, `store backup` (a verified single-file encrypted copy
-taken under the writer lock), and `sync shell` — an authenticated SQL prompt, since page encryption
-breaks ordinary SQL tooling — all exist and are tested. The aggregator client's
-walking skeleton has since landed and been run against the real sandbox: `bankmachine connector
-check` makes one authenticated call and archives the answer verbatim. **There is still no financial
-data to read** — nothing enrolls an account or fetches a transaction yet, so `store init` gives you
-an empty encrypted datastore, `connector check` puts one institution-list response in its archive,
-and `sync shell` lets you look at both. See `docs/system-requirements.md` for what is being built
+**Status: build steps 1-4 are complete, and the first slice of the MCP surface (step 7) is
+serving** (`docs/system-requirements.md` §8) — four of its ten specified tools, with the other six
+recorded as descoped in `.prawduct/artifacts/api-contract.md`.
+
+The pipeline runs end to end. `bankmachine enroll` prints a hosted enrollment URL, waits while you
+complete it in a browser, and records the connection; `connections list` and `connections retire`
+manage them, and retiring removes the connection at the aggregator so it stops billing.
+`bankmachine sync run` fetches each connection's accounts and transactions, applies additions,
+modifications and removals, and advances a cursor transactionally with the rows it accompanies — so
+an interrupted run resumes exactly where it stopped. `bankmachine mcp` serves the result to an MCP
+client over stdio, read-only.
+
+Underneath: an encrypted datastore with two connection roles, the core schema, a raw-response
+archive with a rebuild that verifies its own output, `store backup` (a verified single-file
+encrypted copy taken under the writer lock), and `sync shell` — an authenticated SQL prompt, since
+page encryption breaks ordinary SQL tooling.
+
+🔴 **Every answer says how far to trust it.** Responses carry the environment they came from, a
+freshness stamp, coverage counts, and warnings — `stale`, `degraded`, `gapped`, `partial`. A
+`gapped` warning means the institution granted less history than was asked for, so older data is
+*absent rather than zero*. See `docs/system-requirements.md` for what is being built,
 and `docs/build-vs-adopt-investigation.md` for why it is being built rather than adopted.
 
 ## What it is not

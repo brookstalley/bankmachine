@@ -717,13 +717,45 @@ design_decisions:
 #   - "Which paths count as risk surfaces" — answered by the owner 2026-09-05;
 #     `risk_surfaces:` below has held the five paths since, and the comment there
 #     already recorded that it closed this question.
+# =============================================================================
+# DATA LOCALITY — THE BOUNDARY, RULED 2026-09-07
+# =============================================================================
+# `[DECISION: a PRIVATE git remote is an acceptable reading of "financial data
+# must not leave the machine except as an encrypted backup" | taken by the owner
+# 2026-09-07, answering deployment open question 6.4 with its option (b) | user
+# can revisit]`
+#
+# The remote is `git@github.com:brookstalley/bankmachine.git`, verified PRIVATE
+# on the day of the ruling. The constraint's boundary is therefore the private
+# remote, not this machine, and that is now written down rather than contradicted
+# in silence -- which was the whole point of 6.4 recording it as open.
+#
+# What this ruling does NOT do, stated because the alternative reading is
+# available and wrong:
+#
+#   - It does not undo the gitignore. `deployment/` stays ignored and the leak
+#     guard stays enforcing. 6.4's option (a) was already executed on 2026-09-05
+#     -- verified 2026-09-07: `docs/data-sources.md` appears in no commit on any
+#     ref, no roster blob exists anywhere in history, and `deployment/` was never
+#     tracked. Undoing that would cost something and buy nothing.
+#   - It does not amend the ratified norms. "No roster or operator identity in
+#     anything pushed" (project-preferences) and "configuration is gitignored"
+#     still bind. This ruling widens where *the product's own data* may rest; it
+#     does not license roster rows into git.
+#
+# 🔴 The one consequence that bites later: **publishing this repository moves the
+# boundary again, and this ruling does not cover it.** GitHub keeps unreachable
+# objects fetchable by SHA after a history purge, so flipping this repo public is
+# not equivalent to publishing a clean one. If the tool is published, publish a
+# NEW repository -- and revisit this ruling before doing either.
+
 open_questions:
   - question: "Investment account types per institution (retirement vs. brokerage vs. rollover) — affects whether the aggregator's investments product covers them and what cost basis means. Tracked as deployment open question 6.1."
     blocking: "The investments portion of FR-3 and the cost-basis field in list_holdings."
     waiting_on: user
     priority: medium
   - question: "The complete institution roster. Tracked as deployment open question 6.2."
-    blocking: "Enrollment (build step 3) only. Steps 1-2 — schema, raw layer, aggregator client against sandbox — do not depend on it."
+    blocking: "Nothing currently. Answered 2026-09-07: build step 3 stays on sandbox, so no real institution is linked this cycle and the roster is not needed to finish it. It blocks the FIRST REAL enrollment, which is also the first moment AC-1.2 is irreversible and the first moment the granted window becomes observable (AC-1.3a)."
     waiting_on: user
     priority: medium
   - question: "Retention policy for raw responses: keep indefinitely (recommended — volume is trivial and it is the system of record) or prune after N months?"
@@ -1180,6 +1212,28 @@ distribution: plugin
 # path is markdown-first and sets this later, at scrub/cutover.
 # `/prawduct:backlog` routes on this scalar.
 backlog_service_repo: brookstalley/bankmachine
+
+# Raised from the 40KB default on 2026-09-07, after measuring rather than
+# guessing at what the two nudged files actually hold.
+#
+# `change-log.md` (81KB) cannot shrink at all right now: all thirteen entries
+# carry a `<!-- prawduct: scope=... -->` tag and NOT ONE carries `release=`, so
+# every entry is release-pending. Deleting any of them silently unships the work
+# it records. The file shrinks by itself at the first `develop -> main` release,
+# which archives by scope -- that release, not a deletion, is the remedy.
+#
+# `project-state.yaml` (79KB) is ~35KB `technical_decisions` + `design_decisions`
+# + `open_questions`, which the nudge itself says is the methodology working and
+# not the thing to cut. Most of the rest is explanatory comment on config keys.
+#
+# 100, not higher, is chosen so the nudge keeps a job. It clears both files
+# today with headroom, and fires again once `change-log.md` gains roughly three
+# more entries without a release -- at which point the nudge is no longer noise
+# about file size, it is the signal that the release archive is overdue. The
+# knob is repo-wide, so this also relaxes the ceiling for build plans; those run
+# an order of magnitude smaller, so a build plan reaching 100KB is still a real
+# finding.
+oversized_file_threshold_kb: 100
 
 # =============================================================================
 # NORM REGISTRY

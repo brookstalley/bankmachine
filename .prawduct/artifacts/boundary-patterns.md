@@ -190,9 +190,12 @@ because a datastore backup travels and a credential inside it travels with it.
 
 🔴 **The archive exemption is a property of the endpoint, not a list kept beside
 the archive.** `Endpoint.issues_credential` marks the endpoints whose *response
-body* carries a credential — today `/link/token/create` and
-`/item/public_token/exchange`, the latter verified live as returning
-`access_token`, `item_id`, `request_id`. `FetchedResponse.__post_init__` refuses
+body* carries a credential — today `POST /link/token/create`,
+`POST /link/token/get` and `POST /item/public_token/exchange`. The last is
+verified live as returning `access_token`, `item_id`, `request_id`; the middle
+one was added with hosted enrollment, because a *finished* Link session's body
+carries the `public_token` — the same single-use value the exchange spends, and
+therefore the same reason its body may never reach an append-only store. `FetchedResponse.__post_init__` refuses
 to exist for such an endpoint, and `store.raw` derives everything it persists
 from one of those — so a credential-bearing body cannot be archived by any
 caller, including one written years from now by someone who never read
@@ -208,9 +211,11 @@ token written there is written permanently and travels with every backup.
 and `AccessGrant` — rather than a `FetchedResponse`. There is no path from either
 into the archive, which is what keeps this structural rather than remembered.
 
-### MCP Tool Surface — *not built; build step 7*
+### MCP Tool Surface — *first slice built 2026-09-08; build step 7*
 
-**Producer:** `src/bankmachine/mcp/` (does not exist yet).
+**Producer:** `src/bankmachine/mcp.py` — stdio JSON-RPC, no SDK dependency
+(`api-notes-plaid.md` §18), reading through `src/bankmachine/query.py`. Four of
+the ten tools ship; the descope is recorded in `api-contract.md`.
 **Consumer:** an MCP client, and through it an analyst agent.
 **Contract:** `system-requirements.md` §5 — the ten tools, aggregate-first, with
 a freshness stamp on every response (AC-9.2), explicit warnings over gapped or
@@ -388,9 +393,9 @@ Item — is excluded by `Endpoint.retry_safe`, not by this reasoning.
 credential-archive mechanism; and the institutions and accounts derivers, so
 `store rebuild` now runs end-to-end over a real archive.
 
-**Not built yet:** the enrollment *flow* — the CLI, idempotency and the
-connection cap — which is build step 3, and the transactions deriver, which
-lands with its cursor loop in build step 4.
+**Built 2026-09-07 (build step 3):** the enrollment flow — the CLI, idempotency,
+the connection cap and retirement. **Built 2026-09-08 (build step 4):** the
+transactions deriver and its cursor loop, `bankmachine sync run`.
 
 ## Test Levels
 

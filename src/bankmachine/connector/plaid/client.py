@@ -40,10 +40,14 @@ from plaid.model.country_code import CountryCode
 from plaid.model.institutions_get_request import InstitutionsGetRequest
 from plaid.model.item_get_request import ItemGetRequest
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
+from plaid.model.item_remove_request import ItemRemoveRequest
+from plaid.model.link_token_create_hosted_link import LinkTokenCreateHostedLink
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
 from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
+from plaid.model.link_token_get_request import LinkTokenGetRequest
 from plaid.model.link_token_transactions import LinkTokenTransactions
 from plaid.model.products import Products
+from plaid.model.transactions_sync_request import TransactionsSyncRequest
 
 from bankmachine.config import MAX_HISTORY_DAYS, Config
 from bankmachine.connector import (
@@ -51,12 +55,16 @@ from bankmachine.connector import (
     INSTITUTIONS_GET,
     ITEM_GET,
     ITEM_PUBLIC_TOKEN_EXCHANGE,
+    ITEM_REMOVE,
     LINK_TOKEN_CREATE,
+    LINK_TOKEN_GET,
+    TRANSACTIONS_SYNC,
     AccessGrant,
     AggregatorNotConfiguredError,
     ConnectorError,
     Endpoint,
     FetchedResponse,
+    LinkSession,
     LinkToken,
     MalformedResponseError,
     TransportError,
@@ -78,6 +86,93 @@ from bankmachine.store.types import UtcInstant, now_utc
 #: notices data has stopped arriving, which is this product's named primary
 #: failure mode wearing a different hat.
 DEFAULT_REQUEST_TIMEOUT_SECONDS: Final = 30.0
+
+#: How long the hosted enrollment URL stays usable. The operator has to leave the
+#: terminal, open a browser, find their institution and pass its authentication --
+#: sometimes including a one-time code from a phone. Fifteen minutes is enough for
+#: that without leaving a URL that mints an Item lying around for an afternoon.
+DEFAULT_HOSTED_URL_LIFETIME_SECONDS: Final = 900
+
+#: How many transaction changes to ask for per page. The aggregator's own
+#: maximum is larger; this is smaller on purpose, because AC-2.5's guarantee is
+#: that a crash loses at most one uncommitted page, and a page is the unit of
+#: that loss.
+TRANSACTIONS_PAGE_SIZE: Final = 100
+
+
+def _first_item_add_result(session: dict[str, Any]) -> dict[str, Any] | None:
+    """The one item this session added, or None if it has added none yet.
+
+    Selected once and then read for every field that comes from it. The
+    alternative -- each field walking the entries for itself -- lets the public
+    token come from one item and the institution from another, producing a
+    connection labelled with an institution it does not belong to. Both values
+    would be individually well-formed, so nothing downstream could notice.
+    """
+    results = session.get("results")
+    if not isinstance(results, dict):
+        return None
+    added = results.get("item_add_results")
+    if not isinstance(added, list):
+        return None
+    for entry in added:
+        if isinstance(entry, dict):
+            return entry
+    return None
+
+
+def _public_token_of(session: dict[str, Any], added: dict[str, Any] | None) -> str | None:
+    """The public token a finished Link session yields, or None while it runs.
+
+    🔴 **Two places, read in order, because the aggregator's own models offer
+    both and this product has not yet observed which a real completion uses.**
+    `results.item_add_results[].public_token` is the current shape;
+    `on_success.public_token` is the older one the SDK still types. Reading both
+    costs a few lines and removes a class of failure that would only appear at a
+    real enrollment -- the moment this product is least able to retry, since a
+    completed session cannot be completed again.
+
+    A session that is present but has neither is not an error: a session exists
+    from the moment the operator opens the URL, and carries no token until they
+    finish.
+    """
+    if added is not None:
+        token = added.get("public_token")
+        if isinstance(token, str):
+            return token
+    on_success = session.get("on_success")
+    if isinstance(on_success, dict):
+        token = on_success.get("public_token")
+        if isinstance(token, str):
+            return token
+    return None
+
+
+def _session_public_token(session: dict[str, Any]) -> str | None:
+    """Whether a session carries a token, asked while choosing among several.
+
+    The chosen session is then read once, through `_public_token_of`, so the
+    selection pass and the read cannot disagree about which item they mean.
+    """
+    return _public_token_of(session, _first_item_add_result(session))
+
+
+def _institution_id_of(added: dict[str, Any] | None) -> str | None:
+    """Which institution the operator picked, for the log line that says so.
+
+    Not the source of truth for the connection's institution -- that comes from
+    `/item/get`, which reports the one the Item actually belongs to. Takes the
+    already-selected item rather than searching for one, so it cannot disagree
+    with the token about which item it is describing.
+    """
+    if added is None:
+        return None
+    institution = added.get("institution")
+    if not isinstance(institution, dict):
+        return None
+    institution_id = institution.get("institution_id")
+    return institution_id if isinstance(institution_id, str) else None
+
 
 _HOSTS: Final[dict[str, str]] = {
     "sandbox": plaid.Environment.Sandbox,
@@ -128,6 +223,36 @@ def _payload(endpoint: Endpoint, body: bytes) -> dict[str, Any]:
             endpoint=endpoint,
         )
     return payload
+
+
+def institution_ref_of(item_body: bytes) -> tuple[str, str]:
+    """The institution behind one connection: its source id and its name.
+
+    Read here rather than in the caller for the same reason `capabilities_of` is:
+    the shape of an item body is the aggregator's, and knowing it is what
+    `connector/plaid/` exists to contain. A CLI reaching into `item.institution_id`
+    would put aggregator knowledge in a module the containment test cannot guard.
+
+    🔴 From `/item/get`, never from `/institutions/get`. This is the institution
+    the Item actually belongs to; the catalogue endpoint serves the aggregator's
+    production list of every institution it supports, which is not a fact about
+    this operator.
+    """
+    payload = _payload(ITEM_GET, item_body)
+    item = payload.get("item")
+    if not isinstance(item, dict):
+        raise MalformedResponseError(
+            f"{ITEM_GET} answered without an item object", endpoint=ITEM_GET
+        )
+    source_id = item.get("institution_id")
+    name = item.get("institution_name")
+    if not isinstance(source_id, str) or not isinstance(name, str):
+        raise MalformedResponseError(
+            f"{ITEM_GET} answered without an institution_id and institution_name, so the "
+            f"connection has no institution to hang from",
+            endpoint=ITEM_GET,
+        )
+    return source_id, name
 
 
 def capabilities_of(item_body: bytes) -> frozenset[str]:
@@ -413,6 +538,7 @@ class PlaidClient:
         client_user_id: str,
         country_codes: list[str],
         products: list[str],
+        hosted_url_lifetime_seconds: int = DEFAULT_HOSTED_URL_LIFETIME_SECONDS,
     ) -> LinkToken:
         """Open a Link session that will request `history_days` of history.
 
@@ -441,18 +567,117 @@ class PlaidClient:
             user=LinkTokenCreateRequestUser(client_user_id=client_user_id),
             products=[Products(product) for product in products],
             transactions=LinkTokenTransactions(days_requested=history_days),
+            # 🔴 What makes AC-1.1 reachable without a local web server. Asking
+            # for a hosted session is what puts `hosted_link_url` in the reply;
+            # without it the operator has a token and nowhere to type it, and
+            # the product would need a listener and a registered redirect URI.
+            hosted_link=LinkTokenCreateHostedLink(
+                url_lifetime_seconds=hosted_url_lifetime_seconds,
+            ),
         )
         body = self._fetch_bytes(LINK_TOKEN_CREATE, self._api.link_token_create, request)
         payload = _payload(LINK_TOKEN_CREATE, body)
         token = payload.get("link_token")
         expiration = payload.get("expiration")
+        hosted_url = payload.get("hosted_link_url")
         if not isinstance(token, str) or not isinstance(expiration, str):
             raise MalformedResponseError(
                 f"{LINK_TOKEN_CREATE} answered without a link_token and expiration",
                 endpoint=LINK_TOKEN_CREATE,
                 failed_at=self._now(),
             )
-        return LinkToken(token=token, expires_at=expiration, requested_history_days=history_days)
+        if not isinstance(hosted_url, str) or not hosted_url:
+            # Checked separately from the pair above because its absence means
+            # something different and more specific: the request asked for a
+            # hosted session and did not get one, which is the aggregator saying
+            # Hosted Link is not available here. Folding it into the same message
+            # would send the operator looking at their link token.
+            raise MalformedResponseError(
+                f"{LINK_TOKEN_CREATE} returned no hosted_link_url, so there is no URL to "
+                f"enrol at. The request asked for a hosted session; an account without "
+                f"Hosted Link enabled is the likely cause",
+                endpoint=LINK_TOKEN_CREATE,
+                failed_at=self._now(),
+            )
+        return LinkToken(
+            token=token,
+            expires_at=expiration,
+            requested_history_days=history_days,
+            hosted_link_url=hosted_url,
+        )
+
+    def link_token_get(self, link_token: str) -> LinkSession:
+        """Poll one Link session. Never archived: a finished one carries a credential.
+
+        🔴 **An unfinished session omits `link_sessions` altogether** *(verified
+        live)* -- it is not an empty list and there is no status field, so
+        "still waiting" is the absence of a key. Reading a length here would
+        raise on every poll before the operator finishes, which is most of them.
+
+        The endpoint is `retry_safe`: polling is a pure read the far end can
+        absorb any number of times. It is also `issues_credential`, so its body
+        cannot become a `FetchedResponse` and therefore cannot be archived --
+        the public token is read out here and the body let go.
+        """
+        body = self._fetch_bytes(
+            LINK_TOKEN_GET, self._api.link_token_get, LinkTokenGetRequest(link_token=link_token)
+        )
+        payload = _payload(LINK_TOKEN_GET, body)
+        sessions = payload.get("link_sessions")
+        if sessions is None:
+            # Absent is the live unfinished shape, and the only one that means
+            # "not yet". Kept distinct from a wrong type below: collapsing them
+            # would poll a malformed response until the enrollment timed out,
+            # which is the failure every comment in this method exists to avoid.
+            return LinkSession(public_token=None, session_id=None, institution_id=None)
+        if not isinstance(sessions, list):
+            raise MalformedResponseError(
+                f"{LINK_TOKEN_GET} answered with link_sessions as "
+                f"{type(sessions).__name__}, not a list",
+                endpoint=LINK_TOKEN_GET,
+                failed_at=self._now(),
+            )
+        if not sessions:
+            return LinkSession(public_token=None, session_id=None, institution_id=None)
+        # An entry that is not an object is skipped rather than raised on. One
+        # unreadable entry must not abort the poll: the readable ones may hold a
+        # completed session, and refusing the whole response would strand an Item
+        # that already exists at the aggregator -- spent, billable, and invisible
+        # from here. That is the same harm the ordering below guards against, so
+        # it would be incoherent to reintroduce it as a validation.
+        readable = [entry for entry in sessions if isinstance(entry, dict)]
+        if not readable:
+            # Every entry unreadable is different in kind: there is nothing to
+            # poll, and reporting "still waiting" would wait forever on a response
+            # that will never become readable.
+            raise MalformedResponseError(
+                f"{LINK_TOKEN_GET} returned {len(sessions)} link_sessions and not one "
+                f"is an object, so no session can be read",
+                endpoint=LINK_TOKEN_GET,
+                failed_at=self._now(),
+            )
+        # 🔴 Every session is searched, and the NEWEST match wins -- both halves
+        # matter and they are one decision. One hosted URL can be opened more than
+        # once, and each opening is another entry. Searching all of them means an
+        # operator who completes the flow and then reopens the link is not
+        # reported as "still waiting" forever while their Item already exists.
+        # Taking the newest means that when two sessions are BOTH finished -- the
+        # same reopening, completed twice -- the token exchanged belongs to the
+        # Item just created, not to an older one whose public token may already
+        # have expired while the newer Item stays live and billable. The fallback
+        # for the unfinished case is newest for the same reason, so one rule
+        # covers both rather than two that can disagree.
+        finished = next(
+            (s for s in reversed(readable) if _session_public_token(s) is not None), None
+        )
+        session = finished if finished is not None else readable[-1]
+        added = _first_item_add_result(session)
+        session_id = session.get("link_session_id")
+        return LinkSession(
+            public_token=_public_token_of(session, added),
+            session_id=session_id if isinstance(session_id, str) else None,
+            institution_id=_institution_id_of(added),
+        )
 
     def exchange_public_token(self, public_token: str) -> AccessGrant:
         """Trade a public token for the access token a connection is read with.
@@ -485,6 +710,49 @@ class PlaidClient:
             ITEM_GET,
             self._api.item_get,
             ItemGetRequest(access_token=access_token),
+            connection_id=connection_id,
+        )
+
+    def item_remove(
+        self, access_token: str, *, connection_id: int | None = None
+    ) -> FetchedResponse:
+        """End a connection at the aggregator. Archivable: nothing comes back down.
+
+        The counterpart to enrollment, and the half that keeps a re-link from
+        leaving a paid-for Item behind. `connections.retired_at` records the local
+        decision; this is what makes the far end agree with it.
+        """
+        return self._fetch(
+            ITEM_REMOVE,
+            self._api.item_remove,
+            ItemRemoveRequest(access_token=access_token),
+            connection_id=connection_id,
+        )
+
+    def transactions_sync(
+        self,
+        access_token: str,
+        *,
+        cursor: str | None,
+        count: int = TRANSACTIONS_PAGE_SIZE,
+        connection_id: int | None = None,
+    ) -> FetchedResponse:
+        """One page of transaction changes. Archivable: nothing comes back down.
+
+        `cursor` is `None` for a connection that has never synced, which asks for
+        everything the aggregator will grant. It is a required keyword rather than
+        a defaulted one for the same reason `history_days` is: a caller that
+        forgot it would silently re-fetch all history on every run, and the cost
+        would show up as a rate limit rather than as a wrong answer.
+        """
+        request = TransactionsSyncRequest(access_token=access_token, count=count)
+        if cursor is not None:
+            request.cursor = cursor
+        return self._fetch(
+            TRANSACTIONS_SYNC,
+            self._api.transactions_sync,
+            request,
+            request_context=f"cursor={'initial' if cursor is None else 'resumed'} count={count}",
             connection_id=connection_id,
         )
 

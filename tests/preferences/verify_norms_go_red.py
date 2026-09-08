@@ -25,6 +25,7 @@ Each case restores the file it edited, including on failure.
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import shutil
 import subprocess
@@ -40,6 +41,9 @@ METADATA = pathlib.Path("src/bankmachine/store/schema.py")
 SHELL = pathlib.Path("src/bankmachine/cli/sync.py")
 SECRETS = pathlib.Path("src/bankmachine/secrets.py")
 CLI_CONNECTOR = pathlib.Path("src/bankmachine/cli/connector.py")
+CLI_ENROLL = pathlib.Path("src/bankmachine/cli/enroll.py")
+CLI_CONNECTIONS = pathlib.Path("src/bankmachine/cli/connections.py")
+CLI_MAIN = pathlib.Path("src/bankmachine/cli/__init__.py")
 CONNECTOR_CLIENT = pathlib.Path("src/bankmachine/connector/plaid/client.py")
 CONNECTOR_PACKAGE = pathlib.Path("src/bankmachine/connector/__init__.py")
 CONNECTOR_ERRORS = pathlib.Path("src/bankmachine/connector/plaid/errors.py")
@@ -55,8 +59,16 @@ CONNECTOR_CLI_TESTS = "tests/cli/test_connector_commands.py"
 CONNECTOR_TESTS = "tests/connector/test_client.py"
 ERROR_TESTS = "tests/connector/test_errors.py"
 ENROLLMENT_TESTS = "tests/connector/test_enrollment.py"
+ENROLL_CLI_TESTS = "tests/cli/test_enroll.py"
 DERIVER_TESTS = "tests/connector/test_derivers.py"
 CONNECTOR_DERIVERS = pathlib.Path("src/bankmachine/connector/plaid/derivers.py")
+SYNC_CURSOR_TESTS = "tests/connector/test_sync_cursor.py"
+TXN_TESTS = "tests/connector/test_transaction_derivers.py"
+SYNC_RUN = pathlib.Path("src/bankmachine/cli/sync_run.py")
+SYNC_RUN_TESTS = "tests/cli/test_sync_run.py"
+QUERY = pathlib.Path("src/bankmachine/query.py")
+MCP = pathlib.Path("src/bankmachine/mcp.py")
+MCP_TESTS = "tests/test_mcp.py"
 
 #: (description, file, text to replace, replacement, the test that must go red)
 CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
@@ -112,13 +124,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "migration atomicity: DDL and version stamp commit together",
         MIGRATIONS,
-        "                step.apply(conn)\n"
-        "                stamp_schema_version(conn, step.version)\n",
-        "                step.apply(conn)\n"
-        '            conn.execute("COMMIT")\n'
-        '            conn.execute("BEGIN IMMEDIATE")\n'
-        "            try:\n"
-        "                stamp_schema_version(conn, step.version)\n",
+        '            conn.execute("BEGIN IMMEDIATE")\n            try:',
+        "            try:",
         f"{NORMS}::test_a_migration_killed_between_its_ddl_and_its_stamp_leaves_nothing_healthy",
     ),
     (
@@ -397,7 +404,9 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "the derivation seam: no deriver reads the clock",
         CONNECTOR_DERIVERS,
+        '        "lifecycle_status": "active",\n        "source": "aggregator",\n'
         '        "updated_at": response.received_at,',
+        '        "lifecycle_status": "active",\n        "source": "aggregator",\n'
         '        "updated_at": __import__("bankmachine.store.types", fromlist=["x"]).now_utc(),',
         f"{DERIVER_TESTS}::test_no_deriver_reads_the_clock",
     ),
@@ -421,6 +430,448 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "        if raw_response_id is None:",
         "        if False:",
         f"{DERIVER_TESTS}::test_a_manual_row_survives_an_older_response_replayed_over_it",
+    ),
+    (
+        "AC-10.1: a polled Link session carries a public token and is never archived",
+        CONNECTOR_PACKAGE,
+        'LINK_TOKEN_GET = Endpoint("/link/token/get", retry_safe=True, issues_credential=True)',
+        'LINK_TOKEN_GET = Endpoint("/link/token/get", retry_safe=True)',
+        f"{ENROLLMENT_TESTS}::test_a_polled_session_can_never_become_an_archivable_response",
+    ),
+    (
+        "AC-1.1: an unfinished session is the absence of a key, not an empty list",
+        CONNECTOR_CLIENT,
+        "        if sessions is None:",
+        "        if False:",
+        f"{ENROLLMENT_TESTS}::test_an_unfinished_session_is_reported_by_the_absence_of_a_key",
+    ),
+    (
+        "AC-1.1: a hosted session with no URL is refused rather than returned empty",
+        CONNECTOR_CLIENT,
+        "        if not isinstance(hosted_url, str) or not hosted_url:",
+        "        if False:",
+        f"{ENROLLMENT_TESTS}::"
+        "test_a_hosted_session_that_returns_no_url_is_refused_not_returned_empty",
+    ),
+    (
+        "AC-1.2: the window that gets sent is the configured one, not a literal",
+        CONNECTOR_CLIENT,
+        "            transactions=LinkTokenTransactions(days_requested=history_days),",
+        "            transactions=LinkTokenTransactions(days_requested=MAX_HISTORY_DAYS),",
+        f"{ENROLLMENT_TESTS}::test_the_configured_window_travels_from_config_not_from_a_literal",
+    ),
+    (
+        "AC-1.1: a finished session is found behind a newer empty one",
+        CONNECTOR_CLIENT,
+        "        session = finished if finished is not None else readable[-1]",
+        "        session = readable[-1]",
+        f"{ENROLLMENT_TESTS}::test_a_completed_session_is_found_behind_a_newer_empty_one",
+    ),
+    (
+        "AC-1.1: a mistyped link_sessions is refused, not polled to timeout",
+        CONNECTOR_CLIENT,
+        "        if not isinstance(sessions, list):",
+        "        if False:",
+        f"{ENROLLMENT_TESTS}::test_a_mistyped_link_sessions_is_refused_not_read_as_waiting",
+    ),
+    (
+        "AC-1.3: the token and the institution describe the same added item",
+        CONNECTOR_CLIENT,
+        "        added = _first_item_add_result(session)",
+        "        added = _first_item_add_result(readable[0])",
+        f"{ENROLLMENT_TESTS}::test_the_token_and_the_institution_come_from_the_same_item",
+    ),
+    (
+        "AC-1.1: one unreadable session entry does not abort the poll",
+        CONNECTOR_CLIENT,
+        "        readable = [entry for entry in sessions if isinstance(entry, dict)]",
+        "        readable = list(sessions)",
+        f"{ENROLLMENT_TESTS}::test_an_unreadable_entry_does_not_strand_a_completed_session",
+    ),
+    (
+        "AC-1.1: a response with no readable session is refused, not waited on",
+        CONNECTOR_CLIENT,
+        "        if not readable:",
+        "        if False:",
+        f"{ENROLLMENT_TESTS}::test_a_response_with_no_readable_session_at_all_is_refused",
+    ),
+    (
+        "AC-1.1: the newest of two finished sessions is the one exchanged",
+        CONNECTOR_CLIENT,
+        "            (s for s in reversed(readable) if _session_public_token(s) is not None), None",
+        "            (s for s in readable if _session_public_token(s) is not None), None",
+        f"{ENROLLMENT_TESTS}::test_the_newest_of_two_finished_sessions_is_the_one_exchanged",
+    ),
+    (
+        "AC-1.5: the cap refuses before a token is minted, not after",
+        CLI_ENROLL,
+        "    if len(live) >= config.connection_cap:",
+        "    if False:",
+        f"{ENROLL_CLI_TESTS}::test_the_cap_refuses_before_anything_is_minted",
+    ),
+    (
+        "AC-1.2: enrollment asks for the CONFIGURED window, not a literal",
+        CLI_ENROLL,
+        "            history_days=config.history_days,",
+        "            history_days=730,",
+        f"{ENROLL_CLI_TESTS}::test_the_configured_window_is_what_enrollment_asks_for",
+    ),
+    (
+        "AC-1.3a: a new connection's granted window is null, never assumed",
+        CLI_ENROLL,
+        "            requested_history_days=requested_history_days,\n"
+        "            granted_history_days=None,",
+        "            requested_history_days=requested_history_days,\n"
+        "            granted_history_days=730,",
+        f"{ENROLL_CLI_TESTS}::"
+        "test_enrollment_records_the_requested_window_and_leaves_granted_unknown",
+    ),
+    (
+        "AC-1.4: re-enrolling an institution updates rather than duplicating",
+        CLI_ENROLL,
+        "    if existing is not None:",
+        "    if False:",
+        f"{ENROLL_CLI_TESTS}::test_re_enrolling_the_same_institution_updates_rather_than_duplicates",
+    ),
+    (
+        "AC-1.2: declining the window confirmation links nothing",
+        CLI_ENROLL,
+        "        if not _confirm_window(config, issued, assume_yes=args.yes):",
+        "        if False:",
+        f"{ENROLL_CLI_TESTS}::test_nothing_is_linked_when_the_window_is_not_confirmed",
+    ),
+    (
+        "exit codes: a cap refusal is 1 (ran and found a problem), never 2",
+        CLI_ENROLL,
+        "EXIT_UNHEALTHY  # ran and found a problem: the roster is full",
+        "EXIT_ERROR  # ran and found a problem: the roster is full",
+        f"{ENROLL_CLI_TESTS}::test_the_cap_race_releases_the_item_it_just_minted",
+    ),
+    (
+        "exit codes: an abandoned session is 1, not a broken install",
+        CLI_ENROLL,
+        "EXIT_UNHEALTHY  # ran and found a problem: the operator walked away",
+        "EXIT_ERROR  # ran and found a problem: the operator walked away",
+        f"{ENROLL_CLI_TESTS}::test_an_abandoned_session_exits_one_and_names_the_session",
+    ),
+    (
+        "exit codes: the code comes off the exception, not a tuple of types in run()",
+        CLI_MAIN,
+        "        return exc.exit_code",
+        "        return EXIT_UNHEALTHY",
+        f"{ENROLL_CLI_TESTS}::test_a_keychain_failure_after_the_exchange_still_names_the_item",
+    ),
+    (
+        "FR-1: the cap race releases the item it just minted",
+        CLI_ENROLL,
+        "        if not release_at_aggregator(config, credential_ref):",
+        "        if False:",
+        f"{ENROLL_CLI_TESTS}::test_the_cap_race_releases_the_item_it_just_minted",
+    ),
+    (
+        "FR-1: a keychain failure past the exchange still names the item",
+        CLI_ENROLL,
+        "    try:\n        # Inside the guard",
+        "    set_access_token(config, credential_ref, grant.access_token)\n"
+        "    try:\n        # Inside the guard",
+        f"{ENROLL_CLI_TESTS}::test_a_keychain_failure_after_the_exchange_still_names_the_item",
+    ),
+    (
+        "exit codes: an unreadable credential does not collapse a cap refusal to 2",
+        CLI_CONNECTIONS,
+        "        return True\n    except SecretsError as exc:",
+        "        return True\n    except AccessTokenMissingError as exc:  # noqa",
+        f"{ENROLL_CLI_TESTS}::test_an_unreadable_credential_does_not_collapse_a_cap_refusal_to_two",
+    ),
+    (
+        "AC-1.2: --timeout is floored, because it is also the URL's lifetime",
+        CLI_ENROLL,
+        "    if seconds < MIN_HOSTED_WAIT_SECONDS:",
+        "    if False:",
+        f"{ENROLL_CLI_TESTS}::test_a_timeout_below_the_floor_is_refused_before_the_aggregator",
+    ),
+    (
+        "FR-1: a re-enrollment releases the item it superseded at all",
+        CLI_ENROLL,
+        "    superseded_released = True\n    if enrolled.superseded_credential_ref is not None:",
+        "    superseded_released = True\n    if False:",
+        f"{ENROLL_CLI_TESTS}::test_removal_happens_only_after_the_replacement_is_committed",
+    ),
+    (
+        "AC-1.2: the hosted URL dies when this side stops waiting for it",
+        CLI_ENROLL,
+        "            hosted_url_lifetime_seconds=args.timeout,",
+        "            hosted_url_lifetime_seconds=900,",
+        f"{ENROLL_CLI_TESTS}::test_the_url_lifetime_is_the_wait_not_a_second_number",
+    ),
+    (
+        "AC-1.4: a re-enrollment removes the item it superseded",
+        CLI_ENROLL,
+        "    if enrolled.superseded_credential_ref is not None:",
+        "    if False:",
+        f"{ENROLL_CLI_TESTS}::test_re_enrolling_removes_the_item_it_superseded",
+    ),
+    (
+        "AC-1.4: a converging re-run against the same item removes nothing",
+        CLI_ENROLL,
+        "superseded_credential_ref=(previous_credential_ref if replaced_the_item else None)",
+        "superseded_credential_ref=previous_credential_ref",
+        f"{ENROLL_CLI_TESTS}::test_a_converging_re_run_against_the_same_item_removes_nothing",
+    ),
+    (
+        "FR-1: a failure after the exchange names the item and the credential",
+        CLI_ENROLL,
+        "            source_connection_id=grant.source_connection_id,\n            credential_ref",
+        '            source_connection_id="",\n            credential_ref',
+        f"{ENROLL_CLI_TESTS}::test_a_failure_after_the_exchange_names_the_item_and_the_credential",
+    ),
+    (
+        "AC-1.6: retirement removes the item at the aggregator, not just locally",
+        CLI_CONNECTIONS,
+        "    removed = release_at_aggregator(config, credential_ref, connection_id=connection_id)",
+        "    removed = True",
+        f"{ENROLL_CLI_TESTS}::test_retiring_removes_the_item_at_the_aggregator",
+    ),
+    (
+        "AC-1.6: retiring keeps the connection row and its history",
+        CLI_CONNECTIONS,
+        '        .values(status="retired", retired_at=now, updated_at=now)',
+        '        .values(status="retired", updated_at=now)',
+        f"{ENROLL_CLI_TESTS}::test_retiring_keeps_every_row_the_connection_produced",
+    ),
+    (
+        "AC-10.1: the credential outlives a failed removal, being the only handle left",
+        CLI_CONNECTIONS,
+        "        delete_access_token(config, credential_ref)",
+        "        pass",
+        f"{ENROLL_CLI_TESTS}::test_retiring_removes_the_item_at_the_aggregator",
+    ),
+    (
+        "AC-2.1: an empty next_cursor never overwrites a good one",
+        CONNECTOR_DERIVERS,
+        "    if not isinstance(next_cursor, str) or not next_cursor:\n        return",
+        "    if False:\n        return",
+        f"{SYNC_CURSOR_TESTS}::test_a_not_ready_response_does_not_move_the_cursor",
+    ),
+    (
+        "AC-2.1: a sync page archived against no connection advances nothing",
+        CONNECTOR_DERIVERS,
+        "    if response.connection_id is None:\n"
+        "        raise DerivationError(\n"
+        '            f"raw response {response.raw_response_id} ({TRANSACTIONS_SYNC})',
+        "    if False:\n"
+        "        raise DerivationError(\n"
+        '            f"raw response {response.raw_response_id} ({TRANSACTIONS_SYNC})',
+        f"{SYNC_CURSOR_TESTS}::test_a_page_archived_against_no_connection_is_refused",
+    ),
+    (
+        "the sign convention: a purchase reported positive is stored negative",
+        CONNECTOR_DERIVERS,
+        "    return negate(exact)",
+        "    return exact",
+        f"{TXN_TESTS}::test_a_purchase_reported_positive_is_stored_negative",
+    ),
+    (
+        "AC-2.3: a posting transaction updates the pending row, never duplicates it",
+        CONNECTOR_DERIVERS,
+        "    if pending_source_id is None:\n        return None",
+        "    if True:\n        return None",
+        f"{TXN_TESTS}::test_a_posting_transaction_updates_the_pending_row",
+    ),
+    (
+        "AC-2.2: a removed transaction is soft-deleted, never hard-deleted",
+        CONNECTOR_DERIVERS,
+        "        .values(removed_at=response.received_at, updated_at=response.received_at)",
+        "        .values(updated_at=response.received_at)",
+        f"{TXN_TESTS}::test_a_removed_transaction_is_soft_deleted",
+    ),
+    (
+        "AC-2.2: a transaction sent again after removal is present again",
+        CONNECTOR_DERIVERS,
+        "            removed_at=None,\n            **values,",
+        "            **values,",
+        f"{TXN_TESTS}::test_a_transaction_removed_then_sent_again_is_present_again",
+    ),
+    (
+        "AC-6.2: a ledger amount is converted exactly or refused, never rounded",
+        CONNECTOR_DERIVERS,
+        "        exact = from_decimal_string(amount, exponent=minor_digits(currency))",
+        '        exact = to_minor(amount, currency, "a transaction", response)',
+        f"{TXN_TESTS}::test_an_amount_with_sub_cent_precision_is_refused_not_rounded",
+    ),
+    (
+        "AC-2.1: a transaction for an unknown account is refused, not skipped",
+        CONNECTOR_DERIVERS,
+        "    if not isinstance(source_account_id, str) or source_account_id not in known:",
+        "    if False:",
+        f"{TXN_TESTS}::test_a_transaction_for_an_unknown_account_is_refused",
+    ),
+    (
+        "AC-2.6: NOT_READY is read before has_more, or an empty sync reports success",
+        SYNC_RUN,
+        "                if status == NOT_READY:",
+        "                if False:",
+        f"{SYNC_RUN_TESTS}::test_a_not_ready_first_page_is_not_reported_as_a_successful_empty_sync",
+    ),
+    (
+        "AC-2.1: each page resumes from the cursor the datastore committed",
+        SYNC_RUN,
+        "                cursor = _cursor_for(config, connection_id)",
+        "                cursor = None",
+        f"{SYNC_RUN_TESTS}::test_each_page_resumes_from_the_cursor_the_last_one_stored",
+    ),
+    (
+        "AC-4.1: one connection's failure never aborts another",
+        SYNC_RUN,
+        "        return _degrade(config, outcome, type(exc).__name__, str(exc))",
+        "        raise",
+        f"{SYNC_RUN_TESTS}::test_one_connection_failing_does_not_stop_the_others",
+    ),
+    (
+        "AC-2.1: accounts are refreshed before transactions are paged",
+        SYNC_RUN,
+        "            accounts_page = client.accounts_get(",
+        "            accounts_page = None  # type: ignore[assignment]\n            _unused(",
+        f"{SYNC_RUN_TESTS}::test_every_run_refreshes_accounts_before_paging_transactions",
+    ),
+    (
+        "AC-1.6: a retirement whose removal never confirmed is retried, not reported done",
+        CLI_CONNECTIONS,
+        "        if not _credential_survives(config, row.credential_ref):",
+        "        if True:",
+        f"{ENROLL_CLI_TESTS}::"
+        "test_retrying_a_retirement_whose_removal_never_confirmed_actually_retries",
+    ),
+    (
+        "FR-1: an item this product could not release gets a row to retry from",
+        CLI_ENROLL,
+        "            _record_orphan(config, item.body, grant.source_connection_id, credential_ref)",
+        "            pass",
+        f"{ENROLL_CLI_TESTS}::test_an_item_orphaned_by_the_cap_race_becomes_a_retirable_connection",
+    ),
+    (
+        "FR-1: a post-exchange failure releases the item it could not record",
+        CLI_ENROLL,
+        "        released = release_at_aggregator(config, credential_ref)",
+        "        released = False",
+        f"{ENROLL_CLI_TESTS}::test_a_failure_after_the_exchange_releases_the_item_it_could_not_record",
+    ),
+    (
+        "exit codes: syncing an unknown connection is 1, not a silent 0",
+        SYNC_RUN,
+        "        if args.connection is not None:",
+        "        if False:",
+        f"{SYNC_RUN_TESTS}::test_syncing_an_unknown_connection_is_reported_not_silently_fine",
+    ),
+    (
+        "AC-2.1: a run that hits its page ceiling says it stopped short",
+        SYNC_RUN,
+        "                outcome.stopped_short = True",
+        "                outcome.stopped_short = False",
+        f"{SYNC_RUN_TESTS}::test_a_run_that_hits_the_page_ceiling_says_it_stopped_short",
+    ),
+    (
+        "AC-1.3a: the granted window is measured only once history is complete",
+        SYNC_RUN,
+        "    if outcome.historical_complete:",
+        "    if True:",
+        f"{SYNC_RUN_TESTS}::test_the_granted_window_is_not_computed_before_the_backfill_completes",
+    ),
+    (
+        "AC-11.8: a shortfall against the requested window is recorded, not swallowed",
+        SYNC_RUN,
+        "    if _is_short(granted, requested):\n        # AC-11.8",
+        "    if False:\n        # AC-11.8",
+        f"{SYNC_RUN_TESTS}::test_a_shortfall_against_the_requested_window_is_reported",
+    ),
+    (
+        "the MCP envelope: every answer names the environment it came from",
+        QUERY,
+        '            "environment": self.environment,',
+        '            "environment": "unknown",',
+        f"{MCP_TESTS}::test_every_answer_names_the_environment_it_came_from",
+    ),
+    (
+        "AC-11.8: a history shortfall rides the success path as a warning",
+        QUERY,
+        "        elif _is_short(granted, requested):",
+        "        elif False:",
+        f"{MCP_TESTS}::test_a_shortfall_rides_the_success_path_as_a_warning",
+    ),
+    (
+        "AC-1.3a: an unmeasured window is not reported as no shortfall",
+        QUERY,
+        "        if granted is None and last_success is not None:",
+        "        if False:",
+        f"{MCP_TESTS}::test_an_unmeasured_window_is_reported_differently_from_no_shortfall",
+    ),
+    (
+        "AC-4.2: spending sums outflow only, never net movement",
+        QUERY,
+        "                transactions.c.amount_minor < 0,",
+        "                transactions.c.amount_minor != 0,",
+        f"{MCP_TESTS}::test_spending_sums_outflow_only_and_reports_magnitudes",
+    ),
+    (
+        "MCP: the client's protocol version is honoured when recognized",
+        MCP,
+        "            if isinstance(requested, str) and requested in SUPPORTED_PROTOCOL_VERSIONS",
+        "            if False",
+        f"{MCP_TESTS}::test_the_clients_protocol_version_is_honoured_when_recognized",
+    ),
+    (
+        "AC-2.1: the derivation transaction rolls back a cursor it already wrote",
+        ENGINE,
+        '        conn.exec_driver_sql("ROLLBACK")',
+        '        conn.exec_driver_sql("COMMIT")',
+        f"{SYNC_CURSOR_TESTS}::"
+        "test_a_cursor_written_then_abandoned_does_not_survive_the_transaction",
+    ),
+    (
+        "AC-2.1: a bounded run does not stamp last_success_at",
+        SYNC_RUN,
+        "    _record_success(config, connection_id, complete=not outcome.stopped_short)",
+        "    _record_success(config, connection_id, complete=True)",
+        f"{SYNC_RUN_TESTS}::test_a_bounded_run_does_not_claim_the_connection_is_up_to_date",
+    ),
+    (
+        "AC-ARCH.3: the MCP server reports an unreadable datastore, never refuses",
+        QUERY,
+        "    status = inspect(config)\n"
+        '    return None if status.healthy else (status.problem or "it is missing or unreadable")',
+        "    return None",
+        f"{MCP_TESTS}::test_the_server_starts_and_answers_when_the_datastore_is_missing",
+    ),
+    (
+        "AC-11.8: the granted window is measured once, never re-measured",
+        SYNC_RUN,
+        "        if existing is not None:\n            # Already measured",
+        "        if False:\n            # Already measured",
+        f"{SYNC_RUN_TESTS}::test_the_granted_window_is_measured_once_and_never_re_measured",
+    ),
+    (
+        "AC-ARCH.3: cmd_mcp starts against a missing datastore rather than refusing",
+        MCP,
+        "    status = inspect(config)\n    if not status.healthy:\n        logger.warning(",
+        "    status = inspect(config)\n    if not status.healthy:\n        raise SystemExit(2)\n"
+        "    if not status.healthy:\n        logger.warning(",
+        f"{MCP_TESTS}::test_cmd_mcp_itself_starts_against_a_missing_datastore",
+    ),
+    (
+        "AC-11.8: a later run still reports a shortfall it did not measure",
+        SYNC_RUN,
+        "            if _is_short(existing, requested):\n"
+        "                outcome.history_shortfall_days = int(requested) - int(existing)",
+        "            if False:\n"
+        "                outcome.history_shortfall_days = int(requested) - int(existing)",
+        f"{SYNC_RUN_TESTS}::test_a_later_run_still_reports_the_shortfall_it_did_not_measure",
+    ),
+    (
+        "AC-10.1: a public token never reaches a repr",
+        CONNECTOR_PACKAGE,
+        '        held = "<redacted>" if self.public_token is not None else None',
+        "        held = self.public_token",
+        f"{ENROLLMENT_TESTS}::test_no_enrollment_credential_reaches_a_repr",
     ),
 ]
 
@@ -447,7 +898,29 @@ def main() -> int:
             survivors.append(name)
             continue
 
-        path.write_text(original.replace(old, new, 1), encoding="utf-8")
+        mutated = original.replace(old, new, 1)
+        # 🔴 The mutation must still be valid Python, and this is not a nicety.
+        # `main` judges a case by pytest's exit code, and pytest exits non-zero
+        # on a COLLECTION error exactly as it does on a failure -- so a mutation
+        # that does not parse prints RED without ever exercising the guarantee,
+        # and the case passes forever no matter what the code does. That is the
+        # same shape as every defect this harness exists to catch, in the harness
+        # itself. Checked before the run rather than inferred from its output,
+        # because by then the two are indistinguishable.
+        if path.suffix == ".py":
+            try:
+                ast.parse(mutated)
+            except SyntaxError as exc:
+                print(
+                    f"INVALID {name}\n"
+                    f"       the mutation does not parse ({exc.msg} at line {exc.lineno}), so "
+                    f"pytest would fail to COLLECT and the case would report RED without "
+                    f"testing anything"
+                )
+                survivors.append(name)
+                continue
+
+        path.write_text(mutated, encoding="utf-8")
         _drop_bytecode()
         try:
             result = subprocess.run(

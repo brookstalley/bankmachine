@@ -41,6 +41,13 @@ ENV_PREFIX: Final = "BANKMACHINE_"
 #: reversible.
 MAX_HISTORY_DAYS: Final = 730
 
+#: How many live connections the aggregator plan allows. 🔴 AC-1.5 requires this
+#: to be configuration and not a literal, because plan tiers change -- and the
+#: refusal has to come from here rather than from the aggregator, which would
+#: reject only *after* the operator had completed a Link session and minted an
+#: Item nobody can use.
+DEFAULT_CONNECTION_CAP: Final = 10
+
 #: SQLite waits this long for a competing writer before raising `database is
 #: locked`. It is the second layer only; writer processes serialize on the
 #: advisory lock in `store.connection` before they open anything.
@@ -63,6 +70,13 @@ class Config:
     plaid_client_id: str | None
     """The aggregator client identifier. Public in the sense that it is not the secret,
     but still an operator's own value, so it is configuration rather than a literal."""
+    connection_cap: int
+    """How many live connections may exist at once (AC-1.5).
+
+    Configuration rather than a literal because plan tiers change. Retired
+    connections do not count against it: they hold history and cost nothing at
+    the aggregator.
+    """
     history_days: int
     """How much transaction history enrollment asks the aggregator to grant.
 
@@ -104,6 +118,20 @@ class Config:
         first.
         """
         return f"plaid:{self.environment}"
+
+    def connection_keychain_account(self, source_connection_id: str) -> str:
+        """The keychain account holding ONE connection's access token.
+
+        Environment-scoped for the reason the two above are: a sandbox item and a
+        production item can carry the same aggregator id, and one account name for
+        both would let a sandbox re-enrollment overwrite the credential for a real
+        connection -- silently, and discoverable only at the next sync.
+
+        The word "token" is deliberately absent for the same reason the datastore
+        account avoids "key": the redacting formatter treats `token:<value>` as a
+        credential and would blank the connection out of every line naming it.
+        """
+        return f"connection:{self.environment}:{source_connection_id}"
 
 
 def _home(env: Mapping[str, str]) -> Path:
@@ -238,6 +266,17 @@ def load_config(
             f"maximum), got {history_days}"
         )
 
+    cap_raw = _resolve("connection_cap", env, file_values)
+    try:
+        connection_cap = int(cap_raw) if cap_raw else DEFAULT_CONNECTION_CAP
+    except ValueError as exc:
+        raise ConfigError(f"connection_cap must be an integer, got {cap_raw!r}") from exc
+    if connection_cap < 1:
+        # A cap of zero would refuse every enrollment including the first, which
+        # is indistinguishable from the product being broken. Refusing the value
+        # names the setting instead.
+        raise ConfigError(f"connection_cap must be at least 1, got {connection_cap}")
+
     timeout_raw = _resolve("busy_timeout_ms", env, file_values)
     try:
         busy_timeout_ms = int(timeout_raw) if timeout_raw else DEFAULT_BUSY_TIMEOUT_MS
@@ -253,6 +292,7 @@ def load_config(
         keychain_service=keychain_service,
         busy_timeout_ms=busy_timeout_ms,
         plaid_client_id=plaid_client_id,
+        connection_cap=connection_cap,
         history_days=history_days,
         config_path=config_path if explicit_config else None,
     )

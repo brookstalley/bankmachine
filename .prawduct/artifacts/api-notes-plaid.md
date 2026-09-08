@@ -321,6 +321,173 @@ fixtures rather than a shape the sandbox will hand over on its own.
 
 ---
 
+## What Chunk 01 of enrollment established
+
+### 15. 🔴 Hosted Link works, and an unfinished session has no `link_sessions` key
+
+Probed live against sandbox 2026-09-07, which is what settled the enrollment design.
+
+**`/link/token/create` with `hosted_link` set** returns `expiration`, `hosted_link_url`,
+`link_token`, `request_id` — one key more than the same call without it (§11 recorded
+`expiration`, `link_token`, `request_id`). So the hosted URL is available on this account, and
+AC-1.1's "prints a hosted enrollment URL" needs no local web server: the operator opens the URL,
+and the CLI polls for the result.
+
+🔴 **`hosted_link_url` WAS discarded by the client before this chunk.** `LinkToken` carried
+`token`, `expires_at` and `requested_history_days` only, and `link_token_create` did not send
+`hosted_link` at all — so AC-1.1 was unreachable, which is not what "the client half exists"
+suggested. Both were fixed in the same chunk. `LinkToken.hosted_link_url` carries it now, and the
+lifetime sent with the request is the caller's own wait, so the URL cannot outlive the poll watching
+for it.
+
+**`/link/token/get` on an unfinished session omits `link_sessions` entirely.** Measured keys:
+`created_at`, `expiration`, `link_token`, `metadata`, `request_id`. `link_sessions` is **absent**,
+not an empty list and not a status field — so *"has the operator finished?"* is answered by the
+absence of a key. A poll loop that reads `len(link_sessions)` raises `TypeError` on every call
+before completion, which is the normal case for most of the loop's life.
+
+**The metadata carries no window field**, confirming live what §11 established from the models:
+`client_name`, `country_codes`, `initial_products`, `language`, `redirect_uri`, `webhook`. Together
+with `Item` carrying none either, this is the third and last place the granted window could have
+been and is not — the evidence behind the AC-1.3/AC-1.3a split.
+
+**Still unprobed: the finished-session payload.** Sandbox offers no way to complete a Hosted Link
+session programmatically — `/sandbox/public_token/create` bypasses Link, so it mints a public token
+without ever creating a session `/link/token/get` would report. The finished shape needs a human to
+complete one session in a browser. Narrowly stated: what is blocked is the *finished* payload only,
+and everything above was reachable without it.
+
+---
+
+## What the transaction-sync verify-api established
+
+### 16. 🔴 `transactions_update_status` answers AC-2.6 on the SUCCESS path, and gates AC-1.3a
+
+Read from the pinned SDK 2026-09-07, before any of build step 4 was designed.
+
+`POST /transactions/sync` takes `access_token`, `cursor`, `count`, `options` and answers with
+`transactions_update_status`, `accounts`, `added`, `modified`, `removed`, `next_cursor`,
+`has_more`, `request_id`. Everything FR-2 asks for is there: `has_more`/`next_cursor` for AC-2.1's
+loop and its transactional cursor, the three change lists for AC-2.2, and
+`Transaction.pending_transaction_id` for AC-2.3's pending→posted match. A `RemovedTransaction`
+carries only `transaction_id` and `account_id`, which is all AC-2.2's soft delete needs.
+
+🔴 **`transactions_update_status` is an enum on the success path**, with values
+`TRANSACTIONS_UPDATE_STATUS_UNKNOWN`, `NOT_READY`, `INITIAL_UPDATE_COMPLETE`,
+`HISTORICAL_UPDATE_COMPLETE`. Two consequences, and the second is the one that would have been
+expensive to discover late:
+
+1. **AC-2.6's "not yet ready" is a field, not an error.** The requirement says a not-yet-ready
+   response must trigger backoff-and-retry rather than failure, and this is how the aggregator
+   actually says it. `PRODUCT_NOT_READY` — recorded in the handoff as the least-evidenced entry in
+   the whole error taxonomy — is not the primary channel for this case. Reading the status field is
+   both better evidenced and on the path the code already takes.
+
+2. 🔴 **AC-1.3a's granted window cannot be computed until `HISTORICAL_UPDATE_COMPLETE`.**
+   `sync_state.history_start_date` is meant to hold the oldest transaction the aggregator actually
+   returned, and that is what `granted_history_days` is derived from. Computing it at
+   `INITIAL_UPDATE_COMPLETE` would measure a backfill still in flight and record a shortfall that
+   does not exist — a confidently wrong number, well-formed and plausible, which is the exact
+   failure class this product was built to prevent. **The status field is the gate**, and a build
+   that fills `granted_history_days` on the first completed page has failed AC-11.8 while appearing
+   to satisfy it.
+
+`accounts` also rides the sync response, so a sync refreshes account rows without a separate
+`POST /accounts/get`. Whether to use it or keep the endpoints separate is a build step 4 decision,
+not settled here.
+
+---
+
+### 17. 🔴 `has_more` is FALSE on a `NOT_READY` response, so it cannot terminate the loop
+
+Probed live 2026-09-07 against a freshly minted sandbox item
+(`POST /sandbox/public_token/create` → exchange → `POST /transactions/sync`). Two attempts, three
+seconds apart:
+
+| attempt | `transactions_update_status` | added | `has_more` | `next_cursor` |
+|---|---|---|---|---|
+| 1 | `NOT_READY` | 0 | **`False`** | **empty** |
+| 2 | `INITIAL_UPDATE_COMPLETE` | 10 | `True` | set |
+
+🔴 **A loop written as `while has_more:` terminates immediately on the first sync of every new
+connection, and records a successful run with zero transactions.** Nothing raises. The connection
+looks synced, `last_success_at` is stamped, and the account reports no activity — a *successful*
+response computed over data that has not materialized yet, which `api-contract.md` § Direction names
+as this product's primary failure mode in so many words. AC-2.6 exists to prevent exactly this, and
+the shape of the trap is that the naive loop satisfies AC-2.1's "loop until the source reports no
+more pages" **literally** while being wrong.
+
+**So the status is consulted before `has_more`, not after.** `NOT_READY` means back off and retry;
+it is not an error, not a degraded connection, and not the end of a page run.
+
+🔴 **`next_cursor` is empty on that response**, so a writer that persists it unconditionally either
+stores an empty cursor — which means *start from the beginning* — or, worse, overwrites a good
+cursor with one. The cursor is written only from a response that carried one.
+
+**What the transaction body actually holds** *(measured on a real sandbox row)*: `account_id`,
+`amount`, `iso_currency_code`, `date`, `authorized_date`, `pending`, `pending_transaction_id`,
+`transaction_id`, `name`, `merchant_name`, `personal_finance_category` (`primary`/`detailed`/
+`confidence_level`/`version`), plus `counterparties`, `location`, `payment_meta`, `running_balance`
+and a dozen more. `personal_finance_category.primary`/`.detailed` are what
+`source_category_primary`/`_detailed` take.
+
+**A purchase arrives POSITIVE.** The sample row is `amount: 89.4` for a merchant purchase on a
+depository account — money leaving. Under `data-model.md` § Direction's operator-POV convention that
+is stored **negative**, and a build that took it at face value would be wrong by twice the amount on
+every spend row.
+
+**The SDK's `to_dict()` floats the amount and parses the date into `datetime.date`.** Neither reaches
+this product: bodies are archived as raw bytes and parsed with `parse_float=str`. Recorded because it
+is a live demonstration of why AC-5.1 puts the archive before any normalization — the convenient path
+loses exactness at the first hop.
+
+---
+
+## The MCP surface
+
+### 18. 🔴 The official SDK is a web stack, and this server speaks over stdio
+
+Measured 2026-09-08, in a throwaway venv rather than by recall: `uv pip install mcp` resolves to
+**29 packages** — `mcp` and `mcp-types` plus 27 transitive, including `uvicorn`, `starlette`,
+`sse-starlette`, `httpx2`, `httpcore2`, `cryptography`, `opentelemetry-api`, `pyjwt` and
+`python-multipart`. This product currently has **five direct dependencies and four transitive**.
+
+🔴 **Adopting it would put an HTTP server and an HTTP client into the dependency graph of a
+read-only local tool** whose ratified norm is *"the aggregator's API is the only network
+destination; nothing outside `connector/` may reach a network transport"*
+(`security-model.md` § Direction). That norm's own recorded limit is that the import scan cannot
+see a dependency phoning home on its own — so the mechanism that enforces it is weakest exactly
+where a web stack would be added. Taking the SDK is therefore not a neutral convenience; it is a
+decision that stresses the norm's weakest seam, for transports this product does not use.
+
+**So the stdio transport is implemented directly, and the norm is conformed to rather than
+departed from.** `[DECISION: the MCP server speaks JSON-RPC over stdio without the official SDK |
+the SDK's value is its HTTP/SSE transports, session management and spec tracking, and this server
+uses none of the first two; 29 packages against 9, including uvicorn and starlette, is a poor trade
+for a local read-only tool, and the surface actually needed — `initialize`, `tools/list`,
+`tools/call`, `notifications/initialized` — is small enough to read | user can revisit if the
+handshake proves brittle in practice]`
+
+**The honest cost of that decision**, stated rather than discovered later: the SDK tracks
+protocol-version changes and negotiation edge cases, and a hand-rolled handshake can be subtly
+wrong in a way that fails at connection time rather than in a test. The mitigation is that the wire
+format below was read from the SDK's own type definitions rather than remembered, and the handshake
+is exercised end to end.
+
+**The wire format, read from `mcp.types` 2.2.0:**
+
+- `LATEST_PROTOCOL_VERSION` is `2026-07-28`; `DEFAULT_NEGOTIATED_VERSION` is `2025-03-26`. A server
+  echoes back a version the client can speak, so **the client's requested version is honoured when
+  recognized** rather than the server's newest being asserted.
+- `InitializeResult` serializes as `protocolVersion`, `capabilities`, `serverInfo`, `instructions`
+  — camelCase on the wire, snake_case in the SDK's Python. Getting this wrong is the most likely
+  hand-rolling error, which is why it is recorded here rather than inferred.
+- `Tool` serializes as `name`, `title`, `description`, `inputSchema`, `annotations`.
+- `CallToolResult` serializes as `content`, `structuredContent`, `isError`.
+- `ServerCapabilities` carries `tools`, `resources`, `prompts`, `logging`, `completions`.
+
+---
+
 ## What is deliberately unused
 
 The generated response models — the largest part of the package — are not used at all, and

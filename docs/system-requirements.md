@@ -159,7 +159,33 @@ parameter in the system: a build that ships with the vendor default has failed.
 
 **AC-1.3** — On success the public token is exchanged for an access token, persisted per §6, and the
 connection is recorded with its institution identifier, enrollment timestamp, and **the history
-window actually granted** — which may be less than requested.
+window requested**.
+
+**AC-1.3a** — 🔴 **The granted history window is recorded when it first becomes observable, which is
+not at enrollment.** No enrollment-path response reports it, so `granted_history_days` is null on a
+newly enrolled connection and is written once the initial backfill reveals the oldest transaction
+the aggregator actually returned. A null granted window means *not yet known*, and must never be
+read as *no shortfall* — AC-11.8 computes the shortfall only once this is set.
+
+> **Amendment (2026-09-07, build step 3 planning).** AC-1.3 previously required enrollment to record
+> "the history window actually granted." It cannot: the aggregator's enrollment path does not carry
+> that value anywhere. Verified against the pinned SDK rather than the vendor docs —
+> `/link/token/create` returns only `link_token`, `expiration`, `request_id`, `hosted_link_url`,
+> `user_id` (and `api-notes-plaid.md` §11 already recorded that it does not echo the request);
+> `/link/token/get`'s metadata carries only `initial_products`, `webhook`, `country_codes`,
+> `language`, `redirect_uri`, `client_name`, `institution_data`, `account_filters`; and `/item/get`'s
+> `Item` carries no window field at all. The requirement as written was unsatisfiable by any
+> implementation, so it is split rather than quietly under-delivered: enrollment records what it can
+> know (requested), and AC-1.3a homes the granted window where it is first knowable. **This moves
+> when a value is recorded, not whether** — the shortfall AC-11.8 exists to make visible is
+> unchanged, and null is given an explicit meaning so the gap cannot be read as its absence.
+>
+> The schema had already assumed this. `store/migrations/core_schema.py` has carried the comment
+> *"`granted_history_days` is nullable because AC-1.3 records what the source actually gave, which is
+> not known until the first sync returns"* since build step 1 — so the DDL and AC-1.3 have disagreed
+> from the day both existed, and every reader who reached the column believed the schema. This
+> amendment settles the disagreement in favour of the one that was right, rather than discovering it
+> as a defect during the build.
 
 **AC-1.4** — Enrollment is idempotent: re-running for an already-enrolled institution updates rather
 than duplicating the connection.
@@ -339,6 +365,10 @@ Required tools:
 | `list_holdings` | Current investment positions with cost basis where available |
 | `find_recurring` | Detected recurring charges with cadence, amount drift, last-seen |
 | `get_coverage_report` | Per account: first and last transaction date, gaps >7 days, source breakdown |
+
+*(Build status 2026-09-08: `get_pipeline_health`, `list_accounts`, `query_transactions` and
+`spending_summary` are implemented in first slice; the other six are not yet built, and the descope
+— including what the shipped four do not yet carry — is recorded in `.prawduct/artifacts/api-contract.md`.)*
 
 **AC-9.2** — Every tool response includes a **freshness stamp** — last successful sync per
 contributing account.
