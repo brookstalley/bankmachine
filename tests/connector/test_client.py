@@ -562,8 +562,8 @@ def test_an_item_with_nothing_left_to_add_is_read_not_refused() -> None:
 
     Pinned separately from the malformed-body cases because the guard that
     refuses a non-list is one truthiness check away from refusing this too, and
-    every other body here makes `products` falsy first -- so that weakening would
-    never reach this field and the suite would stay green.
+    no other body here carries an empty-but-present list -- so that weakening
+    would go uncaught and the suite would stay green.
     """
     capabilities = capabilities_of(
         _item_body(products=["investments", "transactions"], available_products=[])
