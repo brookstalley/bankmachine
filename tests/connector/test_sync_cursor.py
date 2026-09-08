@@ -21,11 +21,10 @@ from sqlalchemy import select
 
 from bankmachine.config import Config
 from bankmachine.connector import TRANSACTIONS_SYNC
-from bankmachine.connector.plaid.derivers import TRANSACTIONS_DOMAIN
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.store.derivation import DerivationError, apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
-from bankmachine.store.schema import connections, institutions, sync_state
+from bankmachine.store.schema import TRANSACTIONS_DOMAIN, connections, institutions, sync_state
 from bankmachine.store.types import now_utc
 
 CURSOR_ONE = "cursor-after-page-one"

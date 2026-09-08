@@ -17,6 +17,8 @@ are in the database rather than only in the code.
 
 from __future__ import annotations
 
+from typing import Final
+
 from sqlalchemy import (
     Column,
     ForeignKey,
@@ -353,6 +355,15 @@ Index(
     investment_transactions.c.account_id,
     investment_transactions.c.trade_date,
 )
+
+#: The `sync_state.domain` a transaction cursor is keyed under. One domain today;
+#: the column exists because balances and holdings advance on their own schedules
+#: and a single cursor per connection would make one wait for another.
+#:
+#: Homed here rather than beside the aggregator's deriver because it is a fact
+#: about this table's key, and the read surface needs it without reaching into
+#: `connector/` to get it.
+TRANSACTIONS_DOMAIN: Final = "transactions"
 
 sync_state = Table(
     "sync_state",

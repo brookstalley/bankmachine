@@ -838,6 +838,21 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         f"{SYNC_RUN_TESTS}::test_a_bounded_run_does_not_claim_the_connection_is_up_to_date",
     ),
     (
+        "AC-ARCH.3: the MCP server reports an unreadable datastore, never refuses",
+        QUERY,
+        "    status = inspect(config)\n"
+        '    return None if status.healthy else (status.problem or "it is missing or unreadable")',
+        "    return None",
+        f"{MCP_TESTS}::test_the_server_starts_and_answers_when_the_datastore_is_missing",
+    ),
+    (
+        "AC-11.8: the granted window is measured once, never re-measured",
+        SYNC_RUN,
+        "        if existing is not None:\n            return",
+        "        if False:\n            return",
+        f"{SYNC_RUN_TESTS}::test_the_granted_window_is_measured_once_and_never_re_measured",
+    ),
+    (
         "AC-10.1: a public token never reaches a repr",
         CONNECTOR_PACKAGE,
         '        held = "<redacted>" if self.public_token is not None else None',

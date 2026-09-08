@@ -55,6 +55,7 @@ from bankmachine.logging_setup import get_logger
 from bankmachine.store.derivation import DerivationContext, DerivationError, Deriver
 from bankmachine.store.raw import RawResponse
 from bankmachine.store.schema import (
+    TRANSACTIONS_DOMAIN,
     accounts,
     balances_daily,
     connections,
@@ -273,12 +274,6 @@ def derive_item(conn: SAConnection, response: RawResponse, context: DerivationCo
         name=_required(item.get("institution_name"), "institution name", response),
         seen_at=response.received_at,
     )
-
-
-#: The `sync_state` row a transaction sync belongs to. One domain today; the
-#: column exists because balances and holdings advance on their own schedules and
-#: a single cursor per connection would make one of them wait for another.
-TRANSACTIONS_DOMAIN: Final = "transactions"
 
 
 def derive_transactions_sync(

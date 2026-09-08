@@ -120,6 +120,31 @@ Raw-row access exists but is paginated and hard-capped.
 
 Every tool is safe and idempotent, trivially — nothing writes.
 
+> **Amendment (2026-09-08, build step 7's first slice).** 🔴 **Four of these ten ship; six do not
+> yet.** Built: `get_pipeline_health`, `list_accounts`, `query_transactions`, `spending_summary`.
+> Not built: `cashflow_summary`, `balance_history`, `net_worth`, `list_holdings`, `find_recurring`,
+> `get_coverage_report`.
+>
+> Recorded as a descope rather than left to be noticed, because the same commit updated the README
+> and `architecture.md` to say the MCP surface was "built and serving" — which is true of a surface
+> and not of *this* surface, and a reader comparing the two would have found the contract claiming
+> ten and the code answering four with nothing saying which was current.
+>
+> **Two of the six are not ordinary omissions.** `get_coverage_report` is half the verification
+> surface this document names two paragraphs above — the product's headline goal is "answer it, or
+> say why you should not", and the coverage half of that is missing. `list_holdings` waits on build
+> step 5, which has not started. The other four are analysis conveniences whose data is already in
+> the datastore.
+>
+> **What the shipped four do not yet carry**, also descoped rather than silently unimplemented:
+> `query_transactions` is specified paginated with category, amount-range and merchant filters and
+> currently offers a date range, an account and a hard cap; `spending_summary` is specified with
+> merchant and account breakdowns and period-over-period comparison and currently aggregates by
+> category over one window.
+>
+> The `experimental` tier permits these changes without a version bump. It does not permit them
+> going unrecorded, which is what this amendment exists to prevent.
+
 🔴 **Two of these ten are the verification surface, not the analysis surface.** `get_pipeline_health`
 and `get_coverage_report` exist so the analyst agent can **establish completeness *before* answering**.
 The product's headline goal is not "answer the question" but "answer it, or say why you should not."
@@ -307,9 +332,12 @@ Retention: additive-first; removal of a `stable` member defers to a major versio
 The public contract, declared rather than inferred. Members not listed are internal and carry no
 promise. `experimental` means *this may break* — removing one is the policy working, not a violation.
 
-**MCP tools** — all `experimental` until build step 7 ships them and the §7 verification gate passes;
-they are specified here but nothing implements them yet, so promising stability would be a promise
-about code that does not exist:
+**MCP tools** — all `experimental` until the §7 verification gate passes. As of 2026-09-08 four of
+the ten are implemented (`get_pipeline_health`, `list_accounts`, `query_transactions`,
+`spending_summary`) and six are still specification only; see the amendment under the tool table
+above for what is descoped and why. `experimental` therefore means two different things in this
+list, and the distinction is worth keeping in view: for the shipped four it means *this may break*,
+and for the other six it means *this does not exist yet*:
 
 - `get_pipeline_health` — experimental
 - `list_accounts` — experimental

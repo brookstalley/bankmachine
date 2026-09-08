@@ -33,7 +33,6 @@ from bankmachine.cli.exit_codes import EXIT_OK, EXIT_UNHEALTHY
 from bankmachine.config import Config
 from bankmachine.connector import ConnectorError, FetchedResponse
 from bankmachine.connector.plaid.client import PlaidClient
-from bankmachine.connector.plaid.derivers import TRANSACTIONS_DOMAIN
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.logging_setup import get_logger
 from bankmachine.secrets import SecretsError, get_access_token, get_plaid_secret
@@ -41,6 +40,7 @@ from bankmachine.store.connection import DatastoreMissingError, inspect
 from bankmachine.store.derivation import DerivationError, apply_response
 from bankmachine.store.engine import reader_connection, transaction, writer_connection
 from bankmachine.store.schema import (
+    TRANSACTIONS_DOMAIN,
     accounts,
     connections,
     institutions,
@@ -321,15 +321,26 @@ def _record_granted_window(
     measurement nobody made.
     """
     with reader_connection(config) as conn:
+        existing, requested = conn.execute(
+            select(
+                connections.c.granted_history_days,
+                connections.c.requested_history_days,
+            ).where(connections.c.connection_id == connection_id)
+        ).one()
+        # 🔴 Measured ONCE, and this guard is the whole difference between a
+        # recorded fact and a number that drifts. `HISTORICAL_UPDATE_COMPLETE` is
+        # a persistent STATE, not an event -- every later sync reports it too. So
+        # re-measuring oldest-held-to-today grows the window by a day per day,
+        # and the AC-11.8 shortfall would shrink to nothing on its own: the
+        # `gapped` warning would quietly stop being emitted while the missing
+        # history stayed missing. That is the silent-staleness failure this
+        # product exists to prevent, produced by its own bookkeeping.
+        if existing is not None:
+            return
         oldest = conn.execute(
             select(func.min(transactions.c.posted_date))
             .select_from(transactions.join(accounts))
             .where(accounts.c.connection_id == connection_id)
-        ).scalar_one_or_none()
-        requested = conn.execute(
-            select(connections.c.requested_history_days).where(
-                connections.c.connection_id == connection_id
-            )
         ).scalar_one_or_none()
     if oldest is None:
         logger.info(

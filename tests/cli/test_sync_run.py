@@ -24,7 +24,6 @@ from bankmachine.connector import (
     FetchedResponse,
     TransportError,
 )
-from bankmachine.connector.plaid.derivers import TRANSACTIONS_DOMAIN
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.secrets import (
     SecretsError,
@@ -35,7 +34,13 @@ from bankmachine.secrets import (
 )
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
-from bankmachine.store.schema import connections, institutions, sync_state, transactions
+from bankmachine.store.schema import (
+    TRANSACTIONS_DOMAIN,
+    connections,
+    institutions,
+    sync_state,
+    transactions,
+)
 from bankmachine.store.types import now_utc
 
 SOURCE_ACCOUNT = "acct-checking"
@@ -731,3 +736,41 @@ def test_a_complete_run_does_stamp_the_success(cli_env: Config) -> None:
     assert run(["sync", "run"]) == 0
 
     assert _connection_row(cli_env)["last_success_at"] is not None
+
+
+def test_the_granted_window_is_measured_once_and_never_re_measured(
+    cli_env: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 `HISTORICAL_UPDATE_COMPLETE` is a persistent STATE, not an event.
+
+    Every later sync reports it too. Re-measuring oldest-held-to-today grows the
+    window by a day per day, so the AC-11.8 shortfall shrinks to nothing on its
+    own and the `gapped` warning quietly stops being emitted while the missing
+    history stays missing — the silent-staleness failure this product exists to
+    prevent, produced by its own bookkeeping.
+    """
+    entry = _txn("t1")
+    entry["date"] = "2025-09-08"
+    FakeClient.pages = [
+        _page(added=[entry], next_cursor="c1", status="HISTORICAL_UPDATE_COMPLETE")
+    ]
+    assert run(["sync", "run"]) == 0
+    first = _granted(cli_env)
+    assert first is not None
+
+    # 🔴 A year later. The drift is TIME-based, not data-based: the window is
+    # measured as (today - oldest transaction), so it grows by a day per day
+    # while the oldest transaction stays exactly where it is. A test that only
+    # changed the DATA would not see this — I wrote that one first and it passed
+    # against the unguarded code.
+    a_year_on = now_utc().replace(year=now_utc().year + 1)
+    monkeypatch.setattr("bankmachine.cli.sync_run.now_utc", lambda: a_year_on)
+    FakeClient.pages = [
+        _page(added=[_txn("t2")], next_cursor="c2", status="HISTORICAL_UPDATE_COMPLETE")
+    ]
+    assert run(["sync", "run"]) == 0
+
+    assert _granted(cli_env) == first, (
+        "the granted window was re-measured, so the recorded shortfall drifts and "
+        "eventually disappears while the missing history stays missing"
+    )

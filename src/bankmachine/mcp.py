@@ -34,7 +34,7 @@ from bankmachine import query
 from bankmachine.cli.exit_codes import EXIT_OK
 from bankmachine.config import Config
 from bankmachine.logging_setup import get_logger
-from bankmachine.store.connection import DatastoreMissingError, inspect
+from bankmachine.store.connection import inspect
 
 logger = get_logger("mcp")
 
@@ -78,7 +78,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
         },
         {
-            "name": "list_transactions",
+            "name": "query_transactions",
             "title": "List transactions",
             "description": (
                 "Transactions in a date window, newest first. Amounts are INTEGER MINOR "
@@ -97,7 +97,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
-            "name": "spending_by_category",
+            "name": "spending_summary",
             "title": "Spending by category",
             "description": (
                 "Total outflow per category in a date window. Sums only money leaving, "
@@ -114,10 +114,11 @@ def _tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
-            "name": "pipeline_health",
+            "name": "get_pipeline_health",
             "title": "Pipeline health",
             "description": (
-                "Every connection, when it last synced, and what is wrong with it. 🔴 Call "
+                "Every connection, when it last synced, and what is wrong with it — including "
+                "when there is no datastore at all. 🔴 Call "
                 "this before trusting a total that looks surprising: a granted history "
                 "window of null means NOT YET MEASURED, never 'no shortfall'."
             ),
@@ -129,17 +130,17 @@ def _tool_definitions() -> list[dict[str, Any]]:
 def _dispatch_tool(config: Config, name: str, arguments: dict[str, Any]) -> query.Answer:
     handlers: dict[str, Callable[..., query.Answer]] = {
         "list_accounts": lambda: query.list_accounts(config),
-        "list_transactions": lambda: query.list_transactions(
+        "query_transactions": lambda: query.list_transactions(
             config,
             since=arguments.get("since"),
             until=arguments.get("until"),
             account_id=arguments.get("account_id"),
             limit=int(arguments.get("limit", 100)),
         ),
-        "spending_by_category": lambda: query.spending_by_category(
+        "spending_summary": lambda: query.spending_by_category(
             config, since=arguments.get("since"), until=arguments.get("until")
         ),
-        "pipeline_health": lambda: query.pipeline_health(config),
+        "get_pipeline_health": lambda: query.pipeline_health(config),
     }
     handler = handlers.get(name)
     if handler is None:
@@ -308,11 +309,28 @@ def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
 
 
 def cmd_mcp(config: Config, _args: argparse.Namespace) -> int:
+    """🔴 Starts even when the datastore is empty or missing. AC-ARCH.3.
+
+    An earlier version refused, which inverted the requirement — and used
+    `inspect()` to do it, whose own docstring says it exists so the server can
+    *report* that state. The reason the AC reads this way is that a client
+    launches this as a subprocess: a server that exits on startup shows up as a
+    tool that silently does not appear, and the operator has no way to ask why.
+    A server that starts and answers `get_pipeline_health` with "there is no
+    datastore" can be asked.
+
+    So the unhealthy state is logged and carried into every answer as a warning
+    rather than raised.
+    """
     status = inspect(config)
     if not status.healthy:
-        raise DatastoreMissingError(
-            f"datastore at {status.path} is not ready ({status.problem or 'unknown problem'}); "
-            f"run `bankmachine store init` before serving it"
+        logger.warning(
+            "serving %s with an unusable datastore at %s (%s); tools will report this rather "
+            "than fail",
+            config.environment,
+            status.path,
+            status.problem or "unknown problem",
         )
-    logger.info("serving %s datastore over stdio", config.environment)
+    else:
+        logger.info("serving %s datastore over stdio", config.environment)
     return serve(config, stdin=sys.stdin, stdout=sys.stdout)

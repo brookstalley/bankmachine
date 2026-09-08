@@ -59,17 +59,26 @@ bankmachine enroll              # opens a hosted URL; complete it in a browser
 bankmachine sync run            # fetches accounts and transactions
 ```
 
-`bankmachine mcp` refuses to start against a datastore that does not exist, rather than creating an
-empty one — an empty encrypted store would answer every question with zero.
+`bankmachine mcp` starts even without a datastore and reports that state (AC-ARCH.3); it never
+creates one, because an empty encrypted store would answer every question with a confident zero.
 
 ## The tools
 
 | Tool | Answers |
 |---|---|
 | `list_accounts` | every account with its latest recorded balance |
-| `list_transactions` | transactions in a date window, newest first |
-| `spending_by_category` | outflow per category in a window |
-| `pipeline_health` | every connection, when it last synced, what is wrong |
+| `query_transactions` | transactions in a date window, newest first |
+| `spending_summary` | outflow per category in a window |
+| `get_pipeline_health` | every connection, when it last synced, what is wrong |
+
+🔴 **Four of the ten specified tools.** `cashflow_summary`, `balance_history`, `net_worth`,
+`list_holdings`, `find_recurring` and `get_coverage_report` are not built yet — the descope is
+recorded in `.prawduct/artifacts/api-contract.md`. `get_coverage_report` is the one to be aware of:
+it is half the verification surface, so for now `get_pipeline_health` is the whole of it.
+
+The server also starts against a **missing or empty datastore** and reports that through
+`get_pipeline_health` rather than refusing (AC-ARCH.3) — so a tool that returns nothing tells you
+whether it found nothing or could read nothing.
 
 ## 🔴 Reading the answers
 

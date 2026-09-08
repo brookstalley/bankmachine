@@ -32,8 +32,10 @@ from sqlalchemy import func, select
 from sqlalchemy.engine import Connection as SAConnection
 
 from bankmachine.config import Config
+from bankmachine.store.connection import inspect
 from bankmachine.store.engine import reader_connection
 from bankmachine.store.schema import (
+    TRANSACTIONS_DOMAIN,
     accounts,
     balances_daily,
     connections,
@@ -251,8 +253,56 @@ def _answer(config: Config, conn: SAConnection, rows: list[dict[str, Any]]) -> A
     )
 
 
+def _unusable(config: Config, problem: str) -> Answer:
+    """🔴 An answer about a datastore that cannot be read. AC-ARCH.3.
+
+    Zero rows and a warning, never an exception: the requirement is that the
+    server reports this state rather than crashing, and a tool that raised would
+    reach the client as a failed call rather than as an answer they can read.
+    The coverage block is present and zero so a consumer sees the shape it
+    expects, and the warning is what tells them the zeroes mean "nothing to read"
+    rather than "nothing happened".
+    """
+    return Answer(
+        rows=[],
+        warnings=[
+            Caveat(
+                kind="partial",
+                detail=(
+                    f"the {config.environment} datastore is not readable ({problem}), so this "
+                    f"answer is empty because nothing could be read — not because there is "
+                    f"nothing to report. Run `bankmachine store init` to create it"
+                ),
+            )
+        ],
+        environment=config.environment,
+        as_of=now_utc(),
+        coverage={
+            "connections": 0,
+            "accounts": 0,
+            "transactions": 0,
+            "earliest_transaction": None,
+            "latest_transaction": None,
+        },
+    )
+
+
+def _readable(config: Config) -> str | None:
+    """The reason the datastore cannot be read, or None when it can.
+
+    Checked per call rather than once at startup: a datastore can be created,
+    moved or corrupted while a long-lived server is running, and an answer must
+    describe the store as it is at the moment of answering.
+    """
+    status = inspect(config)
+    return None if status.healthy else (status.problem or "it is missing or unreadable")
+
+
 def list_accounts(config: Config) -> Answer:
     """Every account, with its latest recorded balance."""
+    problem = _readable(config)
+    if problem is not None:
+        return _unusable(config, problem)
     with reader_connection(config) as conn:
         latest = (
             select(
@@ -316,6 +366,9 @@ def list_transactions(
     limit: int = 100,
 ) -> Answer:
     """Transactions in a window, newest first. Soft-deleted rows are excluded."""
+    problem = _readable(config)
+    if problem is not None:
+        return _unusable(config, problem)
     with reader_connection(config) as conn:
         statement = (
             select(
@@ -369,6 +422,9 @@ def spending_by_category(
     refunds in would answer a different one. The sign convention is what makes
     that a filter rather than a per-account special case.
     """
+    problem = _readable(config)
+    if problem is not None:
+        return _unusable(config, problem)
     with reader_connection(config) as conn:
         statement = (
             select(
@@ -408,6 +464,9 @@ def pipeline_health(config: Config) -> Answer:
     Returns rows even when everything is fine, because "healthy" is an answer
     and an empty result would be indistinguishable from a broken query.
     """
+    problem = _readable(config)
+    if problem is not None:
+        return _unusable(config, problem)
     with reader_connection(config) as conn:
         result = conn.execute(
             select(
@@ -423,7 +482,15 @@ def pipeline_health(config: Config) -> Answer:
             )
             .select_from(
                 connections.join(institutions).outerjoin(
-                    sync_state, sync_state.c.connection_id == connections.c.connection_id
+                    sync_state,
+                    (sync_state.c.connection_id == connections.c.connection_id)
+                    # 🔴 Filtered on domain, like every other read of this table.
+                    # `sync_state` is keyed on (connection, domain) and balances
+                    # and holdings advance on their own schedules -- so the day a
+                    # second domain lands, an unfiltered join silently returns
+                    # one health row per domain and a consumer counts each
+                    # connection twice.
+                    & (sync_state.c.domain == TRANSACTIONS_DOMAIN),
                 )
             )
             .order_by(connections.c.connection_id)

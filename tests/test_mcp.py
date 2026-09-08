@@ -274,10 +274,10 @@ def test_no_tool_mutates_anything(initialized_config: Config) -> None:
     tools = mcp._tool_definitions()
     assert {t["name"] for t in tools} == {
         "list_accounts",
-        "list_transactions",
-        "spending_by_category",
-        "pipeline_health",
-    }
+        "query_transactions",
+        "spending_summary",
+        "get_pipeline_health",
+    }, "the shipped subset of the api-contract tool surface"
     forbidden = ("create", "update", "delete", "remove", "write", "set_", "transfer", "pay")
     for tool in tools:
         assert not any(word in tool["name"] for word in forbidden), tool["name"]
@@ -307,7 +307,7 @@ def test_every_answer_names_the_environment_it_came_from(initialized_config: Con
     """
     _seed(initialized_config)
 
-    for name in ("list_accounts", "list_transactions", "spending_by_category", "pipeline_health"):
+    for name in ("list_accounts", "query_transactions", "spending_summary", "get_pipeline_health"):
         wire = _call(initialized_config, name)["structuredContent"]
         assert wire["environment"] == "sandbox", name
         assert wire["as_of"], name
@@ -323,7 +323,7 @@ def test_a_shortfall_rides_the_success_path_as_a_warning(initialized_config: Con
     """
     _seed(initialized_config, granted=90)
 
-    wire = _call(initialized_config, "spending_by_category")["structuredContent"]
+    wire = _call(initialized_config, "spending_summary")["structuredContent"]
 
     gapped = [w for w in wire["warnings"] if w["kind"] == "gapped"]
     assert gapped, "a 90-against-730 shortfall was reported as a complete answer"
@@ -342,7 +342,7 @@ def test_an_unmeasured_window_is_reported_differently_from_no_shortfall(
     """
     _seed(initialized_config, granted=None)
 
-    wire = _call(initialized_config, "pipeline_health")["structuredContent"]
+    wire = _call(initialized_config, "get_pipeline_health")["structuredContent"]
 
     assert wire["rows"][0]["granted_history_days"] is None
     kinds = {w["kind"] for w in wire["warnings"]}
@@ -358,7 +358,7 @@ def test_a_degraded_connection_warns_on_every_answer(initialized_config: Config)
     """
     _seed(initialized_config, degraded=True)
 
-    wire = _call(initialized_config, "list_transactions")["structuredContent"]
+    wire = _call(initialized_config, "query_transactions")["structuredContent"]
 
     assert any(w["kind"] == "degraded" for w in wire["warnings"])
 
@@ -371,7 +371,7 @@ def test_an_empty_datastore_says_so_rather_than_answering_zero(
     Without this, an unconfigured install reports zero spending and looks like a
     frugal month.
     """
-    wire = _call(initialized_config, "spending_by_category")["structuredContent"]
+    wire = _call(initialized_config, "spending_summary")["structuredContent"]
 
     assert wire["rows"] == []
     assert any("no connections are enrolled" in w["detail"] for w in wire["warnings"])
@@ -391,7 +391,7 @@ def test_spending_sums_outflow_only_and_reports_magnitudes(initialized_config: C
     """
     _seed(initialized_config)
 
-    rows = _call(initialized_config, "spending_by_category")["structuredContent"]["rows"]
+    rows = _call(initialized_config, "spending_summary")["structuredContent"]["rows"]
 
     by_category = {r["category"]: r["spent_minor_units"] for r in rows}
     assert by_category == {"GENERAL_MERCHANDISE": 8940, "FOOD_AND_DRINK": 1200}
@@ -404,7 +404,7 @@ def test_amount_fields_say_they_are_minor_units(initialized_config: Config) -> N
     of magnitude, and the number would still look plausible."""
     _seed(initialized_config)
 
-    rows = _call(initialized_config, "list_transactions")["structuredContent"]["rows"]
+    rows = _call(initialized_config, "query_transactions")["structuredContent"]["rows"]
 
     assert "amount_minor_units" in rows[0]
     assert all("amount" not in key or "minor_units" in key for key in rows[0])
@@ -469,3 +469,72 @@ def test_both_content_forms_are_sent(initialized_config: Config) -> None:
 
     assert result["structuredContent"]["rows"]
     assert json.loads(result["content"][0]["text"])["rows"]
+
+
+# --------------------------------------------------------------------------
+# AC-ARCH.3 — starts against an empty or missing datastore, and REPORTS it
+# --------------------------------------------------------------------------
+
+
+def test_the_server_starts_and_answers_when_the_datastore_is_missing(
+    config: Config,
+) -> None:
+    """🔴 AC-ARCH.3, which an earlier version of this server inverted.
+
+    It refused to start — using `inspect()` to do it, whose own docstring says it
+    exists so the server can *report* that state. The requirement reads this way
+    because a client launches this as a subprocess: a server that exits on
+    startup appears as a tool that silently does not show up, and the operator
+    has no way to ask why. One that starts and answers "there is no datastore"
+    can be asked.
+    """
+    assert not config.datastore_path.exists()
+
+    replies = _converse(
+        config,
+        [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "get_pipeline_health", "arguments": {}},
+            },
+        ],
+    )
+
+    assert "serverInfo" in replies[0]["result"], "the server refused to start"
+    result = replies[1]["result"]
+    assert result["isError"] is False, "a missing datastore reached the client as a failed call"
+    wire = result["structuredContent"]
+    assert wire["rows"] == []
+    assert any("not readable" in w["detail"] for w in wire["warnings"])
+    assert wire["coverage"]["transactions"] == 0
+
+
+def test_every_tool_answers_against_a_missing_datastore(config: Config) -> None:
+    """Not only the health tool.
+
+    A consumer that called `list_accounts` first would otherwise see a crash
+    where the health tool would have explained itself.
+    """
+    for name in ("list_accounts", "query_transactions", "spending_summary", "get_pipeline_health"):
+        wire = _call(config, name)["structuredContent"]
+        assert wire["rows"] == [], name
+        assert any(w["kind"] == "partial" for w in wire["warnings"]), name
+
+
+def test_the_missing_datastore_warning_says_the_zeroes_mean_nothing_read(
+    config: Config,
+) -> None:
+    """🔴 Zero and unreadable are different answers.
+
+    "You spent nothing" and "I could not read anything" are the same payload
+    unless the warning distinguishes them, and only one of them is a fact about
+    the operator's money.
+    """
+    wire = _call(config, "spending_summary")["structuredContent"]
+
+    detail = " ".join(w["detail"] for w in wire["warnings"])
+    assert "nothing could be read" in detail
+    assert "store init" in detail, "the operator is not told how to fix it"

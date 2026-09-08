@@ -10,8 +10,9 @@ independently establish that the underlying data is complete and fresh before it
 
 It is a data pipeline. It does no budgeting, forecasting, categorization or advice.
 
-**Status: build steps 1-4 are complete, and the MCP surface (step 7) is built and serving**
-(`docs/system-requirements.md` §8).
+**Status: build steps 1-4 are complete, and the first slice of the MCP surface (step 7) is
+serving** (`docs/system-requirements.md` §8) — four of its ten specified tools, with the other six
+recorded as descoped in `.prawduct/artifacts/api-contract.md`.
 
 The pipeline runs end to end. `bankmachine enroll` prints a hosted enrollment URL, waits while you
 complete it in a browser, and records the connection; `connections list` and `connections retire`
