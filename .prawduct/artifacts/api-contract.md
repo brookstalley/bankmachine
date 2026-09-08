@@ -99,7 +99,7 @@ codes are a machine contract**, not just operator ergonomics.
 
 ## Operations
 
-### MCP tool surface — the ten tools (§5) · *specified, not yet built*
+### MCP tool surface — the ten tools (§5) · *four built, six specified*
 
 🔴 **Read-only. No mutation tools. No exceptions.** (Vetting a comparable server surfaced 19 mutation
 tools including `delete_transaction` with no undo. Not reproducing that.)
@@ -154,7 +154,7 @@ The product's headline goal is not "answer the question" but "answer it, or say 
 
 ### CLI — the operator surface
 
-**Built (steps 1–2):**
+**Built:**
 
 | Command | Purpose | Mutating |
 |---|---|---|
