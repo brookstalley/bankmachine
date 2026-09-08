@@ -58,8 +58,15 @@ message` — but only on the date path. Every other failure still rendered
 - **`additionalProperties: False` is advertised on all four tools and was enforced on none.** A
   misspelled `sinceX` was silently dropped and `spending_summary` returned the ALL-TIME aggregate —
   byte-identical to the windowed answer the caller thought it had asked for. Unknown keys are now
-  refused, naming the offending key and what the tool accepts, with the permitted set read back off
-  `_tool_definitions()` rather than restated.
+  refused, naming **every** offending key at once and what the tool accepts, with the permitted set
+  read back off `_tool_definitions()` rather than restated.
+- **Four review observations closed in the same branch.** `limit=... or 100` was truthiness on an
+  int, so `limit: 0` served the hundred-row default instead of the one row the query layer's
+  `max(1, ...)` clamp defines. The refusal named only the first unrecognized key though it had
+  sorted them all. The tool-name set was built three times in one call path, and the membership half
+  of the dispatch guard was dead once the name began being resolved before dispatch. And an
+  assertion read `"since" in message` against a message containing `'sinceX'` — a substring that
+  could never fail, now an exact set.
 - **`except KeyError` wrapped the handler call**, so a `KeyError` from anywhere beneath the query
   layer was answered `no tool named 'spending_summary'` as JSON-RPC -32601 — a false statement about
   a tool that exists. The tool name is resolved before the call now.

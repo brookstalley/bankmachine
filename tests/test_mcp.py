@@ -869,13 +869,13 @@ def test_an_argument_the_tool_does_not_advertise_is_refused(initialized_config: 
     assert result["isError"] is True
     message = result["content"][0]["text"]
     assert "sinceX" in message, "the refusal does not name the argument it rejected"
-    # 🔴 An exact set, not `"since" in message`: the message already contains
-    # 'sinceX', so that substring can never fail and would have pinned nothing.
-    # Fourth instance today of one valid value containing another as text --
-    # see learnings.md, and the two in commit 67e69b4.
-    accepted = message.split("It accepts: ")[1].strip()
-    assert set(accepted.split(", ")) == {"since", "until"}, (
-        f"the refusal does not say what is accepted; it offered {accepted!r}"
+    # 🔴 An exact set, not `"since" in message`: the refusal already contains
+    # 'sinceX', so that substring can never fail. When one valid value contains
+    # another as text, `in` cannot tell them apart.
+    _, _, accepted = message.partition("It accepts: ")
+    assert accepted, f"the refusal does not say what is accepted: {message!r}"
+    assert set(accepted.strip().split(", ")) == {"since", "until"}, (
+        f"the refusal offered {accepted.strip()!r}"
     )
     assert result["structuredContent"]["error"]["code"] == "invalid_argument"
 
@@ -913,10 +913,10 @@ def test_every_unrecognized_argument_is_named_at_once(initialized_config: Config
     """Two typos should cost one round trip, not two."""
     _seed(initialized_config)
 
-    message = _call(initialized_config, "spending_summary", {"sinceX": "x", "untilX": "y"})[
-        "content"
-    ][0]["text"]
+    result = _call(initialized_config, "spending_summary", {"sinceX": "x", "untilX": "y"})
 
+    assert result["isError"] is True
+    message = result["content"][0]["text"]
     assert "sinceX" in message and "untilX" in message
 
 
