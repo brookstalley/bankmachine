@@ -258,6 +258,44 @@ def test_an_unparseable_line_is_answered_rather_than_ignored(initialized_config:
     assert reply["error"]["code"] == -32700
 
 
+def test_a_frame_nested_too_deeply_is_answered_and_the_session_survives(
+    initialized_config: Config,
+) -> None:
+    """🔴 The parse failure that is NOT a `JSONDecodeError`, and it used to kill the server.
+
+    `json.loads` raises `RecursionError` on a deeply nested document — a
+    `RuntimeError`, sharing no base with `JSONDecodeError` beyond `Exception`.
+    Uncaught it escaped the read loop and ended `serve()`, so the operator's
+    tool vanished mid-session with nothing said: the outcome `cmd_mcp` exists to
+    prevent, arriving one frame in rather than at startup.
+
+    The second request is the assertion that matters. A server that answered the
+    bad frame and then died would satisfy the first half of this test, and the
+    symptom a person actually reports is the disappearance rather than the
+    refusal.
+
+    The reply carries this server's own sentence, not the decoder's, whose text
+    names the stack size it blew.
+    """
+    stdin = io.StringIO(
+        "[" * 100_000
+        + "]" * 100_000
+        + "\n"
+        + json.dumps({"jsonrpc": "2.0", "id": 2, "method": "ping", "params": {}})
+        + "\n"
+    )
+    stdout = io.StringIO()
+
+    mcp.serve(initialized_config, stdin=stdin, stdout=stdout)
+
+    replies = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
+    assert len(replies) == 2, "the session ended instead of answering both frames"
+    assert replies[0]["error"]["code"] == mcp._PARSE_ERROR
+    assert replies[0]["error"]["message"] == "could not parse a message: it is nested too deeply"
+    assert "Stack overflow" not in replies[0]["error"]["message"]
+    assert replies[1]["id"] == 2 and replies[1]["result"] == {}
+
+
 def test_an_unknown_method_is_a_method_not_found(initialized_config: Config) -> None:
     replies = _converse(
         initialized_config, [{"jsonrpc": "2.0", "id": 1, "method": "resources/list"}]

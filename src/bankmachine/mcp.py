@@ -572,6 +572,23 @@ def _read_messages(stdin: IO[str], stdout: IO[str]) -> Iterator[dict[str, Any]]:
             # unparseable is waiting, and silence would look like a hang.
             _write(stdout, _error(None, _PARSE_ERROR, f"could not parse a message: {exc}"))
             continue
+        except RecursionError:
+            # 🔴 Not a `JSONDecodeError`, and not a syntax error at all:
+            # `json.loads` exhausts the stack on a deeply nested document and
+            # raises this instead. Uncaught it escapes this generator and ends
+            # `serve()`, so the client's tool DISAPPEARS mid-session — which is
+            # the outcome `cmd_mcp` exists to prevent, arriving one frame in
+            # rather than at startup. The clause above cannot cover it, because
+            # the two do not share a base beyond `Exception`.
+            #
+            # Answered in this server's own words rather than the decoder's,
+            # whose text names the stack size it blew: `api-contract.md`
+            # § Error Model keeps internals off the wire.
+            _write(
+                stdout,
+                _error(None, _PARSE_ERROR, "could not parse a message: it is nested too deeply"),
+            )
+            continue
         if not isinstance(message, dict):
             _write(stdout, _error(None, _INVALID_REQUEST, "a message must be an object"))
             continue

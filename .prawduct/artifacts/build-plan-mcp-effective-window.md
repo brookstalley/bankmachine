@@ -139,62 +139,60 @@ latency question, which Chunk 02 answers as a build step rather than a precondit
 
 - [x] Chunk 01: `Window` — the clamp a windowed tool cannot skip, and the two warnings that announce it
 - [x] Chunk 02: `returned` / `matching` / `truncated`, so a capped answer stops reading as a complete one
-- [ ] Chunk 03: cursor pagination, so truncation is escapable rather than only visible
+- [x] Chunk 03: cursor pagination, so truncation is escapable rather than only visible
 
-Context: Chunks 01 and 02 built and reviewed 2026-09-08 on `feature/mcp-effective-window`,
-branched from `develop` at `a4e78e5`. Suite green (`prawduct-hook test-status`), ruff and mypy
-strict clean, verified against the real sandbox store — the A1 case the plan predicted reproduces
-exactly (account 4 over 2024-01-01..2026-12-31 returns `{returned: 100, matching: 144, truncated:
-true}`), and August 2026 still reports 1,114,946 minor units across 8 categories, identical to the
-figure Chunk 01 recorded, so Chunk 02 moved no number either.
+Context: **All three chunks are built, reviewed and committed on `feature/mcp-effective-window`,
+branched from `develop` at `a4e78e5`.** The plan's `cumulative-final` ran over merge-base…HEAD and
+returned 0 blocking, 3 warnings and 1 note; all four were fixed in one pass and
+`verify-resolutions` recorded 0 findings, so `check-cumulative-critic` reads satisfied. Suite green
+(`prawduct-hook test-status`), ruff format and check clean, mypy strict clean, and the 117-case
+norms go-red harness caught every break.
 
-**Chunk 02's Done-when 2 is discharged on evidence, and it closes the plan's one open measurement.**
-`.prawduct/artifacts/mcp-count-latency-2026-09-08.md`: each count costs roughly what the row query
-costs — ~1ms at 10k rows, ~89ms at 200k — with a full `query_transactions` call at ~18ms and ~435ms
-against the ~1s target. **`matching` ships exact; the approximate-count fallback held in reserve is
-not built.** The midpoint governance checkpoint is therefore closed.
+**Verified against the real sandbox store rather than only the fixture.** The A1 case still returns
+100 of 144 truncated over account 4 for 2024-01-01..2026-12-31, and now pages to 144 distinct rows
+in two pages with the last carrying no cursor and no `rows_truncated` warning. August 2026 still
+reports 1,114,946 minor units across 8 categories, identical to the figure Chunk 01 recorded, so
+neither 02 nor 03 moved a number.
 
-🔴 **The Critic's blocking finding on Chunk 02 was the best of the chunk, and it falsified a claim
-this plan's author wrote.** `Truncation` raised on `returned > matching` under a docstring calling
-that unreachable. It is reachable: the read handle is autocommit — `store/connection.py`, "every
-statement is its own snapshot" — so the row query and the count are two snapshots, and the nightly
-sync soft-deletes exactly the recent rows a default query returns. The *untruncated* case is where it
-bites, since `returned == matching` there and one removal suffices. Resolved by treating it as the
-data condition it is: `Truncation.over()` floors `matching` at `returned`, `truncated` reads false
-because nothing is hidden, and a new `counted_during_change` warning announces the skew. A test
-forces the interleaving through the real query path rather than pinning it only at the unit level.
+🔴 **One requirement surfaced during Chunk 03 and is recorded as an amendment in its deliverables
+above, not designed in chat: a cursor carries a fingerprint of the predicate it was issued for.**
+The owner has NOT ruled on it and it is explicitly vetoable — removing it is one comparison and one
+field, and the paged walk works without it. The case for it is that the reachable foreign cursor is
+not a forged string but the caller's own against a changed window or account, which selects real
+rows in the right order and answers a question nobody asked.
 
-🔴 **A wider consequence is FILED, NOT FIXED — #27, and the owner has RULED on it (2026-09-08).**
-One `Answer` is assembled from 8+ statements, each its own snapshot, so this is not a property of
-Chunk 02's counts. What reaches further: **Chunk 01's guarantee that "every returned row lies inside
-`effective_window`" holds against the COVERAGE snapshot rather than the ROW snapshot** — a soft
-delete of the store's oldest row between the reads moves `earliest_transaction` forward and can push
-`effective_since` past a row already returned — and the three transaction counts are three reads at
-three times. **The wording is now corrected** in `query.py`, `api-contract.md` and
-`tests/test_query_window.py` to state the conditional version, which was the defect: an overclaim,
-not a malfunction.
+🔴 **The Critic's best finding on Chunk 03 was a refusal path that answers "internal error".**
+`Cursor.decode` caught only `ValueError` under a comment asserting every decode failure derives from
+it. `json.loads` on a deeply nested payload raises `RecursionError`, a `RuntimeError` — so a forged
+cursor escaped the refusal into the boundary's broad catch and told a caller who mistyped an
+argument to go check whether their datastore was readable. Reproduced before fixing. **Note the
+shape: the comment stating the guard was total is what made the gap invisible.**
 
-**Ruling: #27 is low priority and does NOT ride Chunk 03.** An earlier draft of this block argued 03
-was "the last cheap moment"; that was withdrawn. Keyset pagination is *designed* to be correct across
-snapshots — which is why this plan chose it over offset — so 03 gains nothing from a read
-transaction, and 03's review is this branch's `cumulative-final`, which should not carry two
-unrelated risk surfaces. The fix also departs from a documented norm in `store/connection.py` and
-needs its own ruling first.
+🔴 **Two of the ten Chunk 03 mutations survived their first run, and neither assertion was wrong —
+the FIXTURES were.** Each forged cursor carried a placeholder fingerprint, so an earlier guard
+refused every one of them before the branch under test was reached, and ten parametrized cases all
+proved the same one thing. Recorded in `learnings.md`: when a case exists to exercise one rejection
+path, make it valid in every respect but that one.
 
-🔴 **`as_of` is NOT part of #27, and an earlier draft of this block wrongly said it was.** It is
-captured after the rows, so `today` — and therefore `covered_end` — can only widen relative to what
-the rows saw, and a wider window still contains them. Capturing it *first* would be the hazardous
-direction. Do not "fix" the ordering.
+**Carried forward, still live and NOT fixed by this plan:**
 
-Next: Chunk 03, the plan's `cumulative-final`. Carry forward that the invariant-before-matrix
-discipline has now paid three chunks running — 26 mutations were all caught in Chunk 02 and two real
-defects still came from hand-probing reachable inputs. 03's invariants are *every row appears exactly
-once across a paged walk* and *the last page carries no `next_cursor`*. Its Done-when also carries
-the one step most likely to be skipped: **ask which existing tests now short-circuit**, because 03
-changes control flow through the statement builder and mutation testing is structurally blind to
-that. The peer acceptance session is still NOT dispatched during this plan's chunks — relaunched and
-briefed once, after Chunk 03 (#25) — but if #25 is fixed the budget argument disappears and a round
-per chunk becomes cheap.
+- 🔴 **#27 — an answer's rows and counts are separate snapshots.** Ruled low priority 2026-09-08 and
+  deliberately kept off Chunk 03. Keyset pagination is snapshot-tolerant by design, so 03 gained
+  nothing from a read transaction. `as_of` is NOT part of #27 — it is captured after the rows, so
+  the covered end can only widen and a wider window still contains them. Do not "fix" that ordering.
+- 🔴 **`Truncation.over()` and `Cursor.issued_for()` are the only routes that should build their
+  types.** Bare construction skips the floor-and-flag reconciliation and the fingerprint.
+- **A walk can end early on a `counted_during_change` page.** Enough rows removed mid-walk floors
+  `matching` at `returned`, `truncated` reads false and no cursor is issued — correct for the numbers
+  in that payload, possibly short of the window. The warning is the telling; recorded in
+  `api-contract.md` and in `Truncation.next_cursor`'s docstring.
+- 🔴 **Latency is answered; do not re-measure.** `mcp-count-latency-2026-09-08.md`: ~18ms at 10k
+  rows, ~435ms at 200k against a ~1s target. The cursor adds one predicate and no statement.
+
+Next: this plan is complete. The peer acceptance session (#25) is the follow-on — relaunch it and
+brief it on #16 and #17 against a build it can confirm by `build.commit` rather than by
+fingerprinting a refusal string. The MCP tool/action architecture audit the owner asked about is the
+other queued item, and it is discovery-shaped rather than build-shaped.
 
 ## Scaffolding
 
