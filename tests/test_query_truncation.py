@@ -1024,10 +1024,27 @@ def _forged(payload: object) -> str:
     return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
 
 
+def _forged_depth(depth: int) -> str:
+    """A cursor payload nested deeper than the JSON decoder's stack.
+
+    🔴 The one decode failure that is NOT a `ValueError`: `json.loads` raises
+    `RecursionError` here, a `RuntimeError`, so a decoder catching only
+    `ValueError` lets this cursor escape the refusal path into the boundary's
+    broad catch — and the caller is told "internal error, check whether your
+    datastore is readable" for a mistake in their own argument.
+
+    The case survives a future decoder that parses this iteratively: the payload
+    is an array, so it would then be refused for not being an object. What it
+    cannot survive is the guard narrowing back to `ValueError` alone.
+    """
+    return base64.urlsafe_b64encode(("[" * depth + "]" * depth).encode()).decode().rstrip("=")
+
+
 @pytest.mark.parametrize(
     ("presented", "why"),
     [
         ("", "empty"),
+        (_forged_depth(50_000), "nested past the JSON decoder's recursion limit"),
         ("not a cursor at all", "not base64"),
         (_forged([2026, 1, 1]), "a JSON array rather than an object"),
         (_forged("a string"), "a JSON string rather than an object"),

@@ -214,10 +214,14 @@ against this fixture would be verified against nothing.
 
 Ordered by dependency. Each ends with `/prawduct:critic chunk`.
 
-**C1 — the time and row axes.** `effective_window` (start clamped to coverage, end clamped to
-`as_of`), the two warning kinds `window_starts_before_coverage` / `window_extends_past_today`,
-window-scoped transaction counts, `returned` / `matching` / `truncated`, and cursor pagination.
-→ closes #16, #17.
+**C1 — the time and row axes.** `effective_window` (the requested window beside the one the data
+could answer over) with its two request-scoped warning kinds, window-scoped transaction counts,
+`returned` / `matching` / `truncated`, and cursor pagination. → closes #16, #17.
+🔴 **Shipped 2026-09-08, and `api-contract.md` is now the authority on its particulars** — this line
+deliberately does not restate the kind names or the clamp bounds, because C2 and C4 add windowed
+tools against this same mechanism and both moved while C1 was being built: the end bound is the
+covered end (today, *or* the last transaction when that is later) rather than `as_of`, and one kind
+was renamed. A builder planning against a restatement writes a retired name into a tool description.
 
 **C2 — the account and field axes.** Account lifecycle onto `list_accounts` (see the entanglement
 above), per-account coverage, `get_coverage_report` built, the three-way distinction between *no

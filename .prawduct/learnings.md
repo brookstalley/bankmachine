@@ -164,9 +164,23 @@ case to fall outside of. Prefer the second form even when the first is true toda
   its quieter sibling, where the comparison is strict equality and the *operands* are empty. Nothing
   distinguishes "these two agree" from "I found neither". The defense is one line: **every
   extraction asserts it found what it was looking for**, before anything is compared. The repo
-  already had this right one function away — `_window_kinds` guards its derived set with `assert
-  request_scoped, "the window kinds vanished from the vocabulary"`, for exactly this reason — and I
-  did not carry it to the new extraction I wrote beside it.
+  already had this right one function away — the helper in the MCP tests that derives the
+  request-scoped warning kinds from the vocabulary asserts the derived set is non-empty before using
+  it, for exactly this reason — and I did not carry it to the new extraction I wrote beside it.
+- *2026-09-08, the cursor's forged-payload fixtures, and the same rule one layer further out.* Ten
+  mutations were aimed at the new refusal paths and two SURVIVED — removing the bool guard that stops
+  JSON `true` becoming transaction id 1, and removing the scheme-tag check. Neither assertion was
+  wrong. **The fixtures were**: each forged cursor carried a placeholder fingerprint, so an EARLIER
+  guard refused every one of them before the branch under test was reached, and ten cases all passed
+  by proving the same one thing. Fixed by giving the fixtures the real fingerprint, which is the only
+  value that lets each case be wrong in exactly one way.
+  🔴 **The trap here is not a loose assertion or a derived operand — it is a fixture that cannot
+  REACH the subject**, because some other guard between the entry point and the branch fires first.
+  A parametrized list makes it worse, not better: ten green cases read as ten checks. The tell is
+  that the input is invalid in more than one way at once. **When a case exists to exercise one
+  rejection path, make it valid in every respect but that one** — and confirm it by breaking that
+  path alone and watching this case, not the list, go red.
+
   *(Two further defects in the same chunk were found by neither the matrix nor 22 mutations, but by
   reading reachable inputs by hand: a caveat advising a caller to raise `limit` past a cap it had
   already hit, and a windowed answer that dropped a coverage key only when the datastore was

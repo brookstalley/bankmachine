@@ -303,6 +303,28 @@ can actually follow — paging leads, because it is the only route that reaches 
 and raising `limit` is offered only while `limit` has something left to give: at the cap it would be
 advice the answer's own `returned` contradicts.
 
+🔴 **`matching` and the rows are two snapshots, and the contract says which way that resolves.**
+The read handle is opened in autocommit — `store/connection.py`: *"every statement is its own
+snapshot"* — and the scheduled sync writer soft-deletes transactions while the MCP reader may be
+mid-query. So a row counted in the first statement and removed before the second makes the count come
+back *below* the rows already in hand. **That is a data condition, not an error:** `matching` floors
+at `returned`, because those rows were observed to match and reporting fewer would contradict the
+payload beside them; `truncated` is then false, which is true, since nothing is being hidden. The
+skew is not smoothed away — `counted_during_change` announces it, so a consumer comparing two calls
+seconds apart knows a write landed between them. **Refusing to answer here would be the wrong
+trade**: it would turn a harmless skew into a failed tool call, which the Direction above forbids in
+as many words.
+
+**Cost, measured rather than assumed** — full method, caveats and the figures below in
+`.prawduct/artifacts/mcp-count-latency-2026-09-08.md`, which records that these are single-process
+warm-cache medians on one developer machine rather than a portable benchmark (2026-09-08, synthetic
+stores, 14 accounts over 24 months):
+the `matching` count runs at roughly the cost of the row query itself — ~1ms at 10k rows, ~89ms at
+200k — and a full `query_transactions` call lands at ~18ms / ~435ms respectively, inside the ~1s
+target in `nonfunctional-requirements.md` with room to spare at volumes well beyond a real 24-month
+store. **`matching` therefore ships exact**; the approximate-count fallback that was held in reserve
+is not needed and is not built.
+
 ### A truncated answer carries the route to the rest (#17)
 
 🔴 **A truncated answer carries `truncation.next_cursor`, when and only when `truncated` is true.**
@@ -335,27 +357,12 @@ under the name of page two.
 measurement already refuted raising it — 74.2% of rows are dropped at full coverage, so no default a
 human would pick fixes this.
 
-🔴 **`matching` and the rows are two snapshots, and the contract says which way that resolves.**
-The read handle is opened in autocommit — `store/connection.py`: *"every statement is its own
-snapshot"* — and the scheduled sync writer soft-deletes transactions while the MCP reader may be
-mid-query. So a row counted in the first statement and removed before the second makes the count come
-back *below* the rows already in hand. **That is a data condition, not an error:** `matching` floors
-at `returned`, because those rows were observed to match and reporting fewer would contradict the
-payload beside them; `truncated` is then false, which is true, since nothing is being hidden. The
-skew is not smoothed away — `counted_during_change` announces it, so a consumer comparing two calls
-seconds apart knows a write landed between them. **Refusing to answer here would be the wrong
-trade**: it would turn a harmless skew into a failed tool call, which the Direction above forbids in
-as many words.
-
-**Cost, measured rather than assumed** — full method, caveats and the figures below in
-`.prawduct/artifacts/mcp-count-latency-2026-09-08.md`, which records that these are single-process
-warm-cache medians on one developer machine rather than a portable benchmark (2026-09-08, synthetic
-stores, 14 accounts over 24 months):
-the `matching` count runs at roughly the cost of the row query itself — ~1ms at 10k rows, ~89ms at
-200k — and a full `query_transactions` call lands at ~18ms / ~435ms respectively, inside the ~1s
-target in `nonfunctional-requirements.md` with room to spare at volumes well beyond a real 24-month
-store. **`matching` therefore ships exact**; the approximate-count fallback that was held in reserve
-is not needed and is not built.
+🔴 **A walk that ends on a `counted_during_change` page may have stopped early.** That warning means
+the count came back below the rows already in hand, so `matching` floored at `returned`, `truncated`
+read false, and no cursor was issued — correct for the numbers in the payload, and possibly short of
+the window if enough rows were removed mid-walk. The warning is the telling: ask again for a count
+taken after the change. Refusing to answer instead would turn a harmless skew into a failed tool
+call, which the Direction above forbids.
 
 ### Window-scoped coverage rides beside the store-wide figure, never replacing it
 

@@ -503,8 +503,12 @@ class Cursor:
         )
 
     def encode(self) -> str:
-        """The wire form. URL-safe and unpadded, because `=` is what a shell or a
-        query string is most likely to eat in transit."""
+        """The wire form: URL-safe and unpadded.
+
+        `=` is the character a shell, a query string or a log line is most
+        likely to eat in transit, and a cursor that arrives one character short
+        is refused rather than misread — a refusal the caller cannot act on.
+        """
         payload = json.dumps(
             {
                 "v": _CURSOR_SCHEME,
@@ -522,10 +526,19 @@ class Cursor:
         """A cursor off the wire, or a refusal — never a silent fall back to page one."""
         try:
             payload = json.loads(base64.urlsafe_b64decode(text + "=" * (-len(text) % 4)))
-        except ValueError:
-            # Base64, UTF-8 and JSON failures all derive from `ValueError`, and
-            # every one of them means the same thing to the caller. `from None`
-            # because the cause is a decoder's internals, which
+        except (ValueError, RecursionError):
+            # Base64, UTF-8 and JSON *syntax* failures all derive from
+            # `ValueError`. 🔴 One does not: `json.loads` on a deeply nested
+            # document exhausts the stack and raises `RecursionError`, which is
+            # a `RuntimeError`. Caught only as `ValueError`, that cursor escapes
+            # this refusal, escapes the boundary's narrowing, and lands in its
+            # broad catch — so a caller who mistyped an argument is answered
+            # "internal error" and told to check whether their datastore is
+            # readable. A false statement about a caller mistake is the exact
+            # outcome `InvertedWindowError` exists to prevent. Found by review,
+            # then reproduced.
+            #
+            # `from None` because the cause is a decoder's internals, which
             # `api-contract.md` § Error Model keeps off the wire.
             raise MalformedCursorError(_CURSOR_REFUSAL) from None
         if not isinstance(payload, dict) or payload.get("v") != _CURSOR_SCHEME:
@@ -659,6 +672,14 @@ class Truncation:
         not, and there is no last row to resume from. Rare — it needs a write to
         land between the two statements — and the `rows_truncated` caveat says
         so without offering a route the caller cannot take.
+
+        🔴 The mirror of that skew ends a walk EARLY, and it is worth naming
+        because it looks like a clean finish. When enough rows are removed
+        between the two statements the count comes back below the rows in hand,
+        `matching` floors at `returned`, `truncated` reads false and no cursor is
+        issued — correct for the numbers in this payload, and possibly short of
+        the window. `counted_during_change` is what says so, which is why it
+        rides out rather than being smoothed away.
         """
         if not self.truncated or self.resume_from is None:
             return None

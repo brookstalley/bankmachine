@@ -34,6 +34,84 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-08: A truncated answer carries the route to the rest
+
+<!-- prawduct: scope=mcp-answer-scope -->
+
+**Why:** the entry below made a capped answer stop reading as a complete one. It did not make the
+missing rows reachable. The cap is a contract term, narrowing the window moves the boundary rather
+than removing it, and at the ceiling the only advice left was one the payload's own `returned`
+contradicted — so a caller could see that a two-year card total was understated by roughly 40% and
+still have no way to get the right number. #17 asked for a total *or* a cursor; the total alone
+leaves the honest answer unobtainable.
+
+**What changed:**
+
+- **`truncation.next_cursor`, present when and only when `truncated` is true**, and an optional
+  `cursor` argument on `query_transactions`. **The key's presence is the loop condition** — page
+  while it is there, stop when it is gone — so a consumer never has to compare two counts to know
+  whether it is done. Both `next_cursor` and `truncated` derive from the same two counts, so they
+  cannot disagree.
+- **`cursor` narrows the request the way `since` does.** The keyset predicate lives in the shared
+  `_transaction_filters`, so the count narrows with the page. A count taken over the whole result
+  set behind every page would leave `truncated` true on the final page forever, and a caller paging
+  until it went false would never stop.
+- **Opaque keyset state over `(posted_date, transaction_id)`, never an offset.** That order is
+  already total, so "everything after this row" is a predicate rather than a count of rows to skip.
+  One insert from a concurrent sync shifts every offset page, so a caller would see one row twice
+  and never see another — this work cycle's own defect arriving through a new door.
+- **A cursor carries a fingerprint of the predicate it was issued for**, and one presented with a
+  different `since`, `until` or `account_id` is refused. 🔴 **This is a requirement that surfaced
+  during the build and is recorded as an amendment in the plan's Chunk 03 deliverables rather than
+  designed in chat.** The reachable foreign cursor is not a forged string — it is the caller's own
+  against a changed request, which selects real rows, in the right order, and answers a question
+  nobody asked, with no error and no warning. `limit` is deliberately outside the fingerprint:
+  changing page size between pages does not change which result set is being walked.
+- **Every rejection path answers in one sentence that names `cursor`** and leaks nothing of the
+  decoder, and none of them falls back to "start from the newest row" — that fallback returns page
+  one under the name of page two.
+- **The `rows_truncated` remedy leads with paging**, because it is the only route that reaches every
+  matching row; "raise `limit`" is still offered only while `limit` has something left to give.
+- **The cap did not move.** ~500 stays a contract term across `api-contract.md`,
+  `nonfunctional-requirements.md` and `security-model.md`; the security model now records that a
+  cursor narrows a request rather than lifting the cap, so each page stays bounded by it.
+
+**The plan's Done-when 2 — "ask which existing tests now short-circuit" — asked and answered.** The
+chunk changes control flow through the statement builder, and `learnings.md` records that mutation
+testing is structurally blind to this, because reverting removes the damage along with the fix. Two
+checks were narrowed by the change and both were widened rather than left:
+
+- The guard comparing the row query's `WHERE` against the count's had no case carrying a cursor, so
+  it would have agreed about a predicate *neither* statement held. It is now parametrized with two
+  cursor cases, and asserts the keyset clause reached the row query **before** comparing the two —
+  `learnings.md` § *Guarantees by construction* records this exact fail-open shape from the same
+  guard one chunk ago.
+- The invariant grid spanned every request the store could answer *before* the function grew a
+  second half. It now carries the cursor as a dimension, with an oracle that spells the keyset out
+  independently, so every invariant is checked on page two as well as page one.
+
+**Done-when 3 — every new assertion broken and watched to fail — ran as ten mutations, and two of
+them survived the first time.** Both survived for the same reason: the forged-cursor fixtures
+carried a placeholder fingerprint, so `parse_cursor` refused them at the fingerprint check before
+the branch under test was ever reached. Removing the bool guard and removing the scheme-tag check
+both left the suite green. The fixtures now carry the real fingerprint, and every mutation goes red.
+🔴 **A check that cannot fail hides every problem in its blast radius, not one** — the rule
+`learnings.md` already records, met again in the fixture rather than in the assertion.
+
+**The Critic caught a refusal path that answers "internal error".** `Cursor.decode` caught only
+`ValueError`, on the stated grounds that every decode failure derives from it. One does not:
+`json.loads` on a deeply nested payload raises `RecursionError`, a `RuntimeError`, so that cursor
+escaped the refusal, escaped the boundary's narrowing, and landed in its broad catch — answering a
+caller who mistyped an argument with "the failure has been logged; `bankmachine store status`
+reports whether the datastore is readable". A false statement about a caller mistake is the exact
+outcome `InvertedWindowError` exists to prevent. Reasoned by the Critic from the exception surface,
+then reproduced, then fixed and pinned by a case that survives a future iterative JSON decoder.
+
+**Verified against the real sandbox store**, not only the fixture: account 4 over
+2024-01-01..2026-12-31 still returns 100 of 144 truncated, and now pages to 144 distinct rows in two
+pages, the last carrying no cursor and no `rows_truncated` warning. August 2026 still reports
+1,114,946 minor units across 8 categories, so no figure moved. Suite green.
+
 ## 2026-09-08: A capped answer says how much it left behind
 
 <!-- prawduct: scope=mcp-answer-scope -->
