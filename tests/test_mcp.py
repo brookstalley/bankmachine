@@ -967,6 +967,52 @@ def test_an_account_id_below_one_is_refused(initialized_config: Config) -> None:
     assert "account_id" in result["content"][0]["text"]
 
 
+def test_an_account_id_that_names_no_account_is_refused_not_answered_empty(
+    initialized_config: Config,
+) -> None:
+    """🔴 A typo in an argument name was loud; a typo in an account id was silent.
+
+    `{"account_id": 999}` returned `rows: []` with no warning -- byte-identical
+    to a real account that happened to be quiet in the window. "No transactions"
+    is an ordinary thing for an account to have, so nothing about the answer
+    invited a second look. The refusal for an unadvertised argument NAME already
+    existed; this is the same mistake one field over, and the quieter one.
+    """
+    _seed(initialized_config)
+
+    result = _call(initialized_config, "query_transactions", {"account_id": 999})
+
+    assert result["isError"] is True, "an account id naming nothing was answered"
+    assert result["structuredContent"]["error"]["code"] == "invalid_argument"
+    message = result["content"][0]["text"]
+    # 🔴 The whole phrase, not `"999" in message`: an id is a bare integer and
+    # would match inside any longer number a future refusal happened to carry.
+    assert "account_id 999 does not exist" in message, message
+    assert "SELECT" not in message, "the refusal leaked the query"
+
+
+def test_an_account_that_exists_but_is_quiet_in_the_window_still_answers_empty(
+    initialized_config: Config,
+) -> None:
+    """🔴 The control. Refusing an id that names nothing must not eat the honest empty.
+
+    An account that exists and simply had no activity in the window has a
+    correct answer, and it is `rows: []`. Without this test, narrowing the
+    existence check by one character -- or applying it to the window rather than
+    to the id -- turns a true answer into a refusal and nothing notices.
+    """
+    _seed(initialized_config)
+
+    result = _call(
+        initialized_config,
+        "query_transactions",
+        {"account_id": 1, "since": "2019-01-01", "until": "2019-12-31"},
+    )
+
+    assert result.get("isError") is not True, f"a real account was refused: {result}"
+    assert result["structuredContent"]["rows"] == []
+
+
 def test_the_merchant_field_is_declared_as_the_aggregators_guess() -> None:
     """🔴 A value a consumer cannot tell is unvalidated is one it will trust.
 

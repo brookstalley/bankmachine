@@ -361,10 +361,15 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
             return _error(message_id, _METHOD_NOT_FOUND, f"no tool named {name!r}")
         try:
             answer = _dispatch_tool(config, name, arguments)
-        except BadArgumentError as exc:
+        except (BadArgumentError, query.UnknownAccountError) as exc:
             # Ahead of the broad catch. The message is the caller's to act on,
             # so it is rendered without the exception class name -- and it is
             # safe to send verbatim because this product wrote every word of it.
+            #
+            # `UnknownAccountError` rides the same path from the query layer:
+            # only a datastore read can know an id names nothing, but what the
+            # caller gets told is this boundary's to decide, and the answer is
+            # the same one an unadvertised argument gets -- correct your call.
             logger.info("tool %s refused an argument: %s", name, exc)
             return _tool_error(message_id, "invalid_argument", str(exc))
         except Exception:  # prawduct:allow prawduct/broad-except -- see below
