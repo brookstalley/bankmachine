@@ -95,9 +95,7 @@ Absence of either key means that tool takes no window, or returns every row it f
 
 The server's own `instructions` are the authority on that list — a test holds them against the union
 of every tool's live envelope and against the warning vocabulary, so they cannot fall behind the
-wire; this page is a copy and can. *(That guard used to sample a single tool's envelope, which is
-how it passed unchanged while two fields and five warning kinds were added. It now reads the union,
-and a second test covers the kinds.)* **Read the warnings before drawing a conclusion**: an answer
+wire; this page is a copy and can. **Read the warnings before drawing a conclusion**: an answer
 can be perfectly well-formed and still be computed over incomplete data, and that is the failure this
 product exists to prevent.
 
