@@ -9,8 +9,8 @@ the loop. It is a data pipeline: no budgeting, forecasting, categorization or ad
 mutation tools on the MCP surface.
 
 🔴 **Every answer says how far to trust it.** Responses carry the environment they came
-from, a freshness stamp, coverage counts, and warnings — `stale`, `degraded`, `gapped`,
-`partial`. A `gapped` warning means the institution granted less history than was asked
+from, a freshness stamp, coverage counts, which build answered, and warnings — `stale`,
+`degraded`, `gapped`, `partial`. A `gapped` warning means the institution granted less history than was asked
 for, so older data is *absent rather than zero*. Silent staleness is the failure mode
 this project exists to prevent, and `docs/system-requirements.md` §7 is the deliverable
 rather than a formality.

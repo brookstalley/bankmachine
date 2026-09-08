@@ -31,6 +31,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.engine import Connection as SAConnection
 
+from bankmachine.build_id import build_identity
 from bankmachine.config import Config
 from bankmachine.store.connection import inspect
 from bankmachine.store.engine import reader_connection
@@ -113,6 +114,13 @@ class Answer:
             # skimming a payload should not have to look for it.
             "environment": self.environment,
             "as_of": self.as_of.isoformat(),
+            # 🔴 Provenance of the ANSWER, so it rides beside `as_of` rather than
+            # living only in the handshake: a client is free not to surface
+            # `serverInfo` to whatever is reading, and an agent that cannot see
+            # which build replied cannot tell a stale server from a current one.
+            # The server is a subprocess launched at connect time, so that
+            # distinction is not hypothetical -- it cost a full acceptance round.
+            "build": build_identity().to_wire(),
             "warnings": [w.to_wire() for w in self.warnings],
             "coverage": self.coverage,
             "rows": self.rows,

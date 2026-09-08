@@ -191,7 +191,7 @@ is what keeps the encryption decision honest.*
 
 Entities are defined in `data-model.md` and are not restated here.
 
-### Every MCP response carries three things
+### What every MCP response carries
 
 🔴 **1. A freshness stamp (AC-9.2)** — last successful sync per contributing account. Not per
 institution, not global.
@@ -202,6 +202,30 @@ over incomplete data must be impossible to do accidentally.*
 🔴 **3. Enough self-description to be read correctly (AC-9.4)** — tool descriptions state **units**
 (minor units), **sign conventions** (the operator's point of view; a card balance is negative), and
 **whether any account rule was applied.** Ambiguity here produces wrong analysis that looks right.
+
+### The answer says which build produced it
+
+🔴 **Every response carries `build`** — `{version, commit, dirty}` — beside `environment` and
+`as_of`. The MCP server is a subprocess the client launches, so it runs whatever code existed at
+connect time; without this a caller cannot tell a server running current code from one running a
+build from before the fix it is testing.
+
+**It is captured once at process start and never re-read, and that is the requirement rather than
+an optimization.** A hash read per request reports the *repository's* current HEAD, so a server
+left running across a merge would answer with the merged commit while still serving pre-merge code
+— reporting itself current at exactly the moment it is not. Re-reading it would build the defect
+into the instrument meant to expose it. The honest cost: a long-lived process reports the build it
+started with even after the checkout moves under it, which is the true statement about that
+process.
+
+🔴 **`commit: null` means the build could not be identified, and `dirty` is then `null` too — never
+`false`.** `false` asserts the tree matches its commit, and a build we cannot identify supports no
+such assertion. `dirty: true` matters on its own: a bare hash is a lie by omission about
+uncommitted code that is running and is not in that commit.
+
+*This is build **provenance**, not API versioning.* The versioning decision below (scheme: none,
+deferred) is about letting consumers negotiate a contract, and it stands unchanged — including its
+revisit trigger. What `build` answers is "which code answered me", which belongs with `as_of`.
 
 ### Coverage is reported per account, never per institution (AC-9.5)
 

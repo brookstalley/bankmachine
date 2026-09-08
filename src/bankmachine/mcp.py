@@ -32,6 +32,7 @@ from datetime import date
 from typing import IO, Any
 
 from bankmachine import query
+from bankmachine.build_id import build_identity
 from bankmachine.cli.exit_codes import EXIT_OK
 from bankmachine.config import Config
 from bankmachine.logging_setup import get_logger
@@ -295,7 +296,15 @@ def _server_info(config: Config) -> dict[str, Any]:
         # answer. A client listing two configured servers should be able to tell
         # the sandbox one from the real one without calling a tool.
         "title": f"bankmachine ({config.environment})",
-        "version": "0.1.0",
+        # Read from package metadata rather than restated here: a literal
+        # version is one that stops matching `pyproject.toml` the first time
+        # either moves without the other.
+        "version": build_identity().version,
+        # 🔴 The handshake carries it too, so a client can show which build it
+        # connected to before any tool is called. `null` means the build could
+        # not be identified -- it is never guessed at.
+        "commit": build_identity().commit,
+        "dirty": build_identity().dirty,
     }
 
 
@@ -303,7 +312,11 @@ def _instructions(config: Config) -> str:
     return (
         f"This server reads a local {config.environment} finance datastore. It is READ-ONLY "
         f"and never moves money.\n\n"
-        f"Every response carries `environment`, `as_of`, `coverage` and `warnings`. 🔴 Read "
+        f"Every response carries `environment`, `as_of`, `build`, `coverage`, `warnings` and "
+        f"`rows`. `build` says which code answered you -- this server is a subprocess launched "
+        f"at connect time, so it runs whatever existed then, and `commit` is captured once at "
+        f"start rather than re-read (a null `commit` means the build could not be identified, "
+        f"and `dirty` is then null too, never false). 🔴 Read "
         f"`warnings` before drawing a conclusion: an answer can be perfectly well-formed and "
         f"still be computed over incomplete data. `stale` means a connection has not synced "
         f"recently; `degraded` means one is failing; `gapped` means the institution granted "
