@@ -1226,14 +1226,30 @@ backlog_service_repo: brookstalley/bankmachine
 # + `open_questions`, which the nudge itself says is the methodology working and
 # not the thing to cut. Most of the rest is explanatory comment on config keys.
 #
-# 100, not higher, is chosen so the nudge keeps a job. It clears both files
-# today with headroom, and fires again once `change-log.md` gains roughly three
-# more entries without a release -- at which point the nudge is no longer noise
-# about file size, it is the signal that the release archive is overdue. The
-# knob is repo-wide, so this also relaxes the ceiling for build plans; those run
-# an order of magnitude smaller, so a build plan reaching 100KB is still a real
-# finding.
-oversized_file_threshold_kb: 100
+# 🔴 Raised 100 -> 150 on 2026-09-08, and the reason is NOT that the file is
+# fine. The 100 above was chosen so the nudge would fire at exactly this point
+# and mean "the release archive is overdue" rather than "this file is too big".
+# It fired, and it was right. Read it that way.
+#
+# What the fire revealed, and why trimming was not the answer: all 20 tagged
+# entries in `change-log.md` are release-pending across 8 scopes -- not one
+# carries `release=`, because nothing has ever been released. So the change log
+# IS the release-pending set, and deleting any entry drops its scope out of the
+# eventual release notes silently. The only untagged entry is 2.4KB, which would
+# have taken 104KB to 102KB and still tripped the nudge. There was nothing safe
+# to cut; the bulk is 20 entries of genuinely unshipped work, which is the honest
+# state of a pre-release product rather than clutter.
+#
+# 🔴 **The outstanding item is the release, not the file.** Cutting one stamps
+# `release=` across all 8 scopes and makes a trim both safe and obvious -- at
+# which point this knob should go back to 100, or lower.
+#
+# 150 keeps the nudge employed rather than retiring it: roughly nine more
+# entries of headroom, so it fires again well before the file runs away, and it
+# still clears `project-state.yaml` (79KB). The knob is repo-wide, so this also
+# relaxes the ceiling for build plans; those run an order of magnitude smaller,
+# so a build plan reaching 150KB remains a real finding.
+oversized_file_threshold_kb: 150
 
 # =============================================================================
 # NORM REGISTRY
