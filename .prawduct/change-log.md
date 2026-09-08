@@ -108,10 +108,18 @@ from eight or more statements, each its own snapshot, so this is not a property 
 `coverage.transactions` has had it since it shipped. Two consequences reach further than the
 truncation block and are worth naming rather than discovering later. **Chunk 01's guarantee that
 "every returned row lies inside `effective_window`" holds against the COVERAGE snapshot, not the ROW
-snapshot** — `_coverage` filters `removed_at IS NULL`, so a soft delete of the oldest rows between
-the two reads moves `earliest_transaction` forward and can clamp `effective_since` past a row already
-in `rows`. And **`as_of` postdates the rows**, so the stamp the tool instructions tell a reader to
-trust is the newest fact in the payload rather than the oldest.
+snapshot** — `_coverage` filters `removed_at IS NULL`, so a soft delete of the store's oldest row
+between the two reads moves `earliest_transaction` forward and can push `effective_since` past a row
+already in `rows`. And **the three transaction counts are three reads at three times**, so the
+relations a caller would assume between `coverage.transactions`, `transactions_in_effective_window`
+and `matching` hold only per-snapshot. The wording in `query.py`, `api-contract.md` and
+`tests/test_query_window.py` now states the conditional version rather than the one that reads
+better; #27 is what would earn back the unqualified claim.
+
+*(An earlier draft of this entry also named `as_of` as a consequence. It is not one, and the
+ordering is the safe one: `as_of` is captured after the rows, so `today` — and therefore
+`covered_end` — can only widen relative to what the rows saw, and a wider window still contains them.
+Capturing it first would be the hazardous direction, and the code does not.)*
 
 Not fixed here, and the reason is governance rather than effort. The fix is a per-answer read
 snapshot, which departs from a documented norm — `store/connection.py` opens the reader autocommit

@@ -487,6 +487,13 @@ def test_every_row_the_predicate_can_return_lies_inside_the_effective_window(
     store — `posted_date <= latest_transaction`. This asserts that the widest
     such row still falls inside the effective bounds, over a `latest` that
     ranges freely on both sides of `as_of`.
+
+    🔴 **Scope of what this proves.** The resolver is pure, so this pins the
+    guarantee against ONE coverage reading. In the running product the rows and
+    the coverage are separate statements on a handle that holds no read snapshot,
+    so a soft delete of a boundary row between them can still move the reported
+    bound — reachable, rare, and tracked as #27. No test here can close that,
+    because the gap is between two statements rather than inside either.
     """
     if since is not None and until is not None and until < since:
         return  # refused, not resolved — pinned by its own test above

@@ -266,10 +266,24 @@ def resolve_window(
     # caller's `until`) while `effective_until` says the answer stopped at
     # today -- a row outside the window the answer claims, which is this work
     # cycle's own defect wearing the fix's clothes. Taking the later of the two
-    # makes "every returned row lies inside `effective_window`" true by
-    # construction rather than true of the fixture: a returned row is at or
-    # before `until` AND at or before `latest`, so it is at or before the
-    # minimum of `until` and this bound.
+    # makes "every returned row lies inside `effective_window`" hold against the
+    # coverage this resolver was handed: a returned row is at or before `until`
+    # AND at or before `latest`, so it is at or before the minimum of `until` and
+    # this bound.
+    #
+    # 🔴 **Against that coverage, not against the rows** -- and the difference is
+    # not pedantry. `coverage` is read by a statement of its own, after the rows,
+    # on a handle that holds no read snapshot (`store/connection.py`: "every
+    # statement is its own snapshot"). So a soft delete of the store's OLDEST row
+    # landing between the two reads moves `earliest` forward and can push
+    # `effective_since` past a row already in hand. Rare -- it needs the boundary
+    # row itself removed inside a sub-millisecond gap, which ordinary sync
+    # traffic does not do, since removals are recent pending rows rather than the
+    # oldest row of a two-year store -- and the cost is a reported bound off by a
+    # little, never a wrong figure or a wrong row. Stated at the strength the
+    # mechanism actually holds because the stronger claim was written here first
+    # and was wrong; a single read snapshot per answer is what would earn it
+    # (#27).
     #
     # The sandbox cannot express it -- its last transaction is deliberately
     # earlier than `as_of` -- so this is reasoned from the predicate, not

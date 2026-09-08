@@ -214,7 +214,8 @@ overlap", which is a different statement and needs to stay distinguishable from 
 requested window intersected with `[earliest covered date, covered end]`, where the covered end is
 today *or the last transaction date when that is later*. Nothing narrows a SQL predicate, and the
 guarantee a consumer gets is the one that matters: **every returned row lies inside
-`effective_window`.**
+`effective_window`** — see the snapshot qualifier below for the one interleaving that can move the
+reported bound.
 
 🔴 **The covered end is not bare `today`, and the difference is load-bearing.** A row dated ahead of
 today is not forbidden — an authorization can post forward, and an institution a day ahead in local
@@ -222,8 +223,23 @@ time posts a date this UTC clock has not reached. The row-level predicate uses t
 so such a row is returned; had the effective end been `today`, the answer would have handed back a
 December row while claiming to stop in September. That is a row outside the window the answer
 claims — this defect class wearing the fix's clothes. Taking the later of the two makes the
-containment guarantee true by construction rather than true of the current fixture, which cannot
-express the case.
+containment guarantee hold against the coverage the resolver was handed, rather than merely being
+true of the current fixture, which cannot express the case.
+
+🔴 **The qualifier, stated at the strength the mechanism holds.** Containment holds against the
+*coverage* snapshot, not against the *row* snapshot, because the two are separate reads on a handle
+that holds no read snapshot. A soft delete of the store's **oldest** row landing between them moves
+`earliest_transaction` forward and can push `effective_since` past a row already returned; the
+mirror case needs a future-dated latest row removed in the same gap, since the covered end cannot
+fall below today. Both are rare — they need the boundary row itself removed inside a sub-millisecond
+gap, and ordinary sync removals are recent pending rows rather than the oldest row of a two-year
+store — and the cost is a reported bound off by a little, never a wrong figure or a wrong row. **What
+would earn the unqualified claim is a single read snapshot per answer (#27); until then this contract
+states the conditional version rather than the one that reads better.**
+
+*(`as_of` is not part of this. It is captured after the rows, so `today` — and therefore the covered
+end — can only widen relative to what the rows saw, and a wider window still contains them. The
+hazardous ordering would be capturing `as_of` first, which is not what the code does.)*
 
 An unbounded request reports the covered span, which is where a caller most needs it: "all of it"
 means nothing until you know what "all" covers.
