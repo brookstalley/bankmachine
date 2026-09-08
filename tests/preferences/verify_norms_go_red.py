@@ -439,6 +439,13 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         f"{ENROLLMENT_TESTS}::test_a_polled_session_can_never_become_an_archivable_response",
     ),
     (
+        "AC-3.2: an item with nothing left to add is read, not refused",
+        CONNECTOR_CLIENT,
+        "        if not isinstance(listed, list):",
+        "        if not listed:",
+        f"{CONNECTOR_TESTS}::test_an_item_with_nothing_left_to_add_is_read_not_refused",
+    ),
+    (
         "AC-3.2: a product already initialized still counts as a capability",
         CONNECTOR_CLIENT,
         'for field in ("products", "available_products"):',

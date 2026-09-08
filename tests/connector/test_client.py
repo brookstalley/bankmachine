@@ -549,3 +549,24 @@ def test_an_item_missing_either_list_is_refused_rather_than_half_answered(missin
     # even when the message names the other list -- which is the one thing this
     # test says the message has to get right.
     assert f"without a {missing} list" in str(caught.value)
+
+
+def test_an_item_with_nothing_left_to_add_is_read_not_refused() -> None:
+    """🔴 An empty `available_products` is a full Item, not a broken reply.
+
+    A connection with every product already initialized reports `[]` there --
+    the aggregator makes that list mutually exclusive with what is already
+    running, so "nothing left to add" is what a *complete* Item looks like. This
+    is the `ins_109511` shape that started this: refusing it, or reading it as no
+    capabilities, would strand the connections that can do the most.
+
+    Pinned separately from the malformed-body cases because the guard that
+    refuses a non-list is one truthiness check away from refusing this too, and
+    every other body here makes `products` falsy first -- so that weakening would
+    never reach this field and the suite would stay green.
+    """
+    capabilities = capabilities_of(
+        _item_body(products=["investments", "transactions"], available_products=[])
+    )
+
+    assert capabilities == frozenset({"investments", "transactions"})
