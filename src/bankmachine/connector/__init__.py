@@ -415,6 +415,15 @@ ITEM_GET = Endpoint("/item/get")
 #: sends someone to the aggregator's dashboard to fix what is already fixed.
 ITEM_REMOVE = Endpoint("/item/remove", retry_safe=False)
 
+#: One page of transaction changes since a cursor, and the cursor that follows it.
+#: Archivable: the body carries transactions and no credential.
+#:
+#: 🔴 `retry_safe` because a cursor makes the call idempotent at the far end --
+#: the same cursor returns the same page, and nothing is consumed by asking. That
+#: is what lets AC-2.5's crash-resume work at all: the page a killed process
+#: never committed is still there under the cursor it never advanced past.
+TRANSACTIONS_SYNC = Endpoint("/transactions/sync")
+
 #: The accounts behind one connection.
 ACCOUNTS_GET = Endpoint("/accounts/get")
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 from collections.abc import Iterator
 from typing import Any
 
@@ -1014,48 +1015,61 @@ def test_a_failed_release_of_the_superseded_item_is_reported_not_swallowed(
 
 
 def test_every_endpoint_declares_both_of_its_risk_properties_deliberately() -> None:
-    """🔴 Derived from the module, so the NEXT endpoint fails in the commit that adds it.
+    """🔴 Every endpoint must appear here BY NAME, so a new one fails this test.
 
-    A hand-written pair of assertions per endpoint is the construction this test
-    replaces: it is an enumeration standing in for a property, correct on the day
-    it is written and silently incomplete from the first endpoint nobody
-    remembers to add. Walking `bankmachine.connector`'s own namespace means an
-    endpoint that is neither listed here nor deliberately exempted breaks this
-    test rather than shipping with whatever the defaults happened to be.
+    An earlier version asserted only that each endpoint's flags matched a set of
+    exceptions — which meant an endpoint whose defaults happened to be right
+    passed silently, with nobody recording why either property was safe. That is
+    the enumeration-for-a-property shape again, one level up: it forced a decision
+    only for the unusual cases, which are not the ones that get forgotten.
 
-    Both properties matter and they are independent. `retry_safe` asks whether the
-    far end can absorb the call twice; `issues_credential` asks whether its body
-    may reach the append-only archive.
+    Comparing the NAME SET is what makes adding an endpoint fail here. Both
+    properties are independent: `retry_safe` asks whether the far end can absorb
+    the call twice, `issues_credential` whether its body may reach the append-only
+    archive.
     """
     import bankmachine.connector as boundary
 
-    endpoints = {
-        name: value
-        for name, value in vars(boundary).items()
-        if isinstance(value, Endpoint)
+    #: name -> (retry_safe, issues_credential, why it is what it is)
+    declared: dict[str, tuple[bool, bool, str]] = {
+        "INSTITUTIONS_GET": (True, False, "a catalogue read; nothing is spent or returned"),
+        "LINK_TOKEN_CREATE": (True, True, "opens a session; the body carries a link token"),
+        "LINK_TOKEN_GET": (True, True, "a poll; a finished session's body carries a public token"),
+        "ITEM_PUBLIC_TOKEN_EXCHANGE": (
+            False,
+            True,
+            "spends a single-use token and mints a durable Item -- a retry mints two",
+        ),
+        "ITEM_GET": (True, False, "the item's own record; the token goes up, nothing comes down"),
+        "ITEM_REMOVE": (
+            False,
+            False,
+            "a retry cannot double-remove, but it can turn a success into a spurious "
+            "ITEM_NOT_FOUND on a path where the operator is being told something worked",
+        ),
+        "TRANSACTIONS_SYNC": (
+            True,
+            False,
+            "a cursor makes it idempotent at the far end -- the same cursor returns the "
+            "same page, which is what lets a killed process resume",
+        ),
+        "ACCOUNTS_GET": (True, False, "a read of the connection's accounts"),
     }
-    assert endpoints, "the walk found nothing, so it would pass whatever the module held"
-
-    #: Every endpoint that may NOT be retried, with the reason it cannot be.
-    not_retryable = {
-        # Spends a single-use token and mints a durable Item; a retry mints two.
-        "ITEM_PUBLIC_TOKEN_EXCHANGE",
-        # A retry cannot double-remove, but it can turn a success into a spurious
-        # ITEM_NOT_FOUND -- on paths where the operator is being told something
-        # worked, which sends them to fix what is already fixed.
-        "ITEM_REMOVE",
+    found = {
+        name: value for name, value in vars(boundary).items() if isinstance(value, Endpoint)
     }
-    #: Every endpoint whose response body carries a credential.
-    credential_bearing = {"LINK_TOKEN_CREATE", "LINK_TOKEN_GET", "ITEM_PUBLIC_TOKEN_EXCHANGE"}
 
-    for name, endpoint in endpoints.items():
-        assert endpoint.retry_safe is (name not in not_retryable), (
-            f"{name}.retry_safe disagrees with this test's record of why it is safe "
-            f"to repeat. Decide it deliberately and say so here"
-        )
-        assert endpoint.issues_credential is (name in credential_bearing), (
-            f"{name}.issues_credential disagrees with this test's record of whether its "
-            f"body carries a credential. An endpoint wrongly marked False can be archived"
+    assert set(found) == set(declared), (
+        "an endpoint is missing from this test's record, or the record names one that no "
+        "longer exists. Both properties are risk decisions and neither has a safe default: "
+        f"undeclared={sorted(set(found) - set(declared))} "
+        f"stale={sorted(set(declared) - set(found))}"
+    )
+    for name, endpoint in found.items():
+        retry_safe, issues_credential, why = declared[name]
+        assert endpoint.retry_safe is retry_safe, f"{name}.retry_safe disagrees with: {why}"
+        assert endpoint.issues_credential is issues_credential, (
+            f"{name}.issues_credential disagrees with: {why}"
         )
 
 
@@ -1152,7 +1166,19 @@ def test_a_production_length_item_id_is_redacted_from_the_log(
 
     written = _log_text(cli_env)
     assert long_id not in written, "an id this shape must not survive the formatter"
-    assert "[REDACTED]" in written or "the item id and credential are in" in written
+    # The positive control, and the reason this test exists: the SAME id, logged
+    # deliberately, comes out redacted. Without this the assertion above passes
+    # because nothing logs the id at all -- which is true today and says nothing
+    # about what happens when someone adds it back.
+    logger = logging.getLogger("bankmachine.cli.enroll")
+    logger.error("deliberate probe of the formatter: %s", long_id)
+    probed = _log_text(cli_env)
+    assert "deliberate probe of the formatter" in probed, "the probe never reached the file"
+    assert long_id not in probed, (
+        "a production-length item id survived the formatter, so a log line carrying "
+        "one would leak it -- and a fixture-length id would not have shown that"
+    )
+    assert "[REDACTED]" in probed
 
 
 def test_a_timeout_below_the_floor_is_refused_before_the_aggregator(

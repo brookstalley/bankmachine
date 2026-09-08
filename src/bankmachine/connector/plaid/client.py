@@ -47,6 +47,7 @@ from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUse
 from plaid.model.link_token_get_request import LinkTokenGetRequest
 from plaid.model.link_token_transactions import LinkTokenTransactions
 from plaid.model.products import Products
+from plaid.model.transactions_sync_request import TransactionsSyncRequest
 
 from bankmachine.config import MAX_HISTORY_DAYS, Config
 from bankmachine.connector import (
@@ -57,6 +58,7 @@ from bankmachine.connector import (
     ITEM_REMOVE,
     LINK_TOKEN_CREATE,
     LINK_TOKEN_GET,
+    TRANSACTIONS_SYNC,
     AccessGrant,
     AggregatorNotConfiguredError,
     ConnectorError,
@@ -90,6 +92,12 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS: Final = 30.0
 #: sometimes including a one-time code from a phone. Fifteen minutes is enough for
 #: that without leaving a URL that mints an Item lying around for an afternoon.
 DEFAULT_HOSTED_URL_LIFETIME_SECONDS: Final = 900
+
+#: How many transaction changes to ask for per page. The aggregator's own
+#: maximum is larger; this is smaller on purpose, because AC-2.5's guarantee is
+#: that a crash loses at most one uncommitted page, and a page is the unit of
+#: that loss.
+TRANSACTIONS_PAGE_SIZE: Final = 100
 
 
 def _first_item_add_result(session: dict[str, Any]) -> dict[str, Any] | None:
@@ -718,6 +726,33 @@ class PlaidClient:
             ITEM_REMOVE,
             self._api.item_remove,
             ItemRemoveRequest(access_token=access_token),
+            connection_id=connection_id,
+        )
+
+    def transactions_sync(
+        self,
+        access_token: str,
+        *,
+        cursor: str | None,
+        count: int = TRANSACTIONS_PAGE_SIZE,
+        connection_id: int | None = None,
+    ) -> FetchedResponse:
+        """One page of transaction changes. Archivable: nothing comes back down.
+
+        `cursor` is `None` for a connection that has never synced, which asks for
+        everything the aggregator will grant. It is a required keyword rather than
+        a defaulted one for the same reason `history_days` is: a caller that
+        forgot it would silently re-fetch all history on every run, and the cost
+        would show up as a rate limit rather than as a wrong answer.
+        """
+        request = TransactionsSyncRequest(access_token=access_token, count=count)
+        if cursor is not None:
+            request.cursor = cursor
+        return self._fetch(
+            TRANSACTIONS_SYNC,
+            self._api.transactions_sync,
+            request,
+            request_context=f"cursor={'initial' if cursor is None else 'resumed'} count={count}",
             connection_id=connection_id,
         )
 

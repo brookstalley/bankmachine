@@ -50,6 +50,8 @@ from bankmachine.store.schema import connections, institutions
 from bankmachine.store.types import UtcInstant, now_utc
 
 logger = get_logger("cli.enroll")
+
+
 def source_institution_id_of(item_body: bytes) -> str:
     """The institution id for a log line, or a placeholder if the body is unreadable.
 
@@ -58,7 +60,11 @@ def source_institution_id_of(item_body: bytes) -> str:
     """
     try:
         return institution_ref_of(item_body)[0]
-    except Exception:  # prawduct:allow prawduct/broad-except -- logging a failure
+    except Exception:  # prawduct:allow prawduct/broad-except -- see the docstring
+        # Deliberately swallowed and deliberately not logged: this runs while
+        # building the message for a failure the operator needs to see, and a
+        # second exception here would replace it. The consequence is bounded to a
+        # placeholder in one line, and the real error still carries its cause.
         return "unreadable"
 
 

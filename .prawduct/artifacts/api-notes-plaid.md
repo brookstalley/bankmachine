@@ -398,6 +398,51 @@ not settled here.
 
 ---
 
+### 17. 🔴 `has_more` is FALSE on a `NOT_READY` response, so it cannot terminate the loop
+
+Probed live 2026-09-07 against a freshly minted sandbox item
+(`POST /sandbox/public_token/create` → exchange → `POST /transactions/sync`). Two attempts, three
+seconds apart:
+
+| attempt | `transactions_update_status` | added | `has_more` | `next_cursor` |
+|---|---|---|---|---|
+| 1 | `NOT_READY` | 0 | **`False`** | **empty** |
+| 2 | `INITIAL_UPDATE_COMPLETE` | 10 | `True` | set |
+
+🔴 **A loop written as `while has_more:` terminates immediately on the first sync of every new
+connection, and records a successful run with zero transactions.** Nothing raises. The connection
+looks synced, `last_success_at` is stamped, and the account reports no activity — a *successful*
+response computed over data that has not materialized yet, which `api-contract.md` § Direction names
+as this product's primary failure mode in so many words. AC-2.6 exists to prevent exactly this, and
+the shape of the trap is that the naive loop satisfies AC-2.1's "loop until the source reports no
+more pages" **literally** while being wrong.
+
+**So the status is consulted before `has_more`, not after.** `NOT_READY` means back off and retry;
+it is not an error, not a degraded connection, and not the end of a page run.
+
+🔴 **`next_cursor` is empty on that response**, so a writer that persists it unconditionally either
+stores an empty cursor — which means *start from the beginning* — or, worse, overwrites a good
+cursor with one. The cursor is written only from a response that carried one.
+
+**What the transaction body actually holds** *(measured on a real sandbox row)*: `account_id`,
+`amount`, `iso_currency_code`, `date`, `authorized_date`, `pending`, `pending_transaction_id`,
+`transaction_id`, `name`, `merchant_name`, `personal_finance_category` (`primary`/`detailed`/
+`confidence_level`/`version`), plus `counterparties`, `location`, `payment_meta`, `running_balance`
+and a dozen more. `personal_finance_category.primary`/`.detailed` are what
+`source_category_primary`/`_detailed` take.
+
+**A purchase arrives POSITIVE.** The sample row is `amount: 89.4` for a merchant purchase on a
+depository account — money leaving. Under `data-model.md` § Direction's operator-POV convention that
+is stored **negative**, and a build that took it at face value would be wrong by twice the amount on
+every spend row.
+
+**The SDK's `to_dict()` floats the amount and parses the date into `datetime.date`.** Neither reaches
+this product: bodies are archived as raw bytes and parsed with `parse_float=str`. Recorded because it
+is a live demonstration of why AC-5.1 puts the archive before any normalization — the convenient path
+loses exactness at the first hop.
+
+---
+
 ## What is deliberately unused
 
 The generated response models — the largest part of the package — are not used at all, and

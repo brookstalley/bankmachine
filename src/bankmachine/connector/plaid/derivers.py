@@ -43,11 +43,23 @@ from typing import Any, Final
 from sqlalchemy import Connection as SAConnection
 from sqlalchemy import delete, insert, select, update
 
-from bankmachine.connector import ACCOUNTS_GET, INSTITUTIONS_GET, ITEM_GET, ITEM_REMOVE
+from bankmachine.connector import (
+    ACCOUNTS_GET,
+    INSTITUTIONS_GET,
+    ITEM_GET,
+    ITEM_REMOVE,
+    TRANSACTIONS_SYNC,
+)
 from bankmachine.logging_setup import get_logger
 from bankmachine.store.derivation import DerivationContext, DerivationError, Deriver
 from bankmachine.store.raw import RawResponse
-from bankmachine.store.schema import accounts, balances_daily, connections, institutions
+from bankmachine.store.schema import (
+    accounts,
+    balances_daily,
+    connections,
+    institutions,
+    sync_state,
+)
 from bankmachine.store.types import (
     CalendarDate,
     MinorUnits,
@@ -258,6 +270,79 @@ def derive_item(conn: SAConnection, response: RawResponse, context: DerivationCo
         source_institution_id=_required(item.get("institution_id"), "institution_id", response),
         name=_required(item.get("institution_name"), "institution name", response),
         seen_at=response.received_at,
+    )
+
+
+#: The `sync_state` row a transaction sync belongs to. One domain today; the
+#: column exists because balances and holdings advance on their own schedules and
+#: a single cursor per connection would make one of them wait for another.
+TRANSACTIONS_DOMAIN: Final = "transactions"
+
+
+def derive_transactions_sync(
+    conn: SAConnection, response: RawResponse, context: DerivationContext
+) -> None:
+    """`/transactions/sync` -> the cursor that follows this page.
+
+    🔴 **The cursor is written HERE, by the deriver, and that is the whole point.**
+    AC-2.1 requires it to be persisted transactionally with the data it
+    accompanies and AC-2.5 requires a crash mid-sync not to advance it. Those are
+    one requirement stated twice, and a caller that wrote the cursor beside the
+    derivation would satisfy them only for as long as everyone remembered to keep
+    the two inside one transaction. Deriving the cursor from the same body as the
+    rows makes them commit together because they are produced together -- there is
+    no ordering left for anyone to get wrong.
+
+    🔴 **A response with no `next_cursor` does not move the cursor.** A
+    `NOT_READY` reply carries an empty one *(measured, `api-notes-plaid.md` §17)*,
+    and storing it would mean either "start from the beginning" or, worse,
+    overwriting a good cursor with nothing.
+
+    Transaction rows are not written here yet -- they are the next chunk. The
+    boundary is built and proved first, because every plausible implementation of
+    this endpoint satisfies or violates both acceptance criteria at this one seam.
+    """
+    if response.connection_id is None:
+        raise DerivationError(
+            f"raw response {response.raw_response_id} ({TRANSACTIONS_SYNC}) was archived "
+            f"without a connection, so there is no cursor for it to advance. A sync page "
+            f"belongs to exactly one connection and nothing else can say which"
+        )
+    payload = _payload(response)
+    next_cursor = payload.get("next_cursor")
+    if not isinstance(next_cursor, str) or not next_cursor:
+        return
+
+    existing = conn.execute(
+        select(sync_state.c.connection_id).where(
+            sync_state.c.connection_id == response.connection_id,
+            sync_state.c.domain == TRANSACTIONS_DOMAIN,
+        )
+    ).one_or_none()
+    if existing is None:
+        conn.execute(
+            insert(sync_state).values(
+                connection_id=response.connection_id,
+                domain=TRANSACTIONS_DOMAIN,
+                cursor=next_cursor,
+                last_success_at=response.received_at,
+                updated_at=response.received_at,
+            )
+        )
+        return
+    conn.execute(
+        update(sync_state)
+        .where(
+            sync_state.c.connection_id == response.connection_id,
+            sync_state.c.domain == TRANSACTIONS_DOMAIN,
+        )
+        .values(
+            cursor=next_cursor,
+            last_success_at=response.received_at,
+            last_error_code=None,
+            last_error_at=None,
+            updated_at=response.received_at,
+        )
     )
 
 
@@ -594,4 +679,5 @@ PLAID_DERIVERS: Final[Mapping[str, Deriver]] = {
     str(ITEM_REMOVE): derive_nothing,
     str(ITEM_GET): derive_item,
     str(ACCOUNTS_GET): derive_accounts,
+    str(TRANSACTIONS_SYNC): derive_transactions_sync,
 }

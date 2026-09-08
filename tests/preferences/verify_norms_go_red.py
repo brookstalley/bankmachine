@@ -62,6 +62,7 @@ ENROLLMENT_TESTS = "tests/connector/test_enrollment.py"
 ENROLL_CLI_TESTS = "tests/cli/test_enroll.py"
 DERIVER_TESTS = "tests/connector/test_derivers.py"
 CONNECTOR_DERIVERS = pathlib.Path("src/bankmachine/connector/plaid/derivers.py")
+SYNC_CURSOR_TESTS = "tests/connector/test_sync_cursor.py"
 
 #: (description, file, text to replace, replacement, the test that must go red)
 CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
@@ -635,6 +636,24 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "        delete_access_token(config, credential_ref)",
         "        pass",
         f"{ENROLL_CLI_TESTS}::test_retiring_removes_the_item_at_the_aggregator",
+    ),
+    (
+        "AC-2.1: an empty next_cursor never overwrites a good one",
+        CONNECTOR_DERIVERS,
+        "    if not isinstance(next_cursor, str) or not next_cursor:\n        return",
+        "    if False:\n        return",
+        f"{SYNC_CURSOR_TESTS}::test_a_not_ready_response_does_not_move_the_cursor",
+    ),
+    (
+        "AC-2.1: a sync page archived against no connection advances nothing",
+        CONNECTOR_DERIVERS,
+        "    if response.connection_id is None:\n"
+        "        raise DerivationError(\n"
+        '            f"raw response {response.raw_response_id} ({TRANSACTIONS_SYNC})',
+        "    if False:\n"
+        "        raise DerivationError(\n"
+        '            f"raw response {response.raw_response_id} ({TRANSACTIONS_SYNC})',
+        f"{SYNC_CURSOR_TESTS}::test_a_page_archived_against_no_connection_is_refused",
     ),
     (
         "AC-10.1: a public token never reaches a repr",
