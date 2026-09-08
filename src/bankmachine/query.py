@@ -367,6 +367,28 @@ def list_accounts(config: Config) -> Answer:
         return _answer(config, conn, rows)
 
 
+class UnknownAccountError(ValueError):
+    """An `account_id` naming no account, refused rather than answered empty.
+
+    🔴 An id that names nothing and an account that was simply quiet in the
+    window both select no rows, and `rows: []` cannot tell them apart. "No
+    transactions" is an entirely ordinary thing for an account to have, so the
+    wrong answer invites no second look -- which makes the typo that produces it
+    more dangerous than a typo in an argument NAME, and that one is already
+    refused by name.
+
+    Raised from the query layer because only a datastore read knows which ids
+    exist; rendered at the MCP boundary, which owns how a caller is told.
+    """
+
+
+def _account_exists(conn: SAConnection, account_id: int) -> bool:
+    found = conn.execute(
+        select(accounts.c.account_id).where(accounts.c.account_id == account_id).limit(1)
+    ).first()
+    return found is not None
+
+
 def list_transactions(
     config: Config,
     *,
@@ -380,6 +402,13 @@ def list_transactions(
     if problem is not None:
         return _unusable(config, problem)
     with reader_connection(config) as conn:
+        # 🔴 Ordered AFTER the readability check on purpose: an unreadable store
+        # knows nothing about which accounts exist, and "that account does not
+        # exist" is a claim about the data rather than about the connection.
+        if account_id is not None and not _account_exists(conn, account_id):
+            raise UnknownAccountError(
+                f"account_id {account_id} does not exist. list_accounts reports the ids that do."
+            )
         statement = (
             select(
                 transactions.c.transaction_id,
