@@ -84,7 +84,12 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "description": (
                 "Transactions in a date window, newest first. Amounts are INTEGER MINOR "
                 "UNITS and signed from the account holder's point of view: money leaving is "
-                "negative, money arriving is positive. Removed transactions are excluded."
+                "negative, money arriving is positive. Removed transactions are excluded. "
+                "🔴 `description` is the institution's own string and is authoritative; "
+                "`merchant` is the AGGREGATOR'S guess at a merchant name, unvalidated and "
+                "often absent or wrong -- it reads 'FUN' for a purchase whose description is "
+                "'SparkFun'. Do not roll up or match on `merchant` without saying it may be "
+                "wrong, and prefer `description` when the two disagree."
             ),
             "inputSchema": {
                 "type": "object",

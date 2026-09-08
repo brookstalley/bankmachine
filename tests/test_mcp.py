@@ -965,3 +965,18 @@ def test_an_account_id_below_one_is_refused(initialized_config: Config) -> None:
 
     assert result["isError"] is True
     assert "account_id" in result["content"][0]["text"]
+
+
+def test_the_merchant_field_is_declared_as_the_aggregators_guess() -> None:
+    """🔴 A value a consumer cannot tell is unvalidated is one it will trust.
+
+    `merchant` sits beside `description` in every row with nothing to say that
+    one is the institution's own string and the other is a third-party guess
+    which reads "FUN" for "SparkFun". Marking the provenance settles nothing
+    about what a merchant *is* -- that is a larger decision -- but it stops the
+    field being presented as though it had been checked.
+    """
+    described = {d["name"]: d["description"] for d in mcp._tool_definitions()}
+
+    assert "merchant" in described["query_transactions"]
+    assert "unvalidated" in described["query_transactions"]

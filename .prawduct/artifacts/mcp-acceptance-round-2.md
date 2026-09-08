@@ -4,6 +4,12 @@ Date: 2026-09-08. Tester: acceptance session (black-box only — tool responses,
 no source read, nothing fixed). Reported to the build session; the operator decides
 anything that changes what a tool means.
 
+**Triaged by the build session same day.** NEW-1 and NEW-3 fixed and committed;
+NEW-2 corrected and fixed; NEW-4 and NEW-6 filed to the backlog; NEW-5 and NEW-7
+adjudicated as faithful passthrough of aggregator data, not defects here. Fixes
+are NOT yet verified — the MCP server must be restarted to load them. Corrections
+are marked inline below; nothing was deleted.
+
 Dataset under test: 1 connection (Tartan Bank), 14 accounts, 388 transactions,
 coverage 2024-09-16 → 2026-09-08 (722 of 730 days granted).
 
@@ -41,10 +47,16 @@ merely regex-shaped), `2026-7-1` rejected for padding, `''` rejected.
 clamp-to-100. One row reads as a plausible complete answer. Per fix 2's own
 philosophy these should be `invalid_argument`.
 
-**NEW-2 — No limit cap at all.** `limit:9999` returned all 388 rows / 93,447
-characters, overflowing the client context. Nothing negotiates result size in
-either direction. Suggest a stated hard cap alongside the already-filed
-`truncated`/`returned`/`matching` fields.
+**NEW-2 — Undeclared limit cap.** *Partly wrong as first written — corrected.*
+I reported "no cap at all" on the evidence that `limit:9999` returned all 388
+rows / 93,447 characters. The build session showed a cap did exist —
+`max(1, min(limit, 1000))` — and 9999 returned everything only because just 388
+rows exist. My test could not distinguish the two and I over-claimed.
+(That formula also explains NEW-1 exactly: `max(1, min(0, 1000))` = 1.)
+The surviving half: a cap nothing declares is, from the caller's side, the same
+defect — a caller cannot tell a complete answer from a trimmed one. Now a named
+`MAX_ROWS` enforced at the boundary, with requests above it refused and the
+ceiling quoted rather than silently trimmed.
 
 **NEW-3 — Four failure states share one indistinguishable `{"rows":[]}`:**
 nonexistent `account_id:999`; real-but-empty `account_id:9` (Mortgage,
@@ -78,9 +90,20 @@ time axis; this is the missing account axis. Fold into the same design.
 `"ACH Electronic CreditGUSTO PAY 123456"`, Plaid Money Market, `-585000`,
 `TRANSFER_OUT`, 24×, -$140,400.00 total. Description says *Credit* and names a
 payroll provider; sign and category say money leaving. The row contradicts
-itself and is the largest line in every `spending_summary` window. Total inflow
-across 24 months is $12,105.50 — a household with ~$504/month of income and a
-$56k mortgage. Any affordability or savings-rate answer is currently garbage.
+itself and is the largest line in every `spending_summary` window.
+
+*Adjudicated — not a defect in this codebase.* The build session read the
+archived Plaid body: Plaid sent `amount: 5850` POSITIVE, which in Plaid's
+convention means money LEAVING, and Plaid assigned `TRANSFER_OUT` itself. The
+`-585000` stored here is the correct normalization to the operator convention.
+The contradiction is between Plaid's own description string and Plaid's own
+amount and category; all three are stored faithfully.
+
+The consequence survives as a fact about the fixture, not a bug: total inflow
+across 24 months is $12,105.50 — this sandbox household really does look like it
+earns ~$504/month while carrying a $56k mortgage. Affordability and savings-rate
+answers computed from this dataset remain unusable, and nothing in the payload
+tells a consumer why.
 
 **NEW-6 — TRAVEL nets to exactly zero; `spending_summary` reports $12,000.**
 -$500.00 "United Airlines" on Credit Card 24× (late month) against +$500.00
@@ -92,6 +115,12 @@ for the `flow_class` proposal.
 (25 rows, $2,235.00). `"Madison Bicycle Shop"`, `"Touchstone Climbing"`,
 `"Tectra Inc"` → `null`. KFC / Starbucks / McDonald's / Uber / United correct.
 Any merchant rollup invents a phantom merchant.
+
+*Adjudicated — not a defect in this codebase.* Plaid sends `name: "SparkFun"`
+with `merchant_name: "FUN"`, and `null` for Madison Bicycle Shop. The value is
+stored as received. Overriding an aggregator's own field is a product decision,
+not a bug fix. Still destroys user trust on sight; left open as a product
+question rather than closed.
 
 ## Answers a user would get, with confidence
 
