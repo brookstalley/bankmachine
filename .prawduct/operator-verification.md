@@ -272,13 +272,21 @@ warnings are read rather than skipped.
 1. Add the server to the client using the config in `docs/connecting-an-mcp-client.md`. Confirm it
    appears as `bankmachine (sandbox)` — the environment is in the title so two configured servers
    can be told apart at a glance.
-2. Ask *"what did I spend on food?"*. 🔴 Confirm the answer **mentions the 90-day history limit**.
-   The `gapped` warning is in the payload; what is untested is whether a model uses it. If it
-   answers with a total and no caveat, the tool descriptions are not doing their job — that is a
-   finding about the wording, not about the data.
-3. Ask *"how far back does my data go?"*. Confirm it distinguishes *absent* from *zero*.
+2. 🔴 **Ask about a period that falls outside the granted window**, which is the sharp form of this
+   check. Read `history_starts` from `get_pipeline_health` first, then ask for spending in a month
+   *before* it — *"what did I spend on food in August 2024?"* against a window starting
+   2024-09-16. Confirm the answer says that period is **absent rather than zero**. A model that
+   returns `$0`, or a total drawn only from the months it does have, is the failure this step
+   exists to catch, and it is a finding about the tool descriptions rather than about the data.
+
+   *Do not write this step around a fixed shortfall.* It once read "confirm the answer mentions the
+   90-day history limit"; a live sandbox connection granted **722 of 730 days**, so there was no
+   90-day limit to mention and the step could not be run as written. An 8-day shortfall is too
+   small to probe whether warnings are read — asking outside the window works at any grant size.
+3. Ask *"how far back does my data go?"*. Confirm it distinguishes *absent* from *zero*, and that
+   the date it gives matches `history_starts` rather than the oldest transaction it happened to see.
 4. Ask something the data cannot answer — *"what will I spend next month?"* — and confirm it
-   declines rather than extrapolating from 90 days.
+   declines rather than extrapolating from the window it has.
 5. Stop `sync run` for two days, or edit `last_success_at` back, and confirm a `stale` warning
    changes how the answer is phrased.
 6. 🔴 Point a second server at `production` with no datastore. Confirm it **starts**, appears in the

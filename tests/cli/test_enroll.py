@@ -271,7 +271,13 @@ def test_the_institution_comes_from_the_item_not_the_catalogue(
 def test_capabilities_are_what_the_connection_could_do(
     cli_env: Config, offline_client: type[FakeClient]
 ) -> None:
-    """AC-3.2 reads `available_products`, so investments is discoverable."""
+    """AC-3.2 stores the union of both product lists, so investments is discoverable.
+
+    Which list each product arrives in, and why neither alone is the answer, is
+    `capabilities_of`'s own contract -- exercised directly in
+    `tests/connector/test_client.py`. This asserts only that enrollment persists
+    what it was given.
+    """
     assert run(["enroll", "--yes"]) == 0
 
     stored = json.loads(_rows(cli_env, connections)[0]._mapping["capabilities"])

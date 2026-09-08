@@ -389,7 +389,7 @@ def _record_granted_window(config: Config, connection_id: int, outcome: Connecti
         # different expectation -- is now.
         outcome.history_shortfall_days = int(requested) - granted
         logger.warning(
-            "connection %d granted %d days of history against %d requested: a %d-day gap",
+            "connection %d granted %d days of history against %d requested: a gap of %d days",
             connection_id,
             granted,
             int(requested),
@@ -512,8 +512,9 @@ def _report(run: RunOutcome) -> None:
             if outcome.history_shortfall_days:
                 print(
                     f"       🔴 {outcome.granted_history_days} days of history granted "
-                    f"against what was requested — a {outcome.history_shortfall_days}-day "
-                    f"gap. It cannot be widened without re-linking (AC-1.2)"
+                    f"against what was requested — a gap of "
+                    f"{outcome.history_shortfall_days} days. It cannot be widened "
+                    f"without re-linking (AC-1.2)"
                 )
     degraded = sum(1 for o in run.outcomes if o.degraded)
     if degraded:

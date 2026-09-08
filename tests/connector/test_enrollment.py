@@ -481,19 +481,24 @@ ITEM_BODY = json.dumps(
 
 
 def test_capabilities_answer_what_the_connection_could_do_not_what_we_asked_for() -> None:
-    """🔴 `available_products`, not `products`.
+    """🔴 Both product lists, because each omits what the other holds.
 
     AC-3.2 pulls investments for any connection whose capabilities include
-    investments. A discovery reading `products` would report back exactly what
-    this product already requested -- it would never discover anything, and every
-    test asserting "capabilities were discovered" would still pass.
+    investments. A discovery reading only `products` would report back exactly
+    what this product already requested -- it would never discover anything, and
+    every test asserting "capabilities were discovered" would still pass. That is
+    what the first two assertions catch.
+
+    Reading only `available_products` fails the same criterion from the other
+    side: the aggregator makes that list mutually exclusive with what the Item
+    already does, so a connection actively running transactions would be recorded
+    as unable to. `transactions` is on this item's `products` alone, which makes
+    its presence the tell for that direction.
     """
     capabilities = capabilities_of(ITEM_BODY)
-    assert "investments" in capabilities
-    assert "liabilities" in capabilities
-    # The tell that the wrong field was read: `transactions` is what was asked
-    # for and is absent from `available_products` on this item.
-    assert "transactions" not in capabilities, "capabilities were read from `products`"
+    assert "investments" in capabilities, "capabilities were read from `products` alone"
+    assert "liabilities" in capabilities, "capabilities were read from `products` alone"
+    assert "transactions" in capabilities, "capabilities were read from `available_products` alone"
 
 
 def test_nothing_in_capability_discovery_reads_an_institution() -> None:
