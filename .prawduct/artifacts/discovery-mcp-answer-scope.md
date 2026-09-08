@@ -159,10 +159,16 @@ failed.
 
 ## Deliberately left filed, with the reason
 
-Three of `mcp-production-readiness.md`'s preconditions are **not** in this work cycle, because none
-of them can be exercised against the sandbox — they need production data or a real settlement cycle.
+Three concerns from `mcp-production-readiness.md` are **not** in this work cycle, because none of
+them can be exercised against the sandbox — they need production data or a real settlement cycle.
 Building against the fixture would produce code whose only test is a fixture that cannot express the
 failure.
+
+⚠️ **Two of the three are numbered preconditions (5 and 7); the third is not.** Multi-connection
+warnings comes from the readiness doc's "Where my confidence comes from" prose, not its numbered
+list — and precondition **6** (closed/retired accounts) is *in* scope, folded into C2 by the
+entanglement above. The numbered list and the prose disagree about how many preconditions that
+document holds, so cite them by name rather than by number.
 
 - **Pending transactions.** `pending` is `false` on all 388 sandbox rows, so the field's behaviour
   has never run. Two untested risks: a pending row counted, then counted again when it posts under a
@@ -173,8 +179,10 @@ failure.
   disagree. `warnings` is already the weak part of the payload; with five connections a consumer
   cannot tell which institution a gap is in.
 
-🔴 These must be **filed as backlog items**, not left in this document — an assessment artifact is
-not a tracker, and the readiness doc has already carried four unfiled preconditions once.
+Filed 2026-09-08 as **#22** (pending-transaction semantics), **#23** (sign convention on a real
+inflow) and **#24** (warnings cannot name which connection is degraded), each carrying the shared
+deferral reason so a later reader does not mistake deferral for oversight. An assessment artifact is
+not a tracker, and this one had already carried four unfiled preconditions once.
 
 ---
 

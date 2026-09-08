@@ -30,7 +30,6 @@ from typing import Final
 from sqlcipher3 import dbapi2
 
 from bankmachine.config import Config
-from bankmachine.logging_setup import get_logger
 from bankmachine.secrets import SecretsError, get_datastore_key
 
 Connection = dbapi2.Connection
@@ -41,8 +40,6 @@ Connection = dbapi2.Connection
 #: second module imports one, "every handle is constructed here" stops being
 #: checkable and goes back to being a convention.
 DriverError = dbapi2.Error
-
-logger = get_logger("store.connection")
 
 
 def statement_is_complete(sql: str) -> bool:
