@@ -980,3 +980,28 @@ def test_the_merchant_field_is_declared_as_the_aggregators_guess() -> None:
 
     assert "merchant" in described["query_transactions"]
     assert "unvalidated" in described["query_transactions"]
+
+
+def test_the_row_ceiling_is_the_contracted_one() -> None:
+    """🔴 The cap is a contract term, and three documents fix it at ~500.
+
+    `api-contract.md` calls it "a contract term, not a tuning knob" under
+    AC-9.1; `nonfunctional-requirements.md` makes it what keeps the sub-second
+    target reachable; and `security-model.md` names it as the mitigation for
+    unrestricted resource consumption (OWASP API4). A cap raised in code alone
+    silently withdraws a declared security control, which is why this asserts
+    the number rather than merely that some ceiling exists.
+    """
+    assert query.MAX_ROWS == 500
+
+
+def test_the_advertised_bounds_match_the_enforced_ones() -> None:
+    """A caller should learn the bounds from the schema, not by being refused."""
+    limit = next(
+        d["inputSchema"]["properties"]["limit"]
+        for d in mcp._tool_definitions()
+        if d["name"] == "query_transactions"
+    )
+
+    assert limit["minimum"] == 1
+    assert limit["maximum"] == query.MAX_ROWS

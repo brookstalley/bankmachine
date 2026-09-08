@@ -96,8 +96,17 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "properties": {
                     "since": {"type": "string", "description": "inclusive start, YYYY-MM-DD"},
                     "until": {"type": "string", "description": "inclusive end, YYYY-MM-DD"},
-                    "account_id": {"type": "integer"},
-                    "limit": {"type": "integer", "default": 100},
+                    "account_id": {"type": "integer", "minimum": 1},
+                    "limit": {
+                        "type": "integer",
+                        "default": 100,
+                        "minimum": 1,
+                        "maximum": query.MAX_ROWS,
+                        "description": (
+                            "rows returned, at most "
+                            f"{query.MAX_ROWS}; asking for more is refused, not trimmed"
+                        ),
+                    },
                 },
                 "additionalProperties": False,
             },

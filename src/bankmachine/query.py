@@ -50,10 +50,13 @@ from bankmachine.store.types import UtcInstant, now_utc
 #: not yet a story and two consecutive ones are.
 STALE_AFTER = timedelta(hours=36)
 
-#: The most rows any single query returns. A ceiling rather than a preference:
-#: a caller that asks for everything is usually an agent with a context window,
-#: and one oversized answer ends the conversation it was meant to inform.
-MAX_ROWS = 1000
+#: The most rows any single query returns. 🔴 **A contract term, not a tuning
+#: knob** -- `api-contract.md` fixes it at ~500 under AC-9.1,
+#: `nonfunctional-requirements.md` makes it what keeps the sub-second target
+#: reachable, and `security-model.md` names it as the mitigation for
+#: unrestricted resource consumption (OWASP API4). Raising it is an amendment to
+#: all three, not an edit here.
+MAX_ROWS = 500
 
 #: The warning vocabulary the API contract fixes. Named here as a tuple rather
 #: than left to string literals at each site, because a warning nobody spells the

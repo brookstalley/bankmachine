@@ -406,7 +406,8 @@ does not spill onto neighbouring lines; it caught that exact bug while being wri
 
 The MCP-surface controls are partly verifiable now that the first slice exists. **Verified:** the
 surface is read-only by construction — every tool reads through a `mode=ro` handle, and a test
-asserts the tool inventory contains no mutating verb. `query_transactions` is hard-capped at 1000
-rows. **Not yet verifiable:** the caps and inventory of the six tools that are specification only,
+asserts the tool inventory contains no mutating verb. `query_transactions` is hard-capped at the contracted ~500
+rows, refused above the ceiling rather than trimmed to it -- so an accepted
+request is known not to have been capped. **Not yet verifiable:** the caps and inventory of the six tools that are specification only,
 and whether an analyst client actually *reads* the warnings every answer carries (queued as
 VRF-004 — no test can settle it).

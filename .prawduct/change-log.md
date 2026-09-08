@@ -48,11 +48,16 @@ result. Its framing is the one worth keeping: a clamp answers a question nobody 
   which is *worse* — a single row reads as a plausible complete answer to a narrow question, where a
   hundred looked obviously wrong. Out-of-range values are refused now, not clamped, which is the
   rule the unknown-key refusal already follows.
-- **The row ceiling is declared and enforced at the boundary.** `query.MAX_ROWS` (1000) was an
-  unnamed literal inside a `min()`, so a caller asking for 9999 silently got a page. It is named
-  where it is enforced and quoted in the refusal. *(A tester read the absence of a visible cap as
-  there being none; the cap existed, but nothing said so, which is the same defect from the
-  caller's side.)*
+- 🔴 **The row ceiling is declared, enforced, and set to the number the contract fixes.** It was an
+  unnamed `1000` inside a `min()`, so a caller asking for 9999 silently got a page. Naming it
+  surfaced that 1000 was never the contracted value: `api-contract.md` fixes the raw-row cap at
+  ~500 under AC-9.1 ("a contract term, not a tuning knob"), `nonfunctional-requirements.md` makes
+  it what keeps the sub-second target reachable, and `security-model.md` names it as the declared
+  mitigation for unrestricted resource consumption (OWASP API4). `MAX_ROWS` is 500, quoted in the
+  refusal and advertised in the `inputSchema`. One line of `security-model.md` had drifted to say
+  1000 — a description tracking the code rather than the norm — and is reconciled.
+  *(A tester read the absence of a visible cap as there being none; the cap existed, but nothing
+  said so, which is the same defect from the caller's side.)*
 - 🔴 **A window whose `until` precedes its `since` is refused.** It selects nothing, and "you spent
   nothing" is an entirely ordinary thing for a month to be — so the one slip a real person makes,
   swapping two bounds, returned a believable wrong answer. There is no window a transposed pair
