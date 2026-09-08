@@ -303,6 +303,13 @@ everything except the fix under test reports green, and green is what you were h
 verification harness acquires the same defect as the system under test, and nothing in the output
 says so.
 
+🔴 **The same question applies to the RULE, not just the code: "recorded" and "reachable" are
+different claims.** A worktree sits at its own commit, so guidance committed to `develop` is
+invisible to a session working from an older branch — and that session is often the one the rule was
+written for. Before relying on a peer having read something, ask which commit their tree is at.
+Where the answer is "not yet", the forward handoff is the carrier that crosses the gap, which is an
+argument for a live rule living in both places rather than only in its home.
+
 **Instances:**
 
 - *2026-09-08, MCP acceptance round 4.* I told a peer testing session its MCP server was serving the
@@ -313,6 +320,12 @@ says so.
   verification half at all — correctly, since a clean pass would have been read as confirming a fix
   it could not have exercised. After the operator relaunched it, the same call returned 500 and the
   round proceeded.
+- *2026-09-08, the rule about the rule.* The testing session pointed out that the amended guidance
+  above was not reachable from its worktree at all: `testing/current` sits at `f6e81f2`, and both the
+  original rule and its amendment landed on `develop` afterwards. Verified — `git show
+  testing/current:.prawduct/learnings.md` matches it zero times. So "amended in `learnings.md`" and
+  "the session it was written for can read it" were not the same statement, and the only carrier on
+  that side was the forward handoff note.
 - *Same session, standing hazard.* The MCP server is a subprocess the client launches, so it runs
   whatever existed at connect time, and `--directory` pins which checkout it serves regardless of
   where the client sits. Both are now in `README.md` under "Wire it to an MCP client", because the
