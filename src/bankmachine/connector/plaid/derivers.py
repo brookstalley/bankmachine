@@ -369,9 +369,7 @@ def _parse_calendar(value: object, what: str, response: RawResponse) -> Calendar
         ) from exc
 
 
-def _operator_signed_amount(
-    amount: object, currency: str, response: RawResponse
-) -> MinorUnits:
+def _operator_signed_amount(amount: object, currency: str, response: RawResponse) -> MinorUnits:
     """🔴 The aggregator's sign, inverted to the operator's point of view.
 
     *Measured* (`api-notes-plaid.md` §17): a merchant purchase on a depository
@@ -492,9 +490,7 @@ def _entries(payload: dict[str, Any], key: str, response: RawResponse) -> list[d
     return entries
 
 
-def _local_account(
-    entry: dict[str, Any], known: dict[str, int], response: RawResponse
-) -> int:
+def _local_account(entry: dict[str, Any], known: dict[str, int], response: RawResponse) -> int:
     """The local account a transaction hangs from, or a refusal naming the gap.
 
     🔴 Refused rather than skipped. A transaction whose account this system has
@@ -573,7 +569,9 @@ def _write_transaction(
         conn.execute(insert(transactions).values(first_seen_at=response.received_at, **values))
         return
     conn.execute(
-        update(transactions).where(transactions.c.transaction_id == row_id).values(
+        update(transactions)
+        .where(transactions.c.transaction_id == row_id)
+        .values(
             # 🔴 `removed_at` is cleared: a transaction the source removed and
             # then sent again is present again, and a stale removal stamp would
             # keep it out of every sum while its row said otherwise.

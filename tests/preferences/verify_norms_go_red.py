@@ -581,8 +581,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         CLI_CONNECTIONS,
         "        return True\n    except SecretsError as exc:",
         "        return True\n    except AccessTokenMissingError as exc:  # noqa",
-        f"{ENROLL_CLI_TESTS}::"
-        "test_an_unreadable_credential_does_not_collapse_a_cap_refusal_to_two",
+        f"{ENROLL_CLI_TESTS}::test_an_unreadable_credential_does_not_collapse_a_cap_refusal_to_two",
     ),
     (
         "AC-1.2: --timeout is floored, because it is also the URL's lifetime",
@@ -615,8 +614,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-1.4: a converging re-run against the same item removes nothing",
         CLI_ENROLL,
-        "                previous_credential_ref if replaced_the_item else None",
-        "                previous_credential_ref",
+        "superseded_credential_ref=(previous_credential_ref if replaced_the_item else None)",
+        "superseded_credential_ref=previous_credential_ref",
         f"{ENROLL_CLI_TESTS}::test_a_converging_re_run_against_the_same_item_removes_nothing",
     ),
     (
@@ -697,7 +696,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "AC-6.2: a ledger amount is converted exactly or refused, never rounded",
         CONNECTOR_DERIVERS,
         "        exact = from_decimal_string(amount, exponent=minor_digits(currency))",
-        "        exact = to_minor(amount, currency, \"a transaction\", response)",
+        '        exact = to_minor(amount, currency, "a transaction", response)',
         f"{TXN_TESTS}::test_an_amount_with_sub_cent_precision_is_refused_not_rounded",
     ),
     (
@@ -712,8 +711,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         SYNC_RUN,
         "                if status == NOT_READY:",
         "                if False:",
-        f"{SYNC_RUN_TESTS}::"
-        "test_a_not_ready_first_page_is_not_reported_as_a_successful_empty_sync",
+        f"{SYNC_RUN_TESTS}::test_a_not_ready_first_page_is_not_reported_as_a_successful_empty_sync",
     ),
     (
         "AC-2.1: each page resumes from the cursor the datastore committed",
@@ -777,8 +775,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         SYNC_RUN,
         "    if outcome.historical_complete:",
         "    if True:",
-        f"{SYNC_RUN_TESTS}::"
-        "test_the_granted_window_is_not_computed_before_the_backfill_completes",
+        f"{SYNC_RUN_TESTS}::test_the_granted_window_is_not_computed_before_the_backfill_completes",
     ),
     (
         "AC-11.8: a shortfall against the requested window is recorded, not swallowed",

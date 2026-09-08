@@ -53,6 +53,7 @@ PUBLIC_TOKEN = "public-sandbox-fake-for-tests"  # credential-shape: test vector
 ITEM_ID = "item-fake-for-tests"
 INSTITUTION_ID = "ins_109508"
 
+
 def _item_body(item_id: str = ITEM_ID, institution_id: str = INSTITUTION_ID) -> bytes:
     """The item body enrollment derives its institution and capabilities from.
 
@@ -132,8 +133,13 @@ class FakeClient:
         return None
 
     def link_token_create(
-        self, *, history_days: int, client_user_id: str, country_codes: list[str],
-        products: list[str], **kwargs: Any,
+        self,
+        *,
+        history_days: int,
+        client_user_id: str,
+        country_codes: list[str],
+        products: list[str],
+        **kwargs: Any,
     ) -> LinkToken:
         self.requested_history_days = history_days
         self.requested_products = products
@@ -915,7 +921,9 @@ def test_an_unreachable_aggregator_leaves_the_retirement_and_says_so(
 
 
 def test_a_piped_run_approves_the_window_without_a_prompt_but_still_prints_it(
-    cli_env: Config, offline_client: type[FakeClient], monkeypatch: pytest.MonkeyPatch,
+    cli_env: Config,
+    offline_client: type[FakeClient],
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The irreversible window auto-approves off a tty, and that branch needs a test.
@@ -1102,9 +1110,7 @@ def test_every_endpoint_declares_both_of_its_risk_properties_deliberately() -> N
         ),
         "ACCOUNTS_GET": (True, False, "a read of the connection's accounts"),
     }
-    found = {
-        name: value for name, value in vars(boundary).items() if isinstance(value, Endpoint)
-    }
+    found = {name: value for name, value in vars(boundary).items() if isinstance(value, Endpoint)}
 
     assert set(found) == set(declared), (
         "an endpoint is missing from this test's record, or the record names one that no "
@@ -1327,9 +1333,7 @@ def test_an_item_orphaned_by_the_cap_race_becomes_a_retirable_connection(
 
     assert run(["enroll", "--yes"]) == 1
 
-    rows = {
-        r._mapping["source_connection_id"]: r._mapping for r in _rows(cli_env, connections)
-    }
+    rows = {r._mapping["source_connection_id"]: r._mapping for r in _rows(cli_env, connections)}
     orphan = rows.get("item-raced")
     assert orphan is not None, "the orphaned item has no row, so nothing can ever retry it"
     assert orphan["retired_at"] is not None

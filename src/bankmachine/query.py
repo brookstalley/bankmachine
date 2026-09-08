@@ -235,7 +235,9 @@ def _coverage(conn: SAConnection) -> dict[str, Any]:
         ).scalar_one(),
         "accounts": conn.execute(select(func.count()).select_from(accounts)).scalar_one(),
         "transactions": conn.execute(
-            select(func.count()).select_from(transactions).where(transactions.c.removed_at.is_(None))
+            select(func.count())
+            .select_from(transactions)
+            .where(transactions.c.removed_at.is_(None))
         ).scalar_one(),
         "earliest_transaction": None if span[0] is None else str(span[0]),
         "latest_transaction": None if span[1] is None else str(span[1]),

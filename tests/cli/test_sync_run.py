@@ -437,9 +437,7 @@ def test_a_recovered_connection_stops_being_degraded(cli_env: Config) -> None:
     assert row["last_success_at"] is not None
 
 
-def test_an_absent_datastore_exits_two(
-    config: Config, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_an_absent_datastore_exits_two(config: Config, monkeypatch: pytest.MonkeyPatch) -> None:
     """`2` — could not run, as distinct from ran and found a problem."""
     for key, value in {
         "BANKMACHINE_DATASTORE_PATH": str(config.datastore_path),
@@ -657,9 +655,7 @@ def test_the_granted_window_is_recorded_once_history_is_complete(cli_env: Config
     old = "2025-09-08"
     entry = _txn("t1")
     entry["date"] = old
-    FakeClient.pages = [
-        _page(added=[entry], next_cursor="c1", status="HISTORICAL_UPDATE_COMPLETE")
-    ]
+    FakeClient.pages = [_page(added=[entry], next_cursor="c1", status="HISTORICAL_UPDATE_COMPLETE")]
 
     assert run(["sync", "run"]) == 0
 
@@ -683,9 +679,7 @@ def test_a_shortfall_against_the_requested_window_is_reported(
     """
     entry = _txn("t1")
     entry["date"] = "2025-09-08"
-    FakeClient.pages = [
-        _page(added=[entry], next_cursor="c1", status="HISTORICAL_UPDATE_COMPLETE")
-    ]
+    FakeClient.pages = [_page(added=[entry], next_cursor="c1", status="HISTORICAL_UPDATE_COMPLETE")]
 
     assert run(["sync", "run"]) == 0
 
@@ -752,9 +746,7 @@ def test_the_granted_window_is_measured_once_and_never_re_measured(
     """
     entry = _txn("t1")
     entry["date"] = "2025-09-08"
-    FakeClient.pages = [
-        _page(added=[entry], next_cursor="c1", status="HISTORICAL_UPDATE_COMPLETE")
-    ]
+    FakeClient.pages = [_page(added=[entry], next_cursor="c1", status="HISTORICAL_UPDATE_COMPLETE")]
     assert run(["sync", "run"]) == 0
     first = _granted(cli_env)
     assert first is not None
@@ -792,9 +784,7 @@ def test_a_later_run_still_reports_the_shortfall_it_did_not_measure(
     """
     entry = _txn("t1")
     entry["date"] = "2025-09-08"
-    FakeClient.pages = [
-        _page(added=[entry], next_cursor="c1", status="HISTORICAL_UPDATE_COMPLETE")
-    ]
+    FakeClient.pages = [_page(added=[entry], next_cursor="c1", status="HISTORICAL_UPDATE_COMPLETE")]
     assert run(["sync", "run"]) == 0
     assert "gap" in capsys.readouterr().out
 

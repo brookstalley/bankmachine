@@ -692,9 +692,7 @@ def _record_connection(
             # item -- which a converging re-run does -- must not remove the very
             # connection it just recorded.
             superseded_source_connection_id=(previous_source_id if replaced_the_item else None),
-            superseded_credential_ref=(
-                previous_credential_ref if replaced_the_item else None
-            ),
+            superseded_credential_ref=(previous_credential_ref if replaced_the_item else None),
         )
 
     live = connection_rows(conn, include_retired=False)

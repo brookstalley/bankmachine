@@ -241,9 +241,7 @@ def _sync_one(
             # open, close and are renamed, and a sync that never looked again
             # would derive transactions against a roster frozen on the day the
             # operator linked the institution.
-            accounts_page = client.accounts_get(
-                access_token, connection_id=connection_id
-            )
+            accounts_page = client.accounts_get(access_token, connection_id=connection_id)
             _persist(config, accounts_page, connection_id)
 
             while outcome.pages < MAX_PAGES_PER_RUN:
@@ -313,9 +311,7 @@ def _is_short(granted: Any, requested: Any) -> bool:
     return granted is not None and requested is not None and int(granted) < int(requested)
 
 
-def _record_granted_window(
-    config: Config, connection_id: int, outcome: ConnectionOutcome
-) -> None:
+def _record_granted_window(config: Config, connection_id: int, outcome: ConnectionOutcome) -> None:
     """🔴 AC-1.3a: what the aggregator ACTUALLY granted, measurable for the first time.
 
     **Only at `HISTORICAL_UPDATE_COMPLETE`, and that gate is the whole point.**
@@ -459,9 +455,7 @@ def _degrade(
     outcome.degraded = True
     outcome.reason = reason
     now = now_utc()
-    logger.warning(
-        "connection %d (%s) failed to sync: %s", outcome.connection_id, code, reason
-    )
+    logger.warning("connection %d (%s) failed to sync: %s", outcome.connection_id, code, reason)
     with writer_connection(config) as conn:
         conn.execute(
             update(connections)
@@ -491,9 +485,7 @@ def _record_success(config: Config, connection_id: int, *, complete: bool) -> No
         values["last_success_at"] = now
     with writer_connection(config) as conn:
         conn.execute(
-            update(connections)
-            .where(connections.c.connection_id == connection_id)
-            .values(**values)
+            update(connections).where(connections.c.connection_id == connection_id).values(**values)
         )
 
 
@@ -508,9 +500,11 @@ def _report(run: RunOutcome) -> None:
             )
         else:
             pages = "page" if outcome.pages == 1 else "pages"
-            more = " (stopped at the page ceiling; run again to continue)" if (
-                outcome.stopped_short
-            ) else ""
+            more = (
+                " (stopped at the page ceiling; run again to continue)"
+                if (outcome.stopped_short)
+                else ""
+            )
             print(
                 f"  {outcome.connection_id}  {outcome.institution_name}: "
                 f"{outcome.pages} {pages} applied{more}"
