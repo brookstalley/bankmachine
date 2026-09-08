@@ -254,7 +254,10 @@ not a tty):
    **"granted history: not yet known"**. 🔴 Confirm that line cannot be misread as
    "we got what we asked for"; that misreading is what AC-1.3a exists to prevent.
 6. Re-run `bankmachine enroll` against the same institution: it reports an *updated*
-   connection rather than a new one, and `bankmachine store shell` shows one row.
+   connection rather than a new one, and `bankmachine connections list` shows one
+   row for it rather than two. (This step also re-derives `capabilities` from the
+   fresh `/item/get`, which is how a connection enrolled before 2026-09-08 sheds
+   the single-list value recorded then.)
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-003`
 
@@ -287,8 +290,32 @@ warnings are read rather than skipped.
    the date it gives matches `history_starts` rather than the oldest transaction it happened to see.
 4. Ask something the data cannot answer — *"what will I spend next month?"* — and confirm it
    declines rather than extrapolating from the window it has.
-5. Stop `sync run` for two days, or edit `last_success_at` back, and confirm a `stale` warning
-   changes how the answer is phrased.
+5. Age the connection past `STALE_AFTER` (36 hours) and confirm a `stale` warning changes how the
+   answer is phrased. `sync shell` is read-only, so this needs the writer — run it through the
+   product's own factory rather than opening the file by hand:
+
+   ```python
+   # sandbox only; undo by running `bankmachine sync run`, which re-stamps the field
+   from datetime import timedelta
+   from bankmachine.config import load_config
+   from bankmachine.query import STALE_AFTER
+   from bankmachine.store import connection as C
+   from bankmachine.store.types import now_utc, utc_instant
+
+   config = load_config()
+   if config.environment != "sandbox":
+       raise SystemExit(f"refusing: environment is {config.environment!r}, not sandbox")
+   aged = utc_instant(now_utc() - STALE_AFTER - timedelta(hours=12)).isoformat()
+   with C.writer(config) as conn:
+       conn.execute("UPDATE connections SET last_success_at = ?", (aged,))
+       conn.commit()
+   ```
+
+   🔴 The environment guard is not decoration — this rewrites a real column, and the production
+   datastore is the *unsuffixed* default. `get_pipeline_health` should then carry **both** a `stale`
+   and a `gapped` warning; what is being verified is whether the client's prose changes, not whether
+   the payload does. *(Validated 2026-09-08 against a copy of the sandbox datastore: "Tartan Bank has
+   not synced successfully for 48 hours".)*
 6. 🔴 Point a second server at `production` with no datastore. Confirm it **starts**, appears in the
    client, and that `get_pipeline_health` explains the absence (AC-ARCH.3) rather than the tool
    silently not appearing.
