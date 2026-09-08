@@ -203,6 +203,42 @@ over incomplete data must be impossible to do accidentally.*
 (minor units), **sign conventions** (the operator's point of view; a card balance is negative), and
 **whether any account rule was applied.** Ambiguity here produces wrong analysis that looks right.
 
+### A windowed answer says which window it covered (#16)
+
+🔴 **Every windowed tool carries `effective_window`** — `{requested: {since, until}, effective:
+{since, until}}` — and unwindowed tools carry no such key at all. Absence means "this tool takes no
+window"; `effective` nulls mean "the window you asked for and the data this store holds do not
+overlap", which is a different statement and needs to stay distinguishable from it.
+
+**The window is clamped, and the clamp is reportorial rather than selective.** `effective` is the
+requested window intersected with `[earliest covered date, covered end]`, where the covered end is
+today *or the last transaction date when that is later*. Nothing narrows a SQL predicate, and the
+guarantee a consumer gets is the one that matters: **every returned row lies inside
+`effective_window`.**
+
+🔴 **The covered end is not bare `today`, and the difference is load-bearing.** A row dated ahead of
+today is not forbidden — an authorization can post forward, and an institution a day ahead in local
+time posts a date this UTC clock has not reached. The row-level predicate uses the caller's `until`,
+so such a row is returned; had the effective end been `today`, the answer would have handed back a
+December row while claiming to stop in September. That is a row outside the window the answer
+claims — this defect class wearing the fix's clothes. Taking the later of the two makes the
+containment guarantee true by construction rather than true of the current fixture, which cannot
+express the case.
+
+An unbounded request reports the covered span, which is where a caller most needs it: "all of it"
+means nothing until you know what "all" covers.
+
+**Why clamp rather than refuse.** `operational-spec.md` refuses an out-of-range *enrollment* window
+rather than clamping it, "because a clamp would enroll at a window the operator never chose and
+never told them about". That reason is about not being told, and on a read it points the other way:
+refusing "show me 2024" against a store beginning 2024-09-16 refuses an ordinary question, and
+enrollment's cost — history that cannot be bought back — has no analogue here. Ruled 2026-09-08:
+clamp, and say so in band. `effective_window` plus its request-scoped warning is the saying so.
+
+**What it fixes.** `spending_summary` over a window preceding coverage returned no rows, and
+"you spent nothing" and "this is not knowable" were the same payload — measured across four
+acceptance rounds as the most believable wrong answer this surface can produce.
+
 ### The answer says which build produced it
 
 🔴 **Every response carries `build`** — `{version, commit, dirty}` — beside `environment` and
@@ -275,6 +311,20 @@ three-week-old hole in the data and answer confidently.
 | `gapped` | A known coverage hole in the queried window |
 | `partial` | A contributing account has bounded history |
 | `rule-applied` | An account rule filtered rows from this aggregate |
+| `window_starts_before_coverage` | The window asked for reaches back past the first covered date |
+| `window_extends_past_today` | The window asked for reaches past the covered end — today, or the last transaction when that is later |
+
+🔴 **The last two are REQUEST-scoped; the first five are CONNECTION-scoped, and the distinction is
+the reason they exist.** A connection-scoped warning describes the standing state of the pipeline,
+so it rides every response equally — measurement found the `gapped` notice arriving
+character-for-character identical on a window wholly inside coverage, a window wholly outside it, a
+future window, and a query for an account that does not exist. It is therefore true and useless: it
+cannot tell a caller whether *this* answer is the degraded one, and a field that fires on every
+response trains its reader to skip it. A request-scoped warning fires only when the request it rides
+on actually crosses the boundary it names, so its presence is information and **so is its absence**.
+
+Added additively under the evolution rules below (new warning codes need no version bump; consumers
+must tolerate a code they do not recognize), so AC-9.3's list — itself a minimum — is unamended.
 
 These are the **minimum** distinctions, not the maximum. 🔴 AC-8.3: any aggregate that applied a rule
 **must say so** — an exclusion can never be silently forgotten during analysis.

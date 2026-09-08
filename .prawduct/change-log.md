@@ -34,6 +34,79 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-08: An answer says which window it actually covered
+
+<!-- prawduct: scope=mcp-answer-scope -->
+
+**Why:** `spending_summary` over a window that precedes coverage returned no rows, and nothing in
+the payload distinguished "you spent nothing" from "this is not knowable". Four independent
+acceptance rounds each arrived at the same judgement — an empty summary is the most believable wrong
+answer this surface can produce — and each had to work the truth out by hand by comparing their
+window against `coverage`. The connection-scoped `gapped` notice could not help: it arrives
+character-for-character identical on a covered window, an uncovered one, a future one, and a query
+for an account that does not exist, so it says nothing about any of them.
+
+**What changed:**
+
+- Every windowed response carries `effective_window` — the window requested beside the window
+  actually covered. Unwindowed tools carry no such key, so absence means "takes no window" and null
+  effective bounds mean "your window and this store do not overlap", which are different facts.
+- Two request-scoped warning kinds, `window_starts_before_coverage` and `window_extends_past_today`,
+  which fire only when this request crosses the boundary they name. Their absence is now
+  information — the property the five connection-scoped kinds cannot have.
+- The clamp is reportorial, not selective: no predicate narrowed, no figure moved. Verified against
+  the real sandbox store, where August 2026 still reports 1,114,946 minor units across 8 categories,
+  matching an independently recorded acceptance figure to the unit.
+- The covered span ends at today *or the last transaction when that is later*, so that "every
+  returned row lies inside `effective_window`" holds by construction. Bare `today` would have
+  reported an answer stopping in September while returning a row dated in December, since the
+  row-level predicate uses the caller's `until`. A forward-dated row is ordinary — a forward-posting
+  authorization, or an institution a day ahead in local time — and the sandbox cannot express it.
+- `_answer` gained a required keyword `requested_window` with no default, so every construction site
+  must state whether its answer is windowed. Three more windowed tools are specified against this;
+  a clamp each of them had to remember is a clamp that decays.
+- Both windowed tool descriptions now share one sentence about the window, written once, so the two
+  cannot drift into disagreeing.
+- An inverted window (`until` before `since`) is refused by the resolver as its own
+  `InvertedWindowError`, which the MCP boundary renders as a clean refusal alongside
+  `UnknownAccountError`. Unreachable today — `_window` refuses the transposed pair first, and that
+  remains the better place because the caller's own words are still in hand there — but a future
+  windowed tool that skipped argument narrowing would otherwise have hit the boundary's broad catch
+  and been told "internal error" for what is a caller mistake.
+- Fixed while passing: `_declared_floor()` returned `Any` from a `-> str` function under
+  `warn_return_any`, so `mypy --strict` had been failing on `tests/` since the floor test landed.
+
+**Verified by breaking what each check names.** Ten mutations, each reverted after: the boundary
+comparison loosened to `<=` (2 red); the two warning kind strings swapped, which is the shared-prefix
+trap (3 red); `caveats` given a default, removing the structural guarantee (1 red); the covered end
+pinned to the last transaction (8 red); `list_transactions` no longer declaring its window (3 red);
+`effective_window` dropped from the wire (6 red); an unwindowed tool made to report one (2 red);
+`spending_summary` stripped of the shared window sentence (1 red); the contradiction fix reverted
+(1 red); and `_unusable` returned to omitting the window key (4 red). Every mutation was caught — which is the point of the entry below about what mutation
+testing cannot do.
+
+🔴 **Four bugs survived that mutation pass and a hand-written boundary matrix**, every one of them
+an empty answer that failed to say why — the same shape as the defect being fixed. One was found
+re-reading the diff, one by probing reachable inputs, and **two by the hypothesis property that was
+only written because the first two had escaped**. The fourth was an inverted window, a shape the
+property had no idea the MCP boundary already refuses; it is now refused in the resolver too, so
+that function's invariant is total rather than resting on a boundary staying in front of it. Review
+found two more, including the one below about forward-dated rows.
+
+The lesson is recorded in `learnings.md`: mutation testing validates the checks you wrote and is
+structurally blind to the case you did not think to write, and a hand-built matrix inherits the
+code's blind spot because the same mind writes both at the same sitting. The invariant — *a window
+that covers nothing always says why* — is the check that cannot be written from a model of which
+windows are empty, which is why it kept finding what the model missed.
+
+**Ruled during the work:** clamp and announce, rather than refuse. `operational-spec.md` refuses an
+out-of-range *enrollment* window because a clamp would enroll at a window the operator never chose
+and was never told about; on a read that reason points the other way, since refusing "show me 2024"
+against a store beginning 2024-09-16 refuses an ordinary question and no history is lost. Silent
+clamping was offered and rejected.
+
+**Closes:** #16.
+
 ## 2026-09-08: The log can tell a failed run from a quiet one, and two claims stop being unchecked
 
 <!-- prawduct: scope=observability -->

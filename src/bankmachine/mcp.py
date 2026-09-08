@@ -64,6 +64,20 @@ _METHOD_NOT_FOUND = -32601
 _INTERNAL_ERROR = -32603
 
 
+#: What every windowed tool says about its own window. Written once and shared
+#: because two tools describing one mechanism in two sentences is how the two
+#: sentences stop agreeing -- and this text is the only place a caller is told
+#: the field exists before they have seen one.
+_WINDOW_NOTE = (
+    "The window you ask for is CLAMPED to what the store can answer over, and the result "
+    "says so: `effective_window` carries the window requested beside the window actually "
+    "covered, and a `window_starts_before_coverage` or `window_extends_past_today` warning "
+    "names the boundary crossed. Absent those warnings, the window you asked for is the "
+    "window you got. Read it before treating an empty result as a zero -- outside coverage, "
+    "data is ABSENT rather than zero."
+)
+
+
 def _tool_definitions() -> list[dict[str, Any]]:
     """The tool surface. 🔴 Every one of them reads; none of them writes."""
     return [
@@ -90,7 +104,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "`merchant` is the AGGREGATOR'S guess at a merchant name, unvalidated and "
                 "often absent or wrong -- it reads 'FUN' for a purchase whose description is "
                 "'SparkFun'. Do not roll up or match on `merchant` without saying it may be "
-                "wrong, and prefer `description` when the two disagree."
+                "wrong, and prefer `description` when the two disagree. " + _WINDOW_NOTE
             ),
             "inputSchema": {
                 "type": "object",
@@ -118,7 +132,8 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "description": (
                 "Total outflow per category in a date window. Sums only money leaving, "
                 "reported as positive magnitudes in INTEGER MINOR UNITS -- refunds and "
-                "income are excluded, because 'spending' is a question about outflow."
+                "income are excluded, because 'spending' is a question about outflow. "
+                + _WINDOW_NOTE
             ),
             "inputSchema": {
                 "type": "object",
@@ -374,7 +389,11 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
             return _error(message_id, _METHOD_NOT_FOUND, f"no tool named {name!r}")
         try:
             answer = _dispatch_tool(config, name, arguments)
-        except (BadArgumentError, query.UnknownAccountError) as exc:
+        except (
+            BadArgumentError,
+            query.UnknownAccountError,
+            query.InvertedWindowError,
+        ) as exc:
             # Ahead of the broad catch. The message is the caller's to act on,
             # so it is rendered without the exception class name -- and it is
             # safe to send verbatim because this product wrote every word of it.

@@ -23,7 +23,7 @@ governed_by:
       - "CLI three-way exit code → inapplicable because nothing here touches the CLI"
   - artifact: operational-spec
     dispositions:
-      - "🔴 an out-of-range history window is refused rather than clamped, 'because a clamp would enroll at a window the operator never chose and never told them about' (line 113) → applies by analogy, and this plan honours the WHY rather than the letter. [DECISION: a query window is clamped and announced, not refused | the norm's reason is the operator never being TOLD; enrollment clamping silently costs history that cannot be bought back, while a query clamp costs nothing and refusing 'show me 2024' against coverage starting 2024-09-16 would refuse an ordinary question. `effective_window` is the telling. 🔴 The clamp is reportorial, not selective — it changes no predicate and no returned row | user can veto]"
+      - "🔴 an out-of-range history window is refused rather than clamped, 'because a clamp would enroll at a window the operator never chose and never told them about' (line 113) → applies by analogy, and this plan honours the WHY rather than the letter. **OWNER RULING 2026-09-08: clamp and announce.** The norm's reason is the operator never being TOLD; enrollment clamping silently costs history that cannot be bought back, while a query clamp costs nothing and refusing 'show me 2024' against coverage starting 2024-09-16 would refuse an ordinary question. `effective_window` plus a request-scoped warning is the telling. 🔴 The clamp is reportorial, not selective — it changes no predicate and no returned row. Silent clamping was offered and rejected: a field nobody must read is the defect this cycle exists to fix."
       - "no filesystem path is hardcoded → inapplicable"
       - "a backup destination is never created implicitly → inapplicable"
   - artifact: nonfunctional-requirements
@@ -31,8 +31,14 @@ governed_by:
       - "MCP aggregate tool response under ~1s over 24 months → ruling needed at Chunk 02, not before: `matching` costs a second COUNT per call. Free on this 388-row fixture and unmeasured at real volume. Chunk 02's Done-when measures it rather than assuming it"
   - artifact: data-model
     dispositions:
-      - "calendar dates and UTC instants are distinct types and never mix → conforms, and it is load-bearing here: the window bounds are `date`, `as_of` is a UTC instant, and clamping `until` against today is the one place they meet. The comparison converts explicitly at that site"
-      - "every stored amount is signed from the operator's point of view → inapplicable because no amount is read or written by this plan"
+      - "🔴 calendar dates and UTC instants are distinct types and never mix → conforms, and it is load-bearing here: the window bounds are `date`, `as_of` is a UTC instant, and deriving the covered end is the one place they meet. `resolve_window` converts once, through `calendar_date(as_of.date())`, at a site the comment names"
+      - "every stored amount is signed from the operator's point of view → inapplicable because no amount is read, written or compared by this plan"
+      - "all monetary values are integer minor units, no floats → inapplicable for the same reason; the only arithmetic here is on dates"
+      - "every silver row carries the evidence for which it is → inapplicable because this plan writes no row"
+      - "the daily balance and holdings series are append-only → inapplicable because this plan writes no row"
+      - "a source value is never overwritten in place; local interpretation lives in its own column → conforms by analogy, and the analogy is the design: `requested` and `effective` are carried side by side rather than the requested window being overwritten by the clamped one. The norm's reason — a consumer must be able to see what arrived as well as what was made of it — is exactly why both halves ship"
+      - "a transaction is never hard-deleted; removal is a soft delete → inapplicable because this plan deletes nothing. Note the read path already respects it: both windowed queries filter `removed_at IS NULL`, unchanged here"
+      - "a migration's DDL is frozen once written → inapplicable because this plan changes no schema and adds no migration"
 partition: serial — all three chunks edit the same two modules (`query.py` and `mcp.py`), and each extends the statement the previous one built: 02 counts the rows 01's window selects, 03 pages the rows 02 counted. A fan-out would have three delegates editing one `select()` against a window type none of them had settled.
 last_validated: 2026-09-08
 ---
@@ -75,10 +81,19 @@ later wave re-implements the clamp and they drift — which is precisely what #1
 triage comment predicted about a second mechanism, and precisely the failure mode
 `learnings.md` § *Guarantees by construction* names: *"a guarantee defined by an
 enumeration decays."* So the windowed query functions stop taking `since`/`until` and
-start taking a `Window`, whose only route into existence computes its own caveats. **A
-future windowed tool cannot be written without the clamp, because it cannot be called
-without one.** That is the repo's existing idiom — `Answer.warnings` has no default for
-the same reason — not a new invention.
+start taking a `Window`, whose only route into existence computes its own caveats.
+
+🔴 **The honest form of that guarantee, corrected before building.** Coverage lives behind
+the reader connection *inside* `query.py`, so `mcp.py` cannot resolve a window before
+calling — which rules out "a windowed tool cannot be called without one." What is
+achievable, and what this plan builds, is one rung lower and still worth having:
+`_answer`'s `requested_window` is a **required keyword with no default**, so every
+construction site must say explicitly whether its answer has a window. An unwindowed tool writes `None` on
+purpose; a windowed tool that omitted the clamp would have to write `None` on purpose too,
+which is a visible lie rather than an oversight. That is exactly what `Answer.warnings`
+already achieves — *cannot be built without having considered it*, not *cannot be built
+wrong* — and stating it at the weaker strength is deliberate: `learnings.md` records that
+a guarantee claimed above its mechanism is the kind that fails silently later.
 
 **One thing I am deliberately not building, so it does not get built twice.** `coverage`
 stays store-wide in this plan even when `account_id` narrows the query. Per-account
@@ -104,9 +119,10 @@ and the numbers are on record in `.prawduct/artifacts/mcp-fact-find-ac91.md` and
   currently-returned row or figure moves | HIGH impact | user can veto] — This is what
   makes Chunk 01 safe to land in one pass. It holds because clamping `since` up to
   `coverage.earliest_transaction` and `until` down to `as_of` can only remove rows that
-  do not exist. **Chunk 01's acceptance criterion is that the existing MCP test file
-  passes untouched**; if any assertion there has to change, this assumption was wrong and
-  the chunk stops.
+  do not exist. **Chunk 01's acceptance criterion is that every existing assertion about a
+  returned value holds unchanged**; if one has to move, this assumption was wrong and the
+  chunk stops. (Signature call sites in the test file are a separate matter — see the
+  chunk's amended acceptance criteria.)
 - [ASSUMPTION: an unbounded request (no `since`/`until`) should report the coverage span
   as its effective window, rather than reporting `null` | MED impact | user can override]
   — It is the case where a caller most needs the answer, and it costs nothing extra.
@@ -121,12 +137,36 @@ latency question, which Chunk 02 answers as a build step rather than a precondit
 
 ## Status
 
-- [ ] Chunk 01: `Window` — the clamp a windowed tool cannot skip, and the two warnings that announce it
+- [x] Chunk 01: `Window` — the clamp a windowed tool cannot skip, and the two warnings that announce it
 - [ ] Chunk 02: `returned` / `matching` / `truncated`, so a capped answer stops reading as a complete one
 - [ ] Chunk 03: cursor pagination, so truncation is escapable rather than only visible
 
-Context: Plan written 2026-09-08 on `feature/mcp-effective-window`, branched from
-`develop` at `a4e78e5`. Nothing built yet. Next: Chunk 01. The peer acceptance session is
+Context: Chunk 01 built and reviewed 2026-09-08 on `feature/mcp-effective-window`,
+branched from `develop` at `a4e78e5`. Suite green (`prawduct-hook test-status`), ruff and mypy strict clean,
+verified against the real sandbox store (August 2026 still reports 1,114,946 minor units
+across 8 categories, matching the independently recorded acceptance figure to the unit —
+the reportorial-clamp assumption held). Critic `rev-20260908T202159Z-baff728e` returned 1
+blocking, 4 warnings, 4 notes; all five blocking/warning findings fixed, three notes
+accepted with reasons, one (missing mutation evidence) discharged by recording it in the
+change-log. Two `verify-resolutions` rounds followed: `rev-20260908T203846Z-71ffd854`
+verified all five fixed and raised **one new blocking finding** — my own R-4 fix changed
+the unreadable-store wire shape and nothing pinned it, since every other
+`effective_window` assertion runs against an initialized store — and
+`rev-20260908T204841Z-a92ec80c` closed at 0 blocking, 0 findings.
+
+🔴 **Two design corrections were made before code and one after; all three are written into
+this plan rather than left in the transcript.** `mcp.py` cannot resolve a window (coverage
+lives behind the reader connection), so the guarantee moved to a required keyword on
+`_answer` and is now stated at the strength it actually holds. And `effective_until` takes
+the LATER of today and the last transaction, not bare today — the row predicate uses the
+caller's unclamped `until`, so a forward-dated row would otherwise be returned outside the
+window its own answer claims. The sandbox cannot express that case.
+
+Next: Chunk 02. Carry forward that the hypothesis invariant in
+`tests/test_query_window.py` is what found two of this chunk's four bugs — Chunk 02's
+`matching`/`returned`/`truncated` has an invariant of exactly the same kind
+(`returned <= matching`, and `truncated` iff `returned < matching`), and it should be
+written as a property before the hand matrix, not after it. The peer acceptance session is
 NOT dispatched during this plan's chunks — it is relaunched and briefed once, after
 Chunk 03, because its MCP server is a subprocess it cannot restart (#25) and each
 mid-plan round would spend that relaunch on a build about to change.
@@ -175,9 +215,18 @@ builder, ask which existing tests now short-circuit.
     guarantee holds by construction rather than by every future author remembering it.
     Built only by a resolver that takes the requested bounds, the coverage span and
     `as_of`.
-  - `list_transactions` and `spending_by_category` take `window: Window` in place of
-    `since`/`until`. This is the structural half — a new windowed tool cannot be called
-    without a resolved window.
+  - 🔴 **The structural half, redesigned 2026-09-08 before building.** The original
+    deliverable had the query functions take `window: Window` in place of `since`/`until`,
+    with `mcp.py` resolving it. **That is not buildable:** the coverage span a window is
+    reconciled against lives behind the reader connection *inside* `query.py`, so nothing
+    upstream can resolve one. The forced decision moves to the single place that already
+    computes coverage — `_answer` gains a **required keyword** `requested_window`, with no
+    default. Every construction site must state whether its answer is windowed;
+    `list_accounts` and `pipeline_health` pass `None` deliberately, and a windowed tool
+    that skipped the clamp would have to write `None` in plain sight rather than simply
+    forget a call. Bonus, and the reason this is also the better design: the public
+    signatures of `list_transactions` and `spending_by_category` are unchanged, so the two
+    mypy snippets pinning `date | None` at the boundary keep pinning it untouched.
   - Two additive members in `WARNING_KINDS`: `window_starts_before_coverage` and
     `window_extends_past_today`, each raised **only when this request's window actually
     crosses the boundary** — the fix for A2, where one invariant connection-level
@@ -192,7 +241,13 @@ builder, ask which existing tests now short-circuit.
   and each warning kind **by whole phrase, never by `in`**: the two kind strings share a
   `window_` prefix and a substring assertion cannot tell them apart, which is the trap
   `learnings.md` records twice. Regression — `tests/test_mcp.py` passes **unmodified**.
-- **Acceptance criteria:** `uv run pytest -q` passes with `tests/test_mcp.py` unchanged;
+- **Acceptance criteria:** `uv run pytest -q` passes, and **every existing assertion about
+  returned data holds unchanged**. 🔴 Amended 2026-09-08, before building: the original
+  criterion said `tests/test_mcp.py` passes *unmodified*, which conflated "no figure moves"
+  with "no file is touched" — worth separating even though the redesign above happens to
+  keep both true. The binding half is the first: any change to an assertion about a *value*
+  means the reportorial-clamp assumption was wrong and the chunk stops. Editing a call site
+  that names a changed signature would be permitted and is not expected here;
   `spending_summary{since:2024-01-01, until:2024-06-30}` — the measured case that reads
   as "you spent nothing" against coverage starting 2024-09-16 — returns an answer whose
   `effective_window` and warning together say the window is outside coverage; a
@@ -232,6 +287,23 @@ builder, ask which existing tests now short-circuit.
     keeps its store-wide meaning untouched — window-scoping it in place is the repurpose
     `api-contract.md` names in red, where a consumer still reading it gets a wrong answer
     rather than an error.
+- 🔴 **Rename `window_extends_past_today`, carried here on the Critic's own route.** The
+  kind names the wrong bound: the covered end is today *or the last transaction when that
+  is later*, so the string is stale by one word while its detail text is accurate.
+  `window_extends_past_coverage` is the right name — it mirrors
+  `window_starts_before_coverage`, so both kinds name one boundary concept. Cheapest now
+  while unreleased and expensive later, since `api-contract.md` makes removing a warning
+  code a breaking change. Deferred to this chunk rather than done in Chunk 01 **only**
+  because Chunk 01's tree had a clean review and re-editing it would have bought another
+  round for a rename; riding a commit being made anyway buys none. This departs from the
+  kind name the discovery specified — say so in the commit that lands it.
+- 🔴 **Carried in from Chunk 01's review, to be met here rather than deferred:**
+  `tests/test_mcp.py::_window_kinds` derives the request-scoped warning set by the
+  `window_` prefix while its docstring calls the set "request-scoped". Those are the same
+  set only until this chunk lands — truncation is request-scoped and will not carry that
+  prefix. Decide it here: either the helper keys on something that actually means
+  request-scoped, or its name and docstring narrow to windows and truncation gets its own.
+  Do not leave a helper whose docstring is wider than what it derives.
 - **Tests:** unit — the count agrees with the row query across window, account and
   default-limit combinations, including the measured case (account 4 over 2024-01-01..2026-12-31
   returns 100 of a larger `matching` with `truncated` true). Guard — a test that fails if

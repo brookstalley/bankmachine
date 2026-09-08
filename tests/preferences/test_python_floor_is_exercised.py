@@ -38,6 +38,15 @@ def _version(text: str) -> tuple[int, ...]:
 def _declared_floor() -> str:
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     requires = pyproject["project"]["requires-python"]
+    # 🔴 `tomllib.loads` returns `dict[str, Any]`, so every value read out of it
+    # is `Any` and flows onward unchallenged -- `warn_return_any` is what makes
+    # narrowing it mandatory rather than optional here, and it is the same rule
+    # that keeps `_dispatch_tool`'s arguments typed `object` at the MCP
+    # boundary. Asserting the type is what turns a malformed pyproject into a
+    # named failure instead of an AttributeError three lines later.
+    assert isinstance(requires, str), (
+        f"requires-python is {requires!r}, not a string; this test reads a `>=` floor"
+    )
     assert requires.startswith(">="), (
         f"requires-python is {requires!r}; this test reads a `>=` floor and the form has changed"
     )

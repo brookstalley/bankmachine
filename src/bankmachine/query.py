@@ -44,7 +44,7 @@ from bankmachine.store.schema import (
     sync_state,
     transactions,
 )
-from bankmachine.store.types import UtcInstant, now_utc
+from bankmachine.store.types import UtcInstant, calendar_date, now_utc
 
 #: How long since a connection's last successful sync before its data is called
 #: stale. A day and a half: the scheduled job runs nightly, so one missed run is
@@ -62,7 +62,28 @@ MAX_ROWS = 500
 #: The warning vocabulary the API contract fixes. Named here as a tuple rather
 #: than left to string literals at each site, because a warning nobody spells the
 #: same way twice is a warning a consumer cannot branch on.
-WARNING_KINDS: tuple[str, ...] = ("stale", "degraded", "gapped", "partial", "rule-applied")
+WARNING_KINDS: tuple[str, ...] = (
+    "stale",
+    "degraded",
+    "gapped",
+    "partial",
+    "rule-applied",
+    # 🔴 The two window kinds are REQUEST-scoped; every kind above them is
+    # CONNECTION-scoped. That distinction is the whole point of adding them. The
+    # connection-scoped `gapped` notice is invariant -- an acceptance round
+    # measured it arriving character-for-character identical on a window wholly
+    # inside coverage, a window wholly outside it, a future window, and a query
+    # for an account that does not exist -- so it cannot tell a caller whether
+    # THIS answer is the degraded one. A warning that fires on every response
+    # trains its reader to skip it. These two fire only when this request's
+    # window actually crosses the boundary they name.
+    #
+    # Additive by `api-contract.md`'s own evolution rule: new warning codes need
+    # no version bump, and consumers are required to tolerate a kind they do not
+    # recognize. AC-9.3's list is a minimum, so it needs no amendment.
+    "window_starts_before_coverage",
+    "window_extends_past_today",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +114,248 @@ class Caveat:
 
 
 @dataclass(frozen=True, slots=True)
+class Window:
+    """The window a caller asked for, beside the one the data could answer over.
+
+    🔴 `caveats` has no default, for exactly the reason `Answer.warnings` has
+    none: a window that has not been reconciled against coverage cannot be
+    constructed, so the reconciliation is structural rather than remembered.
+
+    The clamp this records is **reportorial, not selective.** Nothing here
+    narrows a SQL predicate -- clamping `since` up to the first covered date can
+    only exclude rows that do not exist, and clamping `until` down to today can
+    only exclude rows that have not happened. So an effective window never
+    changes a returned figure; it says what the figure was always computed over.
+
+    `operational-spec.md` refuses an out-of-range ENROLLMENT window rather than
+    clamping it, "because a clamp would enroll at a window the operator never
+    chose and never told them about". That reason is about not being told, and a
+    query is the case where it points the other way: refusing "show me 2024"
+    against a store that starts in September 2024 refuses an ordinary question,
+    and enrollment's cost -- history that cannot be bought back -- has no
+    analogue in a read. Ruled 2026-09-08: clamp, and say so. This type is the
+    saying so.
+    """
+
+    requested_since: date | None
+    requested_until: date | None
+    effective_since: date | None
+    effective_until: date | None
+    caveats: list[Caveat]
+
+    @property
+    def covers_nothing(self) -> bool:
+        """True when the request and the covered span do not overlap at all."""
+        return self.effective_since is None or self.effective_until is None
+
+    def to_wire(self) -> dict[str, Any]:
+        return {
+            "requested": {
+                "since": _iso_or_none(self.requested_since),
+                "until": _iso_or_none(self.requested_until),
+            },
+            "effective": {
+                "since": _iso_or_none(self.effective_since),
+                "until": _iso_or_none(self.effective_until),
+            },
+        }
+
+
+def _iso_or_none(value: date | None) -> str | None:
+    return None if value is None else value.isoformat()
+
+
+def _parse_coverage_date(value: Any) -> date | None:
+    """A coverage bound off the wire dict, back to a date.
+
+    `_coverage` renders its bounds with `str()` for the payload, so the resolver
+    reads them back rather than re-querying. An unparseable value is treated as
+    absent: a window that cannot be reconciled must not raise on the success
+    path, because incompleteness rides the answer here and never the error
+    channel (`api-contract.md` § Direction).
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+class InvertedWindowError(ValueError):
+    """A window whose end precedes its start.
+
+    🔴 Its own type, not a bare `ValueError`, so the MCP boundary can render it
+    as a refusal the caller can act on. Reached only by a windowed tool that did
+    not narrow its arguments first -- `mcp._window` refuses the transposed pair
+    ahead of the query layer today, and the caller's own words are still in hand
+    there, so that remains the better place to catch it. But a future windowed
+    tool that forgot would otherwise land in the boundary's broad catch and get
+    back "internal error", which is a false statement about a caller mistake.
+    Rides the same path `UnknownAccountError` does, for the same reason.
+    """
+
+
+def resolve_window(
+    *,
+    since: date | None,
+    until: date | None,
+    coverage: dict[str, Any],
+    as_of: UtcInstant,
+) -> Window:
+    """Reconcile a requested window against what the store actually holds.
+
+    The effective window is the requested one intersected with
+    `[earliest transaction, today]`. An unbounded request reports that span,
+    which is the case where a caller most needs the answer: "all of it" means
+    nothing until you know what "all" covers.
+    """
+    # 🔴 A transposed window is a CALLER error, not a data condition, and it is
+    # the one empty window this function cannot explain: there is no boundary
+    # crossed and no coverage fact to report -- "nothing" is simply what an
+    # inverted window selects. The MCP boundary already refuses it by name
+    # ("until X is before since Y ... Did the two get swapped?"), which is the
+    # right treatment and belongs there, where the caller's own words are still
+    # in hand. Refusing it here too is what makes this function's own invariant
+    # total: every window it RETURNS that covers nothing carries a caveat
+    # saying why. Found by the hypothesis property below, which had no idea the
+    # boundary refuses this shape -- exactly why it was worth writing.
+    if since is not None and until is not None and until < since:
+        raise InvertedWindowError(
+            f"until ({until.isoformat()}) is before since ({since.isoformat()}); "
+            f"an inverted window selects nothing and there is no coverage fact that "
+            f"explains it. Refuse it at the boundary that has the caller's own words."
+        )
+
+    # 🔴 The one place a UTC instant becomes a calendar date. `data-model.md`
+    # keeps the two apart because an instant carries a zone and a transaction
+    # date does not, so the conversion is a decision made at a named site rather
+    # than an implicit coercion. Today is UTC today, matching the `as_of` the
+    # same answer is stamped with -- a caller comparing the two reads one clock.
+    today = calendar_date(as_of.date())
+    earliest = _parse_coverage_date(coverage.get("earliest_transaction"))
+    latest = _parse_coverage_date(coverage.get("latest_transaction"))
+
+    # 🔴 The covered span ends at TODAY, or at the last transaction when that is
+    # later. `today` alone is wrong the moment a row is dated ahead of it, and
+    # nothing stops one: an authorization can post forward, and an institution a
+    # day ahead in local time posts a date this UTC clock has not reached. With
+    # `today` as the bound, such a row is RETURNED (the predicate uses the
+    # caller's `until`) while `effective_until` says the answer stopped at
+    # today -- a row outside the window the answer claims, which is this work
+    # cycle's own defect wearing the fix's clothes. Taking the later of the two
+    # makes "every returned row lies inside `effective_window`" true by
+    # construction rather than true of the fixture: a returned row is at or
+    # before `until` AND at or before `latest`, so it is at or before the
+    # minimum of `until` and this bound.
+    #
+    # The sandbox cannot express it -- its last transaction is deliberately
+    # earlier than `as_of` -- so this is reasoned from the predicate, not
+    # measured. Found by review.
+    covered_end = today if latest is None or latest < today else latest
+
+    caveats: list[Caveat] = []
+    if earliest is None:
+        # Nothing is covered, so there is no span to intersect with. The empty
+        # store already announces itself through `coverage`, and inventing a
+        # window caveat here would say the same thing in a second voice.
+        return Window(
+            requested_since=since,
+            requested_until=until,
+            effective_since=None,
+            effective_until=None,
+            caveats=caveats,
+        )
+
+    effective_since = earliest if since is None else max(since, earliest)
+    effective_until = covered_end if until is None else min(until, covered_end)
+    overlaps = effective_since <= effective_until
+
+    # 🔴 Both sentences quote the effective bound, so both must fall back to the
+    # same phrase when there is no effective window to quote. Saying "this
+    # answer covers through <date>" beside an `effective` of null is exactly the
+    # defect this whole work cycle exists to remove -- a plausible sentence the
+    # structured field contradicts -- and it would be read, because a consumer
+    # reads the warning precisely when the numbers look wrong.
+    nothing_covered = "no part of the window you asked for"
+
+    # 🔴 EITHER bound can put the request before coverage, and keying on `since`
+    # alone missed the second case: `{until: "2020-01-01"}` with no `since` --
+    # "everything up to 2020" against a store beginning 2024 -- covered nothing
+    # and said nothing. Found by the property test below, after two hand-written
+    # instances of this class had already slipped through a matrix written from
+    # the same assumption as the code. The bound named in the sentence is
+    # whichever one is the evidence.
+    before_coverage = (
+        ("from", since)
+        if since is not None and since < earliest
+        else ("until", until)
+        if until is not None and until < earliest
+        else None
+    )
+    if before_coverage is not None:
+        preposition, bound = before_coverage
+        covered = f"{effective_since.isoformat()} onward" if overlaps else nothing_covered
+        caveats.append(
+            Caveat(
+                kind="window_starts_before_coverage",
+                detail=(
+                    f"you asked {preposition} {bound.isoformat()}, but coverage begins "
+                    f"{earliest.isoformat()}. Anything before that date is absent rather "
+                    f"than zero, so this answer covers {covered}"
+                ),
+            )
+        )
+    # 🔴 Either bound reaching past today counts, not just `until`. An
+    # open-ended `since` in the future -- `{since: "2027-01-01"}` with no
+    # `until`, an entirely ordinary shape -- clamps the end to today and leaves
+    # the window backwards, so it covers nothing. Keyed on `until` alone that
+    # case produced a null effective window with NO warning at all: a silent
+    # null, which is the defect this chunk exists to remove, reachable from
+    # ordinary input. Found by probing the reachable inputs rather than by a
+    # test, because the test matrix was written from the same assumption the
+    # code was.
+    beyond_coverage = (
+        ("until", until)
+        if until is not None and until > covered_end
+        else ("from", since)
+        if since is not None and since > covered_end
+        else None
+    )
+    if beyond_coverage is not None:
+        preposition, bound = beyond_coverage
+        covered = f"through {effective_until.isoformat()}" if overlaps else nothing_covered
+        caveats.append(
+            Caveat(
+                kind="window_extends_past_today",
+                detail=(
+                    f"you asked {preposition} {bound.isoformat()}, but this store holds "
+                    f"nothing after {covered_end.isoformat()}, so this answer covers "
+                    f"{covered}"
+                ),
+            )
+        )
+
+    if not overlaps:
+        # The request and the covered span do not overlap. Reporting a backwards
+        # window would be worse than reporting none: it reads as a real window.
+        return Window(
+            requested_since=since,
+            requested_until=until,
+            effective_since=None,
+            effective_until=None,
+            caveats=caveats,
+        )
+    return Window(
+        requested_since=since,
+        requested_until=until,
+        effective_since=effective_since,
+        effective_until=effective_until,
+        caveats=caveats,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class Answer:
     """Rows, and everything a consumer needs to know about how far to trust them.
 
@@ -105,6 +368,15 @@ class Answer:
     warnings: list[Caveat]
     environment: str
     as_of: UtcInstant
+    #: 🔴 No default, and that is the mechanism rather than a style choice. It
+    #: sits BEFORE `coverage` so it cannot acquire one by drifting after a
+    #: defaulted field. Every construction site must say whether its answer was
+    #: computed over a window: an unwindowed tool writes `None` on purpose, and
+    #: a windowed tool that skipped the clamp would have to write `None` in
+    #: plain sight rather than merely forget a call. Three more windowed tools
+    #: are specified against this (`get_coverage_report`, `cashflow_summary`),
+    #: and a clamp each of them has to remember is a clamp that decays.
+    effective_window: Window | None
     coverage: dict[str, Any] = field(default_factory=dict)
 
     def to_wire(self) -> dict[str, Any]:
@@ -123,6 +395,11 @@ class Answer:
             "build": build_identity().to_wire(),
             "warnings": [w.to_wire() for w in self.warnings],
             "coverage": self.coverage,
+            **(
+                {}
+                if self.effective_window is None
+                else {"effective_window": self.effective_window.to_wire()}
+            ),
             "rows": self.rows,
         }
 
@@ -260,18 +537,52 @@ def _coverage(conn: SAConnection) -> dict[str, Any]:
     }
 
 
-def _answer(config: Config, conn: SAConnection, rows: list[dict[str, Any]]) -> Answer:
+def _answer(
+    config: Config,
+    conn: SAConnection,
+    rows: list[dict[str, Any]],
+    *,
+    requested_window: tuple[date | None, date | None] | None,
+) -> Answer:
+    """One answer, and the one place a window is reconciled against coverage.
+
+    `requested_window` is a required keyword with no default: `None` means this
+    tool is not windowed, and it has to be written. Resolution lives here rather
+    than in each query function because this is where `_coverage` is already
+    computed -- one read, one reconciliation, and no second mechanism for a
+    later windowed tool to drift from.
+    """
     now = now_utc()
+    coverage = _coverage(conn)
+    window = (
+        None
+        if requested_window is None
+        else resolve_window(
+            since=requested_window[0],
+            until=requested_window[1],
+            coverage=coverage,
+            as_of=now,
+        )
+    )
     return Answer(
         rows=rows,
-        warnings=_pipeline_warnings(conn, now),
+        # 🔴 Connection-scoped warnings first, then this request's own. A
+        # consumer reading top-down meets the standing state of the pipeline
+        # before the thing that is specific to what they just asked.
+        warnings=_pipeline_warnings(conn, now) + ([] if window is None else window.caveats),
         environment=config.environment,
         as_of=now,
-        coverage=_coverage(conn),
+        effective_window=window,
+        coverage=coverage,
     )
 
 
-def _unusable(config: Config, problem: str) -> Answer:
+def _unusable(
+    config: Config,
+    problem: str,
+    *,
+    requested_window: tuple[date | None, date | None] | None,
+) -> Answer:
     """🔴 An answer about a datastore that cannot be read. AC-ARCH.3.
 
     Zero rows and a warning, never an exception: the requirement is that the
@@ -283,6 +594,24 @@ def _unusable(config: Config, problem: str) -> Answer:
     """
     return Answer(
         rows=[],
+        # 🔴 A windowed tool still reports a window here, with null effective
+        # bounds. The contract fixes ABSENCE of the key as "this tool takes no
+        # window", so omitting it on `query_transactions` would say something
+        # false about the tool rather than about the store -- and a consumer
+        # branching on the key's presence would take the wrong branch precisely
+        # when the datastore is unreadable. Nulls say "your window and this
+        # store do not overlap", which is true of a store that cannot be read.
+        effective_window=(
+            None
+            if requested_window is None
+            else Window(
+                requested_since=requested_window[0],
+                requested_until=requested_window[1],
+                effective_since=None,
+                effective_until=None,
+                caveats=[],
+            )
+        ),
         warnings=[
             Caveat(
                 kind="partial",
@@ -320,7 +649,7 @@ def list_accounts(config: Config) -> Answer:
     """Every account, with its latest recorded balance."""
     problem = _readable(config)
     if problem is not None:
-        return _unusable(config, problem)
+        return _unusable(config, problem, requested_window=None)
     with reader_connection(config) as conn:
         latest = (
             select(
@@ -372,7 +701,7 @@ def list_accounts(config: Config) -> Answer:
             }
             for r in result
         ]
-        return _answer(config, conn, rows)
+        return _answer(config, conn, rows, requested_window=None)
 
 
 class UnknownAccountError(ValueError):
@@ -408,7 +737,7 @@ def list_transactions(
     """Transactions in a window, newest first. Soft-deleted rows are excluded."""
     problem = _readable(config)
     if problem is not None:
-        return _unusable(config, problem)
+        return _unusable(config, problem, requested_window=(since, until))
     with reader_connection(config) as conn:
         # 🔴 Ordered AFTER the readability check on purpose: an unreadable store
         # knows nothing about which accounts exist, and "that account does not
@@ -456,7 +785,7 @@ def list_transactions(
             }
             for r in conn.execute(statement).all()
         ]
-        return _answer(config, conn, rows)
+        return _answer(config, conn, rows, requested_window=(since, until))
 
 
 def spending_by_category(
@@ -471,7 +800,7 @@ def spending_by_category(
     """
     problem = _readable(config)
     if problem is not None:
-        return _unusable(config, problem)
+        return _unusable(config, problem, requested_window=(since, until))
     with reader_connection(config) as conn:
         statement = (
             select(
@@ -502,7 +831,7 @@ def spending_by_category(
             }
             for r in conn.execute(statement).all()
         ]
-        return _answer(config, conn, rows)
+        return _answer(config, conn, rows, requested_window=(since, until))
 
 
 def pipeline_health(config: Config) -> Answer:
@@ -513,7 +842,7 @@ def pipeline_health(config: Config) -> Answer:
     """
     problem = _readable(config)
     if problem is not None:
-        return _unusable(config, problem)
+        return _unusable(config, problem, requested_window=None)
     with reader_connection(config) as conn:
         result = conn.execute(
             select(
@@ -557,4 +886,4 @@ def pipeline_health(config: Config) -> Answer:
             }
             for r in result
         ]
-        return _answer(config, conn, rows)
+        return _answer(config, conn, rows, requested_window=None)

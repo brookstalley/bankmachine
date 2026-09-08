@@ -545,6 +545,51 @@ def test_every_tool_answers_against_a_missing_datastore(config: Config) -> None:
         assert any(w["kind"] == "partial" for w in wire["warnings"]), name
 
 
+@pytest.mark.parametrize(
+    ("tool", "arguments", "expects_window"),
+    [
+        ("query_transactions", {"since": "2024-01-01", "until": "2024-06-30"}, True),
+        ("spending_summary", {"since": "2024-01-01", "until": "2024-06-30"}, True),
+        ("list_accounts", {}, False),
+        ("get_pipeline_health", {}, False),
+    ],
+)
+def test_an_unreadable_store_still_reports_whether_the_tool_takes_a_window(
+    config: Config, tool: str, arguments: dict[str, Any], expects_window: bool
+) -> None:
+    """🔴 The key's PRESENCE is a fact about the tool, not about the store.
+
+    The contract fixes absence as "this tool takes no window". So a windowed
+    tool must still emit the key when the datastore cannot be read, with null
+    effective bounds — the true statement being "your window and this store do
+    not overlap", which is exactly the state of a store that cannot be read.
+    Omitting it here would say something false about the TOOL at precisely the
+    moment a consumer branching on the key would take the wrong branch.
+
+    Pinned because nothing did: every other `effective_window` assertion in this
+    file runs against an initialized store, so the old shape (key omitted) and
+    the new one passed the AC-ARCH.3 tests identically. `_unusable` is also the
+    one construction site that hand-builds a `Window` with no caveats, which
+    makes it the only place left that can emit an unexplained empty window.
+    """
+    assert not config.datastore_path.exists()
+
+    wire = _call(config, tool, arguments)["structuredContent"]
+
+    if not expects_window:
+        assert "effective_window" not in wire, tool
+        return
+
+    assert wire["effective_window"] == {
+        "requested": {"since": "2024-01-01", "until": "2024-06-30"},
+        "effective": {"since": None, "until": None},
+    }, tool
+    # The `partial` warning is what explains the emptiness here; a window caveat
+    # would be a second voice saying the same thing about a different subject.
+    assert _window_kinds(wire) == [], tool
+    assert any(w["kind"] == "partial" for w in wire["warnings"]), tool
+
+
 def test_the_missing_datastore_warning_says_the_zeroes_mean_nothing_read(
     config: Config,
 ) -> None:
@@ -1260,3 +1305,142 @@ def test_the_advertised_bounds_match_the_enforced_ones() -> None:
 
     assert limit["minimum"] == 1
     assert limit["maximum"] == query.MAX_ROWS
+
+
+# --------------------------------------------------------------------------
+# The window the answer actually covered (#16)
+# --------------------------------------------------------------------------
+
+
+def _window_kinds(wire: dict[str, Any]) -> list[str]:
+    """🔴 The request-scoped warnings only, compared as a whole list.
+
+    Never a substring test: the two kinds share a `window_` prefix, and
+    `learnings.md` records two occasions where `in` passed against the value the
+    assertion was written to exclude. Filtering to the request-scoped kinds and
+    comparing the list also pins ABSENCE, which is the half that catches a
+    warning firing on every response — the defect these two exist to fix.
+    """
+    # 🔴 DERIVED from the vocabulary, never re-listed here. A hand-kept copy
+    # would silently exempt a third request-scoped kind from every absence
+    # assertion below -- and absence is the half these assertions exist for.
+    request_scoped = {k for k in query.WARNING_KINDS if k.startswith("window_")}
+    assert request_scoped, "the window kinds vanished from the vocabulary"
+    return [w["kind"] for w in wire["warnings"] if w["kind"] in request_scoped]
+
+
+@pytest.mark.parametrize("tool", ["query_transactions", "spending_summary"])
+def test_a_windowed_answer_states_the_window_it_covered(
+    initialized_config: Config, tool: str
+) -> None:
+    """Both windowed tools, because one that forgot would be invisible.
+
+    The fixture's transactions are all dated today, so a request reaching back
+    to 2024 crosses the coverage boundary by nearly two years.
+    """
+    _seed(initialized_config)
+    today = str(now_utc().date())
+
+    wire = _call(initialized_config, tool, {"since": "2024-01-01", "until": today})[
+        "structuredContent"
+    ]
+
+    assert _window_kinds(wire) == ["window_starts_before_coverage"], tool
+    assert wire["effective_window"]["requested"]["since"] == "2024-01-01"
+    assert wire["effective_window"]["effective"]["since"] == today
+    assert wire["effective_window"]["effective"]["until"] == today
+
+
+@pytest.mark.parametrize("tool", ["query_transactions", "spending_summary"])
+def test_a_window_inside_coverage_carries_no_window_warning(
+    initialized_config: Config, tool: str
+) -> None:
+    """The silence that makes the warning worth reading.
+
+    An acceptance round measured the connection-scoped `gapped` notice arriving
+    identically on a covered window, an uncovered one and a future one, which is
+    why it says nothing about any of them. If these fired here too they would
+    inherit that uselessness on the day they shipped.
+    """
+    _seed(initialized_config)
+    today = str(now_utc().date())
+
+    wire = _call(initialized_config, tool, {"since": today, "until": today})["structuredContent"]
+
+    assert _window_kinds(wire) == [], tool
+    assert wire["effective_window"]["effective"] == {"since": today, "until": today}
+
+
+def test_a_future_window_says_so_rather_than_reading_as_a_quiet_period(
+    initialized_config: Config,
+) -> None:
+    """Measured: a 2027 window returned `rows: []` indistinguishable from real quiet."""
+    _seed(initialized_config)
+
+    wire = _call(
+        initialized_config,
+        "query_transactions",
+        {"since": "2027-01-01", "until": "2027-12-31"},
+    )["structuredContent"]
+
+    assert wire["rows"] == []
+    assert _window_kinds(wire) == ["window_extends_past_today"]
+    assert wire["effective_window"]["effective"] == {"since": None, "until": None}
+
+
+def test_an_empty_answer_outside_coverage_is_told_apart_from_a_zero(
+    initialized_config: Config,
+) -> None:
+    """🔴 The single most believable wrong answer this surface can produce.
+
+    `spending_summary` over a window that precedes coverage returns no rows.
+    "You spent nothing" and "this is not knowable" were the same payload; the
+    effective window plus its warning are what separate them.
+    """
+    _seed(initialized_config)
+
+    wire = _call(
+        initialized_config,
+        "spending_summary",
+        {"since": "2024-01-01", "until": "2024-06-30"},
+    )["structuredContent"]
+
+    assert wire["rows"] == []
+    assert _window_kinds(wire) == ["window_starts_before_coverage"]
+    assert wire["effective_window"]["effective"] == {"since": None, "until": None}
+
+
+@pytest.mark.parametrize("tool", ["list_accounts", "get_pipeline_health"])
+def test_an_unwindowed_tool_reports_no_window_at_all(initialized_config: Config, tool: str) -> None:
+    """The key is ABSENT, not null.
+
+    A null `effective_window` on a tool that takes no window would invite a
+    consumer to reconcile one that does not exist. Absence is the honest shape,
+    and it is what `requested_window=None` at the construction site produces.
+    """
+    _seed(initialized_config)
+
+    wire = _call(initialized_config, tool)["structuredContent"]
+
+    assert "effective_window" not in wire, tool
+    assert _window_kinds(wire) == [], tool
+
+
+def test_the_two_windowed_tools_describe_the_window_in_one_shared_sentence() -> None:
+    """One mechanism, one description — the drift #16's own triage note predicted.
+
+    Two tools explaining one behaviour in two sentences is how the sentences
+    stop agreeing. Pinning the shared text is what makes a divergence a test
+    failure rather than a slow documentation rot.
+    """
+    described = {
+        d["name"]: d["description"]
+        for d in mcp._tool_definitions()
+        if d["name"] in {"query_transactions", "spending_summary"}
+    }
+
+    assert len(described) == 2
+    for name, text in described.items():
+        assert mcp._WINDOW_NOTE in text, name
+    for name, text in described.items():
+        assert "ABSENT rather than zero" in text, name

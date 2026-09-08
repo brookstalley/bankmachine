@@ -131,6 +131,26 @@ case to fall outside of. Prefer the second form even when the first is true toda
   and 552 tests plus a live sandbox test all passed against a criterion that was exactly inverted. A
   second institution found it in one enrollment.
 
+- *2026-09-08, the window resolver, and the sharpest version of this yet.* I wrote a hand-built
+  boundary matrix for a clamp — inside coverage, before it, after today, both, unbounded, no
+  overlap, empty store, on the edge — then ran nine mutations against it and **every mutation was
+  caught.** By the rule as written, the checks were validated. Three real bugs were still live, and
+  each was a *plausible sentence the payload beside it contradicted*: a future window whose warning
+  read "this answer covers through 2026-09-08" while `effective` was null; `{since: 2027-01-01}`
+  with no `until`, an ordinary shape, producing a null window and **no warning at all**; and its
+  mirror, `{until: "2020-01-01"}` with no `since`. I found the first by re-reading the diff, the
+  second by probing reachable inputs by hand, and **the third was found in under a second by a
+  property test asserting the invariant** — "a window that covers nothing always says why" — which
+  I had only written *because* the first two had already escaped.
+  🔴 **Mutation testing validates the checks you wrote; it is structurally blind to the case you
+  did not think to write.** And a hand-built matrix is written by the same mind, at the same
+  sitting, from the same mental model as the code — so it reproduces the code's blind spot rather
+  than crossing it. Both bound-checks were keyed on one bound because I was picturing one bound.
+  **The escape is to assert the INVARIANT rather than enumerate the instances**: `if
+  window.covers_nothing: assert window.caveats` cannot be written from a mental model of which
+  windows are empty, so it does not inherit one. Note the shape of the failure — the enumeration
+  was in the *test matrix*, not in the code, which is the same decay this rule names one layer up.
+
 **How to apply:** before recording a guarantee, name the surface that could violate it and check
 that surface exists in the product. **And for every check you write, break the thing it names and
 watch it fail** — a green first run is the moment to distrust, not the moment to move on. Where a
@@ -138,7 +158,10 @@ mutation harness exists, point one at the branch the assertion actually reads; w
 edit the source, run the test, and put the source back. If the answer is "a future command someone forgets to add to
 the list" or "any SQL that reaches this handle", the guarantee needs a different mechanism, not a
 firmer sentence. And when a rule matches on a *name* — a column name, a filename, a function name —
-ask what relationship the name is standing in for, and match on that instead. Related:
+ask what relationship the name is standing in for, and match on that instead. **When the thing
+under test has a stateable invariant, write the invariant as well as the cases** — the cases check
+your model, and only the invariant checks the model itself; where a property-based library is
+available, that is what it is for. Related:
 [[review-coverage]] — both are the same family, a check whose bad news never arrives.
 
 ---
