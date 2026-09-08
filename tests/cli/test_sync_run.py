@@ -519,3 +519,98 @@ def test_a_transaction_for_a_newly_opened_account_is_applied_not_refused(
 
     assert run(["sync", "run"]) == 0
     assert len(_txn_rows(cli_env)) == 1
+
+
+def test_syncing_an_unknown_connection_is_reported_not_silently_fine(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """🔴 It used to fall through to "no live connections" and exit 0.
+
+    Asking for a connection that is retired or mistyped and being told everything
+    is fine is how an operator concludes a connection is syncing when it is not —
+    and a scheduled job reading exit codes would agree with them.
+    """
+    assert run(["sync", "run", "--connection", "999"]) == 1
+
+    err = capsys.readouterr().err
+    assert "no live connection 999" in err
+    assert FakeClient.calls == []
+
+
+def test_syncing_one_connection_leaves_the_others_alone(cli_env: Config) -> None:
+    """`--connection` narrows the run, which is the whole point of the flag."""
+    now = now_utc()
+    second_ref = cli_env.connection_keychain_account("item-two")
+    set_access_token(cli_env, second_ref, "access-sandbox-second")  # credential-shape: test vector
+    with writer_connection(cli_env) as conn:
+        primary_key = conn.execute(
+            institutions.insert().values(
+                source_institution_id="ins_second",
+                name="Second Bank",
+                first_seen_at=now,
+                last_seen_at=now,
+            )
+        ).inserted_primary_key
+        assert primary_key is not None
+        conn.execute(
+            connections.insert().values(
+                institution_id=primary_key[0],
+                source_connection_id="item-two",
+                credential_ref=second_ref,
+                capabilities="[]",
+                requested_history_days=730,
+                status="active",
+                enrolled_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    FakeClient.pages = [_page(added=[_txn("t1")], next_cursor="cursor-1")]
+
+    assert run(["sync", "run", "--connection", "1"]) == 0
+
+    assert FakeClient.accounts_calls == 1, "the narrowed run touched a second connection"
+
+
+def test_a_run_that_hits_the_page_ceiling_says_it_stopped_short(
+    cli_env: Config, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """🔴 "500 pages applied" with no further word reads as finished.
+
+    And the operator would have no reason to run again — while the cursor sat
+    mid-history. Not degraded: nothing is wrong, the run is bounded, and the next
+    one continues exactly here.
+    """
+    monkeypatch.setattr("bankmachine.cli.sync_run.MAX_PAGES_PER_RUN", 2)
+    FakeClient.pages = [
+        _page(added=[_txn("t1")], next_cursor="c1", has_more=True),
+        _page(added=[_txn("t2")], next_cursor="c2", has_more=True),
+        _page(added=[_txn("t3")], next_cursor="c3", has_more=True),
+    ]
+
+    assert run(["sync", "run"]) == 0
+
+    out = capsys.readouterr().out
+    assert "stopped at the page ceiling" in out
+    assert "run again to continue" in out
+    assert _cursor(cli_env) == "c2", "the cursor must sit where the bounded run stopped"
+
+
+def test_a_bounded_run_resumes_from_where_it_stopped(
+    cli_env: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Which is what makes the ceiling a bound rather than data loss."""
+    monkeypatch.setattr("bankmachine.cli.sync_run.MAX_PAGES_PER_RUN", 2)
+    FakeClient.pages = [
+        _page(added=[_txn("t1")], next_cursor="c1", has_more=True),
+        _page(added=[_txn("t2")], next_cursor="c2", has_more=True),
+    ]
+    assert run(["sync", "run"]) == 0
+    assert len(_txn_rows(cli_env)) == 2
+
+    FakeClient.calls = []
+    FakeClient.pages = [_page(added=[_txn("t3")], next_cursor="c3")]
+    assert run(["sync", "run"]) == 0
+
+    assert FakeClient.calls[0] == "c2", "the resumed run refetched from the beginning"
+    assert len(_txn_rows(cli_env)) == 3

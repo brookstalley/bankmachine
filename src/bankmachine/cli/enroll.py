@@ -52,6 +52,86 @@ from bankmachine.store.types import UtcInstant, now_utc
 logger = get_logger("cli.enroll")
 
 
+def _home_the_orphan(
+    conn: SAConnection,
+    *,
+    institution_id: int,
+    source_connection_id: str,
+    credential_ref: str,
+    now: UtcInstant,
+) -> None:
+    """Record an Item we decided should not exist and could not confirm removing.
+
+    🔴 **A pending release IS a retired connection**, and that is why this needs
+    no new state: something enrolled, decided against, and not yet confirmed gone
+    is exactly what `retired_at` means. Writing the row gives the obligation a
+    home a command can find -- `connections list --all` shows it and
+    `connections retire <id>` retries the removal, because a surviving credential
+    is what tells those two that the far end was never confirmed.
+
+    Without this the operator is told money may still be leaving and no command
+    they can run will ever retry it. The credential sits in a keychain that
+    `secrets.py` exposes no enumeration for, so nothing could even find it.
+
+    `source_connection_id` is unique, so this is only ever called once the live
+    row has stopped naming this item.
+    """
+    conn.execute(
+        insert(connections).values(
+            institution_id=institution_id,
+            source_connection_id=source_connection_id,
+            credential_ref=credential_ref,
+            capabilities="[]",
+            requested_history_days=None,
+            granted_history_days=None,
+            status="retired",
+            enrolled_at=now,
+            retired_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+
+def _record_orphan(
+    config: Config, item_body: bytes, source_connection_id: str, credential_ref: str
+) -> None:
+    """Give an unconfirmed release a row, in its own transaction and never fatally.
+
+    Best-effort by construction: it runs on a path that is already failing, and
+    an exception here would replace the error the operator actually needs. What
+    it buys when it works is that `connections retire` can retry the removal at
+    all.
+    """
+    try:
+        with writer_connection(config) as conn, transaction(conn):
+            institution_id = conn.execute(
+                select(institutions.c.institution_id).where(
+                    institutions.c.source_institution_id == source_institution_id_of(item_body)
+                )
+            ).scalar_one_or_none()
+            if institution_id is None:
+                raise EnrollmentError("no institution row to hang the orphan from")
+            _home_the_orphan(
+                conn,
+                institution_id=int(institution_id),
+                source_connection_id=source_connection_id,
+                credential_ref=credential_ref,
+                now=now_utc(),
+            )
+    except Exception as exc:  # prawduct:allow prawduct/broad-except -- see the docstring
+        logger.error(
+            "item %s could not be recorded for later removal, so nothing will retry it: %s",
+            source_connection_id,
+            exc,
+        )
+        return
+    logger.info(
+        "item %s recorded as a retired connection so its removal can be retried",
+        source_connection_id,
+    )
+
+
 def source_institution_id_of(item_body: bytes) -> str:
     """The institution id for a log line, or a placeholder if the body is unreadable.
 
@@ -128,14 +208,37 @@ class EnrollmentIncompleteError(EnrollmentError):
     recovery needs and neither is recoverable from a generic message.
     """
 
-    def __init__(self, *, source_connection_id: str, credential_ref: str, cause: str) -> None:
+    def __init__(
+        self,
+        *,
+        source_connection_id: str,
+        credential_ref: str,
+        cause: str,
+        released: bool,
+    ) -> None:
         self.source_connection_id = source_connection_id
         self.credential_ref = credential_ref
+        self.released = released
+        # 🔴 The two outcomes are told apart, because they need different things
+        # from the operator. Released: nothing is billing and a re-run is clean.
+        # Not released: an Item exists that NO command in this product can reach
+        # -- there is no row to retry from and the keychain cannot be enumerated
+        # -- so the aggregator's own dashboard is the only remedy, and saying so
+        # is better than implying a retry that does not exist.
+        aftermath = (
+            "It was removed at the aggregator, so nothing is billing; re-run "
+            "`bankmachine enroll` for this institution"
+            if released
+            else (
+                "🔴 It could NOT be removed at the aggregator and may still be billing. "
+                "Nothing in this product can retry that -- remove the item from the "
+                "aggregator's dashboard, then re-run `bankmachine enroll`"
+            )
+        )
         super().__init__(
             f"the connection was created at the aggregator but could not be recorded here: "
             f"{cause}. The item is {source_connection_id} and its access token is in the "
-            f"keychain at {credential_ref}. Re-run `bankmachine enroll` for this institution "
-            f"to converge, or `bankmachine connections list` to check whether it landed"
+            f"keychain at {credential_ref}. {aftermath}"
         )
 
 
@@ -181,6 +284,8 @@ class EnrolledConnection:
     capabilities: frozenset[str]
     requested_history_days: int
     updated_existing: bool
+    superseded_source_connection_id: str | None
+    """The aggregator's id for the item this enrollment replaced, if any."""
     superseded_credential_ref: str | None
     """The credential this enrollment replaced, if it replaced one.
 
@@ -365,6 +470,7 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
                 "item %s may still be billing",
                 grant.source_connection_id,
             )
+            _record_orphan(config, item.body, grant.source_connection_id, credential_ref)
         raise
     except Exception as exc:  # prawduct:allow prawduct/broad-except -- see below
         # 🔴 Broad on purpose, and narrow in what it does. Past the exchange the
@@ -388,10 +494,18 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
             source_institution_id_of(item.body),
             exc,
         )
+        # 🔴 Try to release it before giving up. This is the one condition whose
+        # orphan cannot be given a row: the failure may be the archive write
+        # itself, so there may be no institution for a connection to hang from.
+        # Releasing is therefore the only recovery available, and the error names
+        # the item either way -- the message is the operator's last resort, and
+        # it says so rather than implying a retry that does not exist.
+        released = release_at_aggregator(config, credential_ref)
         raise EnrollmentIncompleteError(
             source_connection_id=grant.source_connection_id,
             credential_ref=credential_ref,
             cause=str(exc),
+            released=released,
         ) from exc
 
     # A re-enrollment went through Link again, so the aggregator minted a NEW item
@@ -403,6 +517,15 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
     superseded_released = True
     if enrolled.superseded_credential_ref is not None:
         superseded_released = release_at_aggregator(config, enrolled.superseded_credential_ref)
+        if not superseded_released and enrolled.superseded_source_connection_id is not None:
+            # The live row now names the NEW item, so the old id is free and the
+            # orphan can have a row of its own to be retried from.
+            _record_orphan(
+                config,
+                item.body,
+                enrolled.superseded_source_connection_id,
+                enrolled.superseded_credential_ref,
+            )
 
     logger.info(
         "enrolled %s as connection %d (%s), requested %d days of history",
@@ -541,7 +664,8 @@ def _record_connection(
     if existing is not None:
         connection_id = int(existing[0])
         previous_credential_ref = str(existing[2])
-        replaced_the_item = str(existing[3]) != source_connection_id
+        previous_source_id = str(existing[3])
+        replaced_the_item = previous_source_id != source_connection_id
         conn.execute(
             update(connections)
             .where(connections.c.connection_id == connection_id)
@@ -567,6 +691,7 @@ def _record_connection(
             # Only when the item actually changed. Re-running against the same
             # item -- which a converging re-run does -- must not remove the very
             # connection it just recorded.
+            superseded_source_connection_id=(previous_source_id if replaced_the_item else None),
             superseded_credential_ref=(
                 previous_credential_ref if replaced_the_item else None
             ),
@@ -600,6 +725,7 @@ def _record_connection(
         capabilities=capabilities,
         requested_history_days=requested_history_days,
         updated_existing=False,
+        superseded_source_connection_id=None,
         superseded_credential_ref=None,
     )
 

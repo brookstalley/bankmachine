@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -73,6 +74,7 @@ class ConnectionOutcome:
     connection_id: int
     institution_name: str
     pages: int = 0
+    stopped_short: bool = False
     degraded: bool = False
     reason: str | None = None
     still_materializing: bool = False
@@ -143,6 +145,16 @@ def cmd_sync_run(config: Config, args: argparse.Namespace) -> int:
     with reader_connection(config) as conn:
         targets = _live_connections(conn, only=args.connection)
     if not targets:
+        if args.connection is not None:
+            # 🔴 Distinguished from "nothing enrolled". Asking for a connection
+            # that is retired or mistyped and being told everything is fine is
+            # how an operator concludes a connection is syncing when it is not.
+            print(
+                f"bankmachine: no live connection {args.connection}. "
+                f"`bankmachine connections list --all` shows what exists",
+                file=sys.stderr,
+            )
+            return EXIT_UNHEALTHY
         print("no live connections to sync. `bankmachine enroll` links one")
         return EXIT_OK
 
@@ -255,6 +267,19 @@ def _sync_one(
                 outcome.pages += 1
                 if not _has_more(fetched):
                     break
+            else:
+                # 🔴 The loop hit its page ceiling with more to fetch. Reported,
+                # because "500 pages applied" with no further word reads as
+                # finished -- and the operator would have no reason to run again.
+                # Not degraded: nothing is wrong, the run is simply bounded, and
+                # the cursor means the next one continues exactly here.
+                outcome.stopped_short = True
+                logger.info(
+                    "connection %d stopped at the %d-page ceiling with more to fetch; "
+                    "run again to continue",
+                    connection_id,
+                    MAX_PAGES_PER_RUN,
+                )
     except (ConnectorError, DerivationError) as exc:
         return _degrade(config, outcome, type(exc).__name__, str(exc))
 
@@ -359,9 +384,12 @@ def _report(run: RunOutcome) -> None:
             )
         else:
             pages = "page" if outcome.pages == 1 else "pages"
+            more = " (stopped at the page ceiling; run again to continue)" if (
+                outcome.stopped_short
+            ) else ""
             print(
                 f"  {outcome.connection_id}  {outcome.institution_name}: "
-                f"{outcome.pages} {pages} applied"
+                f"{outcome.pages} {pages} applied{more}"
             )
     degraded = sum(1 for o in run.outcomes if o.degraded)
     if degraded:

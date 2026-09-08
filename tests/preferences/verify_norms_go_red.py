@@ -516,7 +516,9 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-1.3a: a new connection's granted window is null, never assumed",
         CLI_ENROLL,
+        "            requested_history_days=requested_history_days,\n"
         "            granted_history_days=None,",
+        "            requested_history_days=requested_history_days,\n"
         "            granted_history_days=730,",
         f"{ENROLL_CLI_TESTS}::"
         "test_enrollment_records_the_requested_window_and_leaves_granted_unknown",
@@ -738,6 +740,34 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "        if True:",
         f"{ENROLL_CLI_TESTS}::"
         "test_retrying_a_retirement_whose_removal_never_confirmed_actually_retries",
+    ),
+    (
+        "FR-1: an item this product could not release gets a row to retry from",
+        CLI_ENROLL,
+        "            _record_orphan(config, item.body, grant.source_connection_id, credential_ref)",
+        "            pass",
+        f"{ENROLL_CLI_TESTS}::test_an_item_orphaned_by_the_cap_race_becomes_a_retirable_connection",
+    ),
+    (
+        "FR-1: a post-exchange failure releases the item it could not record",
+        CLI_ENROLL,
+        "        released = release_at_aggregator(config, credential_ref)",
+        "        released = False",
+        f"{ENROLL_CLI_TESTS}::test_a_failure_after_the_exchange_releases_the_item_it_could_not_record",
+    ),
+    (
+        "exit codes: syncing an unknown connection is 1, not a silent 0",
+        SYNC_RUN,
+        "        if args.connection is not None:",
+        "        if False:",
+        f"{SYNC_RUN_TESTS}::test_syncing_an_unknown_connection_is_reported_not_silently_fine",
+    ),
+    (
+        "AC-2.1: a run that hits its page ceiling says it stopped short",
+        SYNC_RUN,
+        "                outcome.stopped_short = True",
+        "                outcome.stopped_short = False",
+        f"{SYNC_RUN_TESTS}::test_a_run_that_hits_the_page_ceiling_says_it_stopped_short",
     ),
     (
         "AC-10.1: a public token never reaches a repr",

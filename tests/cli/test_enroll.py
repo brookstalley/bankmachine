@@ -632,22 +632,63 @@ def test_a_failure_after_the_exchange_names_the_item_and_the_credential(
     assert "enroll" in err, "the operator needs to be told what converges this"
 
 
-def test_the_credential_is_stored_before_anything_can_fail_after_the_exchange(
-    cli_env: Config, offline_client: type[FakeClient], monkeypatch: pytest.MonkeyPatch
+def test_a_failure_after_the_exchange_releases_the_item_it_could_not_record(
+    cli_env: Config,
+    offline_client: type[FakeClient],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """What makes the post-exchange window survivable rather than merely narrow.
+    """🔴 The only recovery available on this path, so it is attempted.
 
-    The access token reaches the keychain before the first write, so a failure
-    afterwards leaves a recoverable state instead of an Item nothing holds a
-    handle to.
+    This is the one condition whose orphan cannot be given a row: the failure may
+    be the archive write itself, so there may be no institution for a connection
+    to hang from. Releasing is therefore the whole remedy — and when it works,
+    nothing is billing and the credential is correctly gone.
     """
 
     def explode(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError("the disk went away")
 
     monkeypatch.setattr("bankmachine.cli.enroll.apply_response", explode)
+
     assert run(["enroll", "--yes"]) == 2
 
+    assert FakeClient.removed_tokens == [f"{ACCESS_TOKEN}-{ITEM_ID}"]
+    with pytest.raises(AccessTokenMissingError):
+        get_access_token(cli_env, cli_env.connection_keychain_account(ITEM_ID))
+    assert "nothing is billing" in capsys.readouterr().err
+
+
+def test_an_unreleasable_item_says_the_dashboard_is_the_only_remedy(
+    cli_env: Config,
+    offline_client: type[FakeClient],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """🔴 The honest half: no command in this product can reach this Item.
+
+    There is no row to retry from and `secrets.py` exposes no keychain
+    enumeration, so implying a retry would be a lie. The credential survives
+    because it is the only handle that exists, and the message sends the operator
+    where the Item can actually be removed.
+    """
+
+    def explode(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("the disk went away")
+
+    def unreachable(*args: Any, **kwargs: Any) -> None:
+        raise TransportError("the aggregator is unreachable", endpoint=ITEM_REMOVE)
+
+    monkeypatch.setattr("bankmachine.cli.enroll.apply_response", explode)
+    monkeypatch.setattr(FakeClient, "item_remove", unreachable)
+
+    assert run(["enroll", "--yes"]) == 2
+
+    err = capsys.readouterr().err
+    assert "may still be billing" in err
+    assert "dashboard" in err, "the operator must be told the one place it can be removed"
+    assert f"item is {ITEM_ID}" in err
+    # The credential survives: it is the only handle to that item that exists.
     assert get_access_token(cli_env, cli_env.connection_keychain_account(ITEM_ID)).startswith(
         ACCESS_TOKEN
     )
@@ -1261,3 +1302,37 @@ def test_a_confirmed_retirement_reports_already_retired_and_retries_nothing(
 
     assert FakeClient.removed_tokens == []
     assert "was already retired" in capsys.readouterr().out
+
+
+def test_an_item_orphaned_by_the_cap_race_becomes_a_retirable_connection(
+    cli_env: Config, offline_client: type[FakeClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 A pending release IS a retired connection, which is why this needs no new state.
+
+    The cap race mints an Item and then refuses to record it. If the release also
+    fails, the operator was previously told money may still be leaving and no
+    command they could run would ever retry it — the credential sat in a keychain
+    nothing can enumerate. Writing the retired row gives the obligation a home
+    `connections retire` can find.
+    """
+    monkeypatch.setenv("BANKMACHINE_CONNECTION_CAP", "1")
+    assert run(["enroll", "--yes"]) == 0
+
+    def unreachable(*args: Any, **kwargs: Any) -> None:
+        raise TransportError("the aggregator is unreachable", endpoint=ITEM_REMOVE)
+
+    monkeypatch.setattr(FakeClient, "item_remove", unreachable)
+    _blind_the_preflight_only(monkeypatch)
+    FakeClient.item_id, FakeClient.institution_id = "item-raced", "ins_second"
+
+    assert run(["enroll", "--yes"]) == 1
+
+    rows = {
+        r._mapping["source_connection_id"]: r._mapping for r in _rows(cli_env, connections)
+    }
+    orphan = rows.get("item-raced")
+    assert orphan is not None, "the orphaned item has no row, so nothing can ever retry it"
+    assert orphan["retired_at"] is not None
+    assert orphan["status"] == "retired"
+    # And the command that retries it can now find it.
+    assert run(["connections", "list", "--all"]) == 0
