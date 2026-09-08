@@ -869,7 +869,14 @@ def test_an_argument_the_tool_does_not_advertise_is_refused(initialized_config: 
     assert result["isError"] is True
     message = result["content"][0]["text"]
     assert "sinceX" in message, "the refusal does not name the argument it rejected"
-    assert "since" in message and "until" in message, "the refusal does not say what is accepted"
+    # 🔴 An exact set, not `"since" in message`: the message already contains
+    # 'sinceX', so that substring can never fail and would have pinned nothing.
+    # Fourth instance today of one valid value containing another as text --
+    # see learnings.md, and the two in commit 67e69b4.
+    accepted = message.split("It accepts: ")[1].strip()
+    assert set(accepted.split(", ")) == {"since", "until"}, (
+        f"the refusal does not say what is accepted; it offered {accepted!r}"
+    )
     assert result["structuredContent"]["error"]["code"] == "invalid_argument"
 
 
@@ -900,3 +907,30 @@ def test_a_keyerror_beneath_the_query_layer_is_not_reported_as_an_unknown_tool(
 
     assert result["isError"] is True
     assert result["structuredContent"]["error"]["code"] == "internal_error"
+
+
+def test_every_unrecognized_argument_is_named_at_once(initialized_config: Config) -> None:
+    """Two typos should cost one round trip, not two."""
+    _seed(initialized_config)
+
+    message = _call(initialized_config, "spending_summary", {"sinceX": "x", "untilX": "y"})[
+        "content"
+    ][0]["text"]
+
+    assert "sinceX" in message and "untilX" in message
+
+
+def test_a_limit_of_zero_is_not_silently_a_hundred(initialized_config: Config) -> None:
+    """`or 100` is truthiness on an int, and 0 is a number a caller can send.
+
+    The query layer clamps with `max(1, min(limit, 1000))`, so 0 means one row.
+    Reading it as "unset" instead hands back a hundred -- a different answer to
+    the question that was asked, with nothing saying so.
+    """
+    _seed(initialized_config)
+
+    rows = _call(initialized_config, "query_transactions", {"limit": 0})["structuredContent"][
+        "rows"
+    ]
+
+    assert len(rows) == 1, "limit=0 was read as unset and served the default page"

@@ -128,6 +128,11 @@ def _tool_definitions() -> list[dict[str, Any]]:
     ]
 
 
+def _tool_names() -> frozenset[str]:
+    """The advertised tool names, derived once from the one definition list."""
+    return frozenset(definition["name"] for definition in _tool_definitions())
+
+
 def _permitted_arguments(name: str) -> frozenset[str]:
     """The keys one tool advertises. Derived, never restated.
 
@@ -206,12 +211,12 @@ def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> q
     to notice it. Do not widen this back.
     """
     unknown = sorted(set(arguments) - _permitted_arguments(name))
-    if unknown and name in {d["name"] for d in _tool_definitions()}:
+    if unknown:
         # 🔴 Silently dropping one is the dangerous outcome, not a strict one:
         # a misspelled `since` returns the ALL-TIME aggregate, which is
         # indistinguishable from the window that was asked for.
         raise BadArgumentError(
-            f"{name} has no argument {unknown[0]!r}. It accepts: "
+            f"{name} has no argument {', '.join(repr(key) for key in unknown)}. It accepts: "
             f"{', '.join(sorted(_permitted_arguments(name))) or 'no arguments'}"
         )
     handlers: dict[str, Callable[..., query.Answer]] = {
@@ -221,7 +226,7 @@ def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> q
             since=_calendar_date(arguments, "since"),
             until=_calendar_date(arguments, "until"),
             account_id=_whole_number(arguments, "account_id", None),
-            limit=_whole_number(arguments, "limit", 100) or 100,
+            limit=_limit if (_limit := _whole_number(arguments, "limit", 100)) is not None else 100,
         ),
         "spending_summary": lambda: query.spending_by_category(
             config,
@@ -301,7 +306,7 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
         arguments = params.get("arguments") or {}
         if not isinstance(name, str) or not isinstance(arguments, dict):
             return _error(message_id, _INVALID_REQUEST, "tools/call needs a name and arguments")
-        if name not in {definition["name"] for definition in _tool_definitions()}:
+        if name not in _tool_names():
             # Resolved BEFORE the call, so that a `KeyError` raised anywhere
             # BENEATH the query layer is not answered "no tool named
             # 'spending_summary'" -- which is a false statement about a tool
