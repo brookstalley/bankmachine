@@ -25,7 +25,7 @@ write whatever SQL reaches it.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
@@ -362,8 +362,8 @@ def list_accounts(config: Config) -> Answer:
 def list_transactions(
     config: Config,
     *,
-    since: str | None = None,
-    until: str | None = None,
+    since: date | None = None,
+    until: date | None = None,
     account_id: int | None = None,
     limit: int = 100,
 ) -> Answer:
@@ -415,7 +415,7 @@ def list_transactions(
 
 
 def spending_by_category(
-    config: Config, *, since: str | None = None, until: str | None = None
+    config: Config, *, since: date | None = None, until: date | None = None
 ) -> Answer:
     """🔴 An aggregate, which is the shape AC-4.2 asks the tool surface to prefer.
 

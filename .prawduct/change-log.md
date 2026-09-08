@@ -34,6 +34,48 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-08: Every windowed question was unanswerable, and the checker was told to say so
+
+<!-- prawduct: scope=sync-v1 -->
+
+**Why:** `spending_summary` and `query_transactions` failed on *any* `since` or `until` with
+`StatementError: (TemporalError) a calendar date must be a date, got str`. That is every question
+the MCP server exists to answer. Found by a second session driving the tools; reproduced here
+before anything was changed.
+
+**What changed:**
+
+- **Dates are parsed at the MCP boundary.** JSON has no date type, so `since`/`until` arrive as
+  text and were passed straight to a `CalendarDate` column that refuses anything but a `date`.
+  🔴 The `inputSchema` was never wrong — it advertises a string, and a string is what arrives; the
+  gap was purely the missing narrowing at dispatch.
+- **`query.list_transactions` and `spending_by_category` were annotated `since: str | None`** while
+  their bodies required a `date`. The annotation was the lie that made the call site look correct.
+  They take `date | None` now.
+- 🔴 **`_dispatch_tool`'s argument bag is `dict[str, object]`, not `dict[str, Any]`.** This is the
+  mechanism, not tidiness: under `Any` every JSON value flows into the query layer unchallenged and
+  mypy strict is silent, which is exactly how this shipped. Typed `object`, an unnarrowed value
+  cannot be passed at all — and the checker immediately found the same latent defect in `limit`
+  (`int()` on whatever arrived) and `account_id` (forwarded unchecked). Both are narrowed now, with
+  `bool` refused for `limit` because a JSON `true` is an `int` in Python and would have meant 1.
+- **A malformed date now reads as a sentence**: `since must be a calendar date in YYYY-MM-DD form,
+  got 'August 2024'` on `isError`, where a model can correct itself — not a `StatementError`
+  carrying a SELECT. Deliberately not a JSON-RPC error code: the schema declares a *string* and
+  "August 2024" is one, so this is the tool reporting on its input rather than a protocol violation.
+- **Ten tests where there were none.** No existing test called either tool with a date at all —
+  every one passed `{}`. The window tests assert *discrimination* (a window that excludes the data
+  returns empty while one that includes it returns rows), because a parse that silently produced
+  the wrong date would satisfy "it did not error". Two go-red cases (114 total).
+
+🔴 **The positive control earned its place.** The mypy-snippet test named its files `narrowed.py`
+and `unnarrowed.py` — and `"narrowed.py" in line` matches both, so the control matched the negative
+file. Same containment trap recorded in `learnings.md` hours earlier, third instance in one day.
+The files are renamed so neither contains the other; a cleverer match would have left the trap.
+
+**Also corrected:** the mypy test pins `query.py`'s signature, not `_dispatch_tool`'s bag — widening
+the bag back to `Any` leaves it green, because the snippets declare their own signature. The
+annotation is pinned by its own test, and the docstring no longer claims otherwise.
+
 ## 2026-09-08: Capabilities are both product lists, and AC-3.2 stops inverting
 
 <!-- prawduct: scope=sync-v1 -->

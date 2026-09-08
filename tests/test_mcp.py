@@ -8,8 +8,13 @@ driven here through the real loop over string buffers, not mocked.
 from __future__ import annotations
 
 import argparse
+import inspect
 import io
 import json
+import subprocess
+import sys
+from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -613,3 +618,223 @@ def test_the_domain_filter_keeps_one_health_row_per_connection(
     rows = _call(initialized_config, "get_pipeline_health")["structuredContent"]["rows"]
 
     assert len(rows) == 1, "a second sync domain duplicated the connection"
+
+
+# --------------------------------------------------------------------------
+# The date window — JSON has no date, so this boundary is where one is made
+# --------------------------------------------------------------------------
+
+
+def test_a_date_window_filters_rather_than_failing(initialized_config: Config) -> None:
+    """🔴 The regression. Every windowed question was unanswerable without this.
+
+    `since` and `until` arrive as JSON strings and get bound to a `CalendarDate`
+    column that refuses anything but a `date`, so for a while every window --
+    every question this server exists to answer -- came back as a
+    `StatementError` carrying a SQL fragment. Nothing caught it because every
+    other test here calls these tools with NO arguments at all.
+
+    Asserted as *discrimination* rather than as "it did not error": a window
+    that excludes the data must come back empty while one that includes it comes
+    back full. A parse that silently produced the wrong date would satisfy the
+    weaker check and fail this one.
+    """
+    _seed(initialized_config)
+    today = now_utc().date()
+
+    inside = _call(
+        initialized_config,
+        "spending_summary",
+        {"since": str(today - timedelta(days=1)), "until": str(today + timedelta(days=1))},
+    )
+    before = _call(
+        initialized_config,
+        "spending_summary",
+        {"since": "2020-01-01", "until": "2020-12-31"},
+    )
+
+    assert inside["isError"] is False
+    assert before["isError"] is False
+    assert inside["structuredContent"]["rows"], "a window containing the data returned nothing"
+    assert before["structuredContent"]["rows"] == [], (
+        "a window ending in 2020 returned rows dated today, so the bound never reached the query"
+    )
+
+
+def test_a_transaction_window_filters_rather_than_failing(initialized_config: Config) -> None:
+    """The same boundary on the other windowed tool, which has its own call site."""
+    _seed(initialized_config)
+    today = now_utc().date()
+
+    inside = _call(initialized_config, "query_transactions", {"since": str(today)})
+    before = _call(initialized_config, "query_transactions", {"until": "2020-12-31"})
+
+    assert inside["isError"] is False
+    assert inside["structuredContent"]["rows"], "today's transactions were filtered out"
+    assert before["structuredContent"]["rows"] == [], "an `until` bound in 2020 returned rows"
+
+
+def test_a_malformed_date_is_refused_with_a_sentence_a_caller_can_act_on(
+    initialized_config: Config,
+) -> None:
+    """🔴 The caller is the one who can fix this, so the message is written to them.
+
+    A model asking about "August 2024" must be told the form to use. What it got
+    instead was `StatementError: (bankmachine.store.types.TemporalError) ...`
+    followed by the SELECT -- which names no argument, suggests no correction,
+    and leaks the schema to whoever is reading.
+    """
+    _seed(initialized_config)
+
+    result = _call(initialized_config, "spending_summary", {"since": "August 2024"})
+
+    assert result["isError"] is True
+    message = result["content"][0]["text"]
+    assert "since" in message, "the message does not say which argument was wrong"
+    assert "YYYY-MM-DD" in message, "the message does not say what form to use"
+    assert "SELECT" not in message, "the refusal leaked the query"
+    assert not message.startswith("BadArgumentError"), (
+        "the exception class name is noise to the caller being asked to fix its call"
+    )
+
+
+@pytest.mark.parametrize(
+    ("arguments", "field"),
+    [
+        ({"since": 20240801}, "since"),
+        ({"until": ["2024-08-01"]}, "until"),
+        ({"limit": "lots"}, "limit"),
+        ({"limit": True}, "limit"),
+        ({"account_id": "1"}, "account_id"),
+    ],
+)
+def test_an_argument_of_the_wrong_json_type_is_refused_by_name(
+    initialized_config: Config, arguments: dict[str, Any], field: str
+) -> None:
+    """Every argument crossing this boundary, not only the two that broke.
+
+    `limit` reached `int(...)` unchecked and `account_id` reached the query
+    unchecked; both had the same defect as the dates and neither had been tried.
+    `True` is included because a bool IS an int in Python, so a caller sending
+    JSON `true` for a count would otherwise get a limit of 1.
+    """
+    _seed(initialized_config)
+
+    result = _call(initialized_config, "query_transactions", arguments)
+
+    assert result["isError"] is True
+    assert field in result["content"][0]["text"]
+
+
+# --------------------------------------------------------------------------
+# The typing that makes the boundary refuse an unparsed value at all
+# --------------------------------------------------------------------------
+
+_UNNARROWED = """
+from bankmachine import query
+from bankmachine.config import Config
+
+
+def dispatch(config: Config, arguments: dict[str, object]) -> query.Answer:
+    return query.list_transactions(config, since=arguments.get("since"))
+"""
+
+_NARROWED = """
+from datetime import date
+
+from bankmachine import query
+from bankmachine.config import Config
+
+
+def dispatch(config: Config, arguments: dict[str, object]) -> query.Answer:
+    raw = arguments.get("since")
+    since = date.fromisoformat(raw) if isinstance(raw, str) else None
+    return query.list_transactions(config, since=since)
+"""
+
+
+@pytest.fixture(scope="module")
+def dispatch_report(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """One mypy run over both snippets, because mypy is the slow part.
+
+    What this pins is `query.list_transactions`'s own signature: it takes
+    `date | None`, so an `object` cannot reach it. That is the half a runtime
+    assertion cannot check, because the call never happens -- the checker stops
+    it first.
+
+    🔴 It does NOT pin `_dispatch_tool`'s `dict[str, object]`, and the two are
+    easy to conflate: these snippets declare their own signature, so widening
+    the real one back to `dict[str, Any]` leaves this test green. The annotation
+    itself is pinned separately, below.
+
+    🔴 The two snippet filenames deliberately share no substring. Naming them
+    `narrowed.py` and `unnarrowed.py` made the positive control match the
+    NEGATIVE file -- `in` cannot tell a name from a name that contains it, which
+    is the containment trap recorded in `learnings.md`.
+    """
+    workspace = tmp_path_factory.mktemp("dispatch")
+    (workspace / "forwards_raw.py").write_text(_UNNARROWED, encoding="utf-8")
+    (workspace / "parses_first.py").write_text(_NARROWED, encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "mypy",
+            "--strict",
+            "--no-incremental",
+            "--no-error-summary",
+            "--cache-dir",
+            str(workspace / ".mypy_cache"),
+            str(workspace / "forwards_raw.py"),
+            str(workspace / "parses_first.py"),
+        ],
+        cwd=Path(__file__).parent.parent,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0, (
+        "mypy accepted a dispatch that forwards an unnarrowed JSON value into the query "
+        f"layer. That is the whole mechanism:\n{result.stdout}{result.stderr}"
+    )
+    return result.stdout
+
+
+def test_an_unnarrowed_argument_cannot_reach_the_query_layer(dispatch_report: str) -> None:
+    """🔴 The property, not the instance: no call site can forward raw JSON."""
+    errors = [line for line in dispatch_report.splitlines() if "forwards_raw.py" in line]
+    assert any("since" in line for line in errors), (
+        f"mypy rejected the snippet, but not for the unnarrowed argument:\n{errors}"
+    )
+
+
+def test_mypy_accepts_the_dispatch_that_parses_first(dispatch_report: str) -> None:
+    """The positive control.
+
+    Without it this passes just as happily when mypy failed for an unrelated
+    reason -- a broken import, say -- which is the one way a type-check
+    assertion goes quietly green.
+    """
+    assert not [line for line in dispatch_report.splitlines() if "parses_first.py" in line], (
+        f"mypy rejected the correct dispatch:\n{dispatch_report}"
+    )
+
+
+def test_the_dispatch_bag_is_typed_object_so_narrowing_cannot_be_skipped() -> None:
+    """🔴 The annotation is the mechanism, so the annotation is what gets asserted.
+
+    `dict[str, Any]` lets every value flow into the query layer unchallenged
+    with mypy strict silent -- which is precisely how raw JSON strings reached a
+    `CalendarDate` column and made every windowed question unanswerable while
+    553 tests passed. Typed `object`, an unnarrowed value cannot be passed at
+    all and the checker refuses it.
+
+    Asserted on the annotation rather than through mypy because the snippets
+    that run the checker declare their own signature and so cannot see this one.
+    """
+    annotation = inspect.signature(mcp._dispatch_tool).parameters["arguments"].annotation
+
+    assert annotation == "dict[str, object]", (
+        f"the dispatch bag is annotated {annotation!r}. Widened to Any, an unparsed JSON "
+        f"value reaches the query layer and mypy strict says nothing."
+    )

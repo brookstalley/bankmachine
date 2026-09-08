@@ -28,6 +28,7 @@ import argparse
 import json
 import sys
 from collections.abc import Callable, Iterator
+from datetime import date
 from typing import IO, Any
 
 from bankmachine import query
@@ -127,18 +128,81 @@ def _tool_definitions() -> list[dict[str, Any]]:
     ]
 
 
-def _dispatch_tool(config: Config, name: str, arguments: dict[str, Any]) -> query.Answer:
+class BadArgumentError(ValueError):
+    """A tool argument the caller can correct, reported so that it can.
+
+    Not a JSON-RPC error: the schema declares `since` a *string*, and
+    "August 2024" is one -- what it violates is the YYYY-MM-DD form the
+    description asks for, which no schema here states. So this is the tool
+    reporting on its input, and it rides `isError` where a model will read it
+    and try again, rather than a protocol code a client tends to surface as a
+    hard failure.
+    """
+
+
+def _calendar_date(arguments: dict[str, object], field: str) -> date | None:
+    """One JSON argument, narrowed to the type the query layer accepts.
+
+    🔴 JSON has no date. Every date crossing this boundary arrives as text and
+    must be parsed HERE -- the query layer binds it to a `CalendarDate` column
+    that refuses anything else, and AC-6.4 keeps dates and instants apart on
+    purpose, so a datetime string is refused rather than silently truncated.
+    """
+    raw = arguments.get(field)
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise BadArgumentError(
+            f"{field} must be a date as a YYYY-MM-DD string, got {type(raw).__name__}"
+        )
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        raise BadArgumentError(
+            f"{field} must be a calendar date in YYYY-MM-DD form, got {raw!r}"
+        ) from None
+
+
+def _whole_number(arguments: dict[str, object], field: str, default: int | None) -> int | None:
+    """Same narrowing for the integer arguments, and for the same reason.
+
+    `int(...)` on whatever arrived would turn a caller's mistake into a
+    `ValueError` from deep inside the dispatch table, which reaches the client
+    as a stack-shaped string instead of a sentence naming the field.
+    """
+    raw = arguments.get(field)
+    if raw is None:
+        return default
+    # bool is an int in Python, and `true` is a JSON value a caller can send.
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise BadArgumentError(f"{field} must be a whole number, got {type(raw).__name__}")
+    return raw
+
+
+def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> query.Answer:
+    """🔴 `arguments` is `dict[str, object]`, not `dict[str, Any]`, and that is load-bearing.
+
+    Under `Any` every value here flows into the query layer unchallenged and
+    mypy strict says nothing -- which is exactly how raw JSON strings reached a
+    `CalendarDate` column and broke every windowed question the server could be
+    asked. Typed as `object`, a value that has not been narrowed cannot be
+    passed at all, so the checker refuses the mistake rather than a test having
+    to notice it. Do not widen this back.
+    """
+    limit = _whole_number(arguments, "limit", 100)
     handlers: dict[str, Callable[..., query.Answer]] = {
         "list_accounts": lambda: query.list_accounts(config),
         "query_transactions": lambda: query.list_transactions(
             config,
-            since=arguments.get("since"),
-            until=arguments.get("until"),
-            account_id=arguments.get("account_id"),
-            limit=int(arguments.get("limit", 100)),
+            since=_calendar_date(arguments, "since"),
+            until=_calendar_date(arguments, "until"),
+            account_id=_whole_number(arguments, "account_id", None),
+            limit=limit if limit is not None else 100,
         ),
         "spending_summary": lambda: query.spending_by_category(
-            config, since=arguments.get("since"), until=arguments.get("until")
+            config,
+            since=_calendar_date(arguments, "since"),
+            until=_calendar_date(arguments, "until"),
         ),
         "get_pipeline_health": lambda: query.pipeline_health(config),
     }
@@ -217,6 +281,16 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
             answer = _dispatch_tool(config, name, arguments)
         except KeyError:
             return _error(message_id, _METHOD_NOT_FOUND, f"no tool named {name!r}")
+        except BadArgumentError as exc:
+            # Ahead of the broad catch, and rendered WITHOUT the exception class
+            # name: the caller is being told how to fix its own call, and
+            # "BadArgumentError: " in front of the sentence is noise to the only
+            # reader who can act on it.
+            logger.info("tool %s refused an argument: %s", name, exc)
+            return _result(
+                message_id,
+                {"content": [{"type": "text", "text": str(exc)}], "isError": True},
+            )
         except Exception as exc:  # prawduct:allow prawduct/broad-except -- see below
             # 🔴 Broad, because this is the boundary between this product and a
             # client that must not be left hanging: an unhandled exception here
