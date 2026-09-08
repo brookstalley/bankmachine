@@ -7,6 +7,7 @@ driven here through the real loop over string buffers, not mocked.
 
 from __future__ import annotations
 
+import argparse
 import io
 import json
 from typing import Any
@@ -538,3 +539,77 @@ def test_the_missing_datastore_warning_says_the_zeroes_mean_nothing_read(
     detail = " ".join(w["detail"] for w in wire["warnings"])
     assert "nothing could be read" in detail
     assert "store init" in detail, "the operator is not told how to fix it"
+
+
+def test_cmd_mcp_itself_starts_against_a_missing_datastore(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 The function that did the refusing, which nothing exercised.
+
+    Every other AC-ARCH.3 test here goes through `_converse`, whose body is
+    `mcp.serve(...)` — and `serve` never carried the refusal. `cmd_mcp` raised
+    *before* calling it. So the sibling test whose docstring says "the server
+    refused to start" passes identically against the unfixed tree, and re-adding
+    the raise today would leave the whole suite green.
+
+    This calls `cmd_mcp` directly with `serve` replaced by a sentinel, so the
+    assertion is that the handler REACHED serving — which is the thing AC-ARCH.3
+    is about and the thing the inversion broke.
+    """
+    served: list[Config] = []
+
+    def record(cfg: Config, **_: Any) -> int:
+        served.append(cfg)
+        return 0
+
+    monkeypatch.setattr(mcp, "serve", record)
+    assert not config.datastore_path.exists()
+
+    exit_code = mcp.cmd_mcp(config, argparse.Namespace())
+
+    assert exit_code == 0
+    assert served == [config], (
+        "cmd_mcp refused to serve a missing datastore, which inverts AC-ARCH.3: a client "
+        "launches this as a subprocess, so refusing shows up as a tool that silently does "
+        "not appear"
+    )
+
+
+def test_cmd_mcp_serves_a_healthy_datastore_too(
+    initialized_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mirror half, without which "always serve" is satisfied by never checking."""
+    served: list[Config] = []
+
+    def record(cfg: Config, **_: Any) -> int:
+        served.append(cfg)
+        return 0
+
+    monkeypatch.setattr(mcp, "serve", record)
+
+    assert mcp.cmd_mcp(initialized_config, argparse.Namespace()) == 0
+    assert served == [initialized_config]
+
+
+def test_the_domain_filter_keeps_one_health_row_per_connection(
+    initialized_config: Config,
+) -> None:
+    """A second sync domain would otherwise duplicate every connection.
+
+    `sync_state` is keyed on (connection, domain), and balances and holdings will
+    advance on their own schedules. Seeded here rather than waited for, so the
+    join is asserted now instead of the day the second domain lands.
+    """
+    from bankmachine.store.schema import sync_state
+
+    _seed(initialized_config)
+    with writer_connection(initialized_config) as conn:
+        conn.execute(
+            sync_state.insert().values(
+                connection_id=1, domain="balances", cursor="b1", updated_at=now_utc()
+            )
+        )
+
+    rows = _call(initialized_config, "get_pipeline_health")["structuredContent"]["rows"]
+
+    assert len(rows) == 1, "a second sync domain duplicated the connection"

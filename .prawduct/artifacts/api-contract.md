@@ -20,9 +20,12 @@ versioning decision, and stability tiers.
 **Dependency note.** The template's usual product-brief upstream does not exist as a separate
 artifact; §0 and §5 of `docs/system-requirements.md` carry that content.
 
-**Build status.** 🔴 The **CLI partially exists** (`store`, `connector`, `sync shell` — build steps 1
-and 2). The **MCP surface does not exist yet** (build step 7). This contract is therefore
-*specification* for one surface and *description* for the other, and each operation below says which.
+**Build status** *(2026-09-08)*. The **CLI exists** through build step 4 — `store`, `connector`,
+`sync shell`, `enroll`, `connections`, `sync run`, `mcp`. The **MCP surface exists in first slice**:
+four of the ten tools below are implemented and six are specification only, recorded as a dated
+descope under the tool table. This contract is therefore *description* for most of the CLI, *both*
+for the four shipped tools, and *specification* for the remaining six — and each operation below
+says which.
 Writing it now is the point: introducing an error model or a versioning handle after consumers exist
 is a breaking change.
 

@@ -783,8 +783,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-11.8: a shortfall against the requested window is recorded, not swallowed",
         SYNC_RUN,
-        "    if requested is not None and granted < int(requested):",
-        "    if False:",
+        "    if _is_short(granted, requested):\n        # AC-11.8",
+        "    if False:\n        # AC-11.8",
         f"{SYNC_RUN_TESTS}::test_a_shortfall_against_the_requested_window_is_reported",
     ),
     (
@@ -848,9 +848,26 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-11.8: the granted window is measured once, never re-measured",
         SYNC_RUN,
-        "        if existing is not None:\n            return",
-        "        if False:\n            return",
+        "        if existing is not None:\n            # Already measured",
+        "        if False:\n            # Already measured",
         f"{SYNC_RUN_TESTS}::test_the_granted_window_is_measured_once_and_never_re_measured",
+    ),
+    (
+        "AC-ARCH.3: cmd_mcp starts against a missing datastore rather than refusing",
+        MCP,
+        "    status = inspect(config)\n    if not status.healthy:\n        logger.warning(",
+        "    status = inspect(config)\n    if not status.healthy:\n        raise SystemExit(2)\n"
+        "    if not status.healthy:\n        logger.warning(",
+        f"{MCP_TESTS}::test_cmd_mcp_itself_starts_against_a_missing_datastore",
+    ),
+    (
+        "AC-11.8: a later run still reports a shortfall it did not measure",
+        SYNC_RUN,
+        "            if _is_short(existing, requested):\n"
+        "                outcome.history_shortfall_days = int(requested) - int(existing)",
+        "            if False:\n"
+        "                outcome.history_shortfall_days = int(requested) - int(existing)",
+        f"{SYNC_RUN_TESTS}::test_a_later_run_still_reports_the_shortfall_it_did_not_measure",
     ),
     (
         "AC-10.1: a public token never reaches a repr",

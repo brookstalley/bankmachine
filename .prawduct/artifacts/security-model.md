@@ -404,5 +404,9 @@ act someone performs and a reviewer can see. It is used once today, on the redac
 fixtures, which must carry real credential shapes or they prove nothing. A test asserts the marker
 does not spill onto neighbouring lines; it caught that exact bug while being written.
 
-The MCP-surface controls (row caps, inventory) cannot be verified until build step 7 creates the
-surface.
+The MCP-surface controls are partly verifiable now that the first slice exists. **Verified:** the
+surface is read-only by construction — every tool reads through a `mode=ro` handle, and a test
+asserts the tool inventory contains no mutating verb. `query_transactions` is hard-capped at 1000
+rows. **Not yet verifiable:** the caps and inventory of the six tools that are specification only,
+and whether an analyst client actually *reads* the warnings every answer carries (queued as
+VRF-004 — no test can settle it).

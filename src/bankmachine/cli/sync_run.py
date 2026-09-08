@@ -303,6 +303,16 @@ def _sync_one(
     return outcome
 
 
+def _is_short(granted: Any, requested: Any) -> bool:
+    """Whether the aggregator granted less history than was asked for.
+
+    A named predicate rather than an inline conjunction, and the null case is why:
+    a null granted window is NOT a shortfall of zero, it is an unmeasured window
+    (AC-1.3a). `query.py` carries the same predicate for the same reason.
+    """
+    return granted is not None and requested is not None and int(granted) < int(requested)
+
+
 def _record_granted_window(
     config: Config, connection_id: int, outcome: ConnectionOutcome
 ) -> None:
@@ -336,6 +346,14 @@ def _record_granted_window(
         # history stayed missing. That is the silent-staleness failure this
         # product exists to prevent, produced by its own bookkeeping.
         if existing is not None:
+            # Already measured, so nothing is written -- but the shortfall is
+            # still true, and the summary should keep saying so. Reading it back
+            # here is what stops a persisted gap from disappearing out of the
+            # CLI's own report just because this run was not the one that found
+            # it.
+            outcome.granted_history_days = int(existing)
+            if _is_short(existing, requested):
+                outcome.history_shortfall_days = int(requested) - int(existing)
             return
         oldest = conn.execute(
             select(func.min(transactions.c.posted_date))
@@ -368,7 +386,7 @@ def _record_granted_window(
         )
 
     outcome.granted_history_days = granted
-    if requested is not None and granted < int(requested):
+    if _is_short(granted, requested):
         # AC-11.8: the shortfall is recorded as a known gap rather than the
         # returned window being treated as complete. Logged as well as stored,
         # because the operator's one chance to act on it -- re-linking with a

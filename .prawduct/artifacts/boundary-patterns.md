@@ -211,9 +211,11 @@ token written there is written permanently and travels with every backup.
 and `AccessGrant` — rather than a `FetchedResponse`. There is no path from either
 into the archive, which is what keeps this structural rather than remembered.
 
-### MCP Tool Surface — *not built; build step 7*
+### MCP Tool Surface — *first slice built 2026-09-08; build step 7*
 
-**Producer:** `src/bankmachine/mcp/` (does not exist yet).
+**Producer:** `src/bankmachine/mcp.py` — stdio JSON-RPC, no SDK dependency
+(`api-notes-plaid.md` §18), reading through `src/bankmachine/query.py`. Four of
+the ten tools ship; the descope is recorded in `api-contract.md`.
 **Consumer:** an MCP client, and through it an analyst agent.
 **Contract:** `system-requirements.md` §5 — the ten tools, aggregate-first, with
 a freshness stamp on every response (AC-9.2), explicit warnings over gapped or

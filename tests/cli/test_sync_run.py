@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import json
 from collections.abc import Iterator
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -763,7 +764,9 @@ def test_the_granted_window_is_measured_once_and_never_re_measured(
     # while the oldest transaction stays exactly where it is. A test that only
     # changed the DATA would not see this — I wrote that one first and it passed
     # against the unguarded code.
-    a_year_on = now_utc().replace(year=now_utc().year + 1)
+    # `timedelta`, not `.replace(year=...)`: the latter raises on Feb 29, so the
+    # test would fail once every four years for a reason unrelated to what it asserts.
+    a_year_on = now_utc() + timedelta(days=365)
     monkeypatch.setattr("bankmachine.cli.sync_run.now_utc", lambda: a_year_on)
     FakeClient.pages = [
         _page(added=[_txn("t2")], next_cursor="c2", status="HISTORICAL_UPDATE_COMPLETE")
@@ -774,3 +777,28 @@ def test_the_granted_window_is_measured_once_and_never_re_measured(
         "the granted window was re-measured, so the recorded shortfall drifts and "
         "eventually disappears while the missing history stays missing"
     )
+
+
+def test_a_later_run_still_reports_the_shortfall_it_did_not_measure(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """🔴 The gap is still true on the runs that did not find it.
+
+    Measuring once is right; going quiet about it is not. The summary line read a
+    field set only on the measuring run, so the shortfall vanished from every
+    later report while the missing history stayed missing — the same
+    silent-staleness shape as the drift the measure-once guard fixed, arriving
+    from the other side.
+    """
+    entry = _txn("t1")
+    entry["date"] = "2025-09-08"
+    FakeClient.pages = [
+        _page(added=[entry], next_cursor="c1", status="HISTORICAL_UPDATE_COMPLETE")
+    ]
+    assert run(["sync", "run"]) == 0
+    assert "gap" in capsys.readouterr().out
+
+    FakeClient.pages = [_page(next_cursor="c2", status="HISTORICAL_UPDATE_COMPLETE")]
+    assert run(["sync", "run"]) == 0
+
+    assert "gap" in capsys.readouterr().out, "a later run went quiet about a gap that still exists"

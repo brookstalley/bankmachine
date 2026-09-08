@@ -99,8 +99,24 @@ case to fall outside of. Prefer the second form even when the first is true toda
   string embedded the other. **A check that cannot fail hides every problem in its blast radius,
   not one, and they surface a layer at a time.**
 
+- *2026-09-08, seven in one work cycle.* Across build steps 3 and 4 I wrote seven checks that did
+  not exercise what they named: a fixture whose bad entry sat where the search never reached it; a
+  race test that patched the very check it was testing; a credential-absence assertion reading a
+  `caplog` that collected nothing; a go-red mutation that did not parse, so pytest failed at
+  COLLECTION and printed RED forever; a cursor-atomicity claim that held **positionally**, so
+  turning the transaction's `ROLLBACK` into a `COMMIT` left the suite green; a test whose docstring
+  said *"the server refused to start"* that never called the function which refused; and a mutation
+  aimed one line away from the branch its test reads. Every one passed on first run. 🔴 **The
+  through-line is not carelessness about behaviour — it is that when writing a check, attention goes
+  to the behaviour wanted and not to the path the check traverses to reach it.** Two of them were
+  guarding requirements I had implemented backwards, which is exactly when a check is least likely
+  to be examined and most needed.
+
 **How to apply:** before recording a guarantee, name the surface that could violate it and check
-that surface exists in the product. If the answer is "a future command someone forgets to add to
+that surface exists in the product. **And for every check you write, break the thing it names and
+watch it fail** — a green first run is the moment to distrust, not the moment to move on. Where a
+mutation harness exists, point one at the branch the assertion actually reads; where it does not,
+edit the source, run the test, and put the source back. If the answer is "a future command someone forgets to add to
 the list" or "any SQL that reaches this handle", the guarantee needs a different mechanism, not a
 firmer sentence. And when a rule matches on a *name* — a column name, a filename, a function name —
 ask what relationship the name is standing in for, and match on that instead. Related:

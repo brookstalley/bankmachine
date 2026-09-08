@@ -366,6 +366,10 @@ Required tools:
 | `find_recurring` | Detected recurring charges with cadence, amount drift, last-seen |
 | `get_coverage_report` | Per account: first and last transaction date, gaps >7 days, source breakdown |
 
+*(Build status 2026-09-08: `get_pipeline_health`, `list_accounts`, `query_transactions` and
+`spending_summary` are implemented in first slice; the other six are not yet built, and the descope
+— including what the shipped four do not yet carry — is recorded in `.prawduct/artifacts/api-contract.md`.)*
+
 **AC-9.2** — Every tool response includes a **freshness stamp** — last successful sync per
 contributing account.
 
