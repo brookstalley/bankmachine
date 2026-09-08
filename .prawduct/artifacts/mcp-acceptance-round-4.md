@@ -264,3 +264,71 @@ got its wrong premise. The structured field wins.
 **This is narrower than what the tool description states**, and the tester got it wrong
 in the permissive direction — which makes it a candidate defect in the *description*
 rather than only a tester error. Worth deciding when the AC-9.1 work touches tool text.
+
+---
+
+# Round 4, half (a) — RUN, on `87570c3`
+
+Blocked twice by the stale-build problem; run at the third attempt, after the build-identity
+field made the precondition checkable in one call.
+
+**Build, established two independent ways before any testing.** Every response carried
+`{"version":"0.1.0","commit":"87570c3","dirty":false}`, identical across all 16 successful calls.
+`87570c3` descends from both `6532659` and `97085df`, so both fixes are in. Corroborated without
+the field: `limit:9999` → `limit must be at most 500, got 9999`, against round 3's recorded ceiling
+of 1000, so `8c92131` is live too. The tester also fast-forwarded its own worktree (0 ahead, 12
+behind) before starting.
+
+## Both fixes verified
+
+**The date-window fix is numerically right, not merely responsive.** August 2026 rebuilt from raw
+rows and reconciled by hand: 16 rows, 8 categories, outflow 1,114,946 minor units, every category
+matching **to the unit**, with both in-window inflows (United +50,000, INTRST +422) correctly
+excluded from spend. `2026-06-01..2026-08-31` returns exactly 3× every category amount *and* every
+count versus the individual months — nothing double-counts or drops at a boundary. Both bounds
+inclusive, confirmed by a four-day window returning precisely its three rows and a single-day
+window returning its one.
+
+**Argument handling:** transposed window, two malformed date forms, `limit` 0 / −5 / 99999, a
+misspelled argument, an invented argument, `account_id` 0 — all refused naming argument, rule and
+value, with no exception class, stack trace or SQL anywhere.
+
+**`97085df` works and the control survived.** `account_id: 9999` → `account_id 9999 does not exist.
+list_accounts reports the ids that do.` And `account_id: 1` over a window where it is genuinely
+quiet → `rows: []`, no refusal. 🔴 **The fix did not over-reach**, which was the risk worth more
+than the fix. The deliberately-unfixed third case is confirmed as a known boundary: `account_id: 7`
+(no feed at all) returns `rows: []` byte-identical to account 1's honest empty — issue #19, not a
+regression.
+
+## Findings — no new defects; both map to open issues, with much sharper evidence
+
+**A1 → #17. `limit` truncates silently, and the DEFAULT of 100 does it.** 🔴 **This is the exact
+failure shape just fixed for `account_id`, still live on the other axis.**
+`query_transactions{account_id:4, since:"2024-01-01", until:"2026-12-31"}` with no `limit` returns
+100 rows, newest 2026-08-27, oldest dated 2025-04-28 — **stopping mid-month, partway through a
+cycle**. No truncation marker, no total-match count, no `partial`; only the standing `gapped` entry.
+Proven incomplete rather than inferred: a narrower window returns card rows 361–365 dated
+2024-09-19 to 2024-10-01 that are **absent from the "whole range" answer**. About sixteen months
+missing. Summing what returns understates a two-year card total by **roughly 40%**, and every
+derived number is precise, plausible and wrong.
+🔴 **The asymmetry is the sharpest part: over-asking (501+) is an explicit error, under-asking is
+silent.** The loud direction is the safe one.
+
+**A2 → #16. The `gapped` warning is a constant, so it cannot say whether YOUR window is the gapped
+one.** `spending_summary{since:"2024-01-01", until:"2024-06-30"}` → `rows: []` carrying that
+warning, while `coverage.earliest_transaction` is 2024-09-16 — so H1 2024 has **no coverage at
+all** and the honest answer is "unknown", while the delivered one reads as "you spent nothing". A
+correct August answer carries the identical warning character-for-character. Its own text —
+*"absent rather than zero"* — is exactly the right sentence, attached to every response instead of
+to the ones it describes. **An empty summary is the most believable wrong answer this surface can
+produce.**
+
+**A3 → #16.** A future window (`2027-01-01..2027-12-31`) returns `rows: []` with only the standing
+warning, against `as_of 2026-09-08`. Defensible, indistinguishable from a real quiet period. Lowest
+severity, recorded for completeness.
+
+**Consistency check that passed:** `coverage.earliest_transaction` is exactly 722 days before
+`as_of`, matching the 722-of-730 in the warning text.
+
+*The tester's full call-and-response log lives in its own worktree at
+`.prawduct/artifacts/mcp-acceptance-round-4-half-a.md` on `testing/current`.*
