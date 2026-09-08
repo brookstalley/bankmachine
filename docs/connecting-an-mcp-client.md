@@ -89,7 +89,9 @@ data, and that is the failure this product exists to prevent.
 - `stale` — a connection has not synced recently.
 - `degraded` — a connection is failing; its data stops at the last successful run.
 - `gapped` — the institution granted **less history than was asked for**, so older data is *absent
-  rather than zero*. A sandbox connection typically grants 90 days against 730 requested.
+  rather than zero*. How much less varies by institution and cannot be predicted: read
+  `granted_history_days` against `requested_history_days` rather than assuming a figure. *(Measured
+  2026-09-08: a sandbox connection to `ins_109511` granted 722 days against 730 requested.)*
 - `partial` — something is not yet known, such as a granted window that has not been measured. 🔴 A
   null granted window means *not yet measured*, never *no shortfall*.
 

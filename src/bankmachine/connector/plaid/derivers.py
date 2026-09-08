@@ -258,9 +258,11 @@ def derive_item(conn: SAConnection, response: RawResponse, context: DerivationCo
     table -- accounts reference `institution_id`, and reassigning it would orphan
     them.
 
-    The item's `available_products` is what `connections.capabilities` will be
-    built from at enrollment (AC-3.2); `capabilities_of` in the client reads it,
-    and writing that column is build step 3's job rather than a deriver's.
+    The item's `products` and `available_products` together are what
+    `connections.capabilities` is built from at enrollment (AC-3.2) -- neither
+    alone, because the aggregator makes them mutually exclusive and so each
+    omits what the other holds. `capabilities_of` in the client reads them, and
+    writing that column belongs to enrollment rather than to a deriver.
     """
     payload = _payload(response)
     item = payload.get("item")

@@ -106,10 +106,18 @@ their original form so a reader can see what was assumed and what came back.
   sandbox item created with `transactions` lists 14 available including `investments`), and
   requesting a product bills it. The owner chose to request both, accepting that the investments
   product is billed on every connection including deposit-only institutions.
-  **What this does not change:** capability discovery still runs, because `available_products` is
-  what AC-3.2 reads and `products` is not the useful list. What it does change is the bill, and
-  that a connection enrolled without `investments` cannot gain it without re-linking — which is why
-  it is recorded as a decision rather than a default.
+  **What this does not change:** capability discovery still runs. What it does change is the bill,
+  and that a connection enrolled without `investments` cannot gain it without re-linking — which is
+  why it is recorded as a decision rather than a default.
+
+  🔴 **Correction, 2026-09-08.** The sentence above originally read "capability discovery still
+  runs, *because `available_products` is what AC-3.2 reads and `products` is not the useful list*".
+  That reason was false, and this decision is what made it load-bearing: requesting a product moves
+  it **out of** `available_products`, so a discovery reading that list alone is switched off by
+  this very decision, for exactly the products it names. The first live enrollment under it
+  recorded `capabilities: ["balance"]` for a connection running transactions and holding a 401k.
+  The conclusion stands — discovery does still run — but only because `capabilities_of` now reads
+  the union of both lists. Kept rather than rewritten because the false reason is the finding.
 
 ## What I Would Do Differently
 

@@ -112,6 +112,25 @@ case to fall outside of. Prefer the second form even when the first is true toda
   guarding requirements I had implemented backwards, which is exactly when a check is least likely
   to be examined and most needed.
 
+- *2026-09-08, the capabilities union.* Two assertions written the same hour as a commit message
+  boasting about breaking checks to watch them fail. `assert missing in str(caught.value)` looked
+  like it pinned which product list a refusal names — but **`products` is a SUBSTRING of
+  `available_products`**, so the products case passed even when the message named the other one.
+  `assert "gap" in out` passed identically before and after the `a 8-day gap` → `a gap of N days`
+  reword it was written to pin. 🔴 **Substring containment is the specific trap**: when one valid
+  value contains another as text, `in` cannot tell them apart — assert the whole phrase, or match a
+  pattern. Both found by the Critic, neither by a green suite.
+- *2026-09-08, the same change.* **A refactor that changes control flow can orphan an existing test
+  without touching it.** Reading two fields in a loop meant a body missing the first never reached
+  the second's `isinstance` guard, so the case covering a non-list `available_products` kept passing
+  while covering nothing. After changing control flow, ask which existing tests now short-circuit —
+  mutation testing is blind to it, because reverting removes the damage along with the fix.
+- *2026-09-08, the capability fixture.* **A fixture drawn from one instance of a shape cannot
+  discriminate a rule about the shape.** Every capability fixture used `ins_109508`, where
+  investments happens to sit in `available_products` — so the right read and the wrong read agreed,
+  and 552 tests plus a live sandbox test all passed against a criterion that was exactly inverted. A
+  second institution found it in one enrollment.
+
 **How to apply:** before recording a guarantee, name the surface that could violate it and check
 that surface exists in the product. **And for every check you write, break the thing it names and
 watch it fail** — a green first run is the moment to distrust, not the moment to move on. Where a

@@ -368,8 +368,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-3.2: capabilities are what the connection could do, not what we asked for",
         CONNECTOR_CLIENT,
-        '    available = item.get("available_products")',
-        '    available = item.get("products")',
+        'for field in ("products", "available_products"):',
+        'for field in ("products",):',
         f"{ENROLLMENT_TESTS}::"
         "test_capabilities_answer_what_the_connection_could_do_not_what_we_asked_for",
     ),
@@ -437,6 +437,20 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         'LINK_TOKEN_GET = Endpoint("/link/token/get", retry_safe=True, issues_credential=True)',
         'LINK_TOKEN_GET = Endpoint("/link/token/get", retry_safe=True)',
         f"{ENROLLMENT_TESTS}::test_a_polled_session_can_never_become_an_archivable_response",
+    ),
+    (
+        "AC-3.2: an item with nothing left to add is read, not refused",
+        CONNECTOR_CLIENT,
+        "        if not isinstance(listed, list):",
+        "        if not listed:",
+        f"{CONNECTOR_TESTS}::test_an_item_with_nothing_left_to_add_is_read_not_refused",
+    ),
+    (
+        "AC-3.2: a product already initialized still counts as a capability",
+        CONNECTOR_CLIENT,
+        'for field in ("products", "available_products"):',
+        'for field in ("available_products",):',
+        f"{CONNECTOR_TESTS}::test_a_product_already_initialized_is_still_a_capability",
     ),
     (
         "AC-1.1: an unfinished session is the absence of a key, not an empty list",

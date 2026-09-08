@@ -288,7 +288,7 @@ Chunk 03**, and keyed on the endpoint rather than on a rule anyone has to
 remember: `Endpoint.issues_credential` marks it, and `FetchedResponse` refuses to
 exist for such an endpoint, so there is no object for the archive to be given.
 
-### 13. Capabilities are four separate product lists, and `products` is not the useful one
+### 13. Capabilities are four separate product lists, and no single one of them is the answer
 
 `/item/get` returns `item` with `available_products`, `billed_products`,
 `products`, `consent_expiration_time`, `error`, `institution_id`,
@@ -301,10 +301,31 @@ exist for such an endpoint, so there is no object for the archive to be given.
 - `consented_products` → `None` in the sandbox
 
 AC-3.2 requires investments to be pulled for any connection whose recorded
-capabilities include investments, **never for a named institution**. The list
-that answers "could this connection do investments" is `available_products`, not
-`products` — a capability discovery reading `products` would report exactly what
-this product already asked for and never discover anything.
+capabilities include investments, **never for a named institution**. No single
+list answers "could this connection do investments" — it is the **union of
+`products` and `available_products`**, and each alone fails in a different
+direction:
+
+- Reading `products` alone reports exactly what this product already asked for
+  and never discovers anything.
+- 🔴 Reading `available_products` alone drops whatever the Item is *already*
+  doing. Plaid documents that field as "products available for the Item that
+  have not yet been accessed", **mutually exclusive with `billed_products`** — so
+  an initialized product is guaranteed absent from it.
+
+The second failure is the one that survived a build step, because the measurement
+above hides it: on `ins_109508` enrolled with `transactions` alone, investments
+sits in `available_products` and either reading looks right. *(Measured
+2026-09-08, `ins_109511`, a second sandbox institution: `products:
+['investments', 'transactions']`, `available_products: ['balance']`,
+`billed_products: ['investments', 'transactions']`. Reading `available_products`
+alone recorded that connection's capabilities as `["balance"]` while it was
+syncing transactions and holding a 401k — AC-3.2's criterion inverted for exactly
+the connections that have investments.)*
+
+`billed_products` is not read: Plaid documents it as equal to `products` in
+almost all cases and mutually exclusive with `available_products`, so it can only
+contribute what the union already holds.
 
 ### 14. `/accounts/get` shape, and what Chunk 04's derivers get
 

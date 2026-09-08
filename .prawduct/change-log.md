@@ -34,6 +34,51 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-08: Capabilities are both product lists, and AC-3.2 stops inverting
+
+<!-- prawduct: scope=sync-v1 -->
+
+**Why:** the first live enrollment against a second sandbox institution printed
+`capabilities: balance` for a connection that was, at that moment, syncing transactions and
+holding a 401k. Running the product found it; 547 tests did not.
+
+**What changed:**
+
+- `capabilities_of` reads the **union** of `products` and `available_products`. The aggregator
+  documents `available_products` as *"products available for the Item that have not yet been
+  accessed"*, mutually exclusive with `billed_products` — so a product already initialized is
+  guaranteed absent from it, and reading it alone recorded a connection as incapable of exactly
+  what it was doing. AC-3.2 pulls investments for any connection whose recorded capabilities
+  include investments, so the criterion was inverted for precisely the connections that have
+  investments. Measured against the archived `/item/get` body: `["balance"]` before,
+  `["balance", "investments", "transactions"]` after.
+- 🔴 **A test asserted the defect and had to be corrected, not satisfied.**
+  `test_capabilities_answer_what_the_connection_could_do_not_what_we_asked_for` asserted
+  `"transactions" not in capabilities` as its tell that the wrong field had been read. The
+  guarantee it was protecting is real — a read of `products` alone discovers nothing — but the
+  assertion it chose contradicted the AC-3.2 it cited. It now asserts the union, which catches a
+  wrong read from *both* sides where it previously caught one, and the go-red case that guards it
+  was re-pointed accordingly. This is a strengthening; it is recorded here because "the test was
+  failing so I changed it" is the shape a genuine weakening also has.
+- `capabilities_of` had **no direct unit test** — it was reached only through enrollment. Four now
+  cover it: a product initialized-only, a product available-only, the union, and a refusal naming
+  which list the aggregator withheld. A new go-red case (111 total) breaks the union in the
+  direction the old one could not see.
+- The history-shortfall line read `a 8-day gap`. Reworded to `a gap of N days`, which is correct
+  for every number rather than for the ones nobody had hit yet.
+- `docs/connecting-an-mcp-client.md` claimed a sandbox connection "typically grants 90 days
+  against 730 requested". A live one granted **722**. The doc now says the grant varies and cannot
+  be predicted, and cites the measurement with its date and institution.
+- 🔴 **VRF-004 step 2 was written around that 90-day figure** and could not be run as specified.
+  Rewritten to ask about a period *outside* the granted window — the sharp form, which works at any
+  grant size, where an 8-day shortfall is far too small to probe whether a model reads warnings.
+
+**Deliberately not done:** the already-enrolled sandbox connection keeps `["balance"]`.
+`connections` carries no `derivation_version_id` — capabilities are written at enrollment, not
+derived — so no rebuild recomputes it, and nothing reads the column until build step 5. There are
+no production connections. A migration path here would be backwards compatibility for a deployment
+that does not exist; re-enrolling the sandbox connection corrects it for free.
+
 ## 2026-09-08: Transaction sync, and the first MCP slice — the product can be asked questions
 
 <!-- prawduct: scope=sync-v1 -->

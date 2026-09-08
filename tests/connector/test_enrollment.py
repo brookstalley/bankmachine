@@ -461,7 +461,9 @@ def test_no_access_token_reaches_the_request_context(client_config: Config) -> N
 
 #: Shaped from a real `/item/get` reply for a sandbox item enrolled with
 #: `transactions` alone: `products` lists what was asked for, and
-#: `available_products` the fourteen things the connection could actually do.
+#: `available_products` what the connection has not been asked for yet. Neither
+#: is the whole of what it can do -- the aggregator makes them mutually
+#: exclusive, so capabilities are their union.
 ITEM_BODY = json.dumps(
     {
         "item": {
@@ -481,19 +483,24 @@ ITEM_BODY = json.dumps(
 
 
 def test_capabilities_answer_what_the_connection_could_do_not_what_we_asked_for() -> None:
-    """🔴 `available_products`, not `products`.
+    """🔴 Both product lists, because each omits what the other holds.
 
     AC-3.2 pulls investments for any connection whose capabilities include
-    investments. A discovery reading `products` would report back exactly what
-    this product already requested -- it would never discover anything, and every
-    test asserting "capabilities were discovered" would still pass.
+    investments. A discovery reading only `products` would report back exactly
+    what this product already requested -- it would never discover anything, and
+    every test asserting "capabilities were discovered" would still pass. That is
+    what the first two assertions catch.
+
+    Reading only `available_products` fails the same criterion from the other
+    side: the aggregator makes that list mutually exclusive with what the Item
+    already does, so a connection actively running transactions would be recorded
+    as unable to. `transactions` is on this item's `products` alone, which makes
+    its presence the tell for that direction.
     """
     capabilities = capabilities_of(ITEM_BODY)
-    assert "investments" in capabilities
-    assert "liabilities" in capabilities
-    # The tell that the wrong field was read: `transactions` is what was asked
-    # for and is absent from `available_products` on this item.
-    assert "transactions" not in capabilities, "capabilities were read from `products`"
+    assert "investments" in capabilities, "capabilities were read from `products` alone"
+    assert "liabilities" in capabilities, "capabilities were read from `products` alone"
+    assert "transactions" in capabilities, "capabilities were read from `available_products` alone"
 
 
 def test_nothing_in_capability_discovery_reads_an_institution() -> None:
@@ -516,7 +523,21 @@ def test_an_item_without_a_capability_list_is_refused_rather_than_read_as_empty(
     for them -- which is a data hole nothing reports, in a product whose named
     failure mode is exactly that.
     """
-    for body in (b"{}", b'{"item": {}}', b'{"item": {"available_products": "not a list"}}'):
+    bodies = (
+        b"{}",
+        b'{"item": {}}',
+        # Each list guarded separately, and each body carries the OTHER list
+        # well-formed. Capabilities read both fields in turn, so a body missing
+        # the first never reaches the second's guard -- and the case meant to
+        # cover a non-list `available_products` would prove nothing about it.
+        # Left unguarded, a string iterates character by character into the
+        # capability set.
+        b'{"item": {"products": [], "available_products": "not a list"}}',
+        b'{"item": {"products": "not a list", "available_products": []}}',
+        b'{"item": {"available_products": []}}',
+        b'{"item": {"products": []}}',
+    )
+    for body in bodies:
         with pytest.raises(MalformedResponseError):
             capabilities_of(body)
 

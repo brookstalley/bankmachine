@@ -155,10 +155,13 @@ def source_institution_id_of(item_body: bytes) -> str:
 #: What enrollment asks the aggregator for. Both products are requested up front
 #: by operator decision (2026-09-07), which bills `investments` on every
 #: connection including deposit-only ones. The recommendation was `transactions`
-#: alone, because AC-3.2 drives investment pulls off `/item/get`'s
-#: `available_products` rather than off what was requested -- and that discovery
-#: still runs. What requesting both changes is the bill, and that a connection
-#: enrolled without a product cannot gain it without re-linking.
+#: alone, because AC-3.2 drives investment pulls off `/item/get` rather than off
+#: what was requested -- and that discovery still runs. 🔴 It runs only because
+#: capabilities read the UNION of `products` and `available_products`: requesting
+#: a product moves it OUT of `available_products`, so a discovery reading that
+#: list alone would be switched off by this very decision, for exactly the
+#: products it names. What requesting both changes is the bill, and that a
+#: connection enrolled without a product cannot gain it without re-linking.
 ENROLLMENT_PRODUCTS: tuple[str, ...] = ("transactions", "investments")
 
 #: Countries the institution picker offers. Configuration would be premature:

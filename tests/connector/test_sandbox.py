@@ -405,7 +405,14 @@ def test_capabilities_come_back_from_a_real_connection(
         "the sandbox item reports investments among what it could do; if this is empty, "
         "capability discovery is reading `products` and would never discover anything"
     )
-    assert capabilities != set(json.loads(fetched.body)["item"]["products"])
+    # Both lists, whole. Asserted as containment rather than as inequality with
+    # either one: an item with every product already initialized reports an EMPTY
+    # `available_products`, and against that item a correct union equals
+    # `products` exactly -- so `capabilities != products` would fail a connection
+    # that had been read perfectly.
+    item = json.loads(fetched.body)["item"]
+    assert capabilities >= set(item["products"])
+    assert capabilities >= set(item["available_products"])
 
 
 def test_accounts_come_back_and_are_archivable(sandbox_client: Any, enrolled_item: str) -> None:

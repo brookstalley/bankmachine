@@ -256,15 +256,26 @@ def institution_ref_of(item_body: bytes) -> tuple[str, str]:
 
 
 def capabilities_of(item_body: bytes) -> frozenset[str]:
-    """What a connection can do, read from its own record.
+    """What a connection can do, read from its own record: the UNION of two lists.
 
-    🔴 **`available_products`, not `products`.** AC-3.2 requires investments to be
-    pulled for any connection whose capabilities include investments and **never
-    for a named institution** -- so this must answer "what could this connection
-    do", and `products` answers "what did we already ask for". A discovery reading
-    `products` would report back exactly what this product requested and never
-    discover anything *(measured: a sandbox item enrolled with `transactions`
-    returns `products: ['transactions']` and 14 entries in `available_products`)*.
+    🔴 **Neither list alone answers the question.** The aggregator documents
+    `available_products` as "products available for the Item that have not yet
+    been accessed", *mutually exclusive with* `billed_products` -- so a product
+    already initialized on the Item is guaranteed ABSENT from it. `products`
+    holds the complement: what has already been added. "What can this connection
+    do" is therefore neither one, it is both.
+
+    AC-3.2 requires investments to be pulled for any connection whose recorded
+    capabilities include investments and **never for a named institution**, so
+    reading only `available_products` inverts the criterion for exactly the
+    connections that matter: an Item with investments already initialized reports
+    `products: ['investments', 'transactions']`, `available_products: ['balance']`,
+    and would be recorded as incapable of the one thing it is provably doing.
+
+    `billed_products` is deliberately not read. The aggregator documents it as
+    equal to `products` "in almost all cases" and mutually exclusive with
+    `available_products`, so it can contribute only what the union already holds,
+    and reading it would add a third failure mode for no reach.
 
     Nothing here branches on `institution_id`, and nothing may: the whole point
     of discovery is that the roster stays out of the code.
@@ -273,12 +284,17 @@ def capabilities_of(item_body: bytes) -> frozenset[str]:
     item = payload.get("item")
     if not isinstance(item, dict):
         raise MalformedResponseError(f"{ITEM_GET} answered without an item", endpoint=ITEM_GET)
-    available = item.get("available_products")
-    if not isinstance(available, list):
-        raise MalformedResponseError(
-            f"{ITEM_GET} answered without an available_products list", endpoint=ITEM_GET
-        )
-    return frozenset(product for product in available if isinstance(product, str))
+    capabilities: set[str] = set()
+    for field in ("products", "available_products"):
+        listed = item.get(field)
+        if not isinstance(listed, list):
+            raise MalformedResponseError(
+                f"{ITEM_GET} answered without a {field} list, so what this connection can "
+                f"do cannot be told from what it has merely not been asked for",
+                endpoint=ITEM_GET,
+            )
+        capabilities.update(product for product in listed if isinstance(product, str))
+    return frozenset(capabilities)
 
 
 class PlaidClient:

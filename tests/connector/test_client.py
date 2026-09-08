@@ -32,7 +32,7 @@ from bankmachine.connector import (
     ReauthRequiredError,
     TransportError,
 )
-from bankmachine.connector.plaid.client import PlaidClient
+from bankmachine.connector.plaid.client import PlaidClient, capabilities_of
 from bankmachine.connector.plaid.errors import RetryPolicy
 
 
@@ -465,3 +465,108 @@ def test_no_credential_reaches_a_failure_message(
     # Positive control: the message is not empty, so its silence about the
     # credentials is a property of the message rather than of there being none.
     assert "INVALID_API_KEYS" in rendered
+
+
+def _item_body(products: list[str], available_products: list[str]) -> bytes:
+    """An `/item/get` body carrying just the two lists capabilities are read from.
+
+    Shape follows the live body recorded in `api-notes-plaid.md` §13. The
+    institution is the aggregator's own fictional sandbox bank, never one from
+    `deployment/`.
+    """
+    return json.dumps(
+        {
+            "item": {
+                "item_id": "item-fake-for-tests",
+                "institution_id": "ins_109508",
+                "institution_name": "First Platypus Bank",
+                "products": products,
+                "available_products": available_products,
+                "billed_products": products,
+            },
+            "request_id": "req-fake",
+        }
+    ).encode()
+
+
+def test_a_product_already_initialized_is_still_a_capability() -> None:
+    """🔴 The regression: `available_products` EXCLUDES what the Item already does.
+
+    The aggregator documents it as mutually exclusive with `billed_products`, so
+    an Item with investments already running reports investments nowhere but
+    `products`. AC-3.2 pulls investments for any connection whose recorded
+    capabilities include investments -- so reading only `available_products`
+    would skip precisely the connections that have investments, which is the
+    criterion exactly inverted.
+
+    The body here is the shape a live sandbox item returned (`ins_109511`).
+    """
+    capabilities = capabilities_of(
+        _item_body(products=["investments", "transactions"], available_products=["balance"])
+    )
+
+    assert "investments" in capabilities
+
+
+def test_a_product_never_accessed_is_still_a_capability() -> None:
+    """The other half of the union, and the case the original read got right.
+
+    An Item enrolled for transactions alone offers investments only in
+    `available_products`; discovery has to see it there or nothing would ever be
+    discovered that this product had not already asked for.
+    """
+    capabilities = capabilities_of(
+        _item_body(products=["transactions"], available_products=["investments", "balance"])
+    )
+
+    assert "investments" in capabilities
+
+
+def test_capabilities_are_the_union_of_both_lists() -> None:
+    """Neither list alone is the answer, and nothing is dropped from either."""
+    capabilities = capabilities_of(
+        _item_body(products=["transactions"], available_products=["balance"])
+    )
+
+    assert capabilities == frozenset({"transactions", "balance"})
+
+
+@pytest.mark.parametrize("missing", ["products", "available_products"])
+def test_an_item_missing_either_list_is_refused_rather_than_half_answered(missing: str) -> None:
+    """Half a union is indistinguishable from a connection that cannot do the thing.
+
+    Refusing names the field, because the two lists mean different things and a
+    caller reading the message needs to know which half the aggregator withheld.
+    """
+    body = json.loads(_item_body(products=["transactions"], available_products=["balance"]))
+    del body["item"][missing]
+
+    with pytest.raises(MalformedResponseError) as caught:
+        capabilities_of(json.dumps(body).encode())
+
+    # The whole phrase, not the bare field name: "products" is a SUBSTRING of
+    # "available_products", so `missing in message` passes for the products case
+    # even when the message names the other list -- which is the one thing this
+    # test says the message has to get right.
+    assert f"without a {missing} list" in str(caught.value)
+
+
+def test_an_item_with_nothing_left_to_add_is_read_not_refused() -> None:
+    """🔴 An empty `available_products` is a full Item, not a broken reply.
+
+    A connection with every product already initialized reports `[]` there --
+    the aggregator makes that list mutually exclusive with what is already
+    running, so "nothing left to add" is what a *complete* Item looks like. This
+    is the `ins_109511` shape that started this: refusing it, or reading it as no
+    capabilities, would strand the connections that can do the most.
+
+    Pinned separately from the malformed-body cases because the guard that
+    refuses a non-list is one truthiness check away from refusing this too, and
+    no other body here carries an empty-but-present list -- so that weakening
+    would go uncaught and the suite would stay green.
+    """
+    capabilities = capabilities_of(
+        _item_body(products=["investments", "transactions"], available_products=[])
+    )
+
+    assert capabilities == frozenset({"investments", "transactions"})
