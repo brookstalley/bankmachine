@@ -34,6 +34,35 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-08: A mistyped account id stops getting a confident empty answer
+
+<!-- prawduct: scope=sync-v1 -->
+
+**Why:** a fourth acceptance pass, again driving the tools blind, put it in one line — a typo in an
+argument is loud and a typo in an account id is silent, and the silent one is the dangerous one.
+`query_transactions{account_id: 999}` returned `rows: []` with no warning, byte-identical to a real
+account that happened to be quiet in the window.
+
+**What changed:**
+
+- 🔴 **An `account_id` naming no account is refused.** The unadvertised-argument refusal already
+  covered a mistyped argument *name*; this is the same mistake one field over, and quieter. An empty
+  list is an entirely ordinary thing for an account to have, so the wrong answer invited no second
+  look — while the caller most likely to be wrong, the one who mistyped, got the most
+  confident-looking response.
+- The check sits in the **query layer**, because only a datastore read knows which ids exist, and
+  **after** the readability check, because an unreadable store knows nothing about accounts:
+  "that account does not exist" is a claim about the data, not about the connection. The refusal is
+  rendered at the **MCP boundary** beside its sibling, since how a caller is told is that boundary's
+  to decide.
+- **An account that exists and was simply quiet still answers `rows: []`**, held by its own test.
+  A refusal that also swallowed the true empty answer would be a worse defect than the one fixed —
+  and both tests were confirmed falsifiable by mutation before being trusted.
+
+**Deliberately not fixed here:** an account that exists with *no feed at all* still answers `rows:
+[]` with nothing to distinguish "no coverage" from "no activity". That is the per-account coverage
+axis (#19), not this.
+
 ## 2026-09-08: Refuse the argument you cannot honour, instead of clamping it quietly
 
 <!-- prawduct: scope=sync-v1 -->
