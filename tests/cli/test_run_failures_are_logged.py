@@ -56,6 +56,36 @@ def test_a_no_op_run_is_distinguishable_from_a_failed_one(cli_env: Config) -> No
     assert "ERROR" not in _log_text(cli_env), "a healthy no-op run logged an error"
 
 
+def test_the_new_log_line_cannot_carry_a_credential_into_the_file(
+    cli_env: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 Logging a failure means logging an exception message someone else wrote.
+
+    The existing formatter test covers a traceback attached as `exc_info`. This
+    covers the other half and the one this file introduced: an exception passed
+    as a `%s` argument, interpolated by `record.getMessage()` before redaction
+    sees it. Both halves must be scrubbed, and only one of them was exercised.
+
+    Writing failures to a durable file is worth nothing if the file becomes the
+    place credentials end up.
+    """
+    from bankmachine.cli import store as store_commands
+    from bankmachine.store.connection import StoreError
+
+    leaked = "a" * 40
+
+    def explode(*_args: object, **_kwargs: object) -> int:
+        raise StoreError(f"could not open the datastore with access_token={leaked}")
+
+    monkeypatch.setattr(store_commands, "cmd_status", explode)
+
+    assert run(["store", "status"]) == 2
+
+    text = _log_text(cli_env)
+    assert "ERROR" in text, "the failure did not reach the log at all"
+    assert leaked not in text, "a credential in an exception message reached the log file"
+
+
 def test_an_unexpected_failure_reaches_the_log_and_still_propagates(
     cli_env: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
