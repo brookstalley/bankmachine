@@ -105,6 +105,13 @@ rows are the **newest ones only**, so adding them up describes what came back ra
 you asked about — measurement found a two-year card total understated by roughly 40% that way, with
 nothing in the payload saying so.
 
+**To read the rest, page.** A truncated answer also carries `truncation.next_cursor`; hand it back as
+`query_transactions`'s `cursor` argument, with the same window and account, and keep going until
+`truncated` is false — the last page carries no `next_cursor`, which is the signal to stop. The
+cursor is opaque: pass it back unchanged, never build or edit one, and never send one issued for a
+different question, because both are refused rather than answered. Narrowing the window or raising
+`limit` moves the cap; paging is what gets past it.
+
 Warnings come in two scopes, and the difference is why they are worth reading. The first group
 describes the **pipeline**, so it rides every response equally:
 

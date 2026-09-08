@@ -24,11 +24,14 @@ write whatever SQL reaches it.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.engine import Connection as SAConnection
 
 from bankmachine.build_id import build_identity
@@ -405,6 +408,169 @@ def resolve_window(
     )
 
 
+class MalformedCursorError(ValueError):
+    """A `cursor` this server did not issue for the question it arrived with.
+
+    🔴 Its own type so the MCP boundary can refuse it by name, the way a
+    malformed date is refused. The alternative — reading an unusable cursor as
+    "start from the newest row" — returns page one under the name of page two:
+    a plausible complete answer to a question nobody asked, which is the shape
+    this work cycle exists to remove rather than to reintroduce one field over.
+    Rides the same path `UnknownAccountError` does, for the same reason.
+    """
+
+
+#: What a caller is told when a cursor cannot be used. One sentence for every
+#: rejection path on purpose: WHICH way a cursor is wrong — truncated in
+#: transit, forged, stale, or issued for a different question — is this server's
+#: business, and the caller's correct response to all four is the same one.
+_CURSOR_REFUSAL = (
+    "cursor is not a cursor this server issued for this request. Pass back the "
+    "`next_cursor` from a previous answer to the same question, unchanged, or omit it "
+    "to start from the newest row"
+)
+
+#: The cursor payload's shape tag. A cursor is opaque, so its internals are free
+#: to change — but the MCP server is a subprocess a client relaunches, so a
+#: cursor issued by one build and handed back to another is ordinary traffic,
+#: and a payload read under the wrong shape would resume at a position that
+#: means something else. Tagged, a cursor from a shape this build does not know
+#: is refused rather than misread.
+_CURSOR_SCHEME = 1
+
+
+def _request_fingerprint(*, since: date | None, until: date | None, account_id: int | None) -> str:
+    """Which result set a cursor belongs to, short enough to travel inside one.
+
+    🔴 A keyset position is only meaningful inside the query that produced it.
+    Page two's cursor handed to a request with a different `account_id` selects
+    real rows, in the right order, and answers a question the caller did not
+    ask — no error, no warning, and a payload that reads as a continuation. So
+    the predicate travels with the position and the boundary compares them.
+
+    `limit` is deliberately not part of it: it chooses how much of a result set
+    comes back per page, not which result set that is, and a caller changing it
+    between pages is doing something ordinary.
+    """
+    material = json.dumps(
+        [_iso_or_none(since), _iso_or_none(until), account_id], separators=(",", ":")
+    )
+    # Eight bytes, because this discriminates a caller's mistake and is not a
+    # signature. A forged cursor reaches only rows the request's own filters
+    # already admit, at a position `since` could have reached anyway.
+    return hashlib.blake2s(material.encode(), digest_size=8).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class Cursor:
+    """Where a page stopped, in the one total order transactions come back in.
+
+    🔴 **A keyset, never an offset**, and the difference is this work cycle's
+    own subject. `ORDER BY posted_date DESC, transaction_id DESC` is already a
+    total order, so "everything after this row" is a predicate rather than a
+    count of rows to skip. An offset is not: a sync inserting a row between two
+    pages shifts every later page by one, so a caller walking them sees one row
+    twice and never sees another — a paged answer that reads as complete and is
+    not.
+
+    Opaque on the wire. The encoding is reversible rather than signed because
+    there is nothing here to protect — the position names a row the request's
+    own filters already admit — but it is tagged and fingerprinted, so a cursor
+    that does not belong to this question is refused instead of answered.
+    """
+
+    posted_date: date
+    transaction_id: int
+    #: The fingerprint of the request this cursor was issued for. Compared when a
+    #: cursor comes back; never used to select a row.
+    request: str
+
+    @classmethod
+    def issued_for(
+        cls,
+        *,
+        posted_date: date,
+        transaction_id: int,
+        since: date | None,
+        until: date | None,
+        account_id: int | None,
+    ) -> Cursor:
+        """The only route that should build one, so the fingerprint cannot be forgotten."""
+        return cls(
+            posted_date=posted_date,
+            transaction_id=transaction_id,
+            request=_request_fingerprint(since=since, until=until, account_id=account_id),
+        )
+
+    def encode(self) -> str:
+        """The wire form. URL-safe and unpadded, because `=` is what a shell or a
+        query string is most likely to eat in transit."""
+        payload = json.dumps(
+            {
+                "v": _CURSOR_SCHEME,
+                "d": self.posted_date.isoformat(),
+                "t": self.transaction_id,
+                "q": self.request,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+    @classmethod
+    def decode(cls, text: str) -> Cursor:
+        """A cursor off the wire, or a refusal — never a silent fall back to page one."""
+        try:
+            payload = json.loads(base64.urlsafe_b64decode(text + "=" * (-len(text) % 4)))
+        except ValueError:
+            # Base64, UTF-8 and JSON failures all derive from `ValueError`, and
+            # every one of them means the same thing to the caller. `from None`
+            # because the cause is a decoder's internals, which
+            # `api-contract.md` § Error Model keeps off the wire.
+            raise MalformedCursorError(_CURSOR_REFUSAL) from None
+        if not isinstance(payload, dict) or payload.get("v") != _CURSOR_SCHEME:
+            raise MalformedCursorError(_CURSOR_REFUSAL)
+        posted, transaction_id, request = payload.get("d"), payload.get("t"), payload.get("q")
+        # 🔴 `bool` is an `int` in Python and JSON `true` decodes to one, so the
+        # bool check is not defensive noise: without it a payload carrying
+        # `"t": true` would resume at transaction 1 rather than being refused.
+        if (
+            not isinstance(posted, str)
+            or isinstance(transaction_id, bool)
+            or not isinstance(transaction_id, int)
+            or not isinstance(request, str)
+        ):
+            raise MalformedCursorError(_CURSOR_REFUSAL)
+        try:
+            posted_date = date.fromisoformat(posted)
+        except ValueError:
+            raise MalformedCursorError(_CURSOR_REFUSAL) from None
+        return cls(posted_date=posted_date, transaction_id=transaction_id, request=request)
+
+
+def parse_cursor(
+    text: str | None,
+    *,
+    since: date | None,
+    until: date | None,
+    account_id: int | None,
+) -> Cursor | None:
+    """A `cursor` argument, decoded and checked against the request carrying it.
+
+    Both halves live here rather than at the boundary because the encoder lives
+    here: a decoder written one module away from the encoder is the second
+    description that stops matching the first, and the fingerprint check is
+    meaningless unless it runs at the one site that can compare it against the
+    request being answered.
+    """
+    if text is None:
+        return None
+    cursor = Cursor.decode(text)
+    if cursor.request != _request_fingerprint(since=since, until=until, account_id=account_id):
+        raise MalformedCursorError(_CURSOR_REFUSAL)
+    return cursor
+
+
 @dataclass(frozen=True, slots=True)
 class Truncation:
     """How many rows matched, how many came back, and therefore whether the cap bit.
@@ -431,9 +597,16 @@ class Truncation:
     #: build one of these, and a silent `False` here would be a claim that the
     #: two numbers describe one moment when nobody checked.
     counted_during_change: bool
+    #: The last row of this page, from which the next one resumes. 🔴 No default,
+    #: for the reason `effective_window` has none one type down: a capped tool
+    #: that forgot it would issue no cursor, and the only symptom would be
+    #: truncation staying inescapable — silently, on the success path, which is
+    #: the failure mode this whole surface is being corrected for. `None` means
+    #: there is no page to resume from, and it has to be written.
+    resume_from: Cursor | None
 
     @classmethod
-    def over(cls, *, returned: int, counted: int) -> Truncation:
+    def over(cls, *, returned: int, counted: int, resume_from: Cursor | None) -> Truncation:
         """The only route that should build one, because `counted` can lag `returned`.
 
         🔴 **The row query and the count are two snapshots, not one.**
@@ -464,11 +637,32 @@ class Truncation:
             returned=returned,
             matching=max(counted, returned),
             counted_during_change=counted < returned,
+            resume_from=resume_from,
         )
 
     @property
     def truncated(self) -> bool:
         return self.returned < self.matching
+
+    @property
+    def next_cursor(self) -> str | None:
+        """The wire cursor, present when and only when there is a next page to reach.
+
+        🔴 Derived from the same two counts `truncated` is, so "a cursor iff the
+        answer is truncated" is one expression rather than two assignments that
+        can disagree. A stored cursor could outlive the condition that justified
+        it, and a consumer following one on a complete answer would page past
+        the end of an answer that already held everything.
+
+        The one case where a truncated answer carries no cursor is a page with
+        no rows at all: `returned` is zero, the count taken a moment later is
+        not, and there is no last row to resume from. Rare — it needs a write to
+        land between the two statements — and the `rows_truncated` caveat says
+        so without offering a route the caller cannot take.
+        """
+        if not self.truncated or self.resume_from is None:
+            return None
+        return self.resume_from.encode()
 
     @property
     def caveats(self) -> list[Caveat]:
@@ -512,12 +706,24 @@ class Truncation:
             )
         if not self.truncated:
             return caveats
+        # 🔴 The cursor leads, because it is the only remedy that reaches EVERY
+        # missing row: narrowing the window and raising `limit` each move the
+        # boundary, while paging removes it. The `limit` clause is still offered
+        # where it can still do something, and still withheld at the ceiling,
+        # where advising a caller to raise a number to the value it already
+        # holds is the self-contradicting sentence this surface exists to stop
+        # emitting.
         remedy = (
-            f"`limit` is already at its ceiling of {MAX_ROWS} and the cap is fixed, so narrow "
-            f"the window to reach the rest"
+            f"The cap of {MAX_ROWS} is a contract term, so narrowing the window is the "
+            f"only other route to the rest"
             if self.returned >= MAX_ROWS
             else f"Narrow the window, or raise `limit` (at most {MAX_ROWS})"
         )
+        if self.next_cursor is not None:
+            remedy = (
+                f"Pass this answer's `next_cursor` back as `cursor`, with the same window "
+                f"and account, to read the next page. {remedy}"
+            )
         caveats.append(
             Caveat(
                 kind="rows_truncated",
@@ -532,11 +738,18 @@ class Truncation:
         return caveats
 
     def to_wire(self) -> dict[str, Any]:
-        return {
+        wire: dict[str, Any] = {
             "returned": self.returned,
             "matching": self.matching,
             "truncated": self.truncated,
         }
+        # Absent on a complete answer, exactly as `truncation` itself is absent
+        # on an uncapped tool: the key's presence is the statement that there is
+        # more to read, so a consumer that pages while the key is there stops
+        # when it is gone, without having to compare two numbers to know.
+        if self.next_cursor is not None:
+            wire["next_cursor"] = self.next_cursor
+        return wire
 
 
 @dataclass(frozen=True, slots=True)
@@ -747,7 +960,11 @@ def _covered_rows(conn: SAConnection, *, since: date, until: date) -> int:
 
     Composed from `_transaction_filters`, like every other reader of this table:
     the promise that a filter added later reaches every reader is worth nothing
-    if a reader rebuilds the predicates by hand.
+    if a reader rebuilds the predicates by hand. It passes `after=None` because
+    this is a fact about the WINDOW rather than about the page — a figure that
+    shrank as a caller paged would describe the walk instead of the store, and a
+    caller comparing it against `matching` would read the difference as data
+    going missing.
 
     🔴 **Takes two `date`s, never the `Window`.** A window covering nothing has
     null bounds, and SQLAlchemy's comparison operators accept `Any` -- so passing
@@ -762,7 +979,7 @@ def _covered_rows(conn: SAConnection, *, since: date, until: date) -> int:
         conn.execute(
             select(func.count())
             .select_from(transactions)
-            .where(*_transaction_filters(since=since, until=until, account_id=None))
+            .where(*_transaction_filters(since=since, until=until, account_id=None, after=None))
         ).scalar_one()
     )
 
@@ -998,6 +1215,7 @@ def _transaction_filters(
     since: date | None,
     until: date | None,
     account_id: int | None,
+    after: Cursor | None,
 ) -> list[Any]:
     """🔴 The predicates of a transaction query, built once for both statements.
 
@@ -1016,6 +1234,25 @@ def _transaction_filters(
         filters.append(transactions.c.posted_date <= until)
     if account_id is not None:
         filters.append(transactions.c.account_id == account_id)
+    if after is not None:
+        # 🔴 The keyset predicate belongs in the SHARED list, not on the row
+        # query alone. `matching` is the count of what this request selects, and
+        # a page whose count ignored the cursor would report the whole result
+        # set behind every page — so `truncated` would stay true on the last one
+        # and a caller paging until it went false would never stop.
+        #
+        # Spelled as an explicit disjunction rather than as a row-value
+        # comparison, because it mirrors the ORDER BY beside it one clause at a
+        # time: strictly older, or the same day and further down the tie-break.
+        filters.append(
+            or_(
+                transactions.c.posted_date < after.posted_date,
+                and_(
+                    transactions.c.posted_date == after.posted_date,
+                    transactions.c.transaction_id < after.transaction_id,
+                ),
+            )
+        )
     return filters
 
 
@@ -1026,8 +1263,16 @@ def list_transactions(
     until: date | None = None,
     account_id: int | None = None,
     limit: int = 100,
+    after: Cursor | None = None,
 ) -> Answer:
-    """Transactions in a window, newest first. Soft-deleted rows are excluded."""
+    """Transactions in a window, newest first. Soft-deleted rows are excluded.
+
+    `after` resumes a paged walk at the row a previous answer's `next_cursor`
+    named. It narrows this request the way `since` does — `matching` counts what
+    is left from that position, so `truncated` reads false on the page that
+    exhausts the window and the caller has a terminating condition rather than a
+    number to compare.
+    """
     problem = _readable(config)
     if problem is not None:
         return _unusable(
@@ -1036,8 +1281,9 @@ def list_transactions(
             requested_window=(since, until),
             # Zero returned of zero matching: nothing was readable, so nothing
             # matched and nothing was dropped. The key stays present because its
-            # absence would say this tool returns everything it finds.
-            truncation=Truncation.over(returned=0, counted=0),
+            # absence would say this tool returns everything it finds, and there
+            # is no page to resume from because there was no page.
+            truncation=Truncation.over(returned=0, counted=0, resume_from=None),
         )
     with reader_connection(config) as conn:
         # 🔴 Ordered AFTER the readability check on purpose: an unreadable store
@@ -1047,7 +1293,7 @@ def list_transactions(
             raise UnknownAccountError(
                 f"account_id {account_id} does not exist. list_accounts reports the ids that do."
             )
-        filters = _transaction_filters(since=since, until=until, account_id=account_id)
+        filters = _transaction_filters(since=since, until=until, account_id=account_id, after=after)
         # 🔴 Both statements take the SAME from-clause as well as the same
         # filters. The join to `accounts` is part of what selects a row -- an
         # inner join drops a transaction whose account is absent -- so a count
@@ -1072,6 +1318,7 @@ def list_transactions(
             .order_by(transactions.c.posted_date.desc(), transactions.c.transaction_id.desc())
             .limit(max(1, min(limit, MAX_ROWS)))
         )
+        selected = conn.execute(statement).all()
         rows = [
             {
                 "transaction_id": int(r[0]),
@@ -1085,11 +1332,27 @@ def list_transactions(
                 "category": r[9] or r[8],
                 "category_is_override": r[9] is not None,
             }
-            for r in conn.execute(statement).all()
+            for r in selected
         ]
         matching = conn.execute(
             select(func.count()).select_from(source).where(*filters)
         ).scalar_one()
+        # 🔴 Built from the LAST ROW THE STATEMENT RETURNED, in the column types
+        # the order clause sorts on -- never re-parsed from the wire dict beside
+        # it, whose `date` is already a string. A cursor rebuilt from the
+        # rendering of a row is a second description of the position, and the
+        # ordering it has to agree with is SQL's.
+        resume_from = (
+            None
+            if not selected
+            else Cursor.issued_for(
+                posted_date=selected[-1][2],
+                transaction_id=int(selected[-1][0]),
+                since=since,
+                until=until,
+                account_id=account_id,
+            )
+        )
         return _answer(
             config,
             conn,
@@ -1097,7 +1360,9 @@ def list_transactions(
             requested_window=(since, until),
             # `returned` is derived from the rows themselves rather than from
             # `limit`, so it cannot claim a count the payload does not contain.
-            truncation=Truncation.over(returned=len(rows), counted=matching),
+            truncation=Truncation.over(
+                returned=len(rows), counted=matching, resume_from=resume_from
+            ),
         )
 
 
@@ -1135,8 +1400,11 @@ def spending_by_category(
             # disagree about which rows exist — a precise wrong number, not an
             # error. The outflow clause rides on top because it is what makes
             # this tool a SPENDING question rather than a transaction one.
+            # `after` is None because an aggregate is unpaginated by contract,
+            # bounded by its grouping rather than by a row cap, so there is no
+            # page for a cursor to resume.
             .where(
-                *_transaction_filters(since=since, until=until, account_id=None),
+                *_transaction_filters(since=since, until=until, account_id=None, after=None),
                 transactions.c.amount_minor < 0,
             )
             .group_by("category")

@@ -766,6 +766,11 @@ def test_a_malformed_date_is_refused_with_a_sentence_a_caller_can_act_on(
         ({"limit": "lots"}, "limit"),
         ({"limit": True}, "limit"),
         ({"account_id": "1"}, "account_id"),
+        # A cursor is a string on the wire, so a caller sending the whole
+        # `truncation` block back — an ordinary slip — must be told which part
+        # of it to send instead.
+        ({"cursor": 7}, "cursor"),
+        ({"cursor": {"next_cursor": "x"}}, "cursor"),
     ],
 )
 def test_an_argument_of_the_wrong_json_type_is_refused_by_name(
@@ -1662,3 +1667,193 @@ def test_an_unreadable_store_still_reports_whether_the_tool_is_capped(
     assert wire["truncation"] == {"returned": 0, "matching": 0, "truncated": False}
     assert _request_kinds(wire) == [], tool
     assert any(w["kind"] == "partial" for w in wire["warnings"]), tool
+
+
+# --------------------------------------------------------------------------
+# The cursor, read as a consumer reads it — a paged walk over the wire (#17)
+# --------------------------------------------------------------------------
+
+
+def _walk_the_wire(
+    config: Config, arguments: dict[str, Any], *, limit: int
+) -> tuple[list[int], list[dict[str, Any]]]:
+    """Page `query_transactions` over stdio until it stops offering a next page.
+
+    🔴 The loop a consuming agent actually writes, driven through the JSON-RPC
+    surface rather than against the query function: the fields it branches on
+    are the ones in `structuredContent`, and a cursor that never reached the
+    payload would leave an object-level test passing while every consumer was
+    stranded at the cap.
+    """
+    seen: list[int] = []
+    pages: list[dict[str, Any]] = []
+    cursor: str | None = None
+    while True:
+        sent = {**arguments, "limit": limit}
+        if cursor is not None:
+            sent["cursor"] = cursor
+        result = _call(config, "query_transactions", sent)
+        assert result["isError"] is False, result["content"][0]["text"]
+        wire = result["structuredContent"]
+        pages.append(wire)
+        seen.extend(int(row["transaction_id"]) for row in wire["rows"])
+        cursor = wire["truncation"].get("next_cursor")
+        if cursor is None:
+            break
+        # A cursor that fails to advance hangs the test rather than reddening
+        # it, so the walk carries its own ceiling.
+        assert len(pages) <= 40, "the walk did not terminate"
+    return seen, pages
+
+
+def test_a_paged_walk_reassembles_every_row_the_first_page_left_behind(
+    initialized_config: Config,
+) -> None:
+    """🔴 The other half of #17: visibility without a route past the cap is not enough.
+
+    Chunks 01 and 02 made a truncated answer stop reading as a complete one.
+    This is the part that lets a caller do something about it — the measured
+    harm was a two-year card total understated by roughly 40%, and knowing the
+    figure is wrong does not make it right.
+
+    Asserted against `matching` from the FIRST page, which is the number the
+    caller is given up front and the one they would check the walk against.
+    """
+    _seed_many(initialized_config, 130)
+
+    seen, pages = _walk_the_wire(initialized_config, {}, limit=10)
+
+    assert pages[0]["truncation"]["matching"] == 133
+    assert len(seen) == 133, "the walk did not reassemble the answer"
+    assert len(set(seen)) == 133, "a row came back on more than one page"
+    assert len(pages) == 14
+    assert sum(len(page["rows"]) for page in pages) == 133
+
+
+def test_the_last_page_of_a_walk_says_it_is_the_last_one(initialized_config: Config) -> None:
+    """The terminating condition, over the wire and stated in both fields.
+
+    A consumer stops when `next_cursor` is absent; one that branches on
+    `truncated` instead must reach the same conclusion, or the two halves of the
+    block disagree about whether the answer is complete.
+    """
+    _seed_many(initialized_config, 130)
+
+    _, pages = _walk_the_wire(initialized_config, {}, limit=50)
+
+    for page in pages[:-1]:
+        assert page["truncation"]["truncated"] is True
+        assert isinstance(page["truncation"]["next_cursor"], str)
+
+    last = pages[-1]["truncation"]
+    assert last["truncated"] is False
+    assert "next_cursor" not in last
+    assert _request_kinds(pages[-1]) == []
+
+
+def test_a_page_states_the_same_window_every_other_page_states(
+    initialized_config: Config,
+) -> None:
+    """🔴 Paging moves the rows, never the window the answer claims to cover.
+
+    `effective_window` is a statement about the question, and the cursor narrows
+    only which rows of the answer are in hand. A window that crept forward page
+    by page would report each page's own span as the window the caller asked
+    about — the precise wrong number this work cycle exists to remove.
+    """
+    _seed_many(initialized_config, 130)
+
+    _, pages = _walk_the_wire(initialized_config, {}, limit=50)
+
+    windows = {json.dumps(page["effective_window"], sort_keys=True) for page in pages}
+    assert len(pages) > 1
+    assert len(windows) == 1, "the effective window moved while the caller was paging"
+
+
+@pytest.mark.parametrize(
+    ("presented", "why"),
+    [
+        ("", "empty"),
+        ("MTIzNA", "base64 of something that is not a cursor"),
+        ("not a cursor", "not base64 at all"),
+    ],
+)
+def test_a_cursor_this_server_did_not_issue_is_refused_by_name(
+    initialized_config: Config, presented: str, why: str
+) -> None:
+    """🔴 Refused, not read as "start again from the newest row".
+
+    The silent fallback returns page one under the name of page two: a
+    well-formed, plausible, complete-looking answer to a question nobody asked.
+    The refusal names the argument, offers the route back, and — like every other
+    refusal on this boundary — carries no exception class for a caller to puzzle
+    over.
+    """
+    _seed(initialized_config)
+
+    result = _call(initialized_config, "query_transactions", {"cursor": presented})
+
+    assert result["isError"] is True, why
+    assert result["structuredContent"]["error"]["code"] == "invalid_argument", why
+    message = result["content"][0]["text"]
+    assert "cursor" in message, why
+    assert "`next_cursor`" in message, why
+    assert "Error" not in message, why
+
+
+def test_a_cursor_from_a_different_question_is_refused_rather_than_answered(
+    initialized_config: Config,
+) -> None:
+    """🔴 The reachable foreign cursor: the caller's own, against a changed request.
+
+    It would select real rows in the right order and answer a question the
+    caller did not ask — no error, no warning, and a payload that reads as a
+    continuation of the walk they thought they were on. So a cursor carries the
+    request it was issued for, and the boundary compares them.
+    """
+    _seed_many(initialized_config, 130)
+    first = _call(initialized_config, "query_transactions", {"limit": 10})
+    issued = first["structuredContent"]["truncation"]["next_cursor"]
+
+    same = _call(initialized_config, "query_transactions", {"limit": 10, "cursor": issued})
+    assert same["isError"] is False, same["content"][0]["text"]
+
+    changed = _call(
+        initialized_config,
+        "query_transactions",
+        {"limit": 10, "cursor": issued, "account_id": 1},
+    )
+
+    assert changed["isError"] is True, "a cursor from another question was answered"
+    assert "cursor" in changed["content"][0]["text"]
+
+
+def test_the_cursor_is_advertised_on_the_capped_tool_and_nowhere_else() -> None:
+    """A caller learns the argument from the schema, and a misspelling is refused by name.
+
+    `additionalProperties: False` plus `_permitted_arguments` means an argument
+    that is not advertised cannot be sent — so an unadvertised `cursor` would
+    make the escape route unreachable to a caller reading the tool definition,
+    which is the only thing an agent reads.
+    """
+    assert "cursor" in mcp._permitted_arguments("query_transactions")
+    for name in ("spending_summary", "list_accounts", "get_pipeline_health"):
+        assert "cursor" not in mcp._permitted_arguments(name), name
+
+
+def test_the_instructions_say_how_to_reach_what_a_truncated_answer_left_behind(
+    initialized_config: Config,
+) -> None:
+    """🔴 `next_cursor` is nested inside `truncation`, so the envelope guard cannot see it.
+
+    That guard walks the TOP-LEVEL keys of each tool's payload; a field one
+    level down is invisible to it, and a field that appears only on a truncated
+    answer is invisible to a call it makes with no arguments. Both gaps point the
+    same way — the only text a consuming agent reads before it calls anything
+    would not mention the one field that gets it past the cap.
+    """
+    instructions = mcp._instructions(initialized_config)
+
+    assert "`next_cursor`" in instructions
+    assert "`cursor`" in instructions
+    assert mcp._TRUNCATION_NOTE.count("`next_cursor`") >= 1

@@ -85,7 +85,10 @@ _TRUNCATION_NOTE = (
     "selects), `returned` (how many came back) and `truncated`. 🔴 When `truncated` is true "
     "the rows are the NEWEST ones only, so summing or counting them describes what came "
     "back rather than the window you asked about -- a `rows_truncated` warning says by how "
-    "much. Narrow the window or raise `limit`."
+    "much. To read the rest, pass the answer's `next_cursor` straight back as `cursor` with "
+    "the SAME window and account, and keep going until `truncated` is false -- that is the "
+    "only route that reaches every matching row. Narrowing the window or raising `limit` "
+    "moves the cap; paging removes it."
 )
 
 
@@ -134,6 +137,15 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "description": (
                             "rows returned, at most "
                             f"{query.MAX_ROWS}; asking for more is refused, not trimmed"
+                        ),
+                    },
+                    "cursor": {
+                        "type": "string",
+                        "description": (
+                            "resume a paged walk: pass back the `next_cursor` from a "
+                            "previous answer, unchanged, with the same window and account. "
+                            "OPAQUE -- do not read it, build one, or edit one; a cursor "
+                            "this server did not issue for this request is refused"
                         ),
                     },
                 },
@@ -276,6 +288,31 @@ def _window(arguments: dict[str, object]) -> tuple[date | None, date | None]:
     return since, until
 
 
+def _cursor(
+    arguments: dict[str, object],
+    *,
+    since: date | None,
+    until: date | None,
+    account_id: int | None,
+) -> query.Cursor | None:
+    """The `cursor` argument, narrowed to the position type the query layer accepts.
+
+    🔴 Narrowed HERE, like every other argument, so no raw string reaches the
+    query layer. The decoding and the fingerprint check live in `query` beside
+    the encoder that produced them -- a decoder written one module from its
+    encoder is the second description that stops matching the first -- and the
+    refusal it raises rides the same boundary path `UnknownAccountError` does,
+    because what a caller gets told is this boundary's to decide.
+    """
+    raw = arguments.get("cursor")
+    if raw is not None and not isinstance(raw, str):
+        raise BadArgumentError(
+            f"cursor must be the `next_cursor` string from a previous answer, "
+            f"got {type(raw).__name__}"
+        )
+    return query.parse_cursor(raw, since=since, until=until, account_id=account_id)
+
+
 def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> query.Answer:
     """🔴 `arguments` is `dict[str, object]`, not `dict[str, Any]`, and that is load-bearing.
 
@@ -300,6 +337,10 @@ def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> q
     since, until = _window(arguments)
     limit = _whole_number(arguments, "limit", 100, minimum=1, maximum=query.MAX_ROWS)
     account_id = _whole_number(arguments, "account_id", None, minimum=1)
+    # 🔴 After the window and the account, because a cursor is only meaningful
+    # against the request it accompanies and this is the call that compares the
+    # two. A cursor narrowed first would have nothing to be checked against.
+    cursor = _cursor(arguments, since=since, until=until, account_id=account_id)
     handlers: dict[str, Callable[..., query.Answer]] = {
         "list_accounts": lambda: query.list_accounts(config),
         "query_transactions": lambda: query.list_transactions(
@@ -308,6 +349,7 @@ def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> q
             until=until,
             account_id=account_id,
             limit=limit if limit is not None else 100,
+            after=cursor,
         ),
         "spending_summary": lambda: query.spending_by_category(config, since=since, until=until),
         "get_pipeline_health": lambda: query.pipeline_health(config),
@@ -351,7 +393,12 @@ def _instructions(config: Config) -> str:
         f"(`matching`, `returned`, `truncated`). Absence of either key means that tool has no "
         f"window, or returns every row it finds. 🔴 **If `truncated` is true the rows are the "
         f"NEWEST ones only, so summing or counting them describes what came back rather than "
-        f"the window you asked about.**\n\n"
+        f"the window you asked about.** A truncated answer also carries "
+        f"a `next_cursor` inside `truncation`: pass it straight back as the tool's `cursor` "
+        f"argument, "
+        f"with the same window and account, to read the next page, and keep going until "
+        f"`truncated` is false. The cursor is OPAQUE -- never build or edit one -- and it is "
+        f"present when and only when there is more to read.\n\n"
         f"🔴 Read `warnings` before drawing a conclusion: an answer can be perfectly "
         f"well-formed and still be computed over incomplete data. Some warnings describe the "
         f"PIPELINE and ride every response: `stale` means a connection has not synced "
@@ -421,6 +468,7 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
             BadArgumentError,
             query.UnknownAccountError,
             query.InvertedWindowError,
+            query.MalformedCursorError,
         ) as exc:
             # Ahead of the broad catch. The message is the caller's to act on,
             # so it is rendered without the exception class name -- and it is

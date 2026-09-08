@@ -19,6 +19,7 @@ a joined string: `rows_truncated` sits in a vocabulary beside two kinds sharing 
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import Iterator
 from datetime import date, timedelta
@@ -27,7 +28,7 @@ from typing import Any
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
-from sqlalchemy import event, func, select
+from sqlalchemy import and_, event, func, or_, select
 from sqlalchemy.dialects.sqlite import dialect as sqlite_dialect
 from sqlalchemy.engine import Engine
 
@@ -35,7 +36,7 @@ from bankmachine import query
 from bankmachine.config import Config
 from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS
-from bankmachine.query import MAX_ROWS, Truncation
+from bankmachine.query import MAX_ROWS, Cursor, Truncation
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
 from bankmachine.store.schema import connections, institutions, transactions
@@ -52,23 +53,42 @@ _POSSIBLE = st.integers(min_value=0, max_value=10_000).flatmap(
     lambda matching: st.tuples(st.integers(min_value=0, max_value=matching), st.just(matching))
 )
 
+#: 🔴 Every invariant below is drawn over BOTH resume states, because the block
+#: now has two: a page with a row to continue from and a page without one. A
+#: property asserted only at `resume_from=None` would say nothing about the
+#: branch that actually ships on a truncated answer — and the remedy sentence,
+#: which one of these properties exists to police, is exactly the thing that
+#: changes between them.
+_A_CURSOR = Cursor.issued_for(
+    posted_date=date(2026, 5, 4),
+    transaction_id=7,
+    since=None,
+    until=None,
+    account_id=None,
+)
+_RESUME = st.sampled_from([None, _A_CURSOR])
 
-@given(counts=_POSSIBLE)
-def test_truncated_is_true_exactly_when_rows_are_missing(counts: tuple[int, int]) -> None:
+
+@given(counts=_POSSIBLE, resume_from=_RESUME)
+def test_truncated_is_true_exactly_when_rows_are_missing(
+    counts: tuple[int, int], resume_from: Cursor | None
+) -> None:
     """The whole contract of the block, as a rule rather than as examples.
 
     A caller branches on `truncated` and never re-derives it, so a `truncated`
     that disagreed with its own two numbers would be believed over them.
     """
     returned, matching = counts
-    truncation = Truncation.over(returned=returned, counted=matching)
+    truncation = Truncation.over(returned=returned, counted=matching, resume_from=resume_from)
 
     assert truncation.truncated == (returned < matching)
     assert truncation.returned <= truncation.matching
 
 
-@given(counts=_POSSIBLE)
-def test_a_caveat_rides_every_truncated_answer_and_no_complete_one(counts: tuple[int, int]) -> None:
+@given(counts=_POSSIBLE, resume_from=_RESUME)
+def test_a_caveat_rides_every_truncated_answer_and_no_complete_one(
+    counts: tuple[int, int], resume_from: Cursor | None
+) -> None:
     """🔴 The generalisation of this work cycle's defect: a missing row that says nothing.
 
     Stated as an iff in both directions on purpose. The forward half is the
@@ -79,16 +99,16 @@ def test_a_caveat_rides_every_truncated_answer_and_no_complete_one(counts: tuple
     invisible.
     """
     returned, matching = counts
-    truncation = Truncation.over(returned=returned, counted=matching)
+    truncation = Truncation.over(returned=returned, counted=matching, resume_from=resume_from)
 
     kinds = [c.kind for c in truncation.caveats]
 
     assert kinds == (["rows_truncated"] if truncation.truncated else [])
 
 
-@given(counts=_POSSIBLE)
+@given(counts=_POSSIBLE, resume_from=_RESUME)
 def test_the_caveat_never_quotes_a_figure_the_block_beside_it_denies(
-    counts: tuple[int, int],
+    counts: tuple[int, int], resume_from: Cursor | None
 ) -> None:
     """The prose and the structured field cannot contradict each other.
 
@@ -98,7 +118,7 @@ def test_the_caveat_never_quotes_a_figure_the_block_beside_it_denies(
     numbers look wrong.
     """
     returned, matching = counts
-    truncation = Truncation.over(returned=returned, counted=matching)
+    truncation = Truncation.over(returned=returned, counted=matching, resume_from=resume_from)
 
     for caveat in truncation.caveats:
         assert f"{matching} transactions match" in caveat.detail
@@ -131,7 +151,7 @@ def test_a_count_that_lags_the_rows_is_reconciled_rather_than_refused(
     the skew rides out as its own caveat.
     """
     counted = max(0, returned - removed)
-    truncation = Truncation.over(returned=returned, counted=counted)
+    truncation = Truncation.over(returned=returned, counted=counted, resume_from=None)
 
     assert truncation.matching == returned, "a count below the rows contradicts the payload"
     assert truncation.truncated is False, "no rows are being hidden when the count lags"
@@ -146,14 +166,16 @@ def test_a_count_that_matches_or_exceeds_the_rows_reports_no_change() -> None:
     all over again — measurement already showed what that does to a reader.
     """
     for returned, counted in ((0, 0), (3, 3), (100, 144), (500, 500)):
-        truncation = Truncation.over(returned=returned, counted=counted)
+        truncation = Truncation.over(returned=returned, counted=counted, resume_from=None)
 
         assert truncation.counted_during_change is False, (returned, counted)
         assert "counted_during_change" not in [c.kind for c in truncation.caveats]
 
 
-@given(counts=_POSSIBLE)
-def test_the_remedy_is_one_the_caller_can_actually_follow(counts: tuple[int, int]) -> None:
+@given(counts=_POSSIBLE, resume_from=_RESUME)
+def test_the_remedy_is_one_the_caller_can_actually_follow(
+    counts: tuple[int, int], resume_from: Cursor | None
+) -> None:
     """🔴 A sentence that tells a caller to raise `limit` past a cap it already hit.
 
     Found by hand-probing reachable inputs, not by a mutation: at the ceiling the
@@ -167,7 +189,7 @@ def test_the_remedy_is_one_the_caller_can_actually_follow(counts: tuple[int, int
     because the boundary is the thing most likely to move.
     """
     returned, matching = counts
-    truncation = Truncation.over(returned=returned, counted=matching)
+    truncation = Truncation.over(returned=returned, counted=matching, resume_from=resume_from)
 
     for caveat in truncation.caveats:
         offers_a_bigger_limit = "raise `limit`" in caveat.detail
@@ -186,7 +208,7 @@ def test_the_remedy_names_the_ceiling_the_code_enforces() -> None:
     caveat tells a caller what to raise `limit` to, so it must read the same
     constant the query clamps against.
     """
-    detail = Truncation.over(returned=1, counted=2).caveats[0].detail
+    detail = Truncation.over(returned=1, counted=2, resume_from=None).caveats[0].detail
 
     assert f"at most {MAX_ROWS}" in detail
 
@@ -264,6 +286,12 @@ def _from_of(statement: str) -> str:
         {"until": date(2026, 6, 30)},
         {"account_id": 1},
         {"since": date(2026, 1, 1), "until": date(2026, 6, 30), "account_id": 1},
+        # 🔴 The keyset predicate is in this list too, and it is the one whose
+        # absence from the count would be invisible: a count taken over the whole
+        # result set behind every page reports `truncated` true on the last page
+        # forever, so a caller paging until it goes false never stops.
+        {"after": _A_CURSOR},
+        {"since": date(2026, 1, 1), "account_id": 1, "after": _A_CURSOR},
     ],
 )
 def test_the_count_and_the_row_query_select_from_the_same_predicates(
@@ -292,6 +320,18 @@ def test_the_count_and_the_row_query_select_from_the_same_predicates(
     count_at = next(i for i, sql in enumerate(captured_sql) if i > rows_at and "count(*)" in sql)
     rows_sql, count_sql = captured_sql[rows_at], captured_sql[count_at]
 
+    if "after" in arguments:
+        # 🔴 The comparison below fails OPEN if the cursor reached NEITHER
+        # statement: two identical predicate lists agree whether or not they
+        # carry the clause this case exists to check. `learnings.md` records
+        # exactly this shape — an extraction that can quietly find nothing turns
+        # a strict equality into a tautology — so the operand is checked before
+        # it is compared.
+        assert "posted_date < ?" in _where_of(rows_sql), (
+            "the keyset predicate never reached the row query, so the comparison "
+            "below would agree about a filter neither statement has"
+        )
+
     assert _where_of(count_sql) == _where_of(rows_sql), (
         "the count and the row query were built from different predicates"
     )
@@ -314,7 +354,9 @@ def _shared_predicate_texts(*, since: date, until: date) -> list[str]:
     # comparison been laxer, pass for one.
     return [
         str(clause.compile(dialect=sqlite_dialect()))
-        for clause in query._transaction_filters(since=since, until=until, account_id=None)
+        for clause in query._transaction_filters(
+            since=since, until=until, account_id=None, after=None
+        )
     ]
 
 
@@ -503,6 +545,7 @@ def _oracle_count(
     since: date | None,
     until: date | None,
     account_id: int | None,
+    after: Cursor | None,
 ) -> int:
     """The matching count, derived independently of the code under test.
 
@@ -511,6 +554,12 @@ def _oracle_count(
     implementation by construction and detect nothing, which is precisely the
     self-derived oracle `learnings.md` warns produces a test that "would have
     agreed with itself forever".
+
+    The keyset half is spelled out here for the same reason, and it is the half
+    most worth writing twice: "everything after this row" has two orderings that
+    look alike — strictly older, or the same day and further down the tie-break —
+    and an oracle that borrowed the implementation's version could not tell them
+    apart.
     """
     clauses: list[Any] = [transactions.c.removed_at.is_(None)]
     if since is not None:
@@ -519,12 +568,41 @@ def _oracle_count(
         clauses.append(transactions.c.posted_date <= until)
     if account_id is not None:
         clauses.append(transactions.c.account_id == account_id)
+    if after is not None:
+        clauses.append(
+            or_(
+                transactions.c.posted_date < after.posted_date,
+                and_(
+                    transactions.c.posted_date == after.posted_date,
+                    transactions.c.transaction_id < after.transaction_id,
+                ),
+            )
+        )
     with reader_connection(config) as conn:
         return int(
             conn.execute(
                 select(func.count()).select_from(transactions).where(*clauses)
             ).scalar_one()
         )
+
+
+def _resume_midway(since: date | None, until: date | None, account_id: int | None) -> Cursor:
+    """A cursor landing partway through the fixture, issued for the request given.
+
+    Built directly rather than read off a first page: a cursor taken from the
+    implementation's own answer would place the grid's second half wherever the
+    implementation chose to place it, and the invariants would then be checked
+    at a position the code picked for itself. A position of `transaction_id`
+    `_TOTAL // 2` on a mid-fixture date also sits INSIDE a day the fixture wrote
+    two rows on, so the tie-break carries it.
+    """
+    return Cursor.issued_for(
+        posted_date=now_utc().date() - timedelta(days=_DAYS // 3),
+        transaction_id=_TOTAL // 2,
+        since=since,
+        until=until,
+        account_id=account_id,
+    )
 
 
 def test_the_truncation_invariant_holds_over_every_request_this_store_can_answer(
@@ -561,29 +639,52 @@ def test_the_truncation_invariant_holds_over_every_request_this_store_can_answer
             if since is not None and until is not None and until < since:
                 continue
             for account_id in (None, 1, 2):
-                for limit in limits:
-                    answer = query.list_transactions(
-                        seeded_config,
-                        since=since,
-                        until=until,
-                        account_id=account_id,
-                        limit=limit,
-                    )
-                    where = f"since={since} until={until} account={account_id} limit={limit}"
-                    truncation = answer.truncation
-                    assert truncation is not None, where
+                # 🔴 The cursor is a dimension of the grid, not a separate test.
+                # It narrows the request the way `since` does, so every invariant
+                # above has to hold on page two as well — and a grid that only
+                # ever asked for page one would still be exercising the whole
+                # input space it was written for, while the function had grown a
+                # second half.
+                for after in (None, _resume_midway(since, until, account_id)):
+                    for limit in limits:
+                        answer = query.list_transactions(
+                            seeded_config,
+                            since=since,
+                            until=until,
+                            account_id=account_id,
+                            limit=limit,
+                            after=after,
+                        )
+                        where = (
+                            f"since={since} until={until} account={account_id} "
+                            f"limit={limit} after={after}"
+                        )
+                        truncation = answer.truncation
+                        assert truncation is not None, where
 
-                    assert truncation.returned == len(answer.rows), where
-                    assert truncation.matching == _oracle_count(
-                        seeded_config, since=since, until=until, account_id=account_id
-                    ), where
-                    assert truncation.truncated == (len(answer.rows) < truncation.matching), where
+                        assert truncation.returned == len(answer.rows), where
+                        assert truncation.matching == _oracle_count(
+                            seeded_config,
+                            since=since,
+                            until=until,
+                            account_id=account_id,
+                            after=after,
+                        ), where
+                        assert truncation.truncated == (len(answer.rows) < truncation.matching), (
+                            where
+                        )
 
-                    kinds = [
-                        w.kind for w in answer.warnings if w.kind in query.REQUEST_SCOPED_KINDS
-                    ]
-                    assert ("rows_truncated" in kinds) == truncation.truncated, where
-                    checked += 1
+                        kinds = [
+                            w.kind for w in answer.warnings if w.kind in query.REQUEST_SCOPED_KINDS
+                        ]
+                        assert ("rows_truncated" in kinds) == truncation.truncated, where
+                        # A cursor is offered exactly when there is a next page
+                        # to reach, which is the loop condition every consumer
+                        # writes against.
+                        assert (truncation.next_cursor is not None) == (
+                            truncation.truncated and bool(answer.rows)
+                        ), where
+                        checked += 1
 
     assert checked > 100, "the grid collapsed; it is no longer exercising the invariant"
 
@@ -868,3 +969,389 @@ def test_a_row_removed_between_the_two_reads_answers_rather_than_failing(
     assert "counted_during_change" in [w.kind for w in answer.warnings], (
         "the skew was smoothed away instead of announced"
     )
+
+
+# --------------------------------------------------------------------------
+# The cursor — the route past the cap, and the invariants of a paged walk
+# --------------------------------------------------------------------------
+
+
+@given(
+    posted=st.dates(),
+    transaction_id=st.integers(min_value=1, max_value=2**53),
+    since=st.one_of(st.none(), st.dates()),
+    until=st.one_of(st.none(), st.dates()),
+    account_id=st.one_of(st.none(), st.integers(min_value=1, max_value=10_000)),
+)
+def test_a_cursor_survives_its_wire_form_unchanged(
+    posted: date,
+    transaction_id: int,
+    since: date | None,
+    until: date | None,
+    account_id: int | None,
+) -> None:
+    """The codec's whole contract, as a rule rather than at one sample value.
+
+    A cursor that came back subtly different — a date off by a day, an id
+    truncated by a float round trip — would resume at the wrong row, and the
+    walk would silently skip or repeat. That is this work cycle's own defect
+    arriving through the fix's door, so it is asserted over the space rather
+    than at one point.
+    """
+    cursor = Cursor.issued_for(
+        posted_date=posted,
+        transaction_id=transaction_id,
+        since=since,
+        until=until,
+        account_id=account_id,
+    )
+
+    assert Cursor.decode(cursor.encode()) == cursor
+
+
+#: The fingerprint of the unfiltered request every forged payload below claims
+#: to belong to. 🔴 Real, not a placeholder: with a WRONG fingerprint each of
+#: those payloads is refused by the fingerprint check whatever else is broken in
+#: it, so the branch a case exists to exercise is never reached. Removing the
+#: bool guard and removing the scheme check both left this test green until the
+#: fingerprints were made to match — a check that cannot fail hides every
+#: problem in its blast radius, not one.
+_UNFILTERED = query._request_fingerprint(since=None, until=None, account_id=None)
+
+
+def _forged(payload: object) -> str:
+    """A cursor-shaped string this server never issued."""
+    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+
+
+@pytest.mark.parametrize(
+    ("presented", "why"),
+    [
+        ("", "empty"),
+        ("not a cursor at all", "not base64"),
+        (_forged([2026, 1, 1]), "a JSON array rather than an object"),
+        (_forged("a string"), "a JSON string rather than an object"),
+        (_forged({"d": "2026-01-01", "t": 1, "q": _UNFILTERED}), "no scheme tag"),
+        (
+            _forged({"v": 2, "d": "2026-01-01", "t": 1, "q": _UNFILTERED}),
+            "a scheme this build has never issued",
+        ),
+        (
+            _forged({"v": 1, "d": "2026-02-30", "t": 1, "q": _UNFILTERED}),
+            "a date that does not exist",
+        ),
+        (
+            _forged({"v": 1, "d": "2026-01-01", "t": True, "q": _UNFILTERED}),
+            "JSON true, which is an int in Python",
+        ),
+        (_forged({"v": 1, "d": "2026-01-01", "t": "7", "q": _UNFILTERED}), "an id as text"),
+        (_forged({"v": 1, "d": "2026-01-01", "t": 1}), "no fingerprint"),
+    ],
+)
+def test_a_cursor_this_server_did_not_issue_is_refused_rather_than_read(
+    presented: str, why: str
+) -> None:
+    """🔴 Refused, never quietly treated as "start from the newest row".
+
+    The silent fallback is the dangerous branch: it returns page one under the
+    name of page two, which is a well-formed, plausible, complete-looking answer
+    to a question nobody asked — the exact shape this work cycle exists to
+    remove. Every rejection path is listed because each is a separate `raise`,
+    and a missed one fails by ANSWERING rather than by erroring.
+
+    The refusal names the argument and carries no exception class, module or
+    decoder fragment: `api-contract.md` § Error Model keeps internals off the
+    wire, and a decoder's internals are the least actionable thing a caller
+    could be handed.
+    """
+    with pytest.raises(query.MalformedCursorError) as caught:
+        query.parse_cursor(presented, since=None, until=None, account_id=None)
+
+    detail = str(caught.value)
+    assert detail.startswith("cursor "), f"{why}: the refusal does not name the argument"
+    assert "`next_cursor`" in detail, f"{why}: the refusal offers no route back"
+    for leak in ("Error", "Traceback", "binascii", "json", "b64", "Cursor("):
+        assert leak not in detail, f"{why}: the refusal leaks {leak!r}"
+
+
+def test_an_absent_cursor_is_the_first_page_rather_than_a_refusal() -> None:
+    """The reverse half. A parser that refused `None` would make `cursor` mandatory."""
+    assert query.parse_cursor(None, since=None, until=None, account_id=None) is None
+
+
+#: Four requests selecting four different result sets. A cursor is a position
+#: INSIDE one of them, so it means nothing in the other three.
+_REQUESTS: list[tuple[date | None, date | None, int | None]] = [
+    (None, None, None),
+    (None, None, 1),
+    (date(2026, 1, 1), None, None),
+    (date(2026, 1, 1), date(2026, 6, 30), 2),
+]
+
+
+@pytest.mark.parametrize("issued_for", _REQUESTS)
+@pytest.mark.parametrize("presented_with", _REQUESTS)
+def test_a_cursor_is_usable_only_against_the_request_that_issued_it(
+    issued_for: tuple[date | None, date | None, int | None],
+    presented_with: tuple[date | None, date | None, int | None],
+) -> None:
+    """🔴 The foreign cursor that is actually reachable — not a forged one, a stale one.
+
+    Page two's cursor sent with a different `account_id` selects real rows, in
+    the right order, and answers a question the caller did not ask: no error, no
+    warning, and a payload that reads as a continuation. So the predicate travels
+    inside the cursor and is compared here.
+
+    Asserted over the whole cross product rather than over chosen mismatches, so
+    the accepting case and the refusing case are decided by one rule instead of
+    by two lists written from the same mental model as the code.
+    """
+    wire = Cursor.issued_for(
+        posted_date=date(2026, 5, 4),
+        transaction_id=7,
+        since=issued_for[0],
+        until=issued_for[1],
+        account_id=issued_for[2],
+    ).encode()
+
+    def _resume() -> Cursor | None:
+        return query.parse_cursor(
+            wire,
+            since=presented_with[0],
+            until=presented_with[1],
+            account_id=presented_with[2],
+        )
+
+    if presented_with == issued_for:
+        resumed = _resume()
+        assert resumed is not None
+        assert (resumed.posted_date, resumed.transaction_id) == (date(2026, 5, 4), 7)
+        return
+
+    with pytest.raises(query.MalformedCursorError):
+        _resume()
+
+
+@given(counts=_POSSIBLE, resume_from=_RESUME)
+def test_a_cursor_rides_exactly_the_answers_that_have_a_next_page(
+    counts: tuple[int, int], resume_from: Cursor | None
+) -> None:
+    """🔴 The block's new invariant, and the one a caller's loop condition rests on.
+
+    A consumer pages while the key is there and stops when it is gone. A cursor
+    on a complete answer would page past the end of an answer that already held
+    everything; a truncated answer without one strands the caller at the cap,
+    which is the defect this chunk closes.
+
+    The one honest exception is a page that returned no rows at all — there is
+    nothing to resume from — and it is stated as part of the rule rather than
+    excused beside it.
+    """
+    returned, matching = counts
+    truncation = Truncation.over(returned=returned, counted=matching, resume_from=resume_from)
+
+    assert (truncation.next_cursor is not None) == (
+        truncation.truncated and resume_from is not None
+    )
+    assert ("next_cursor" in truncation.to_wire()) == (truncation.next_cursor is not None)
+
+
+def _oracle_ids(
+    config: Config,
+    *,
+    since: date | None,
+    until: date | None,
+    account_id: int | None,
+) -> list[int]:
+    """Every matching transaction id, newest first, derived independently.
+
+    🔴 Written against the table rather than through `_transaction_filters`, for
+    the reason `_oracle_count` above gives: an oracle sharing the builder it
+    checks agrees with itself forever.
+    """
+    clauses: list[Any] = [transactions.c.removed_at.is_(None)]
+    if since is not None:
+        clauses.append(transactions.c.posted_date >= since)
+    if until is not None:
+        clauses.append(transactions.c.posted_date <= until)
+    if account_id is not None:
+        clauses.append(transactions.c.account_id == account_id)
+    with reader_connection(config) as conn:
+        return [
+            int(row[0])
+            for row in conn.execute(
+                select(transactions.c.transaction_id)
+                .where(*clauses)
+                .order_by(
+                    transactions.c.posted_date.desc(),
+                    transactions.c.transaction_id.desc(),
+                )
+            ).all()
+        ]
+
+
+def _walk(
+    config: Config,
+    *,
+    since: date | None = None,
+    until: date | None = None,
+    account_id: int | None = None,
+    page_size: int,
+) -> tuple[list[int], list[query.Answer]]:
+    """Page until the answer stops offering a next one, the way a consumer would.
+
+    🔴 Drives the loop a caller actually writes: read `next_cursor` off the WIRE
+    form, hand it straight back, stop when the key is absent. A walk that read
+    the cursor off the object would exercise a route no consumer has, and would
+    keep passing if the key never reached the payload.
+    """
+    seen: list[int] = []
+    pages: list[query.Answer] = []
+    cursor: Cursor | None = None
+    while True:
+        answer = query.list_transactions(
+            config,
+            since=since,
+            until=until,
+            account_id=account_id,
+            limit=page_size,
+            after=cursor,
+        )
+        pages.append(answer)
+        seen.extend(int(row["transaction_id"]) for row in answer.rows)
+        assert answer.truncation is not None
+        wire = answer.truncation.to_wire()
+        if "next_cursor" not in wire:
+            break
+        cursor = query.parse_cursor(
+            wire["next_cursor"], since=since, until=until, account_id=account_id
+        )
+        # A cursor that fails to advance produces a hung test rather than a red
+        # one, so the walk carries its own ceiling.
+        assert len(pages) <= _TOTAL + 2, "the walk did not terminate"
+    return seen, pages
+
+
+# 🔴 Every page size here must page BOTH row sets: the store holds `_TOTAL` and
+# one account holds half that, so a size above the smaller one would silently
+# make an unpaged answer stand in for a walk.
+@pytest.mark.parametrize("page_size", [1, 3, 7, 50])
+@pytest.mark.parametrize("account_id", [None, 1])
+def test_a_paged_walk_returns_every_row_exactly_once_and_in_order(
+    seeded_config: Config, page_size: int, account_id: int | None
+) -> None:
+    """🔴 The chunk's central invariant, stated over the walk rather than over a page.
+
+    Every row exactly once, in the order one unpaged answer would have given
+    them, with nothing repeated and nothing skipped. Duplication and omission are
+    the two ways keyset paging fails, and both produce a payload that reads
+    correctly on every individual page — which is why this is asserted across the
+    walk and cannot be asserted inside it.
+
+    The odd page sizes are load-bearing: the fixture writes two transactions per
+    day, so a page boundary at 1, 3 or 7 falls INSIDE a day and the tie-break on
+    `transaction_id` is the thing carrying it. A page size that always landed on
+    a day boundary would pass with no tie-break at all.
+    """
+    expected = _oracle_ids(seeded_config, since=None, until=None, account_id=account_id)
+    assert len(expected) > page_size, "this case is one page; it cannot show paging"
+
+    seen, pages = _walk(seeded_config, account_id=account_id, page_size=page_size)
+
+    assert len(seen) == len(set(seen)), "a row came back on more than one page"
+    assert seen == expected, "the walk skipped, repeated or reordered a row"
+    assert len(pages) == -(-len(expected) // page_size)
+
+
+@pytest.mark.parametrize("page_size", [1, 7, 100])
+def test_only_the_last_page_of_a_walk_reads_as_complete(
+    seeded_config: Config, page_size: int
+) -> None:
+    """The terminating condition, which is the half a caller's loop depends on.
+
+    An earlier page reading complete stops the walk with rows still unread; a
+    last page reading truncated leaves the caller paging against an answer that
+    has nothing more to give.
+    """
+    _, pages = _walk(seeded_config, page_size=page_size)
+    blocks = [page.truncation for page in pages]
+    assert all(block is not None for block in blocks)
+
+    truncated = [block.truncated for block in blocks if block is not None]
+    assert truncated == [True] * (len(pages) - 1) + [False]
+
+    carried = ["next_cursor" in block.to_wire() for block in blocks if block is not None]
+    assert carried == truncated, "a cursor and a next page have to arrive together"
+
+    assert [w.kind for w in pages[-1].warnings if w.kind in query.REQUEST_SCOPED_KINDS] == []
+
+
+def test_a_cursor_narrows_matching_to_the_rows_still_ahead(seeded_config: Config) -> None:
+    """🔴 What `matching` means on page two, which is the decision the walk rests on.
+
+    Counting the whole result set behind every page would leave `truncated` true
+    on the final page forever, so a caller paging until it went false would never
+    stop and would ask for a page that does not exist. The cursor narrows the
+    count exactly as `since` does, and the two numbers stay a statement about
+    THIS request.
+    """
+    first = query.list_transactions(seeded_config, limit=10)
+    assert first.truncation is not None
+    assert first.truncation.matching == _TOTAL
+    assert first.truncation.next_cursor is not None
+
+    second = query.list_transactions(
+        seeded_config,
+        limit=10,
+        after=query.parse_cursor(
+            first.truncation.next_cursor, since=None, until=None, account_id=None
+        ),
+    )
+
+    assert second.truncation is not None
+    assert second.truncation.matching == _TOTAL - 10
+    assert second.truncation.returned == 10
+
+
+def test_the_window_scoped_coverage_does_not_shrink_as_a_caller_pages(
+    seeded_config: Config,
+) -> None:
+    """🔴 `transactions_in_effective_window` describes the WINDOW, not the page.
+
+    It is a coverage fact — how much data the answered window holds — so it is
+    counted with the cursor deliberately left off. A figure that fell page by
+    page would describe the walk instead of the store, and a caller comparing it
+    against `matching` would read the difference as data going missing.
+    """
+    _, pages = _walk(seeded_config, page_size=40)
+
+    assert len(pages) > 1
+    assert {page.coverage["transactions_in_effective_window"] for page in pages} == {_TOTAL}
+
+
+def test_the_remedy_on_a_truncated_page_names_the_route_that_reaches_every_row(
+    seeded_config: Config,
+) -> None:
+    """The caveat is where a consumer looks when the numbers seem wrong.
+
+    Before this chunk the sentence offered only remedies that MOVE the cap —
+    narrow the window, raise `limit` — and at the ceiling it offered narrowing
+    alone. Paging is the one route that reaches every matching row, so it leads.
+    """
+    answer = query.list_transactions(seeded_config, limit=10)
+    assert answer.truncation is not None
+
+    detail = next(c.detail for c in answer.truncation.caveats if c.kind == "rows_truncated")
+
+    assert "`next_cursor`" in detail
+    assert "`cursor`" in detail
+
+
+def test_a_complete_answer_offers_no_cursor_to_follow(seeded_config: Config) -> None:
+    """The reverse half: nothing left to read means nothing telling a caller to read on."""
+    answer = query.list_transactions(seeded_config, limit=MAX_ROWS)
+
+    assert answer.truncation is not None
+    assert answer.truncation.truncated is False
+    assert answer.truncation.next_cursor is None
+    assert "next_cursor" not in answer.truncation.to_wire()

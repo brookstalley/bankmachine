@@ -299,8 +299,41 @@ alone cannot say it, because "100 rows" is a believable complete answer.
 
 **A truncated answer also raises `rows_truncated`**, because a structured field is not where a
 consumer looks when the numbers seem wrong. The caveat names the shortfall and a remedy the caller
-can actually follow — at the cap, raising `limit` is not one, so the sentence offers narrowing the
-window instead of advice that its own `returned` contradicts.
+can actually follow — paging leads, because it is the only route that reaches every matching row,
+and raising `limit` is offered only while `limit` has something left to give: at the cap it would be
+advice the answer's own `returned` contradicts.
+
+### A truncated answer carries the route to the rest (#17)
+
+🔴 **A truncated answer carries `truncation.next_cursor`, when and only when `truncated` is true.**
+The caller passes it straight back as `query_transactions`'s optional `cursor` argument, with the
+same window and account, and repeats until `truncated` is false — at which point no `next_cursor` is
+present. **The key's presence is the loop condition**: a consumer pages while it is there and stops
+when it is gone, without comparing two counts to decide. Visibility without a route past the cap
+would have left the honest answer still unobtainable, which is why #17 needed both halves.
+
+**`cursor` narrows the request the way `since` does.** `matching` counts what is left from the
+cursor's position onward, not what lies behind every page — a count over the whole result set would
+leave `truncated` true on the final page forever and a caller paging until it went false would never
+stop.
+
+🔴 **A keyset, never an offset.** The cursor is opaque state over `(posted_date, transaction_id)`,
+the total order rows already come back in. An offset shifts under a concurrent sync — one insert
+between two pages and the caller sees a row twice and never sees another — which would reintroduce
+this cycle's own defect through a new door: a paged answer that reads as complete and is not.
+
+🔴 **A cursor is usable only against the request that issued it.** The predicate it was issued for
+travels inside it and is compared when it comes back, so a cursor sent with a different window or
+account is refused by name rather than answered. That case is the reachable one: it selects real
+rows, in the right order, and answers a question the caller did not ask — no error, no warning, and
+a payload that reads as a continuation. A cursor that is malformed, forged, or from a scheme this
+build does not issue is refused the same way, in one sentence that names `cursor` and leaks nothing
+of the decoder. **It is never read as "start from the newest row"**: that fallback returns page one
+under the name of page two.
+
+**The cap does not move.** Paging is what makes it escapable; ~500 stays a contract term, and
+measurement already refuted raising it — 74.2% of rows are dropped at full coverage, so no default a
+human would pick fixes this.
 
 🔴 **`matching` and the rows are two snapshots, and the contract says which way that resolves.**
 The read handle is opened in autocommit — `store/connection.py`: *"every statement is its own
@@ -349,9 +382,10 @@ Manually imported rows are distinguishable from aggregator-sourced rows in **eve
 | | Value |
 |---|---|
 | Raw-row cap | 🔴 **~500 rows, hard** (AC-9.1) — a contract term, not a tuning knob |
-| Pagination | Cursor-based, opaque |
+| Pagination | Cursor-based, opaque — `truncation.next_cursor` on `query_transactions`, passed back as `cursor` |
 | Aggregates | Unpaginated — bounded by the grouping, not by row count |
 | Hitting the cap | Never silent — `truncation` carries `returned`/`matching`/`truncated`, and `rows_truncated` warns |
+| Escaping the cap | `next_cursor`, present when and only when `truncated`; absent on the last page |
 
 The cap is what keeps the sub-second target in `nonfunctional-requirements.md` reachable, and it is
 what stops a caller driving unbounded cost (OWASP API4).

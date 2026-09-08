@@ -366,6 +366,19 @@ builder, ask which existing tests now short-circuit.
     through a new door.
   - The 500-row cap is **unchanged**. It is a contract term, and measurement already
     showed no default fixes this: 74.2% of rows are dropped at full coverage.
+  - 🔴 **AMENDED DURING THE BUILD, 2026-09-08 — a cursor also carries a fingerprint of
+    the predicate it was issued for, and one presented with a different `since`, `until`
+    or `account_id` is refused.** Written down rather than designed in chat: it is a
+    requirement this chunk's own test line implies (*"a malformed or **foreign** cursor is
+    refused"*) but that the deliverables above did not state, and the reachable kind of
+    foreign cursor is not a forged string — it is the caller's own cursor against a
+    changed request. Without the check that case selects real rows, in the right order,
+    and answers a question the caller did not ask: no error, no warning, and a payload
+    that reads as a continuation, which is the precise defect shape this whole work cycle
+    exists to remove. `limit` is deliberately outside the fingerprint, because changing
+    page size between pages is ordinary and does not change which result set is being
+    walked. **The owner can veto this**: removing it is deleting one comparison and one
+    field, and the paged walk still works without it.
 - **Tests:** unit — cursor round trip returns every row exactly once with no duplicate
   and no gap across pages; a malformed or foreign cursor is refused naming the argument,
   in the established refusal form, leaking no exception class; the final page reports
