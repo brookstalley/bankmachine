@@ -471,3 +471,36 @@ def test_dates_are_calendar_dates_not_instants(synced: Config) -> None:
     row = _rows(synced)[0]
     assert str(row["posted_date"]) == "2026-01-01"
     assert str(row["authorized_date"]) == "2026-09-06"
+
+
+def test_a_whole_dollar_amount_arrives_as_an_integer_and_is_still_exact(
+    synced: Config,
+) -> None:
+    """🔴 The case every fixture in this file used to miss.
+
+    `parse_float=str` keeps decimals as text but leaves JSON *integers* as `int`,
+    so a whole-dollar transaction arrives as `500`, not `"500.00"`. Every fixture
+    here used a fractional amount, so the whole suite passed while the first real
+    sandbox sync refused every whole-dollar transaction it fetched. An int is
+    exact, so converting it loses nothing — what was missing was noticing it
+    could be one.
+    """
+    entry = _txn(transaction_id="t1", amount="0")
+    entry["amount"] = 500  # as `json.loads(..., parse_float=str)` yields it
+
+    _apply(synced, TRANSACTIONS_SYNC.path, _sync_body(added=[entry]))
+
+    assert _rows(synced)[0]["amount_minor"] == -50000
+
+
+def test_a_boolean_amount_is_refused_rather_than_read_as_a_number(synced: Config) -> None:
+    """`bool` is an `int` in Python, and `str(True)` is not a number.
+
+    Without the exclusion this would become the string "True" and fail somewhere
+    less obvious than here.
+    """
+    entry = _txn(transaction_id="t1", amount="0")
+    entry["amount"] = True
+
+    with pytest.raises(DerivationError):
+        _apply(synced, TRANSACTIONS_SYNC.path, _sync_body(added=[entry]))

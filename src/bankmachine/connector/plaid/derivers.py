@@ -389,11 +389,21 @@ def _operator_signed_amount(
     investment valuations, which are price times quantity rather than a sum of
     money that moved.
     """
+    # 🔴 `parse_float=str` leaves JSON INTEGERS as `int`, so a whole-dollar amount
+    # arrives as one. `to_minor` already carried this conversion for balances; the
+    # transaction path did not, and every fixture here used a fractional amount --
+    # so 505 tests passed while the first real sandbox sync refused every
+    # whole-dollar transaction it fetched. An int is exact, so `str()` loses
+    # nothing; `bool` is excluded because it is an `int` and `str(True)` is not a
+    # number.
+    if isinstance(amount, int) and not isinstance(amount, bool):
+        amount = str(amount)
     if not isinstance(amount, str) or not amount:
         raise DerivationError(
             f"raw response {response.raw_response_id} ({response.endpoint}) has a "
-            f"transaction with no amount; the column is NOT NULL and a placeholder "
-            f"would be this system inventing a number and recording it as the source's"
+            f"transaction whose amount is {type(amount).__name__}, not a number the "
+            f"aggregator sent as text; the column is NOT NULL and a placeholder would be "
+            f"this system inventing a number and recording it as the source's"
         )
     try:
         exact = from_decimal_string(amount, exponent=minor_digits(currency))
