@@ -32,6 +32,7 @@ from datetime import date
 from typing import IO, Any
 
 from bankmachine import query
+from bankmachine.build_id import build_identity
 from bankmachine.cli.exit_codes import EXIT_OK
 from bankmachine.config import Config
 from bankmachine.logging_setup import get_logger
@@ -295,7 +296,15 @@ def _server_info(config: Config) -> dict[str, Any]:
         # answer. A client listing two configured servers should be able to tell
         # the sandbox one from the real one without calling a tool.
         "title": f"bankmachine ({config.environment})",
-        "version": "0.1.0",
+        # Read from package metadata rather than restated here: a literal
+        # version is one that stops matching `pyproject.toml` the first time
+        # either moves without the other.
+        "version": build_identity().version,
+        # 🔴 The handshake carries it too, so a client can show which build it
+        # connected to before any tool is called. `null` means the build could
+        # not be identified -- it is never guessed at.
+        "commit": build_identity().commit,
+        "dirty": build_identity().dirty,
     }
 
 

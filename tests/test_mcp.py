@@ -16,10 +16,11 @@ import sys
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import pytest
 
-from bankmachine import mcp, query
+from bankmachine import build_id, mcp, query
 from bankmachine.config import Config
 from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS
@@ -1011,6 +1012,93 @@ def test_an_account_that_exists_but_is_quiet_in_the_window_still_answers_empty(
 
     assert result.get("isError") is not True, f"a real account was refused: {result}"
     assert result["structuredContent"]["rows"] == []
+
+
+def test_every_answer_says_which_build_produced_it(initialized_config: Config) -> None:
+    """🔴 The server is a subprocess launched at connect time, so this is not cosmetic.
+
+    A client holds whatever code existed when it connected. Without a stamp in
+    the response, a session testing a stale build produces a clean pass and
+    reads it as confirmation -- which is what happened on 2026-09-08, caught
+    only because a refusal string had changed between the two builds. A fix that
+    changed no observable string would not have been caught at all.
+    """
+    _seed(initialized_config)
+
+    for tool in ("list_accounts", "query_transactions", "spending_summary", "get_pipeline_health"):
+        build = _call(initialized_config, tool)["structuredContent"]["build"]
+
+        # An exact set: a missing key and a null value are different answers, and
+        # `in` on a subset would accept a payload that dropped one of the three.
+        assert set(build) == {"version", "commit", "dirty"}, f"{tool} reported {build}"
+        assert build["version"], f"{tool} reported no version"
+
+
+def test_the_running_build_is_captured_once_and_not_re_read_per_request(
+    initialized_config: Config,
+) -> None:
+    """🔴 The load-bearing requirement, not an optimization.
+
+    A hash read per request reports the REPOSITORY's current HEAD. A server left
+    running across a merge would then answer with the merged commit while
+    serving pre-merge code -- reporting itself current at exactly the moment it
+    is not, which is the whole defect this stamp exists to expose. Re-reading it
+    would build that bug into the instrument meant to catch it.
+    """
+    _seed(initialized_config)
+    first = _call(initialized_config, "list_accounts")["structuredContent"]["build"]
+
+    # 🔴 No `cache_clear()` here, deliberately. Clearing it would couple this
+    # test to `lru_cache` as the MECHANISM: remove the decorator and the test
+    # dies on `AttributeError` at its setup line, reporting a different defect
+    # than the one it names and never reaching the assertion below. What is
+    # under test is the behaviour -- after the first answer, no request touches
+    # git -- which stays true however the capture is implemented.
+    with mock.patch.object(build_id, "_git", side_effect=AssertionError("git ran per request")):
+        result = _call(initialized_config, "query_transactions")
+
+    assert result.get("isError") is not True, (
+        f"a second request re-read the build identity instead of reusing it: {result}"
+    )
+    assert result["structuredContent"]["build"] == first, (
+        "the build stamp changed between two calls to one process"
+    )
+
+
+def test_an_unidentifiable_build_reports_null_rather_than_claiming_it_is_clean() -> None:
+    """🔴 `dirty: false` is a CLAIM, and an unknown build supports no such claim.
+
+    Reporting a reassuring default where there is no evidence is the exact
+    failure this product exists to prevent, one level up: an answer that looks
+    trustworthy because nothing said otherwise. Absence is reported as absence.
+    """
+    build_id.build_identity.cache_clear()
+    try:
+        with mock.patch.object(build_id, "_git", return_value=None):
+            identity = build_id.build_identity()
+
+        assert identity.commit is None
+        assert identity.dirty is None, "an unidentifiable build claimed its tree was clean"
+        assert identity.version, "the version is known even when the commit is not"
+    finally:
+        build_id.build_identity.cache_clear()
+
+
+def test_a_modified_working_tree_is_reported_dirty() -> None:
+    """A hash alone would be a lie by omission about code that is running.
+
+    Uncommitted edits are what the operator is most likely to be testing, and a
+    bare commit says the process is running that commit when it is not.
+    """
+    build_id.build_identity.cache_clear()
+    try:
+        with mock.patch.object(build_id, "_git", side_effect=["abc1234", " M src/x.py"]):
+            assert build_id.build_identity().dirty is True
+        build_id.build_identity.cache_clear()
+        with mock.patch.object(build_id, "_git", side_effect=["abc1234", ""]):
+            assert build_id.build_identity().dirty is False
+    finally:
+        build_id.build_identity.cache_clear()
 
 
 def test_the_merchant_field_is_declared_as_the_aggregators_guess() -> None:
