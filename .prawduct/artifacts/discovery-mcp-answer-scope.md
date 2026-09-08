@@ -129,7 +129,7 @@ needs a rate source, a rate date policy, and somewhere to store that decision �
 Measured 2026-09-08 by an independent session driving the MCP surface with no source access, on
 build `87570c3` — code-identical to `develop` (the only intervening commit touches one artifact
 file, nothing under `src/` or `tests/`). Full record and every call:
-`.prawduct/artifacts/mcp-fact-find-ac91.md` on `testing/current`.
+`.prawduct/artifacts/mcp-fact-find-ac91.md`.
 
 ### 🔴 AC-9.1's "gaps > 7 days" is the wrong instrument, and this is a spec defect
 

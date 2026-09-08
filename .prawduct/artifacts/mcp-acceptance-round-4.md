@@ -330,5 +330,5 @@ severity, recorded for completeness.
 **Consistency check that passed:** `coverage.earliest_transaction` is exactly 722 days before
 `as_of`, matching the 722-of-730 in the warning text.
 
-*The tester's full call-and-response log lives in its own worktree at
-`.prawduct/artifacts/mcp-acceptance-round-4-half-a.md` on `testing/current`.*
+*The tester's full call-and-response log, with every call and response quoted, is
+`.prawduct/artifacts/mcp-acceptance-round-4-half-a.md` alongside this file.*
