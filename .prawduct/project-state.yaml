@@ -696,7 +696,12 @@ design_decisions:
     (3) macOS Keychain — real instance in integration tests, using a test-scoped service name.
     (4) launchd — verified by actually installing and firing the agent, including a missed-window
     recovery case; not simulated.
-    (5) Manual-import file formats — FOREIGN input surfaces. Adapters are verified against real
+    (5) git — read-only, and only to identify the running build for the `build` field the MCP
+    server stamps on every response. Absent git, an unreadable checkout, or an installed copy
+    outside a checkout are all NORMAL: the field reports null and the server serves regardless.
+    Never required for correctness of any answer about money, which is why it is last here and
+    why nothing retries it.
+    (6) Manual-import file formats — FOREIGN input surfaces. Adapters are verified against real
     exported sample files, not hand-written fixtures that encode our assumptions about the format.
 
   visual_direction: null

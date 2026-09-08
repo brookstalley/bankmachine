@@ -21,6 +21,7 @@ reported here answers "which code answered me", which sits beside `as_of` and
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
@@ -48,9 +49,13 @@ def _package_dir() -> Path:
     return Path(str(package_files("bankmachine")))
 
 
-# Enough to identify a build to a human reading a log; `git` resolves it back to
-# the full hash. Not security-relevant -- nothing authenticates on this value.
-_GIT_TIMEOUT_SECONDS = 5
+logger = logging.getLogger(__name__)
+
+# 🔴 Short on purpose. Two invocations sit in front of `initialize`, so this is a
+# budget the client waits out before the handshake returns. `rev-parse` and
+# `status` on a local checkout are effectively instant; a git that has not
+# answered in this long is wedged, and a fast "unknown" beats a slow one.
+_GIT_TIMEOUT_SECONDS = 2
 
 
 @dataclass(frozen=True)
@@ -82,9 +87,24 @@ def _git(*arguments: str) -> str | None:
             timeout=_GIT_TIMEOUT_SECONDS,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        # 🔴 Logged, because `commit: null` is one value for several causes --
+        # git absent, git wedged, not a checkout, package installed elsewhere --
+        # and an operator asking "why does my server not report a commit" has
+        # nothing else to read. The wire says only that it is unknown; the log
+        # says why. Never raised: an unidentifiable build must still serve.
+        logger.info("build identity: git %s could not run (%s)", arguments[0], exc)
         return None
     if completed.returncode != 0:
+        # The ordinary "not a git checkout" case lands here, so this is debug
+        # rather than info -- an installed copy outside a checkout is a correct
+        # deployment, not a degradation worth a line in every startup log.
+        logger.debug(
+            "build identity: git %s exited %d (%s)",
+            arguments[0],
+            completed.returncode,
+            completed.stderr.strip()[:200],
+        )
         return None
     return completed.stdout.strip()
 
@@ -125,3 +145,13 @@ def build_identity() -> BuildIdentity:
         commit=commit,
         dirty=None if status is None else bool(status),
     )
+
+
+# 🔴 Captured HERE, at import, rather than left to the first caller. `lru_cache`
+# alone would capture on first *call*, which leaves exactly the window this
+# module exists to close: the process starts, the operator merges, and the first
+# request then reports the merged commit while the process serves pre-merge code.
+# Every artifact describing this says "at process start", and this line is what
+# makes that true rather than aspirational. The cache still backs it, so a test
+# can clear and re-capture deliberately.
+_ = build_identity()

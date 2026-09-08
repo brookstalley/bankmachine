@@ -312,7 +312,11 @@ def _instructions(config: Config) -> str:
     return (
         f"This server reads a local {config.environment} finance datastore. It is READ-ONLY "
         f"and never moves money.\n\n"
-        f"Every response carries `environment`, `as_of`, `coverage` and `warnings`. 🔴 Read "
+        f"Every response carries `environment`, `as_of`, `build`, `coverage`, `warnings` and "
+        f"`rows`. `build` says which code answered you -- this server is a subprocess launched "
+        f"at connect time, so it runs whatever existed then, and `commit` is captured once at "
+        f"start rather than re-read (a null `commit` means the build could not be identified, "
+        f"and `dirty` is then null too, never false). 🔴 Read "
         f"`warnings` before drawing a conclusion: an answer can be perfectly well-formed and "
         f"still be computed over incomplete data. `stale` means a connection has not synced "
         f"recently; `degraded` means one is failing; `gapped` means the institution granted "

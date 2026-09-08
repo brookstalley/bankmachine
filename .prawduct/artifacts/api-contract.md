@@ -191,7 +191,7 @@ is what keeps the encryption decision honest.*
 
 Entities are defined in `data-model.md` and are not restated here.
 
-### Every MCP response carries three things
+### What every MCP response carries
 
 🔴 **1. A freshness stamp (AC-9.2)** — last successful sync per contributing account. Not per
 institution, not global.

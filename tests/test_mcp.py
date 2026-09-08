@@ -881,6 +881,127 @@ def test_an_argument_the_tool_does_not_advertise_is_refused(initialized_config: 
     assert result["structuredContent"]["error"]["code"] == "invalid_argument"
 
 
+def test_the_instructions_name_every_field_the_envelope_actually_carries(
+    initialized_config: Config,
+) -> None:
+    """🔴 A closed list in prose is one that stops matching the payload it describes.
+
+    The instructions are the ONE text a consuming agent reads before it calls
+    anything, and they enumerated the envelope as a closed set. Adding `build`
+    to the wire without adding it here would leave the only document the agent
+    sees actively denying the field exists -- which is exactly how a stale-build
+    round happens again, since `build` is what would have prevented the last one.
+
+    Asserted against the real envelope rather than a second hand-written list,
+    because a second list is one that stops matching the first.
+    """
+    _seed(initialized_config)
+    envelope = _call(initialized_config, "list_accounts")["structuredContent"]
+    instructions = mcp._instructions(initialized_config)
+
+    missing = sorted(key for key in envelope if f"`{key}`" not in instructions)
+
+    assert not missing, (
+        f"the envelope carries {missing} but the instructions never name them; "
+        f"an agent reading only the instructions does not know they exist"
+    )
+
+
+def test_the_handshake_reports_the_running_build(initialized_config: Config) -> None:
+    """🔴 `serverInfo` is what a client shows a human BEFORE any tool is called.
+
+    All three keys were untested, including `version` -- which stopped being the
+    literal "0.1.0" and became package metadata, so it now reports "unknown"
+    for a source tree that was never installed. An untested handshake is how a
+    client-facing identity drifts from the code that serves it.
+    """
+    _seed(initialized_config)
+    replies = _converse(
+        initialized_config,
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "t", "version": "1"},
+                },
+            }
+        ],
+    )
+    server_info = replies[0]["result"]["serverInfo"]
+    identity = build_id.build_identity()
+
+    assert server_info["version"] == identity.version
+    assert server_info["commit"] == identity.commit
+    assert server_info["dirty"] == identity.dirty
+    # The handshake and the envelope must not be able to disagree about the
+    # build: two readings of one process are one fact, and a client that showed
+    # a human one commit while an agent read another would be unfalsifiable.
+    envelope = _call(initialized_config, "list_accounts")["structuredContent"]["build"]
+    assert envelope == {
+        "version": server_info["version"],
+        "commit": server_info["commit"],
+        "dirty": server_info["dirty"],
+    }
+
+
+def test_a_build_that_is_not_a_git_checkout_still_serves(initialized_config: Config) -> None:
+    """AC 5, through a real tool call rather than only at the unit level.
+
+    An installed copy outside a checkout has no commit to report, and the
+    requirement is that it answers anyway -- reporting the absence rather than
+    failing or guessing. Verified end to end because the failure mode this
+    guards is the server refusing to start, which a unit test cannot see.
+    """
+    _seed(initialized_config)
+    build_id.build_identity.cache_clear()
+    try:
+        with mock.patch.object(build_id, "_git", return_value=None):
+            result = _call(initialized_config, "list_accounts")
+
+            assert result.get("isError") is not True, (
+                f"a non-checkout build refused to serve: {result}"
+            )
+            assert result["structuredContent"]["build"]["commit"] is None
+            assert result["structuredContent"]["build"]["dirty"] is None
+            assert result["structuredContent"]["rows"], "it reported no data, not just no commit"
+    finally:
+        build_id.build_identity.cache_clear()
+
+
+def test_the_build_is_captured_at_import_not_on_first_call() -> None:
+    """🔴 A cache that fills on first CALL leaves open the window this closes.
+
+    Process starts, operator merges, first request then reports the merged
+    commit while the process is serving pre-merge code -- the exact defect, one
+    step later. `lru_cache` alone gives precisely that; the module-level capture
+    is what removes it, and only a fresh interpreter can observe the difference
+    because this session imported the module long ago.
+    """
+    probe = (
+        "from bankmachine import build_id\n"
+        # Broken AFTER import. Irrelevant if capture already happened; fatal if
+        # the first call is what reaches for git.
+        "def boom(*a):\n"
+        "    raise AssertionError('git ran after import')\n"
+        "build_id._git = boom\n"
+        "build_id.build_identity()\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, timeout=60
+    )
+
+    # The discriminator is the exit code, and it holds whether or not this
+    # happens to be a git checkout: if capture were lazy, the call would reach
+    # the raiser either way.
+    assert completed.returncode == 0, (
+        f"the build identity was captured lazily, not at import: {completed.stderr[-600:]}"
+    )
+
+
 def test_the_permitted_arguments_are_read_from_the_advertised_schema() -> None:
     """Derived, not restated — a second list is one that stops matching the first."""
     for definition in mcp._tool_definitions():
