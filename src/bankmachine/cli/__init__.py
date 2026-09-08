@@ -26,6 +26,11 @@ __all__ = ["EXIT_ERROR", "EXIT_OK", "EXIT_UNHEALTHY", "build_parser", "run"]
 
 logger = get_logger(__name__)
 
+#: Marks a record whose stderr copy the caller has already printed itself.
+#: Without it every failure appears twice on the terminal, once as the
+#: `bankmachine: ...` sentence and again as a timestamped log line.
+_FILE_ONLY = {"file_only": True}
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -80,7 +85,16 @@ def run(argv: Sequence[str] | None = None) -> int:
         # would have to be extended by whoever adds the next refusal, and would
         # silently answer `2` when they forget.
         print(f"bankmachine: {exc}", file=sys.stderr)
-        logger.error("command %s failed: %s", args.command, exc)
+        # 🔴 This is the one arm where a non-zero code does not mean failure.
+        # `EnrollmentError` carries its own code, and the subclasses that mean
+        # "ran and found a problem" -- the roster is full, the operator walked
+        # away -- carry EXIT_UNHEALTHY. Recording those as errors would conflate
+        # exactly the two outcomes this logging exists to separate, so the level
+        # follows the code the exception chose rather than the arm it was caught in.
+        if exc.exit_code == EXIT_ERROR:
+            logger.error("command %s failed: %s", args.command, exc, extra=_FILE_ONLY)
+        else:
+            logger.warning("command %s refused: %s", args.command, exc, extra=_FILE_ONLY)
         return exc.exit_code
     except (StoreError, SecretsError, ConnectorError) as exc:
         # Expected failures get a sentence, not a traceback -- but they are never
@@ -92,12 +106,12 @@ def run(argv: Sequence[str] | None = None) -> int:
         # product whose named primary failure mode is silent staleness, those two
         # must never look alike in the durable record.
         print(f"bankmachine: {exc}", file=sys.stderr)
-        logger.error("command %s failed: %s", args.command, exc)
+        logger.error("command %s failed: %s", args.command, exc, extra=_FILE_ONLY)
         return EXIT_ERROR
     except Exception:  # prawduct:allow prawduct/broad-except -- logs and re-raises
         # An unexpected failure is exactly the one worth a traceback in the file,
         # and it is the case most likely to leave no other trace. This swallows
         # nothing: the `raise` preserves the exit status and the stderr traceback
         # a developer sees interactively, and only the log gains a record.
-        logger.exception("command %s failed unexpectedly", args.command)
+        logger.exception("command %s failed unexpectedly", args.command, extra=_FILE_ONLY)
         raise

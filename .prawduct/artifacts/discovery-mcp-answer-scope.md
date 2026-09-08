@@ -152,11 +152,16 @@ against a constant. On the same data that yields: Checking 0d, Saving 2d, Credit
 Money Market 28d. The last two are 28 days silent on a 30-day cycle — genuinely borderline, and the
 only thing in the whole fixture worth surfacing.
 
-**Proposal:** `get_coverage_report` derives a per-account threshold from the account's median
-interval and reports trailing silence against it, rather than applying a constant. AC-9.1's "gaps >7
-days" should be amended to say so. 🔴 This is a **requirement change, not an implementation
-choice** — it must be ruled on and written into `docs/system-requirements.md` before C2 builds
-against it, not designed in passing.
+**Ruled 2026-09-08 (owner): measure against the account's own cadence.** `get_coverage_report`
+derives a per-account threshold from the account's median interval and reports trailing silence
+against it. The amendment is written into `docs/system-requirements.md` under both **AC-9.1** and
+**AC-11.1** — the gate and the tool must hold the same threshold, or the tool's output is
+unauditable against the gate that checks it. `api-contract.md`'s tool table is amended to match.
+
+Worth keeping: AC-11.1 already carried the principle the constant violated — *"genuine no-activity
+periods are fine but must be identified as such."* A monthly account's 30-day silence is exactly
+that, and the 7-day rule was reporting it as a gap. The requirement contradicted itself, and only
+measurement made that visible.
 
 ### 🔴 `cashflow_summary` has no fixture for its most important branch
 
@@ -219,9 +224,8 @@ above), per-account coverage, `get_coverage_report` built, the three-way distinc
 such account* / *account with no coverage* / *account genuinely quiet in this window*, and
 merchant-population figures on **both** bases (by row and by value — measurement shows they differ
 by nearly 2×, and the row figure is the flattering one).
-🔴 **C2 is blocked on the AC-9.1 gap-threshold ruling** above — do not build a constant-threshold
-coverage report against a requirement that measurement has already falsified. Category population
-is out: measured 0.00% null. → closes #19.
+The gap threshold is **per-account, from the median interval** (ruled; AC-9.1 and AC-11.1 amended),
+so C2 is unblocked. Category population is out: measured 0.00% null. → closes #19.
 
 **C3 — classification.** `flow_class` of `external_spend` / `internal_transfer` / `debt_service` on
 every `spending_summary` row, plus `total_external_spend`. Precedent to follow: `balance_class` on
@@ -298,4 +302,5 @@ its largest inflow is airline refunds. **A sign-keyed split is therefore both th
 implementation and demonstrably wrong**, and no test against this fixture would catch it. The C4
 build plan must state its own interpretation of income explicitly, and say what it cannot verify.
 
-**Blocked** on C2 until the gap-threshold requirement is ruled on — see the measured evidence.
+C2's one open requirement — the gap threshold — was ruled and written into the requirements
+document, so no chunk is blocked on a decision.

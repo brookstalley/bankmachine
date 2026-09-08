@@ -56,6 +56,51 @@ def test_a_no_op_run_is_distinguishable_from_a_failed_one(cli_env: Config) -> No
     assert "ERROR" not in _log_text(cli_env), "a healthy no-op run logged an error"
 
 
+def test_a_failure_is_reported_to_the_terminal_exactly_once(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """🔴 Making the log honest must not make the terminal worse.
+
+    `configure_logging` attaches a stderr handler, so a log record emitted
+    beside the CLI's own `bankmachine: ...` line would print a second
+    timestamped copy of the same sentence directly under the first. The file
+    wants the record; the terminal already had one.
+    """
+    assert run(["connector", "check"]) == 2
+
+    err = capsys.readouterr().err
+    assert err.count("not ready") == 1, f"the failure was reported more than once:\n{err}"
+
+
+def test_a_refusal_is_not_recorded_as_a_failure(cli_env: Config) -> None:
+    """The `EnrollmentError` arm is the one place a non-zero code means "refused".
+
+    Its subclasses carry EXIT_UNHEALTHY for "ran and found a problem" — the
+    roster is full, the operator walked away. Recording those at ERROR would
+    conflate exactly the two outcomes this logging exists to separate, which
+    would leave the log no more use than the exit code it duplicates.
+    """
+    from bankmachine.cli import enroll as enroll_commands
+    from bankmachine.cli.enroll import EnrollmentError
+    from bankmachine.cli.exit_codes import EXIT_UNHEALTHY
+
+    class OperatorWalkedAwayError(EnrollmentError):
+        exit_code: int = EXIT_UNHEALTHY
+
+    def refuse(*_args: object, **_kwargs: object) -> int:
+        raise OperatorWalkedAwayError("the operator did not finish linking")
+
+    import pytest as _pytest
+
+    with _pytest.MonkeyPatch.context() as patch:
+        patch.setattr(enroll_commands, "cmd_enroll", refuse)
+        assert run(["enroll", "--yes"]) == EXIT_UNHEALTHY
+
+    text = _log_text(cli_env)
+    assert "refused" in text, "the refusal left no record at all"
+    assert "ERROR" not in text, "a refusal was recorded as a failure"
+
+
 def test_the_new_log_line_cannot_carry_a_credential_into_the_file(
     cli_env: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:

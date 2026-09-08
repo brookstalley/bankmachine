@@ -364,11 +364,29 @@ Required tools:
 | `net_worth` | Assets minus liabilities over time, investments included |
 | `list_holdings` | Current investment positions with cost basis where available |
 | `find_recurring` | Detected recurring charges with cadence, amount drift, last-seen |
-| `get_coverage_report` | Per account: first and last transaction date, gaps >7 days, source breakdown |
+| `get_coverage_report` | Per account: first and last transaction date, gaps against the account's own cadence, source breakdown |
 
 *(Build status 2026-09-08: `get_pipeline_health`, `list_accounts`, `query_transactions` and
 `spending_summary` are implemented in first slice; the other six are not yet built, and the descope
 — including what the shipped four do not yet carry — is recorded in `.prawduct/artifacts/api-contract.md`.)*
+
+> **Amendment (2026-09-08, owner ruling).** `get_coverage_report`'s gap rule was **"gaps >7 days"**
+> and is now **gaps measured against each account's own cadence** — a per-account threshold derived
+> from the account's median interval, reporting trailing silence against it.
+>
+> 🔴 **The constant was falsified by measurement, not by preference.** Against real data every
+> account here is monthly: CD and Money Market exceed 7 days on **100%** of their intervals with a
+> 30-day minimum, and Saving on 50%. The constant yields **~146 findings and no signal**, because a
+> monthly account is silent for 30 days *by design*. A field that fires on almost every interval
+> trains its reader to ignore it — which is the failure `warnings` already has (issue #16), reached
+> by a different route, and the report exists to be believed at the moment someone is deciding
+> whether to trust an answer.
+>
+> Cadence-relative, the same data surfaces exactly two accounts worth a second look: CD and Money
+> Market, each 28 days silent on a 30-day cycle.
+>
+> AC-11.1's "all gaps >7 days enumerated" carries the same constant for the same reason and is
+> amended with it; see the note there.
 
 **AC-9.2** — Every tool response includes a **freshness stamp** — last successful sync per
 contributing account.
@@ -415,9 +433,18 @@ a formality — the failure mode being guarded against is confident analysis of 
 data.
 
 **AC-11.1 · Coverage** — Every aggregator-linked account shows continuous coverage from enrollment
-back to the full history window the institution actually supplied, with all gaps >7 days enumerated
-and explained. Genuine no-activity periods are fine but must be identified as such; a retired
-account's post-closure period is not a gap.
+back to the full history window the institution actually supplied, with all gaps **against the
+account's own cadence** enumerated and explained. Genuine no-activity periods are fine but must be
+identified as such; a retired account's post-closure period is not a gap.
+
+> **Amendment (2026-09-08, owner ruling).** This said "gaps >7 days"; the constant is amended here
+> for the reason recorded under AC-9.1, and the two must stay in step — this gate is what
+> `get_coverage_report` is checked against, so a gate holding one threshold and a tool computing
+> another would make the tool's output unauditable.
+>
+> Note this clause already carried the principle the fixed constant violated: *"genuine no-activity
+> periods are fine but must be identified as such."* A monthly account's 30-day silence is exactly
+> that, and the 7-day rule was reporting it as a gap.
 
 **AC-11.2 · Reconciliation** — For each account, the balance derived by summing transactions matches
 the reported current balance within a documented tolerance. Discrepancies are **itemized, not
