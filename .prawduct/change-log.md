@@ -36,6 +36,8 @@
 
 ## 2026-09-08: The log can tell a failed run from a quiet one, and two claims stop being unchecked
 
+<!-- prawduct: scope=observability -->
+
 **Why:** A scheduled sync leaves one durable trace — the log file — and it recorded a failure and a
 run with nothing to do identically. For a product whose named primary failure mode is silent
 staleness, those two looking alike in the record is the defect, not a tidiness gap.

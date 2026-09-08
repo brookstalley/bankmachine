@@ -248,7 +248,10 @@ this section**, and it is stated here so the revisit is prompted rather than rem
 - Every active connection's `last_success_at` is within the expected daily cadence.
 - No active connection has `status = 'degraded'`.
 - Every account's coverage is continuous from enrollment back to its granted history window, with
-  gaps > 7 days enumerated and explained (AC-11.1).
+  gaps **as AC-11.1 defines them** enumerated and explained. 🔴 Stated by reference, not by
+  restating the threshold: AC-11.1's rule is per-account and derived from the account's own cadence,
+  and a copy of the number here would silently define "healthy" differently from the gate that
+  audits it.
 - The datastore exists, opens with the keychain key, and reports a **recognized schema version**.
 
 **Degraded states — each visible, each distinct:**
@@ -257,7 +260,7 @@ this section**, and it is stated here so the revisit is prompted rather than rem
 |---|---|---|
 | `stale` | `last_success_at` older than cadence | The sync has not run, or ran and failed |
 | `degraded` | `connections.status`, `last_error_code` | This connection is broken; 🔴 the others are unaffected (AC-4.1) |
-| `gapped` | Coverage report, gaps > 7 days | A known hole in the window |
+| `gapped` | Coverage report, a gap by AC-11.1's rule | A known hole in the window |
 | `partial` | `granted_history_days` < `requested_history_days` | Bounded history — 🔴 recorded as a known gap, never treated as complete (AC-11.8) |
 | `rule-applied` | Aggregate response field | An account rule filtered rows (AC-8.3) |
 | **rule anomaly** | `get_pipeline_health` | An inbound credit to a `contribution_only` account from **outside** its configured contributor set (AC-8.4) — 🔴 surfaced, never silently classified |
