@@ -512,6 +512,11 @@ leads with. **My job is to say what it does not cover, not to restate it.** Prop
 
 ### 3. `.prawduct/artifacts/data-model.md` — correct the index claim
 
+🔴 **APPLIED 2026-09-09 — do not apply again.** Applied as a *flagged defect* rather
+than as a rewrite: the line now records that the described query does not exist, and that
+whether the index goes or the lookup moves onto it is open under AC-13.6. Describing the
+index as merely unused would have recorded a defect as if it were the design.
+
 **Anchor:** the bullet at line 341, § Constraints:
 
 ```
@@ -544,6 +549,11 @@ leads with. **My job is to say what it does not cover, not to restate it.** Prop
 > the mechanism; until it has run across two institutions the norm holds for one feed only.
 
 ### 5. `.prawduct/artifacts/mcp-production-readiness.md` — annotate preconditions 5 and 7
+
+🔴 **APPLIED 2026-09-09 — do not apply again.** Merged with the sibling document's
+delta 4 into a single correction stating closability and buildability separately, as the
+review required. The "misleading as written" framing was dropped: that block already draws
+the connect-vs-trust distinction correctly.
 
 **Anchor:** the `> **State on 2026-09-09:**` tracking block in § "What has to be true before yes".
 

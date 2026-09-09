@@ -665,6 +665,10 @@ settles.
 
 ### 4. `.prawduct/artifacts/mcp-production-readiness.md` — a correction to its own tracking note
 
+🔴 **APPLIED 2026-09-09 — do not apply again.** Merged with the sibling document's
+delta 5 into a single correction on that block, as the review required. It is a factual
+correction about shipped code, so it did not wait on ratification.
+
 The 2026-09-09 tracking block under § *What has to be true before yes* asserts *"**#40 is the one that
 is buildable now**, and cheaper than this list knew: `accounts` already carries `lifecycle_status` and
 `closed_date`, and `list_accounts` simply does not read them."* 🔴 **The first clause holds and the
@@ -688,6 +692,9 @@ second does not.** Proposed appended correction:
 > other two, and it should not be applied in a form that reads as the latter.
 
 ### 5. `.prawduct/artifacts/discovery-mcp-answer-scope.md` — C2's undischarged entanglement
+
+🔴 **APPLIED 2026-09-09 — do not apply again.** A factual correction about shipped
+code; it did not wait on ratification.
 
 That document's § *The entanglement that changes the build order* folded account lifecycle into chunk
 C2 as a correctness precondition, and C2's own description opens *"Account lifecycle onto

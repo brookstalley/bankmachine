@@ -341,6 +341,14 @@ Identity and access indexes:
 - `transactions_pending_link ON (account_id, source_pending_transaction_id) WHERE source_pending_transaction_id IS NOT NULL`
   — AC-2.3: a posting transaction finds its pending row **by the source's own pending identifier
   rather than by guessing from amount and date.**
+  🔴 **This describes a query that does not exist. Verified 2026-09-09.** The implemented
+  lookup (`_existing_transaction`, `connector/plaid/derivers.py`) matches the incoming pending id
+  against `source_transaction_id` — served by `transactions_source_identity` — so the behaviour
+  AC-2.3 requires is delivered, by a different column than this line names.
+  `source_pending_transaction_id` has one writer and **no reader anywhere in `src/`**, and this
+  partial index is maintained on every write and queried by nothing. Whether the index goes or the
+  lookup moves onto it is open, and is carried by #22; do not "fix" this line by describing the
+  index as unused, because that would record a defect as if it were the design.
 
 #### `balances_daily` (AC-3.1)
 
