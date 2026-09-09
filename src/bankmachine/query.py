@@ -32,6 +32,7 @@ from sqlalchemy import Text, and_, case, cast, func, or_, select
 from sqlalchemy.engine import Connection as SAConnection
 from sqlalchemy.sql import ColumnElement
 
+from bankmachine import signs
 from bankmachine.config import Config
 from bankmachine.envelope import (
     MAX_ROWS,
@@ -1287,6 +1288,12 @@ def pipeline_health(config: Config) -> Answer:
             )
             .order_by(connections.c.connection_id)
         ).all()
+        # 🔴 The sign-convention measurement belongs on THIS surface, per
+        # connection, because "we could not tell" is an answer only a
+        # verification tool has room for. `signs.measure` returns one entry per
+        # connection including the ones with nothing to judge, so every row here
+        # carries the three fields and none of them is conditional.
+        conventions = {m.connection_id: m for m in signs.measure(conn)}
         rows = [
             {
                 "connection_id": int(r[0]),
@@ -1299,7 +1306,21 @@ def pipeline_health(config: Config) -> Answer:
                 "granted_history_days": None if r[6] is None else int(r[6]),
                 "history_starts": None if r[8] is None else str(r[8]),
                 "retired": r[7] is not None,
+                "sign_convention": conventions[int(r[0])].verdict,
+                "sign_convention_rows_judged": conventions[int(r[0])].rows_judged,
+                "sign_convention_rows_positive": conventions[int(r[0])].rows_positive,
             }
             for r in result
         ]
-        return _answer(config, conn, rows, requested_window=None, truncation=None)
+        return _answer(
+            config,
+            conn,
+            rows,
+            requested_window=None,
+            truncation=None,
+            # An inverted connection is reported here as well as on the
+            # aggregates, because a health tool that showed the measurement in a
+            # row and stayed silent in `warnings` would leave the one surface
+            # built for this question quieter about it than every other.
+            extra_caveats=signs.caveats(conn),
+        )

@@ -20,7 +20,7 @@ from unittest import mock
 
 import pytest
 
-from bankmachine import build_id, envelope, mcp, mcp_resources, query
+from bankmachine import build_id, envelope, mcp, mcp_resources, query, signs
 from bankmachine.config import Config
 from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS
@@ -1146,6 +1146,55 @@ def test_the_domain_filter_keeps_one_health_row_per_connection(
     rows = _call(initialized_config, "get_pipeline_health")["structuredContent"]["rows"]
 
     assert len(rows) == 1, "a second sync domain duplicated the connection"
+
+
+def test_the_health_row_declares_what_the_sign_check_concluded(
+    initialized_config: Config,
+) -> None:
+    """🔴 AC-14.3, at the wire. The verdict reaches a consumer with its evidence.
+
+    The shared fixture writes two rows in the judged categories, which is below
+    the sample floor -- so the honest answer is `undetermined`, and asserting
+    exactly that is the point: a check that answered `consistent` over two rows
+    would be manufacturing confidence out of a small store, which is the failure
+    the floor exists to prevent. The counts ride along because a verdict with no
+    evidence under it is a claim rather than a measurement.
+    """
+    _seed(initialized_config)
+
+    wire = _call(initialized_config, "get_pipeline_health")["structuredContent"]
+    row = wire["rows"][0]
+
+    assert row["sign_convention"] == "undetermined"
+    assert row["sign_convention_rows_judged"] == 2
+    assert row["sign_convention_rows_positive"] == 0
+    assert not [w for w in wire["warnings"] if w["kind"] == "sign_convention_unverified"]
+
+
+def test_the_published_health_schema_states_the_checks_category_set_and_threshold(
+    initialized_config: Config,
+) -> None:
+    """🔴 AC-14.3 requires the check to DECLARE its category set and threshold.
+
+    Declared where the consumer of the verdict actually reads -- the published
+    `outputSchema`, which `api-contract.md` fixes as the statement nothing thins
+    out -- rather than only in a comment in the module. A verdict whose basis is
+    documented somewhere the agent cannot see is a bare assertion at the moment
+    it matters.
+
+    Read from `signs` rather than spelled out here, so adding a category with
+    its measurement moves this test by construction and adding one without
+    updating the schema fails it.
+    """
+    definition = next(d for d in mcp._tool_definitions() if d["name"] == "get_pipeline_health")
+    published = definition["outputSchema"]["properties"]["rows"]["items"]["properties"]
+    declared = published["sign_convention"]["description"]
+
+    for category in signs.NEVER_INFLOW_CATEGORIES:
+        assert category in declared, f"the published schema does not name {category}"
+    assert f"{signs.INVERTED_ABOVE_SHARE:.0%}" in declared
+    assert str(signs.MINIMUM_JUDGEABLE_ROWS) in declared
+    assert published["sign_convention"]["enum"] == list(signs.VERDICTS)
 
 
 # --------------------------------------------------------------------------
