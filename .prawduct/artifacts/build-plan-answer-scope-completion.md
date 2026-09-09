@@ -242,9 +242,34 @@ gross-versus-net and it is chunk B. Two independent acceptance passes reached th
 different routes — after C, treat a TRAVEL check as confirming the linkage, not as evidence the
 fix failed.
 
-**Do also:** if the classification is announced as an applied rule, it emits `rule-applied` — the
-kind three carriers currently promise and nothing sends (#34). Emitting it here closes that
-exposure as a side effect rather than as separate work.
+### Amendment: the `rule-applied` assumption is FALSIFIED, and #34 stays open
+
+The plan assumed that classifying rows would let chunk C emit `rule-applied` and close #34 as a
+side effect. 🔴 **It does not, and the reason is the ruling itself.** `rule-applied` is defined in
+the vocabulary, the decision table and the resources surface as *"an account rule filtered rows
+out of an aggregate — the total excludes them ON PURPOSE"*. The owner's ruling on #18 is
+**classify, do not filter**: nothing is dropped, precisely so there is no invisible undercount.
+Emitting `rule-applied` here would be a false statement about the answer it rode on.
+
+#34 stays open and is NOT closed by this chunk. The honest cheap fix remains what its triage says
+— record the kind as not-yet in all three carriers — and that is separate work.
+
+### Amendment: the category mapping, written before it was coded
+
+The three values are ruled; the mapping onto them is not, and a taxonomy invented mid-build is a
+tripwire. **Classified from `source_category_primary`**, the aggregator's own taxonomy which
+`data-model.md` keeps unmodified in its own column:
+
+- `LOAN_PAYMENTS` → **`debt_service`** (the measured double-count: mostly credit-card payoff,
+  overlapping card purchases already counted in the spending categories)
+- `TRANSFER_IN`, `TRANSFER_OUT` → **`internal_transfer`** (61% of the two-year total — $164,400 of
+  $267,693 — is the holder moving their own money between their own accounts)
+- everything else → **`external_spend`**
+
+🔴 **Read from the source column, never from `category_override`.** An override is local
+interpretation of what a transaction was *for*; the flow class is about whose money moved and in
+which direction, and letting a re-categorisation silently reclassify a transfer as spending would
+reintroduce the overcount through the back door.
 
 **Done when:** each of the three classes has a test over fixture rows that actually exercise it;
 `total_external_spend` and the summed rows agree by construction rather than by coincidence.
