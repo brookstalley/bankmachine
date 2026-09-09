@@ -25,7 +25,7 @@ write whatever SQL reaches it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from sqlalchemy import Text, and_, case, cast, func, or_, select
@@ -647,6 +647,7 @@ def _transaction_filters(
     until: date | None,
     account_id: int | None,
     after: Cursor | None,
+    include_removed: bool = False,
 ) -> list[Any]:
     """🔴 The predicates of a transaction query, built once for both statements.
 
@@ -657,8 +658,15 @@ def _transaction_filters(
     which is worse than the vague one this chunk exists to remove. Built here,
     a filter added later reaches both by construction because there is only one
     place to add it.
+
+    🔴 `include_removed` is for the ONE question that has to look at rows every
+    answer excludes: an authorisation hold that expired without ever posting
+    left the totals by being soft-deleted, and AC-13.4 requires that exit to be
+    attributable rather than silent. It defaults to False and every row-and-count
+    caller leaves it there, so the pair that must agree still cannot drift; a
+    caller asking for removed rows is asking a different question and says so.
     """
-    filters: list[Any] = [transactions.c.removed_at.is_(None)]
+    filters: list[Any] = [] if include_removed else [transactions.c.removed_at.is_(None)]
     if since is not None:
         filters.append(transactions.c.posted_date >= since)
     if until is not None:
@@ -685,6 +693,229 @@ def _transaction_filters(
             )
         )
     return filters
+
+
+#: How long a transaction may stay `pending` before the hold behind it stops
+#: being explicable as an ordinary authorisation. AC-13.5.
+#:
+#: 🔴 **A declared constant rather than a figure derived from the account's own
+#: cadence, and the departure from AC-9.1's precedent is deliberate.** A coverage
+#: gap is silence in a feed, so the only non-arbitrary yardstick for it is that
+#: feed's own rhythm. A hold's lifetime is a property of the CARD NETWORK that
+#: placed it: the same authorisation expires on the same day whether the account
+#: it sits on posts twice a day or once a month. Measuring it against cadence
+#: would make one hold stranded on a busy card and unremarkable on a quiet one,
+#: which states something about the account rather than about the hold.
+#:
+#: 🔴 **30 days is the OUTER end of the ordinary range, not the typical one.**
+#: Most merchants' authorisations release within a few days, but lodging, vehicle
+#: rental and fuel routinely hold for weeks -- so a threshold set at the typical
+#: value would fire on every hotel stay, which is the ~146-findings-and-no-signal
+#: outcome AC-11.1's amendment records and AC-13.5 explicitly cites. At the outer
+#: end, a row that is still pending has no ordinary hold lifetime left to explain
+#: it.
+#:
+#: 🔴 **This is a claim about the card network, not a measurement taken here.**
+#: No pending row has ever reached this datastore, so there is nothing local to
+#: derive it from, and saying so is the honest half of "declared with its
+#: derivation". AC-13.8's observation against a real settlement is what would let
+#: it be re-derived from data rather than from documented network behaviour.
+STRANDED_HOLD_AFTER_DAYS = 30
+
+
+def _stranded_cutoff(today: CalendarDate) -> CalendarDate:
+    """The newest `posted_date` a still-pending row may carry and not be stranded.
+
+    🔴 One definition of the boundary for two evaluators. The producer below
+    tests it in SQL and a caller may test it against rows already in hand; two
+    hand-written spellings of "older than the threshold" is how the SQL and the
+    Python answers start disagreeing about the same row, and this file already
+    carries the rule that two producers of one fact can contradict each other.
+    """
+    return calendar_date(today - timedelta(days=STRANDED_HOLD_AFTER_DAYS))
+
+
+@dataclass(frozen=True, slots=True)
+class StrandedHold:
+    """One row that is still an authorisation hold long after it should have settled."""
+
+    account_id: int
+    transaction_id: int
+    posted_date: CalendarDate
+    days_pending: int
+    amount_minor: int
+    currency: str
+
+
+def _stranded_holds(
+    conn: SAConnection, *, filters: list[Any], today: CalendarDate
+) -> list[StrandedHold]:
+    """Every hold in this request's scope that is past any ordinary lifetime. AC-13.5.
+
+    Row-level rather than a count, because "three accounts have stranded holds"
+    is a finding nobody can act on: the operator's next move is to look at the
+    transaction, so the id has to travel with the number.
+
+    Ordered oldest first, so the caller naming one names the worst.
+    """
+    cutoff = _stranded_cutoff(today)
+    rows = conn.execute(
+        select(
+            transactions.c.account_id,
+            transactions.c.transaction_id,
+            transactions.c.posted_date,
+            transactions.c.amount_minor,
+            transactions.c.currency,
+        )
+        .select_from(transactions.join(accounts))
+        .where(*filters, transactions.c.pending == 1, transactions.c.posted_date < cutoff)
+        .order_by(transactions.c.posted_date, transactions.c.transaction_id)
+    ).all()
+    return [
+        StrandedHold(
+            account_id=int(row[0]),
+            transaction_id=int(row[1]),
+            posted_date=calendar_date(row[2]),
+            days_pending=(today - calendar_date(row[2])).days,
+            amount_minor=int(row[3]),
+            currency=str(row[4]),
+        )
+        for row in rows
+    ]
+
+
+@dataclass(frozen=True, slots=True)
+class HoldTally:
+    """How many rows, and what they come to signed as stored."""
+
+    transactions: int = 0
+    net_minor: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class HoldTransitions:
+    """The two ways a hold stops being one, per currency. AC-13.4, AC-13.6.
+
+    🔴 **Both halves exist so a total that MOVED is attributable.** A figure over
+    a window holding authorisation holds can change with no new activity
+    whatsoever, and it changes in exactly two ways: a hold expires and its whole
+    amount leaves the total, or a hold settles and its amount is replaced by the
+    settled one. Neither is visible in the rows an answer returns -- an expired
+    hold is soft-deleted and therefore excluded by construction, and a settled
+    row looks like any other posted row -- so a consumer watching a number drift
+    has nothing in the payload to explain it. That is the same defect class as a
+    total that does not state its own scope, arriving one step later in time.
+
+    🔴 Per currency, because every aggregate on this surface groups by currency
+    and never sums across it.
+    """
+
+    expired: dict[str, HoldTally]
+    settled: dict[str, HoldTally]
+
+    def currencies(self) -> set[str]:
+        return set(self.expired) | set(self.settled)
+
+    def expired_for(self, currency: str) -> HoldTally:
+        return self.expired.get(currency, HoldTally())
+
+    def settled_for(self, currency: str) -> HoldTally:
+        return self.settled.get(currency, HoldTally())
+
+
+def _hold_transitions(
+    conn: SAConnection, *, since: date | None, until: date | None
+) -> HoldTransitions:
+    """Holds that left this window, and rows in it that settled out of one.
+
+    🔴 **Two reads rather than a projection off the answer's rows, and each for
+    its own reason.** The expired half counts rows every other statement here
+    excludes, so no arithmetic over the returned rows could reach it. The settled
+    half could in principle be summed alongside the aggregate, but asking for it
+    as `source_pending_transaction_id IS NOT NULL` is what lets SQLite answer
+    from `transactions_pending_link` -- a partial index holding only the rows
+    that carry a link, rather than a scan of every row in the window (AC-13.6;
+    measured with `EXPLAIN QUERY PLAN` in `tests/test_pending_semantics.py`).
+
+    🔴 These are NOT totals over the answer's rows and must never be summed with
+    them. `_flow_class_totals`' identity -- the three classes add to the window's
+    outflow -- holds over the returned rows alone; these two describe rows that
+    left the answer and rows whose amount arrived by replacement.
+    """
+
+    def tally(where: list[Any], extra: list[Any]) -> dict[str, HoldTally]:
+        rows = conn.execute(
+            select(
+                transactions.c.currency,
+                func.count(),
+                func.coalesce(func.sum(transactions.c.amount_minor), 0),
+            )
+            .select_from(transactions.join(accounts))
+            .where(*where, *extra)
+            .group_by(transactions.c.currency)
+        ).all()
+        return {
+            str(row[0]): HoldTally(transactions=int(row[1]), net_minor=int(row[2])) for row in rows
+        }
+
+    return HoldTransitions(
+        # 🔴 `pending = 1` AND removed, which is precisely "expired without ever
+        # posting". A hold that settled is no longer pending -- its own row was
+        # updated in place -- so a later removal of the settled row carries
+        # `pending = 0` and is an ordinary withdrawal rather than a hold that
+        # never became anything.
+        expired=tally(
+            _transaction_filters(
+                since=since, until=until, account_id=None, after=None, include_removed=True
+            ),
+            [transactions.c.removed_at.is_not(None), transactions.c.pending == 1],
+        ),
+        settled=tally(
+            _transaction_filters(since=since, until=until, account_id=None, after=None),
+            [
+                transactions.c.source_pending_transaction_id.is_not(None),
+                transactions.c.pending == 0,
+            ],
+        ),
+    )
+
+
+def _pending_caveat(pending: dict[str, HoldTally], stranded: list[StrandedHold]) -> list[Caveat]:
+    """The notice that an answer's figures include unsettled holds. AC-13.1, AC-13.5.
+
+    🔴 Request-scoped, so its ABSENCE is information too: an answer over rows
+    that are all settled carries no such warning, and a consumer can therefore
+    read a total with no `includes_pending_rows` beside it as a total of settled
+    money. That only works because the disclosure is computed on every answer
+    rather than when someone remembers to ask -- the always-present count in
+    `totals` is the other half of the same statement, and it is what makes a
+    zero distinguishable from a question nobody asked.
+
+    Names the magnitude, not just the count: "some rows are pending" leaves a
+    reader unable to tell a $4 coffee hold from a $2,000 hotel authorisation, and
+    the whole point is whether the figure beside it can move enough to matter.
+    """
+    total = sum(tally.transactions for tally in pending.values())
+    if total == 0:
+        return []
+    magnitude = ", ".join(
+        f"{tally.net_minor} {currency}" for currency, tally in sorted(pending.items())
+    )
+    detail = (
+        f"{total} of the rows this answer drew on are authorisation holds that have not "
+        f"settled, netting {magnitude} in minor units. A hold can settle at a different figure "
+        f"or expire without settling at all, so a figure computed from this answer can change "
+        f"with no new activity whatsoever"
+    )
+    if stranded:
+        oldest = stranded[0]
+        detail += (
+            f". {len(stranded)} of them have been pending for more than "
+            f"{STRANDED_HOLD_AFTER_DAYS} days, which is past any ordinary authorisation "
+            f"lifetime -- the oldest is transaction {oldest.transaction_id} on account "
+            f"{oldest.account_id}, pending {oldest.days_pending} days, and it may never settle"
+        )
+    return [Caveat(kind="includes_pending_rows", detail=detail)]
 
 
 def list_transactions(
@@ -797,6 +1028,29 @@ def list_transactions(
             if account_id is not None
             else []
         )
+        # 🔴 Tallied from the rows THIS PAGE returned, not from `matching`.
+        # AC-13.1's disclosure is about the rows an answer drew on, and a walk's
+        # later page may hold no holds at all -- a caveat counting the whole
+        # result set would then say this page mixes in holds it does not
+        # contain, which is a precise false statement about the payload beside
+        # it. The stranded check below is scoped to the request instead, and its
+        # wording says so, because a hold too old to settle is a fact about the
+        # data rather than about which page of it you are reading.
+        pending: dict[str, HoldTally] = {}
+        for row in rows:
+            if not row["pending"]:
+                continue
+            currency = str(row["currency"])
+            seen = pending.get(currency, HoldTally())
+            pending[currency] = HoldTally(
+                transactions=seen.transactions + 1,
+                net_minor=seen.net_minor + int(row["amount_minor_units"]),
+            )
+        stranded = (
+            _stranded_holds(conn, filters=filters, today=calendar_date(now_utc().date()))
+            if pending
+            else []
+        )
         return _answer(
             config,
             conn,
@@ -807,7 +1061,7 @@ def list_transactions(
             truncation=Truncation.over(
                 returned=len(rows), counted=matching, resume_from=resume_from
             ),
-            extra_caveats=_uncovered_caveat(uncovered),
+            extra_caveats=_uncovered_caveat(uncovered) + _pending_caveat(pending, stranded),
         )
 
 
@@ -1061,33 +1315,69 @@ def _flow_class() -> ColumnElement[str]:
     )
 
 
-def _flow_class_totals(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The window's OUTFLOW split three ways, per currency.
+def _flow_class_totals(
+    rows: list[dict[str, Any]], transitions: HoldTransitions
+) -> list[dict[str, Any]]:
+    """The window's OUTFLOW split three ways, per currency, and how much is a hold.
 
-    🔴 **Summed from the rows this answer returns, never from a second query.**
-    A second read against a live store is taken at a different instant from the
-    rows beside it, and a total that contradicts the rows under it is worse than
-    no total at all -- a reader has no way to tell which of the two is wrong.
-    Summed here, the three classes add to the window's total outflow by
-    construction, and that identity is also the proof the classification
-    PARTITIONS the rows rather than quietly dropping some.
+    🔴 **The three flow classes are summed from the rows this answer returns,
+    never from a second query.** A second read against a live store is taken at a
+    different instant from the rows beside it, and a total that contradicts the
+    rows under it is worse than no total at all -- a reader has no way to tell
+    which of the two is wrong. Summed here, the three classes add to the window's
+    total outflow by construction, and that identity is also the proof the
+    classification PARTITIONS the rows rather than quietly dropping some. The
+    pending pair follows the same rule for the same reason: it is summed from
+    row fields the aggregate already computed, so it cannot disagree with them.
+
+    🔴 **The two hold-transition pairs are the deliberate exception, and they are
+    a different kind of figure rather than a relaxation of the rule.** They do
+    not participate in the outflow identity above and must never be added to it:
+    `expired_holds` counts rows this answer EXCLUDES -- a hold that was
+    soft-deleted without ever posting -- so no arithmetic over the returned rows
+    could reach it, and `settled_from_hold` counts rows whose amount arrived by
+    replacing an earlier hold's. Both exist because AC-13.4 requires a total that
+    moved to be attributable: the two are the only ways a figure over this window
+    changes without any new activity.
 
     🔴 **Per currency, because the ruling on aggregates is that currency groups
     and never sums.** One integer spanning two currencies is not a wrong number,
     it is not a number.
 
-    Every currency present carries all three keys, zero where a class did not
-    appear: a zero is a real answer -- "nothing serviced a debt this window" --
-    and a missing key would leave a reader unable to tell that from a class this
-    tool forgot to compute.
+    Every currency carries every key, zero where nothing appeared: a zero is a
+    real answer -- "nothing serviced a debt this window", "no hold expired" --
+    and a missing key would leave a reader unable to tell that from a figure this
+    tool forgot to compute. AC-13.1 fixes that as the contract for the pending
+    pair: present and zero, never absent.
+
+    🔴 A currency that appears ONLY in an expired hold still gets an entry. Its
+    rows are all excluded from the answer, so summing the returned rows would
+    find no such currency at all -- and dropping the entry would hide the one
+    fact that explains why a previous answer's figure is gone.
     """
     totals: dict[str, dict[str, int]] = {}
-    for row in rows:
-        entry = totals.setdefault(
-            str(row["currency"]),
-            {f"{flow}_outflow_minor_units": 0 for flow in FLOW_CLASSES},
+
+    def entry_for(currency: str) -> dict[str, int]:
+        return totals.setdefault(
+            currency,
+            {f"{flow}_outflow_minor_units": 0 for flow in FLOW_CLASSES}
+            | {"pending_transactions": 0, "pending_net_minor_units": 0},
         )
+
+    for row in rows:
+        entry = entry_for(str(row["currency"]))
         entry[f"{row['flow_class']}_outflow_minor_units"] += int(row["outflow_minor_units"])
+        entry["pending_transactions"] += int(row["pending_transactions"])
+        entry["pending_net_minor_units"] += int(row["pending_net_minor_units"])
+    for currency in transitions.currencies():
+        entry_for(currency)
+    for currency, entry in totals.items():
+        expired = transitions.expired_for(currency)
+        settled = transitions.settled_for(currency)
+        entry["expired_holds"] = expired.transactions
+        entry["expired_holds_net_minor_units"] = expired.net_minor
+        entry["settled_from_hold"] = settled.transactions
+        entry["settled_from_hold_net_minor_units"] = settled.net_minor
     # Sorted so two identical stores answer identically; the wire order of an
     # array is information a consumer may rely on even when it should not.
     return [{"currency": currency, **entry} for currency, entry in sorted(totals.items())]
@@ -1128,6 +1418,19 @@ def money_summary(
     explicitly not chosen — it needs a rate source, a rate date policy, and
     somewhere to record that decision, which is a different scope from carrying
     a field.
+
+    🔴 **Every figure here states how much of itself is an unsettled hold, and
+    the statement is always present** (AC-13.1). An authorisation hold is a claim
+    on the account rather than a completed amount: it can settle at a different
+    figure, and it can expire without settling at all. So a total that mixes
+    holds with settled money is the one kind of figure that changes when nothing
+    happened, and re-asking will not explain it. `pending_transactions` and
+    `pending_net_minor_units` ride every row and every totals entry, zero where
+    nothing is pending, and `includes_pending_rows` fires only when something is
+    — so its absence is a statement too. AC-13.4's other half rides `totals`
+    beside them: `expired_holds` for the holds that dropped out of this window
+    without ever posting, and `settled_from_hold` for the rows whose amount got
+    here by replacing an earlier hold's.
     """
     if group_by not in GROUPINGS:
         raise BadGroupingError(f"group_by must be one of {', '.join(GROUPINGS)}, not {group_by!r}")
@@ -1216,6 +1519,24 @@ def money_summary(
                     0,
                 ).label("outflow"),
                 func.coalesce(func.sum(transactions.c.amount_minor), 0).label("net"),
+                # 🔴 AC-13.1, computed in the SAME pass as the figures it
+                # qualifies. A hold is not a settled amount, and a total that
+                # mixes the two moves without any new activity -- so how much of
+                # this row is a hold has to be a property OF this row rather than
+                # a second count taken a moment later, which could disagree with
+                # the very number it is supposed to qualify.
+                func.coalesce(func.sum(case((transactions.c.pending == 1, 1), else_=0)), 0).label(
+                    "pending_transactions"
+                ),
+                # Signed as stored, like `net` and unlike the two magnitudes
+                # above: the question a reader has is which direction the figure
+                # beside it can move when these holds settle or expire.
+                func.coalesce(
+                    func.sum(
+                        case((transactions.c.pending == 1, transactions.c.amount_minor), else_=0)
+                    ),
+                    0,
+                ).label("pending_net"),
             )
             .select_from(transactions.join(accounts))
             # 🔴 The shared predicates and NOTHING else -- in particular no
@@ -1237,16 +1558,41 @@ def money_summary(
                 "inflow_minor_units": int(r[5]),
                 "outflow_minor_units": int(r[6]),
                 "net_minor_units": int(r[7]),
+                "pending_transactions": int(r[8]),
+                "pending_net_minor_units": int(r[9]),
             }
             for r in conn.execute(statement).all()
         ]
+        pending = {
+            currency: HoldTally(
+                transactions=sum(
+                    int(row["pending_transactions"]) for row in rows if row["currency"] == currency
+                ),
+                net_minor=sum(
+                    int(row["pending_net_minor_units"])
+                    for row in rows
+                    if row["currency"] == currency
+                ),
+            )
+            for currency in {str(row["currency"]) for row in rows}
+        }
+        stranded = (
+            _stranded_holds(
+                conn,
+                filters=_transaction_filters(since=since, until=until, account_id=None, after=None),
+                today=calendar_date(now_utc().date()),
+            )
+            if any(tally.transactions for tally in pending.values())
+            else []
+        )
         return _answer(
             config,
             conn,
             rows,
             requested_window=(since, until),
             truncation=None,
-            totals=_flow_class_totals(rows),
+            totals=_flow_class_totals(rows, _hold_transitions(conn, since=since, until=until)),
+            extra_caveats=_pending_caveat(pending, stranded),
         )
 
 

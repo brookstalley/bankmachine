@@ -339,16 +339,27 @@ Identity and access indexes:
 - `transactions_by_account_date ON (account_id, posted_date)` — the shape the coverage walk and every
   spending/cashflow aggregate reads in.
 - `transactions_pending_link ON (account_id, source_pending_transaction_id) WHERE source_pending_transaction_id IS NOT NULL`
-  — AC-2.3: a posting transaction finds its pending row **by the source's own pending identifier
-  rather than by guessing from amount and date.**
-  🔴 **This describes a query that does not exist. Verified 2026-09-09.** The implemented
-  lookup (`_existing_transaction`, `connector/plaid/derivers.py`) matches the incoming pending id
-  against `source_transaction_id` — served by `transactions_source_identity` — so the behaviour
-  AC-2.3 requires is delivered, by a different column than this line names.
-  `source_pending_transaction_id` has one writer and **no reader anywhere in `src/`**, and this
-  partial index is maintained on every write and queried by nothing. Whether the index goes or the
-  lookup moves onto it is open, and is carried by #22; do not "fix" this line by describing the
-  index as unused, because that would record a defect as if it were the design.
+  — the **reverse** lookup: given a hold, which row settled out of it, and in the aggregate, which
+  rows in a window arrived by replacing a hold. `query._hold_transitions` is the reader, and AC-13.4
+  is why it exists — a total that moved because a hold settled has to be attributable, and a settled
+  row is otherwise indistinguishable from any other posted row. Asking for it as
+  `source_pending_transaction_id IS NOT NULL` is what lets SQLite plan against this partial index,
+  which holds only the small minority of rows carrying a link; asserted by `EXPLAIN QUERY PLAN` in
+  `tests/test_pending_semantics.py`, over the statement the engine actually ran.
+
+  🔴 **This index does NOT serve AC-2.3's pending→posted match, and the line that said it did was
+  wrong** (found 2026-09-09, resolved under AC-13.6 by giving the index a reader rather than dropping
+  it). AC-2.3's match is served by `transactions_source_identity`: `_existing_transaction`
+  (`connector/plaid/derivers.py`) compares an incoming `pending_transaction_id` against the pending
+  row's **own** `source_transaction_id`, because a hold answers to its own id right up until it
+  posts. That is the correct lookup and it is unchanged. One account of the two directions, held
+  here, on the `Index` in `store/schema.py`, and in `_existing_transaction`'s docstring.
+
+  🔴 **The DDL comment in `store/migrations/core_schema.py` still carries the withdrawn claim** — it
+  repeats "a posting transaction finds its pending row by the source's own pending identifier". The
+  DDL is frozen, so correcting a comment inside it is not a change this chunk could make; it is
+  recorded here so the next migration-touching cycle fixes it rather than re-deriving the confusion
+  from it.
 
 #### `balances_daily` (AC-3.1)
 

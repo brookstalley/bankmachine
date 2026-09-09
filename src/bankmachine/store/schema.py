@@ -211,6 +211,21 @@ Index(
     sqlite_where=transactions.c.import_fingerprint.is_not(None),
 )
 Index("transactions_by_account_date", transactions.c.account_id, transactions.c.posted_date)
+# 🔴 **This index serves the REVERSE lookup, and does not serve AC-2.3's match.**
+# The two are easy to confuse and the distinction is the whole of AC-13.6. A
+# posting transaction finds the hold it replaces by that hold's OWN identifier --
+# `_existing_transaction` compares the incoming `pending_transaction_id` against
+# the pending row's `source_transaction_id`, which is served by
+# `transactions_source_identity` -- because a hold answers to its own id right up
+# until it posts.
+#
+# What this index answers is the other direction: given a hold's id, which posted
+# row settled out of it, and more usefully in the aggregate, which rows in a
+# window arrived by replacing a hold. `query._hold_transitions` is that reader
+# (AC-13.4), and asking for it as `source_pending_transaction_id IS NOT NULL`
+# lets SQLite answer from this partial index, which holds only the small
+# minority of rows that carry a link, rather than scanning every row in the
+# window.
 Index(
     "transactions_pending_link",
     transactions.c.account_id,
