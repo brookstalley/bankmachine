@@ -171,6 +171,71 @@ never stored, and one producer feeding both `list_accounts` and `get_coverage_re
 **Done when:** all nine criteria hold; AC-12.9's shrinking-roster replay exists and its assertion has
 been seen red; `query._coverage`'s `accounts` count carries the ruled treatment's figure.
 
+#### Chunk 01 notes — the delegate's recorded decisions *(C1, 2026-09-09)*
+
+The proposed design was built as proposed. Four things it did not settle, decided here:
+
+`[DECISION: the flagged magnitude is a PER-CURRENCY array, not a single signed integer | AC-12.8 says
+"a count and a signed sum, both always present and zero rather than absent". A single integer over
+two currencies is refused by `api-contract.md`'s standing ruling that currency groups and never sums
+— "not a wrong number, it is not a number". So `coverage.not_active_balance_minor_units` is
+`[{currency, current_minor_units}]`, present and EMPTY when nothing qualifies, on the same precedent
+as `money_summary`'s `totals` block, which is present and empty against an unreadable store.
+`coverage.accounts_not_active` carries the count as a plain integer | C1]`
+
+`[DECISION: `account_no_longer_active` is emitted by `list_accounts` and `get_coverage_report`, and
+by nothing else | AC-12.8's sentence "the answer also carries `account_no_longer_active`" sits beside
+a clause that also covers `coverage.accounts`, which rides EVERY response — and a kind on every
+response equally is the `gapped` defect the contract names by name. Resolved on the existing
+precedent rather than by picking: `accounts_without_coverage` is store-wide standing state too, and
+fires on exactly these two tools. The FIGURE rides every answer; the WARNING rides the two answers
+that are about accounts. `query_transactions(account_id=N)` was proposed in the discovery document
+and is NOT built here — `list_transactions` belongs to C2's half of the ownership map, and no
+criterion names it. Left for integration | C1]`
+
+`[DECISION: AC-12.7 is discharged by leaving `silence_exceeds_cadence` FALSE for a non-active
+account, with `silence_ratio` reported as measured | The discovery document leaves "flag goes false
+or ratio goes null" open. Nulling the ratio would destroy the number `silence_ratio`'s own ruling
+exists to preserve, and the lifecycle fields on the same row are what say why the flag is false | C1]`
+
+`[DECISION: the operator's retirement command (`bankmachine accounts retire`) is NOT built | It is a
+vetoable MED-impact assumption in the discovery document, not a criterion — no clause of AC-12.1
+through AC-12.9 requires it — and `src/bankmachine/cli/` is outside chunk 01's ownership map. The
+consequence is stated rather than left to be found: `closed` is reachable in the read path and
+unreachable in the product, so the operator can never confirm what the system suspects and AC-12.2's
+honest ambiguity never resolves for any account. `test_account_lifecycle.py` asserts the absence so
+it cannot be mistaken for closed | C1]`
+
+**Three edits outside the ownership map, each forced by a criterion and each minimal:**
+
+- `src/bankmachine/store/connection.py` — `SUPPORTED_SCHEMA_VERSION` 2 → 3. A migration that nothing
+  serves is a datastore no build will open.
+- `src/bankmachine/mcp.py::_output_schema` — the `coverage` block gains the two AC-12.8 keys. That
+  block is shared by every tool and closes `additionalProperties`, so `query._coverage` could not
+  emit a key the schema did not declare without every tool's answer failing its own published schema.
+- `src/bankmachine/query.py::_unusable` — the same two keys, present and zero. The unreadable-store
+  path builds its envelope in a different function, and AC-12.8 fixes both as always-present.
+
+`src/bankmachine/mcp.py`'s server-instructions table also gained two rows, because
+`test_the_instructions_name_every_field_the_envelope_actually_carries` fails on an envelope key the
+instructions never name. No warning row was touched — chunk 00 landed those.
+
+**The cost, measured rather than inherited** (2026-09-09, 16 accounts across 4 connections, 4 of
+them no longer reported — the shipped sandbox's shape). The discovery document recorded the
+negligible-cost expectation as an expectation, and `learnings.md` § *A cited number measures what its
+study measured* is against reusing #19's 3.0ms figure for a different walk:
+
+| | per call |
+|---|---|
+| `list_accounts` end to end | 10.70 ms |
+| `_account_lifecycle` walk | **0.08 ms** |
+| `_account_coverage` walk (#19, for scale) | 0.15 ms |
+| `_coverage` envelope block, lifecycle figures included | 0.67 ms |
+
+`list_accounts` runs the lifecycle walk twice — once for its rows and once inside `_coverage`, which
+every tool calls. At 0.08 ms the duplication was left rather than threaded through `_answer`, whose
+signature is shared with C2's and C3's tools and was not C1's to move mid-fan-out.
+
 ### Chunk 02 · Pending-transaction semantics (#22)
 
 Delivers AC-13.1 through AC-13.7. Tier 1 (the read path — no aggregate distinguishes pending from

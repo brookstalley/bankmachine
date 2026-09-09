@@ -161,6 +161,26 @@ The agent invokes the CLI, so 🔴 **the exit-code contract is a scheduling cont
 found a problem, `2` means it could not run. Collapsing them would make a broken scheduler
 indistinguishable from a degraded feed.
 
+🔴 **Upgrading across a schema migration has an order, and it is not the usual one.** A build that
+does not recognize the datastore's version refuses to serve, so the datastore must be brought forward
+*and* every process that reads it must be the new build — in this order, on one machine:
+
+1. `launchctl unload` the sync agent, and stop the MCP server (a client disconnect is enough; the
+   server is a subprocess started at connect time).
+2. `bankmachine store backup` — 🔴 **before** the migration, because `store backup` opens through the
+   ordinary writer factory and cannot back up a datastore at a version this build does not serve.
+   After the migration the old build can no longer produce one.
+3. `git pull && uv sync`.
+4. `bankmachine store init` — the migration runner is idempotent and applies only what is pending.
+5. `bankmachine store status` — exit 0, and the reported schema version is the new one.
+6. Reconnect the MCP client and `launchctl load` the agent.
+
+**Migration 003 (`accounts.last_seen_date`, FR-9) is the first one this procedure has been written
+for.** It backfills nothing, so the first sync after the upgrade is what repopulates the column;
+until then every account reads as still-reported, which is the pre-migration answer rather than a
+wrong one. The MCP server and the CLI must be upgraded *with* the datastore — an older reader
+refuses to serve, which is the norm working rather than a fault.
+
 **Rollback** is `git checkout` plus `uv sync`. There is nothing deployed to roll back — but note that
 🔴 **a schema migration is forward-only and is not rolled back by reverting code.** A process that does
 not recognize the datastore's schema version refuses to serve rather than guessing, so an accidental
