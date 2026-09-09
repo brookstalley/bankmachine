@@ -111,7 +111,7 @@ survive the reversal rather than being deleted with it.
 
 - [x] **00 · The amendment, the column's type, the new warning kind, and one deletion** *(coordinator)*
 - [ ] **01 · The roster observation, recorded — #51** *(delegate, worktree)*
-- [ ] **02 · The contract describes everything it publishes — #52** *(delegate, worktree)*
+- [x] **02 · The contract describes everything it publishes — #52** *(delegate, worktree)*
 - [x] **03 · Hold state: two shapes, priced — #53** *(delegate, worktree, discovery only)*
 - [ ] **04 · Integration** *(coordinator)*
 
@@ -271,6 +271,30 @@ anyway.
 **Done when:** `UNDOCUMENTED_AT_FREEZE` is empty, the constant and its staleness test are deleted, the
 remaining assertion is unconditional and passing, no name was removed without a description landing
 for it, and the extraction contract above is written down where `#47` can build against it.
+
+#### Chunk 02 as-built — met in full, and one measured residual it did not create
+
+All four acceptance clauses hold, re-derived by the coordinator rather than accepted: the ratchet and
+its staleness guard are gone from the tree, and a parser written independently from the extraction
+contract's prose alone recovers **93 names from 16 tables**, set-equal to the published set. The
+delegate also found by hand that `status`, `pending` and `rows` had passed the old guard on
+*incidental backticks elsewhere in the document* and were undescribed regardless; all three now carry
+real rows.
+
+🔴 **The guard is weaker than "unconditional" makes it sound, and this is measured, not suspected.**
+Its test is `f"\`{name}\`" not in contract` — a whole-document substring sweep. A name in backticks
+anywhere at all counts as documented: in prose, in a `## Direction` norm, in the CLI section.
+**76 of the 93 published names appear in backticks somewhere other than their own table row, so
+destroying their entire description leaves this guard green. 17 are load-bearing.** The delegate's
+seen-red evidence is honest and happens to have used one of the 17.
+
+**This is not chunk 02's defect** — the sweep predates it and the chunk's brief was the shrinking. It
+is recorded here because chunk 02 is what makes the fix cheap: the extraction contract now exists and
+is validated, so the sweep can be replaced by a parser that reads only the authoritative tables. That
+would take the guard from 17/93 to 93/93 load-bearing **and** is the same parser `#47`'s remaining
+direction needs. **Routed to `#47`, not to chunk 04** — it is a scoped piece of work with its own
+go-red, not an integration step, and rushing it at integration is how a guard gets written that looks
+stronger than it is for a second time.
 
 ---
 
