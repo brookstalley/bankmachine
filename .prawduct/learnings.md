@@ -561,3 +561,44 @@ caller's must anchor on the call.
 ## Removing a value from every literal does not remove it from what those literals interpolate: a branch that builds its sentence from an exception string is the one that keeps leaking, and a guard exercising a single state proves nothing about it
 
 ## A carve-out reaches every state that shares its return type: when one function collapses several distinguishable states into one value, an exception written for one of them silently governs all of them, and the collapse is the defect rather than the exception
+
+---
+
+## A truncated search proves nothing about what it did not reach: `| head -N` returning exactly N is the signature of a cut, and reading it as exhaustion turns a search into a false negative
+
+**When a search backs a NEGATIVE conclusion — "no plan carries this scope", "nothing else tests
+this", "that symbol appears nowhere else" — do not pipe it through `head`. If you already did and
+the result is exactly N lines, treat the search as unfinished, because that is what a cut looks
+like from the inside.**
+
+The asymmetry is the whole point. Truncating a search for something you expect to FIND is harmless:
+you find it in the first N or you widen. Truncating a search that must prove ABSENCE inverts the
+result — the evidence for "it is not there" is indistinguishable from "I stopped looking", and
+nothing in the output says which happened. `head` is the cheap habit that makes that failure silent,
+and both instances below reported the wrong conclusion *confidently*.
+
+**Cross-checking one item against a sibling is what catches it.** Neither instance was visible to
+any per-item check: the value written was well-formed and permitted, and only its disagreement with
+a sibling produced by the same cycle exposed it.
+
+**Instances:**
+
+- *2026-09-08, the capabilities union.* Searching for existing tests with
+  `grep -rn -B5 -A25 'def test.*capabilit' tests/ | head -60` returned a truncated list; I concluded
+  `capabilities_of` was reached only through enrollment and wrote the fix on that basis. A second
+  test existed, asserted the defect as a contract, and failed the suite on the next full run — which
+  is the only reason it surfaced at all.
+- *2026-09-09, closing the backlog for one cycle.* A subagent ran
+  `grep -rn "^scope:\|^branch:" .prawduct/artifacts/*.md | head -20`, got **exactly 20 lines**, and
+  read it as the complete list of plans. There are 14; it saw 10, and the plan it needed sorted past
+  the cut. It concluded "no plan carries this scope", substituted a branch name for the scope, and
+  reported the substitution as a deliberate choice. Nothing downstream would have rejected it — the
+  field permits either spelling — so the only detectable symptom was that the cycle's two items
+  carried different handles and stopped querying as a unit.
+
+**How to apply:** for an absence claim, run the search unbounded, or bound it with `| wc -l` first
+so the count is a fact rather than a ceiling. When a subagent reports a negative finding that
+licenses a substitution or a skip, re-derive it yourself before accepting — `delegation.md` already
+says a delegate's "Done" on a sweep is a claim; this is the same rule for a delegate's "not found".
+Related: [[guarantees-by-construction]], whose instances are the same family — a check whose bad
+news never arrives.
