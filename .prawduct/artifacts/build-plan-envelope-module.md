@@ -124,7 +124,7 @@ before anything else is disturbed.
    `query.py` is answered deliberately: **yes**, for category 3, per the recorded decision.
 5. Published schemas and the reference documents are byte-identical — diffed, not asserted by
    eye. This is the acceptance criterion the whole plan rests on.
-6. Suite green at the recorded baseline, plus the new guard's two cases.
+6. Suite green at the recorded baseline, plus the new guard's cases.
 
 **Correction, recorded rather than quietly satisfied.** This chunk was written
 claiming "no test file changes." That was wrong, and the build proved it: tests import
@@ -183,22 +183,35 @@ anchor text now resolves in `envelope.py` rather than `query.py`.
 tree, and a Critic review reads it. Commit → run the harness → review. Never the harness and a
 review against the same tree.
 
-### Chunk 03: Artifacts, ruling, and backlog close
+### Chunk 03: Artifacts, ruling, and the backlog answer
 
 **Type:** doc-only
 
 1. Record the fourth-conditional-key ruling in `learnings.md` so the trigger outlives this plan,
    and update `architecture.md`'s module description to name the new boundary and its no-database
    invariant.
-2. Answer #39's four acceptance criteria explicitly, including the one added this cycle.
+2. Answer #39's five acceptance criteria explicitly on the issue, including the one added this
+   cycle. Answering is this chunk's deliverable; closing is not.
 3. Add the `.prawduct/change-log.md` entry for this scope — `scope=envelope-module-split`,
    and **no** `release=`, since any value at all drops the scope out of the
    release-pending set and silently unships the work.
-4. Close #39 via `/prawduct:backlog update status=shipped`.
+4. 🔴 **Do NOT close #39 here.** This repo is on the Issues backend, where a close is an API
+   call with no branch to ride — run on an unmerged branch it leaves the item wrongly closed if
+   the PR is reworked, and nothing later sweeps for that. The close belongs to `/prawduct:pr`'s
+   merge flow, seconds after the merge, paired with `update 39 --closed-by envelope-module-split`
+   and moving the `stage:` label off `design`. Record here that it is OWED, so an operator
+   inheriting this plan can see the debt: the plan outlives the branch, and it is where the next
+   reader checks what shipped.
 
 **Done when:** the ruling is findable by someone adding a fourth conditional key who has never
-read this plan; `architecture.md` describes the module boundary that now exists; #39 is closed
-with each acceptance line answered rather than assumed.
+read this plan; `architecture.md` describes the module boundary that now exists; and #39 carries
+each acceptance line answered rather than assumed, with its close recorded as owed at merge.
+
+🔴 **This wording is a re-fix, not a first draft.** The preceding merged commit `cd33323`
+corrected the same defect in another plan — a plan claiming a close it had not earned — and this
+plan reintroduced it. The reason it matters is the one that commit gave: a plan outlives its
+branch and is where the next reader checks what shipped, so a false close-claim here is read as
+fact long after the branch is gone.
 
 The three chunks ship as one PR, so this chunk's own review is the single cumulative
 pass over `merge-base...HEAD` — no separate `final`. Mode is left to inference rather
