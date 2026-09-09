@@ -18,12 +18,13 @@ from __future__ import annotations
 
 import io
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from bankmachine import mcp, query
+from bankmachine import envelope, mcp, query
 from bankmachine.config import Config
 from bankmachine.secrets import (
     delete_datastore_key,
@@ -59,6 +60,9 @@ def _every_tool() -> tuple[str, ...]:
     assert names, "the registry produced no tools, so every loop over this checks nothing"
     return names
 
+
+#: One way of breaking a datastore, applied to a config that names it.
+type _Builder = Callable[[Config], None]
 
 #: A window, offered only to the tools that advertise one.
 _A_WINDOW: dict[str, object] = {"since": "2026-01-01", "until": "2026-03-31"}
@@ -244,7 +248,7 @@ def test_every_problem_the_enum_declares_is_constructed_and_remedied(
     )
 
 
-def _state_builders() -> dict[DatastoreProblem, object]:
+def _state_builders() -> dict[DatastoreProblem, _Builder]:
     """One builder per declared state, shared by every enum-driven guard here.
 
     Shared rather than repeated so the two sweeps cannot drift apart — a state
@@ -267,11 +271,13 @@ def _empty_but_keyed(config: Config) -> None:
         conn.execute("SELECT 1").fetchone()
 
 
-def _initialized_then(step: object) -> object:
+def _initialized_then(step: _Builder) -> _Builder:
+    """A healthy store, then one step that breaks it in a specific way."""
+
     def build(config: Config) -> None:
         set_datastore_key(config, generate_datastore_key())
         migrate(config)
-        step(config)  # type: ignore[operator]
+        step(config)
 
     return build
 
@@ -321,12 +327,13 @@ def test_a_missing_datastore_still_answers(config: Config, entry_point: str) -> 
     assert answer.coverage["accounts"] == 0
 
 
-def _call_query(config: Config, entry_point: str) -> object:
+def _call_query(config: Config, entry_point: str) -> envelope.Answer:
     if entry_point == "list_transactions":
         return query.list_transactions(config, since=None, until=None, account_id=None)
     if entry_point == "money_summary":
         return query.money_summary(config, since=None, until=None, group_by="category")
-    return getattr(query, entry_point)(config)
+    answer: envelope.Answer = getattr(query, entry_point)(config)
+    return answer
 
 
 # --------------------------------------------------------------------------
@@ -392,7 +399,7 @@ def test_the_refusal_carries_no_stack_trace_or_sql(unservable_config: Config) ->
         assert leak not in message
 
 
-def _converse(config: Config, requests: list[dict[str, object]]) -> list[dict]:
+def _converse(config: Config, requests: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Drive the real server loop over string buffers.
 
     Not a mock of the protocol: the same `serve` the CLI calls, reading the same
@@ -405,7 +412,7 @@ def _converse(config: Config, requests: list[dict[str, object]]) -> list[dict]:
     return [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
 
 
-def _call_tool(config: Config, tool: str, arguments: dict[str, object]) -> dict:
+def _call_tool(config: Config, tool: str, arguments: dict[str, object]) -> dict[str, Any]:
     replies = _converse(
         config,
         [
@@ -418,7 +425,8 @@ def _call_tool(config: Config, tool: str, arguments: dict[str, object]) -> dict:
             },
         ],
     )
-    return replies[-1]["result"]
+    result: dict[str, Any] = replies[-1]["result"]
+    return result
 
 
 # --------------------------------------------------------------------------
