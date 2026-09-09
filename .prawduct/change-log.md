@@ -34,6 +34,64 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-08: The MCP surface says what it is, and what to do about what it says
+
+<!-- prawduct: scope=mcp-alignment -->
+
+**Why:** a review of three sibling projects' MCP practice, read against this server and
+against the SDK's own type definitions at 2.2.0 — the same version this repo cited when it
+decided not to take the SDK. The finding was not "conform". Two of the siblings' strongest
+positions are ones this server keeps departing from, and the departures are recorded beside
+the work rather than left for someone to re-litigate.
+
+**The handshake stopped claiming things that were not true.** It offered `2026-07-28`, a
+revision not reachable through `initialize` at all — the registry partitions handshake
+revisions from that one, whose sessions use a different envelope entirely. It omitted
+`2025-11-25`, so a client on the current revision was downgraded two steps. An explicit
+`"id": null` was read as a notification, so a conformant client sending one waited forever;
+`params` as a by-position array, which JSON-RPC permits, raised out of the read loop and
+ended the session. And build identity was hung on `serverInfo`, whose type declares no field
+for it and whose reader drops what it does not declare — so a comment claiming a client could
+see which build answered was false for every SDK-based client. It now rides `_meta`.
+
+**Every tool publishes an `outputSchema`, per tool rather than shared**, because the
+conditional keys carry meaning by their absence: an unwindowed tool's schema now *forbids* a
+window rather than merely not requiring one. A validating client turns envelope drift into a
+loud failure instead of an agent quietly consuming a changed payload.
+
+**A `resources` capability serves the reference material**, so the detail costs nothing until
+it is wanted. Both documents are derived — the warning reference walks the vocabulary, the
+envelope reference renders from the published schemas — so a kind added to the vocabulary
+arrives unexplained rather than silently missing.
+
+**The warnings now say what to DO.** The vocabulary was the half already done well: every kind
+was defined and not one said whether the answer could still be quoted. `gapped` now means do
+not answer about the ungranted period at all; `degraded` means treat the total as a floor.
+This is the gap all three siblings had independently closed.
+
+**Four guards, three of them structural.** Nothing on the server's import path may write to
+stdout (stdout *is* the transport). The documented tool surface must match the built one, by
+name rather than count. Every caveat must name a kind the vocabulary declares — because a
+published enum turns an invented kind into a *rejected answer*, so the warning would destroy
+the response it rode on. And the path guard learned that a URI segment is not a filesystem
+path. Each has a go-red case.
+
+**Not done, and filed rather than dropped — eight items, #30 through #37.** Consolidating the
+tool surface behind action parameters (#30, which must decide the `outputSchema` conflict it
+carries, and which binds the remaining tools before they are designed); teaching errors to hand
+back structured recovery data (#31); adopting `mcp-types` for the wire facts without the SDK's
+transport stack (#32); an eval harness that exercises the surface the way a model actually uses
+it (#33); the instructions still enumerating fields three carriers now state (#36, a deliberate
+keep-for-now whose revisit is tied to #30); a self-describing help surface on the tool layer
+(#37); and `get_coverage_report`, half the verification surface, still unbuilt (#35).
+
+🔴 **One of the eight is exposure this wave created rather than found: #34.** The decision table
+added here tells an agent what to DO about a `rule-applied` warning, and `rule-applied` is
+declared in the vocabulary, explained in the handshake table, and now carried in the resources
+surface — while none of the eleven `Caveat` construction sites can emit it. Three carriers now
+promise a warning nothing sends. The honest cheap fix is to mark it not-yet in all three places;
+building the emitter is the aggregate-rule path and is not this wave's.
+
 ## 2026-09-08: A truncated answer carries the route to the rest
 
 <!-- prawduct: scope=mcp-answer-scope -->

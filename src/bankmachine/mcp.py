@@ -31,7 +31,7 @@ from collections.abc import Callable, Iterator
 from datetime import date
 from typing import IO, Any
 
-from bankmachine import query
+from bankmachine import mcp_resources, query
 from bankmachine.build_id import build_identity
 from bankmachine.cli.exit_codes import EXIT_OK
 from bankmachine.config import Config
@@ -40,27 +40,59 @@ from bankmachine.store.connection import inspect
 
 logger = get_logger("mcp")
 
-#: The newest protocol version this server has been written against, read from
-#: `mcp.types.LATEST_PROTOCOL_VERSION` at 2.2.0 rather than remembered.
-LATEST_PROTOCOL_VERSION = "2026-07-28"
+#: The newest protocol revision an `initialize` handshake can reach, read from
+#: `mcp_types.version.LATEST_HANDSHAKE_VERSION` at 2.2.0 rather than remembered.
+#:
+#: 🔴 Deliberately NOT the SDK's `LATEST_PROTOCOL_VERSION`, which is documented
+#: as the newest revision that SDK speaks *in any era*. The registry is
+#: partitioned, and the partition is the point: `HANDSHAKE_PROTOCOL_VERSIONS`
+#: ends here, while `2026-07-28` sits alone in `MODERN_PROTOCOL_VERSIONS`, whose
+#: sessions use a stateless per-request envelope reached by a `server/discover`
+#: probe. `InitializeRequestParams` and `InitializeResult` both read *"Removed
+#: in protocol 2026-07-28"*, so naming it here would agree, on the handshake, to
+#: an era this server has no code for.
+#:
+#: A second and independent reason, so nobody restores it on the grounds that
+#: the handshake now "works": on 2026-07-28 `ListToolsResult` is a
+#: `CacheableResult` and `ttlMs`/`cacheScope` are REQUIRED on the wire. This
+#: server sends neither, and `tools/list` is the first call every client makes.
+LATEST_HANDSHAKE_VERSION = "2025-11-25"
 
 #: What to answer a client that asks for a version this server does not know.
 #: The SDK's own `DEFAULT_NEGOTIATED_VERSION`, and the conservative choice: a
 #: client that speaks something newer can still speak this.
 FALLBACK_PROTOCOL_VERSION = "2025-03-26"
 
-#: Versions this server will echo back verbatim when a client asks for one.
+#: Versions this server will echo back verbatim when a client asks for one --
+#: the SDK's `HANDSHAKE_PROTOCOL_VERSIONS` entire, because every member of it is
+#: a revision `initialize` can actually negotiate.
 #: 🔴 The CLIENT's version is honoured when recognized rather than the server's
 #: newest being asserted, because the client is the half that cannot adapt.
+#:
+#: 🔴 `2024-11-05` is in the set on purpose, not by inertia. The fallback below
+#: only rescues a client that can speak something NEWER than it asked for;
+#: leaving the oldest revision out means counter-offering `2025-03-26` to a
+#: client pinned at `2024-11-05`, which names a revision it cannot speak, and
+#: the spec has such a client disconnect rather than downgrade. Nothing this
+#: server puts on the wire distinguishes the two anyway -- `structuredContent`
+#: post-dates both, which is why every answer also carries the same JSON as
+#: text -- so excluding it would buy a connection failure and nothing else.
 SUPPORTED_PROTOCOL_VERSIONS: tuple[str, ...] = (
-    LATEST_PROTOCOL_VERSION,
-    "2025-06-18",
+    "2024-11-05",
     FALLBACK_PROTOCOL_VERSION,
+    "2025-06-18",
+    LATEST_HANDSHAKE_VERSION,
 )
 
 _PARSE_ERROR = -32700
 _INVALID_REQUEST = -32600
 _METHOD_NOT_FOUND = -32601
+#: 🔴 What a resource this server does not serve is refused with, read from the
+#: SDK rather than recalled: its own server maps `ResourceNotFoundError` to
+#: `INVALID_PARAMS` per SEP-2164, and `mcp_types.jsonrpc` records `-32002` --
+#: the code an older spec used for exactly this -- as reserved and never
+#: reused. A retired code would be a refusal a current client cannot classify.
+_INVALID_PARAMS = -32602
 _INTERNAL_ERROR = -32603
 
 
@@ -68,33 +100,236 @@ _INTERNAL_ERROR = -32603
 #: because two tools describing one mechanism in two sentences is how the two
 #: sentences stop agreeing -- and this text is the only place a caller is told
 #: the field exists before they have seen one.
+#: 🔴 Deliberately short. The mechanism is spelled out once in the handshake
+#: instructions and again, in full, in the envelope reference this server serves
+#: by URI -- so a third telling here would be the third copy to drift, and it
+#: would cost every session the tokens whether the window mattered or not. What
+#: survives is what a caller cannot act correctly without: that an empty result
+#: outside coverage is not a zero.
 _WINDOW_NOTE = (
-    "The window you ask for is CLAMPED to what the store can answer over, and the result "
-    "says so: `effective_window` carries the window requested beside the window actually "
-    "covered, and a `window_starts_before_coverage` or `window_extends_past_coverage` warning "
-    "names the boundary crossed. Absent those warnings, the window you asked for is the "
-    "window you got. Read it before treating an empty result as a zero -- outside coverage, "
-    "data is ABSENT rather than zero."
+    "WINDOWED: the window is CLAMPED to what the store covers. `effective_window` says what "
+    "was actually answered over, and a `window_starts_before_coverage` or "
+    "`window_extends_past_coverage` warning names the boundary crossed; absent those, you got "
+    "the window you asked for. Outside coverage, data is ABSENT rather than zero, so an empty "
+    "result there is not a zero."
 )
 
 #: 🔴 On `query_transactions` alone. `spending_summary` is an aggregate, fixed
 #: unpaginated by `api-contract.md` and bounded by its grouping, so saying this
 #: there would describe a cap it does not have.
+#: Shortened for the reason `_WINDOW_NOTE` is, and kept longer than it because
+#: the failure it prevents is silent arithmetic on a partial page rather than a
+#: misread empty one. The field-by-field detail is in the envelope reference.
 _TRUNCATION_NOTE = (
-    "This tool is CAPPED. `truncation` carries `matching` (how many rows the request "
-    "selects), `returned` (how many came back) and `truncated`. 🔴 When `truncated` is true "
-    "the rows are the NEWEST ones only, so summing or counting them describes what came "
-    "back rather than the window you asked about -- a `rows_truncated` warning says by how "
-    "much. To read the rest, pass the answer's `next_cursor` straight back as `cursor` with "
-    "the SAME window and account, and keep going until `truncated` is false -- that is the "
-    "only route that reaches every matching row. Narrowing the window or raising `limit` "
-    "moves the cap; paging removes it."
+    "CAPPED: `truncation` carries `matching`, `returned` and `truncated`. 🔴 When `truncated` "
+    "is true the rows are the NEWEST ones only, so summing or counting them describes what "
+    "came back rather than the window you asked about. Pass `next_cursor` back as `cursor` "
+    "with the SAME window and account until `truncated` is false -- that is the only route "
+    "reaching every matching row. Narrowing the window or raising `limit` moves the cap; "
+    "paging removes it."
 )
+
+
+#: What every tool on this surface says about itself, on the wire.
+#: `api-contract.md` § Direction ratifies that *the MCP surface is read-only;
+#: there are no mutation tools, and adding one is not a decision this norm
+#: leaves open* -- and until this block existed that norm had no machine-readable
+#: expression anywhere a client could ask. `ToolAnnotations` is the field the
+#: protocol provides for saying it, and the norm is already true, so this
+#: describes a fact rather than making a promise.
+#:
+#: 🔴 A declaration, not an enforcement, and the SDK's own caveat is the reason
+#: to keep the two apart: annotations are *hints*, and "clients should never
+#: make tool use decisions based on ToolAnnotations received from untrusted
+#: servers." The enforcement stays where it already is -- in the `mode=ro` file
+#: handle every tool opens through, which refuses a write whatever a client
+#: believed about this dictionary.
+_READ_ONLY_ANNOTATIONS: dict[str, Any] = {
+    "readOnlyHint": True,
+    # Meaningful only when `readOnlyHint` is false, per the SDK's own note.
+    # Stated anyway, because a client reading one field and not the other still
+    # gets a true answer, and the default it would otherwise assume is `true`.
+    "destructiveHint": False,
+    "idempotentHint": True,
+    # Closed world: every answer is assembled from the local datastore. The
+    # aggregator is the sync path's business, and no tool here reaches it.
+    "openWorldHint": False,
+}
+
+
+def _output_schema(
+    row_properties: dict[str, dict[str, Any]], *, windowed: bool, capped: bool
+) -> dict[str, Any]:
+    """One tool's answer, published as a schema so the shape outlives the prose.
+
+    Until this existed the envelope was described to the agent only in words --
+    in `instructions` and in each tool's description -- and words are what a
+    context budget trims first. `Tool.outputSchema` is where the protocol takes
+    the same statement in a form nothing thins out, and a client that speaks it
+    checks every answer against what was published rather than trusting it.
+
+    🔴 **Per-tool, because the envelope is per-tool.** `query.Answer` emits
+    `effective_window` and `truncation` only where they are true of the tool
+    that answered, and `api-contract.md` fixes their ABSENCE as information: no
+    `effective_window` says this tool takes no window, no `truncation` says it
+    returns every row it found. One schema with both keys merely optional would
+    publish the opposite of that -- that any tool might carry either -- so a
+    windowed tool REQUIRES its window here and an unwindowed one cannot carry
+    one at all, which is what `additionalProperties: False` says.
+    `coverage.transactions_in_effective_window` follows the same condition,
+    because `query` keys it off the same one.
+
+    🔴 **Every level is closed and every unconditional key required**, and the
+    strictness is the mechanism rather than a preference: a key that reaches the
+    wire without reaching this schema fails a test here, where a schema drifting
+    from its payload otherwise reaches a client that validates and rejects a
+    good answer. Nothing caches across the gap either -- the schema and the
+    answers it describes leave one process, in one session.
+
+    A fresh dict per call, like the annotations below: these go out inside a
+    structure a caller is free to edit.
+    """
+
+    def bounds() -> dict[str, Any]:
+        # Both ends nullable: an unbounded request has no `since`, and a window
+        # that does not overlap coverage at all has no effective bounds.
+        return {
+            "type": "object",
+            "properties": {
+                "since": {"type": ["string", "null"]},
+                "until": {"type": ["string", "null"]},
+            },
+            "required": ["since", "until"],
+            "additionalProperties": False,
+        }
+
+    coverage: dict[str, Any] = {
+        "connections": {"type": "integer"},
+        "accounts": {"type": "integer"},
+        "transactions": {
+            "type": "integer",
+            "description": "store-wide, and never narrowed by the question asked",
+        },
+        "earliest_transaction": {"type": ["string", "null"]},
+        "latest_transaction": {"type": ["string", "null"]},
+    }
+    if windowed:
+        coverage["transactions_in_effective_window"] = {
+            "type": "integer",
+            "description": (
+                "how many rows the window this answer actually covered holds -- the count to "
+                "read against a windowed question, and not narrowed by `account_id`"
+            ),
+        }
+
+    properties: dict[str, Any] = {
+        "environment": {
+            "type": "string",
+            "description": "which datastore answered, so a fixture cannot pass for real money",
+        },
+        "as_of": {"type": "string", "description": "when this answer was assembled, UTC"},
+        "build": {
+            "type": "object",
+            "description": "which code answered",
+            "properties": {
+                "version": {"type": "string"},
+                # Null means the build could not be identified, and `dirty` is
+                # then null too rather than a false claim that the tree was clean.
+                "commit": {"type": ["string", "null"]},
+                "dirty": {"type": ["boolean", "null"]},
+            },
+            "required": ["version", "commit", "dirty"],
+            "additionalProperties": False,
+        },
+        "warnings": {
+            "type": "array",
+            "description": (
+                "read these before drawing a conclusion: an answer can be perfectly "
+                "well-formed and still be computed over incomplete data"
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    # The vocabulary itself rather than a copy of it. A kind a
+                    # consumer is told to branch on is one the published schema
+                    # has to admit, and a list retyped here would start refusing
+                    # answers this server sends the first time a kind is added.
+                    "kind": {"type": "string", "enum": list(query.WARNING_KINDS)},
+                    "detail": {"type": "string"},
+                    # Both carried only by a warning about one connection: an
+                    # operator with ten institutions needs to know which went quiet.
+                    "connection_id": {"type": "integer"},
+                    "institution": {"type": "string"},
+                },
+                "required": ["kind", "detail"],
+                "additionalProperties": False,
+            },
+        },
+        "coverage": {
+            "type": "object",
+            "description": (
+                "what the store HOLDS, which is how an empty answer is told from an empty world"
+            ),
+            "properties": coverage,
+            "required": list(coverage),
+            "additionalProperties": False,
+        },
+        "rows": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": row_properties,
+                # Every key of every row, because each row is built in one place
+                # from one dict literal: a field that is null is present and
+                # null, never dropped.
+                "required": list(row_properties),
+                "additionalProperties": False,
+            },
+        },
+    }
+    required = ["environment", "as_of", "build", "warnings", "coverage", "rows"]
+    if windowed:
+        properties["effective_window"] = {
+            "type": "object",
+            "description": (
+                "the window asked for beside the window the data could answer over; the "
+                "clamp is reportorial, so it never changes a figure, only says what the "
+                "figure was computed over"
+            ),
+            "properties": {"requested": bounds(), "effective": bounds()},
+            "required": ["requested", "effective"],
+            "additionalProperties": False,
+        }
+        required.append("effective_window")
+    if capped:
+        properties["truncation"] = {
+            "type": "object",
+            "description": (
+                "how many rows matched, how many came back, and therefore whether rows were "
+                "left behind. `next_cursor` is present when and only when there is another "
+                "page to read"
+            ),
+            "properties": {
+                "returned": {"type": "integer"},
+                "matching": {"type": "integer"},
+                "truncated": {"type": "boolean"},
+                "next_cursor": {"type": "string"},
+            },
+            "required": ["returned", "matching", "truncated"],
+            "additionalProperties": False,
+        }
+        required.append("truncation")
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": False,
+    }
 
 
 def _tool_definitions() -> list[dict[str, Any]]:
     """The tool surface. 🔴 Every one of them reads; none of them writes."""
-    return [
+    definitions: list[dict[str, Any]] = [
         {
             "name": "list_accounts",
             "title": "List accounts",
@@ -106,6 +341,28 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "card balance is negative."
             ),
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+            "outputSchema": _output_schema(
+                {
+                    "account_id": {"type": "integer"},
+                    "institution": {"type": "string"},
+                    "name": {"type": "string"},
+                    "mask": {"type": ["string", "null"]},
+                    "type": {"type": "string"},
+                    "subtype": {"type": ["string", "null"]},
+                    "balance_class": {"type": "string"},
+                    "current_minor_units": {
+                        "type": ["integer", "null"],
+                        "description": (
+                            "the latest recorded balance in MINOR UNITS, null when none has "
+                            "been recorded yet"
+                        ),
+                    },
+                    "currency": {"type": ["string", "null"]},
+                    "balance_as_of": {"type": ["string", "null"]},
+                },
+                windowed=False,
+                capped=False,
+            ),
         },
         {
             "name": "query_transactions",
@@ -151,6 +408,34 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 },
                 "additionalProperties": False,
             },
+            "outputSchema": _output_schema(
+                {
+                    "transaction_id": {"type": "integer"},
+                    "account": {"type": "string"},
+                    "date": {"type": "string"},
+                    "description": {
+                        "type": "string",
+                        "description": "the institution's own string, and the authoritative one",
+                    },
+                    "merchant": {
+                        "type": ["string", "null"],
+                        "description": "the aggregator's guess at a merchant name, unvalidated",
+                    },
+                    "amount_minor_units": {
+                        "type": "integer",
+                        "description": (
+                            "MINOR UNITS, signed from the account holder's point of view: "
+                            "negative is money out"
+                        ),
+                    },
+                    "currency": {"type": "string"},
+                    "pending": {"type": "boolean"},
+                    "category": {"type": ["string", "null"]},
+                    "category_is_override": {"type": "boolean"},
+                },
+                windowed=True,
+                capped=True,
+            ),
         },
         {
             "name": "spending_summary",
@@ -169,6 +454,18 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 },
                 "additionalProperties": False,
             },
+            "outputSchema": _output_schema(
+                {
+                    "category": {"type": "string"},
+                    "transactions": {"type": "integer"},
+                    "spent_minor_units": {
+                        "type": "integer",
+                        "description": "outflow in MINOR UNITS, as a positive magnitude",
+                    },
+                },
+                windowed=True,
+                capped=False,
+            ),
         },
         {
             "name": "get_pipeline_health",
@@ -180,8 +477,33 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "window of null means NOT YET MEASURED, never 'no shortfall'."
             ),
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+            "outputSchema": _output_schema(
+                {
+                    "connection_id": {"type": "integer"},
+                    "institution": {"type": "string"},
+                    "status": {"type": "string"},
+                    "last_success_at": {"type": ["string", "null"]},
+                    "last_error_code": {"type": ["string", "null"]},
+                    "requested_history_days": {"type": ["integer", "null"]},
+                    "granted_history_days": {
+                        "type": ["integer", "null"],
+                        "description": "null means NOT YET MEASURED, never 'no shortfall'",
+                    },
+                    "history_starts": {"type": ["string", "null"]},
+                    "retired": {"type": "boolean"},
+                },
+                windowed=False,
+                capped=False,
+            ),
         },
     ]
+    for definition in definitions:
+        # Attached to the whole list rather than written into each entry: the
+        # claim is "every tool here is read-only", and four copies of one claim
+        # is how three of them stay right. A fresh dict per tool because these
+        # go out as part of a mutable structure a caller may edit.
+        definition["annotations"] = dict(_READ_ONLY_ANNOTATIONS)
+    return definitions
 
 
 def _tool_names() -> frozenset[str]:
@@ -360,7 +682,23 @@ def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> q
     return handler()
 
 
+#: Where the running build rides in the initialize result's `_meta`. Namespaced
+#: because `io.modelcontextprotocol/*` is reserved for the protocol's own keys
+#: and an unprefixed name is a collision waiting for a future revision to claim.
+BUILD_META_KEY = "bankmachine/build"
+
+
 def _server_info(config: Config) -> dict[str, Any]:
+    """Only the keys `Implementation` declares. Anything else is dropped in transit.
+
+    🔴 `Implementation` -- the type `serverInfo` is -- declares `name`, `title`,
+    `version`, `description`, `websiteUrl` and `icons`, and nothing more. The
+    SDK's wire base sets `populate_by_name=True` and leaves pydantic's default
+    `extra="ignore"` in force, so an undeclared key hung off `serverInfo` is
+    discarded silently before any SDK-based client can read it. Build identity
+    that a client is meant to SEE therefore travels in `_meta`, which is the
+    sanctioned extension point and is typed to hold anything.
+    """
     return {
         "name": "bankmachine",
         # 🔴 The environment is in the server's own identity as well as in every
@@ -371,59 +709,196 @@ def _server_info(config: Config) -> dict[str, Any]:
         # version is one that stops matching `pyproject.toml` the first time
         # either moves without the other.
         "version": build_identity().version,
-        # 🔴 The handshake carries it too, so a client can show which build it
-        # connected to before any tool is called. `null` means the build could
-        # not be identified -- it is never guessed at.
-        "commit": build_identity().commit,
-        "dirty": build_identity().dirty,
+    }
+
+
+def _build_meta() -> dict[str, Any]:
+    """The running build, in the one place on the handshake a client can read it.
+
+    So a client can show which build it connected to before any tool is called.
+    The same three keys as every answer's `build`, from the same capture: two
+    readings of one process are one fact, and a client showing a human one
+    commit while an agent read another would be unfalsifiable.
+    """
+    identity = build_identity()
+    return {
+        "version": identity.version,
+        # 🔴 `null` means the build could not be identified -- it is never
+        # guessed at, and `dirty` is then null too rather than a false claim
+        # that the tree was clean.
+        "commit": identity.commit,
+        "dirty": identity.dirty,
     }
 
 
 def _instructions(config: Config) -> str:
+    """What a consuming agent reads once, at handshake, before it calls anything.
+
+    🔴 **Tables, not paragraphs, and the right-hand column is the deliverable.**
+    This text is read by a model rather than a person, and its job is not to
+    describe the envelope -- `_reference_documents()` does that, by URI, at no
+    per-session cost. Its job is to say what to DO when a field says something.
+    A vocabulary an agent can recite and cannot act on is the half of this
+    product that was missing: every kind was defined here and not one of them
+    said whether the answer could still be quoted.
+
+    🔴 **Every envelope field and every warning kind is still NAMED here**, and
+    two tests hold this text to that. That is deliberate and it is the reason
+    the tables are dense rather than short: the names cannot leave, so the
+    paragraphs around them are what had to. Cutting a name to save room would
+    make the one document the agent reads deny that a field exists.
+    """
     return (
         f"This server reads a local {config.environment} finance datastore. It is READ-ONLY "
-        f"and never moves money.\n\n"
-        f"Every response carries `environment`, `as_of`, `build`, `coverage`, `warnings` and "
-        f"`rows`. `build` carries `version`, `commit` and `dirty`, and says which code answered "
-        f"you -- this server is a subprocess launched "
-        f"at connect time, so it runs whatever existed then, and `commit` is captured once at "
-        f"start rather than re-read (a null `commit` means the build could not be identified, "
-        f"and `dirty` is then null too, never false).\n\n"
-        f"🔴 A WINDOWED tool also carries `effective_window`, holding `requested` (the window "
-        f"you asked for) beside `effective` (the one the data could answer over), each a "
-        f"`since` and an `until`. A CAPPED tool also carries `truncation` "
-        f"(`matching`, `returned`, `truncated`). Absence of either key means that tool has no "
-        f"window, or returns every row it finds. 🔴 **If `truncated` is true the rows are the "
-        f"NEWEST ones only, so summing or counting them describes what came back rather than "
-        f"the window you asked about.** A truncated answer also carries "
-        f"a `next_cursor` inside `truncation`: pass it straight back as the tool's `cursor` "
-        f"argument, "
-        f"with the same window and account, to read the next page, and keep going until "
-        f"`truncated` is false. The cursor is OPAQUE -- never build or edit one -- and it is "
-        f"present when and only when there is more to read.\n\n"
-        f"🔴 `coverage` says what the store HOLDS, which is how an empty answer is told from an "
-        f"empty world: `connections`, `accounts`, `transactions`, and `earliest_transaction` / "
-        f"`latest_transaction`, the first and last dates any transaction carries. 🔴 "
-        f"`transactions` is ALWAYS store-wide and never narrows with your question. A windowed "
-        f"answer adds `transactions_in_effective_window` — how many rows the window it actually "
-        f"covered holds — and that is the one to read against a windowed question. It is not "
-        f"narrowed by `account_id` either, so it is a fact about the window rather than about "
-        f"your filters; compare it against `truncation.matching`, which is.\n\n"
-        f"🔴 Read `warnings` before drawing a conclusion: an answer can be perfectly "
-        f"well-formed and still be computed over incomplete data. Some warnings describe the "
-        f"PIPELINE and ride every response: `stale` means a connection has not synced "
-        f"recently; `degraded` means one is failing; `gapped` means the institution granted "
-        f"less history than was asked for, so older data is ABSENT rather than zero; "
-        f"`partial` means something is not yet known; `rule-applied` means an account rule "
-        f"filtered rows out of an aggregate, so the total excludes them on purpose. The rest "
-        f"describe THIS REQUEST and "
-        f"appear only when it crosses the boundary they name, so their absence is information "
-        f"too: `window_starts_before_coverage` and `window_extends_past_coverage` mean the "
-        f"window you asked for reaches outside what the store holds; `rows_truncated` means "
-        f"rows were left behind; `counted_during_change` means a write landed while the "
-        f"answer was being assembled.\n\n"
-        f"All amounts are integer minor units (cents for USD) and signed from the account "
-        f"holder's point of view: negative is money out, positive is money in."
+        f"and never moves money. Amounts are integer minor units (cents for USD), signed from "
+        f"the account holder's point of view: negative is money out, positive is money in.\n\n"
+        f"🔴 **An answer can be perfectly well-formed and still be computed over incomplete "
+        f"data.** Read `warnings` BEFORE drawing a conclusion, and say what you found. Nothing "
+        f"here throws; the numbers simply stop being true.\n\n"
+        f"WHAT A WARNING MEANS, AND WHAT TO DO ABOUT IT\n"
+        f"These ride every response and describe the PIPELINE:\n"
+        f"| kind | what it means | what to do |\n"
+        f"|---|---|---|\n"
+        f"| `stale` | a connection has not synced recently | quote the figure, say it may be "
+        f"out of date, and name `as_of` |\n"
+        f"| `degraded` | a connection is failing | treat totals as a FLOOR; the missing "
+        f"institution's rows are absent, not zero |\n"
+        f"| `gapped` | the institution granted less history than was asked for | do not answer "
+        f"about the ungranted period at all -- older data is ABSENT, and an empty result there "
+        f"is not a zero |\n"
+        f"| `partial` | something is not yet known | never read it as 'no shortfall'; say the "
+        f"measurement has not happened |\n"
+        f"| `rule-applied` | an account rule filtered rows out of an aggregate | the total "
+        f"excludes them ON PURPOSE; say so when you quote it |\n\n"
+        f"These describe THIS REQUEST and appear only when it crosses the boundary they name, "
+        f"so their ABSENCE is information too:\n"
+        f"| kind | what it means | what to do |\n"
+        f"|---|---|---|\n"
+        f"| `window_starts_before_coverage` | your window reaches back past what the store "
+        f"holds | re-ask inside `effective_window.effective`, or qualify the answer to it |\n"
+        f"| `window_extends_past_coverage` | your window reaches past the last data | the tail "
+        f"is unanswered, not quiet |\n"
+        f"| `rows_truncated` | rows were left behind | do NOT sum or count these rows; page "
+        f"with `next_cursor` until `truncated` is false, or ask `spending_summary` instead |\n"
+        f"| `counted_during_change` | a write landed while the answer was assembled | rows and "
+        f"counts are from adjacent moments; re-ask if the two must reconcile exactly |\n\n"
+        f"WHAT EVERY ANSWER CARRIES\n"
+        f"| field | read it for |\n"
+        f"|---|---|\n"
+        f"| `environment` | whether this is real money or a fixture |\n"
+        f"| `as_of` | how fresh the answer is |\n"
+        f"| `build` (`version`, `commit`, `dirty`) | which code answered; this server is a "
+        f"subprocess started at connect time, so it runs whatever existed then. A null "
+        f"`commit` means the build could not be identified, and `dirty` is then null too, "
+        f"never false |\n"
+        f"| `coverage` | what the store HOLDS -- `connections`, `accounts`, `transactions`, "
+        f"`earliest_transaction`, `latest_transaction`. 🔴 `transactions` is ALWAYS store-wide "
+        f"and never narrows with your question |\n"
+        f"| `warnings` | the tables above |\n"
+        f"| `rows` | the answer itself |\n\n"
+        f"A WINDOWED tool adds `effective_window` — `requested` (what you asked for) beside "
+        f"`effective` (what the data could answer over), each a `since` and an `until` — and "
+        f"adds `transactions_in_effective_window` inside `coverage`, the count to read against "
+        f"a windowed question. That count ignores `account_id`, so it is a fact about the "
+        f"window rather than about your filters; `matching` is the one narrowed by them.\n\n"
+        f"A CAPPED tool adds `truncation` (`matching`, `returned`, `truncated`). 🔴 **When "
+        f"`truncated` is true the rows are the NEWEST ones only**, so summing them describes "
+        f"what came back rather than the window you asked about. Pass `next_cursor` back as "
+        f"`cursor` with the SAME window and account, and keep going until `truncated` is "
+        f"false. The cursor is OPAQUE -- never build or edit one -- and it is present when and "
+        f"only when there is more to read.\n\n"
+        f"🔴 **Absence of `effective_window` or `truncation` is a fact, not a gap**: that tool "
+        f"takes no window, or returns every row it found. Each tool publishes an "
+        f"`outputSchema` saying which it carries.\n\n"
+        f"The full detail is SERVED rather than repeated here — read it by URI when you need "
+        f"it, at no cost when you do not: `{mcp_resources.ENVELOPE_URI}` is every field and "
+        f"which tools carry it; `{mcp_resources.WARNINGS_URI}` is every warning kind with what "
+        f"it implies and what to do."
+    )
+
+
+def _reference_documents() -> list[mcp_resources.Document]:
+    """The reference surface, assembled from the vocabulary and the tool schemas.
+
+    🔴 Reads nothing. AC-ARCH.3 makes every tool answer against a missing or
+    unreadable datastore, and a resource that could not would be a fresh way for
+    the operator's tool to fail on the one connection where they most need to
+    ask why -- so these documents are derived from what this process already
+    knows about itself, and there is nothing for a broken store to fail at.
+    """
+    return mcp_resources.documents(_tool_definitions())
+
+
+def _resource_entry(document: mcp_resources.Document) -> dict[str, Any]:
+    """One listing entry. `Resource`'s own fields, and no others.
+
+    `size` is offered because the type is explicit about what it is for -- a
+    host estimating context-window cost before it reads -- which is the whole
+    argument for serving this material as resources rather than as prose in the
+    handshake. Measured in bytes of the text itself, as the field specifies.
+    """
+    return {
+        "uri": document.uri,
+        "name": document.name,
+        "title": document.title,
+        "description": document.description,
+        "mimeType": document.mime_type,
+        "size": len(document.text.encode("utf-8")),
+    }
+
+
+def _handle_resource(method: str, message_id: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """The resource surface, refusing the way the tool surface refuses.
+
+    🔴 The broad catch is the same boundary argument `tools/call` makes: an
+    exception escaping here ends the read loop, and the operator sees their tool
+    disappear mid-session rather than fail. A resource has no `isError` channel
+    to report on -- `ReadResourceResult` carries only `contents` -- so a failure
+    is a protocol error, which is also what the SDK's own server does.
+    """
+    try:
+        documents = _reference_documents()
+    except Exception:  # prawduct:allow prawduct/broad-except -- boundary, see above
+        # 🔴 The exception never crosses the boundary: `api-contract.md`
+        # § Error Model keeps stack traces and internal identifiers off the
+        # wire. The detail goes to the log, where redaction applies.
+        logger.exception("the reference documents could not be assembled")
+        return _error(
+            message_id,
+            _INTERNAL_ERROR,
+            "the reference documents could not be assembled. The failure has been logged; "
+            "the tools are unaffected and answer as usual.",
+        )
+
+    if method == "resources/list":
+        return _result(message_id, {"resources": [_resource_entry(d) for d in documents]})
+
+    if method == "resources/templates/list":
+        # Every document here is served at a fixed URI, so there is no template
+        # to expand. Answered rather than refused because declaring `resources`
+        # is what invites the call, and an error to a call this server invited
+        # is the failure the capability declaration exists to avoid.
+        return _result(message_id, {"resourceTemplates": []})
+
+    uri = params.get("uri")
+    if not isinstance(uri, str):
+        return _error(message_id, _INVALID_PARAMS, "resources/read needs a uri")
+    for document in documents:
+        if document.uri == uri:
+            return _result(
+                message_id,
+                {
+                    "contents": [
+                        {"uri": document.uri, "mimeType": document.mime_type, "text": document.text}
+                    ]
+                },
+            )
+    # Refused the way an unknown tool is: a sentence naming what was asked for
+    # and what is on offer, so the caller's next call can be the right one. The
+    # roster is read back off the documents rather than restated.
+    served = ", ".join(document.uri for document in documents)
+    return _error(
+        message_id, _INVALID_PARAMS, f"no resource at {uri!r}. This server serves: {served}"
     )
 
 
@@ -433,11 +908,28 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
     message_id = message.get("id")
     params = message.get("params") or {}
 
-    if message_id is None:
+    if "id" not in message:
         # A notification. `notifications/initialized` is the expected one; any
         # other is ignored rather than answered, because replying to a
         # notification is a protocol error on this side.
+        #
+        # 🔴 Asked as "is there an `id` member", not "is the id None", because
+        # those are different questions and JSON-RPC 2.0 answers them
+        # differently: a Notification is a request object WITHOUT an `id`, so an
+        # `id` that is present and null is an ordinary request and gets an
+        # ordinary response carrying `"id": null`. Collapsing the two leaves
+        # that client waiting for a reply this server decided not to send, and a
+        # hang is the one failure the read loop exists to prevent.
         return None
+
+    if not isinstance(params, dict):
+        # 🔴 JSON-RPC 2.0 permits `params` to be an ARRAY -- by-position
+        # arguments -- and every branch below reads it as an object. An array
+        # from a conformant client would raise an `AttributeError` out of this
+        # function and out of `serve()`, which is the operator's tool
+        # disappearing mid-session. MCP itself only ever sends an object, so
+        # this is refused rather than interpreted.
+        return _error(message_id, _INVALID_REQUEST, "params must be an object")
 
     if method == "initialize":
         requested = params.get("protocolVersion")
@@ -450,16 +942,36 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
             message_id,
             {
                 "protocolVersion": version,
-                # Only `tools`. Declaring a capability this server does not serve
-                # would have the client offer the operator something that fails.
-                "capabilities": {"tools": {"listChanged": False}},
+                # Both of these, and nothing else, because both are served.
+                # Declaring a capability this server does not serve would have
+                # the client offer the operator something that fails.
+                #
+                # Each sub-flag is the same claim one level down: nothing here
+                # emits a `listChanged` notification -- the tool list and the
+                # reference documents are both fixed for the life of the
+                # process -- and there is no subscription machinery, so a
+                # client that asked to be told about a change would wait
+                # forever on a promise never made.
+                "capabilities": {
+                    "tools": {"listChanged": False},
+                    "resources": {"subscribe": False, "listChanged": False},
+                },
                 "serverInfo": _server_info(config),
+                # Build identity rides here rather than on `serverInfo`, whose
+                # type declares no field for it and whose reader drops what it
+                # does not declare. `InitializeResult` inherits
+                # `meta: Meta | None = Field(alias="_meta")` from `Result`, and
+                # `Meta` is `dict[str, Any]`.
+                "_meta": {BUILD_META_KEY: _build_meta()},
                 "instructions": _instructions(config),
             },
         )
 
     if method == "tools/list":
         return _result(message_id, {"tools": _tool_definitions()})
+
+    if method in ("resources/list", "resources/templates/list", "resources/read"):
+        return _handle_resource(method, message_id, params)
 
     if method == "tools/call":
         name = params.get("name")
@@ -536,6 +1048,13 @@ def _tool_error(message_id: Any, code: str, remedy: str) -> dict[str, Any]:
     retrying with a corrected call, `internal_error` is not -- and a remedy
     sentence for the human. Both forms, because a client that renders only text
     would otherwise show an empty failure.
+
+    🔴 This payload deliberately does NOT match the tool's published
+    `outputSchema`, and shaping it so it did would be the wrong repair: that
+    schema describes an ANSWER, and a refusal is not one. A client holds
+    `structuredContent` to the schema only where `isError` is false, so the two
+    never meet -- and dressing a refusal as an answer to satisfy a check nobody
+    runs would cost the `error` block a consumer branches on.
     """
     return _result(
         message_id,

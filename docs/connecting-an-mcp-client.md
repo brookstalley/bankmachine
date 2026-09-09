@@ -99,6 +99,33 @@ wire; this page is a copy and can. **Read the warnings before drawing a conclusi
 can be perfectly well-formed and still be computed over incomplete data, and that is the failure this
 product exists to prevent.
 
+Each tool also publishes an `outputSchema`, which says *per tool* whether it carries a window or a
+cap — so a client can tell "this tool has no window" from "this answer happens not to have one"
+without calling it. A client that validates will reject a payload that has drifted from the schema,
+which turns silent envelope drift into a loud failure.
+
+## Reference material, without spending a tool call
+
+The server also serves two MCP **resources**. A client reads them by URI, so the detail costs
+nothing until it is wanted:
+
+| URI | What it is |
+|---|---|
+| `bankmachine://reference/warnings` | every warning kind, what it implies about the answer carrying it, and what to do about it |
+| `bankmachine://reference/envelope` | every envelope field and which tools carry it |
+
+Both are generated from the code that produces the answers — the warning reference walks the
+vocabulary itself, the envelope reference renders from the published schemas — so neither can quietly
+fall behind the wire the way this page can.
+
+## What the handshake tells you
+
+`initialize` carries the build in `_meta` under `bankmachine/build`, so you can see which code you
+connected to before calling anything. It negotiates a protocol revision from `2024-11-05` through
+`2025-11-25`, honouring yours when it is one of those. And every tool declares `readOnlyHint`, which
+is this surface's read-only guarantee stated where a client can actually read it — though the
+guarantee itself lives in the `mode=ro` file handle, not in the annotation.
+
 🔴 **`coverage.transactions` is always store-wide.** It does not narrow with your question, so a
 windowed answer carries a sibling — `coverage.transactions_in_effective_window` — counted over the
 window the answer actually covered. Read the sibling against a windowed question; reading

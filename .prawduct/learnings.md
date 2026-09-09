@@ -275,9 +275,9 @@ sabotage and reports it as fact.**
 
 The harness is the mechanism behind [[two-descriptions-compared]] — it removes a mechanism and
 checks that a named test notices. Removing the mechanism means *writing the broken version to
-disk*, running one test, and putting it back. Fifty-five times. The tree is correct before and
-after and wrong in between, which is the shape that makes it invisible: every check of the file
-afterwards agrees with what you meant.
+disk*, running one test, and putting it back — once per entry in its `CASES` table. The tree
+is correct before and after and wrong in between, which is the shape that makes it invisible:
+every check of the file afterwards agrees with what you meant.
 
 **Instances:**
 
@@ -403,3 +403,53 @@ argument for a live rule living in both places rather than only in its home.
   whatever existed at connect time, and `--directory` pins which checkout it serves regardless of
   where the client sits. Both are now in `README.md` under "Wire it to an MCP client", because the
   gap between "I changed the code" and "the thing under test changed" is invisible from the client.
+
+
+---
+
+## A green mutation is not a proof until you know the mutation landed
+
+**When you prove a guard goes red by editing source and re-running it, ASSERT that the edit
+applied before reading the result — because a `str.replace` whose anchor did not match produces
+a green run that is indistinguishable from a guard that works.**
+
+The failure is silent and it reads as success, which is the shape this project keeps getting
+caught by. You set out to prove a test can fail, the test passes, and the passing run means
+nothing happened at all rather than nothing was wrong.
+
+The defence is one line: `assert new != original` before writing, and prefer an anchor naming a
+whole statement or keyword argument over one spanning a formatter-chosen line break — the latter
+is a hostage to the next reformat, which is why [[the-norm-harness-sabotages-the-working-tree]]
+reports `SKIP … anchor no longer present` rather than counting the case as passed.
+
+**Instances:**
+
+- *2026-09-08, the warning-vocabulary guard.* Two mutations of `query.py` both reported
+  "4 passed". Neither had landed — the anchors carried indentation the real source did not have.
+  Caught only because a *4-passed* looked wrong for a run meant to go red; a less suspicious
+  reading would have recorded the guard as proven. Re-run with asserted anchors, both arms failed
+  naming `query.py:906` and the offending kind.
+- *2026-09-08, chunk 07's go-red cases.* Same error, caught by the harness instead of by me: one
+  of three new cases reported `SKIP … anchor no longer present` because the anchor guessed at a
+  `logger = get_logger("query")` line that does not exist in that module. The harness's decision
+  to report a missing anchor as a survivor rather than a pass is what made it visible.
+
+---
+
+## A cited number measures what its study measured, not what you are about to change
+
+**Before applying an external budget or threshold, check what the underlying research actually
+varied — because a derived figure quoted out of its mechanism measures the wrong thing
+confidently.**
+
+**Instances:**
+
+- *2026-09-08, the MCP token budget.* A sibling project's "≤200 tokens per tool description" was
+  taken as a byte budget and a miss was treated as a defect worth three mitigation proposals. The
+  figure is derived from tool-COUNT research — a model discriminating among many near-twin tools
+  (10 fine, 20 near-fine, 107 total failure). This server has four differentiated tools going to
+  ten specified ones, so the crowding it measures is not present. Worse, the mitigations all
+  targeted prose, which was 21% of the cost; 78% was schema structure, and that structure is the
+  drift detector, not overhead. **Measuring first would have prevented the recommendation, not
+  just corrected it.** The revisit trigger is now the mechanism (tool count, near-twins) rather
+  than a byte count.

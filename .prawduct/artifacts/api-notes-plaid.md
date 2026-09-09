@@ -495,17 +495,60 @@ wrong in a way that fails at connection time rather than in a test. The mitigati
 format below was read from the SDK's own type definitions rather than remembered, and the handshake
 is exercised end to end.
 
-**The wire format, read from `mcp.types` 2.2.0:**
+**The wire format, read from `mcp_types` 2.2.0** — corrected 2026-09-08 after two of the
+lines below were found to be wrong in a way that shipped:
 
-- `LATEST_PROTOCOL_VERSION` is `2026-07-28`; `DEFAULT_NEGOTIATED_VERSION` is `2025-03-26`. A server
-  echoes back a version the client can speak, so **the client's requested version is honoured when
-  recognized** rather than the server's newest being asserted.
-- `InitializeResult` serializes as `protocolVersion`, `capabilities`, `serverInfo`, `instructions`
-  — camelCase on the wire, snake_case in the SDK's Python. Getting this wrong is the most likely
-  hand-rolling error, which is why it is recorded here rather than inferred.
-- `Tool` serializes as `name`, `title`, `description`, `inputSchema`, `annotations`.
-- `CallToolResult` serializes as `content`, `structuredContent`, `isError`.
-- `ServerCapabilities` carries `tools`, `resources`, `prompts`, `logging`, `completions`.
+- 🔴 **The version registry is PARTITIONED, and reading past the partition is how this went
+  wrong.** `KNOWN_PROTOCOL_VERSIONS` splits into `HANDSHAKE_PROTOCOL_VERSIONS`
+  (`2024-11-05`, `2025-03-26`, `2025-06-18`, `2025-11-25`) and `MODERN_PROTOCOL_VERSIONS`
+  (`2026-07-28`), whose sessions use a stateless per-request envelope reached by a
+  `server/discover` probe. `LATEST_PROTOCOL_VERSION` is documented as the newest revision the
+  SDK speaks **in any era** — it is `2026-07-28`, and it is NOT reachable through
+  `initialize`. The constant to build a handshake against is `LATEST_HANDSHAKE_VERSION`
+  (`2025-11-25`). `DEFAULT_NEGOTIATED_VERSION` is `2025-03-26`. A server echoes back a version
+  the client can speak, so **the client's requested version is honoured when recognized**
+  rather than the server's newest being asserted.
+- `InitializeResult` serializes as `protocolVersion`, `capabilities`, `serverInfo`,
+  `instructions`, `_meta` — camelCase on the wire, snake_case in the SDK's Python. Getting this
+  wrong is the most likely hand-rolling error, which is why it is recorded here rather than
+  inferred. 🔴 `_meta` is the extension point: `serverInfo` is an `Implementation`, which
+  declares only `name`, `title`, `version`, `description`, `websiteUrl` and `icons`, and the
+  SDK's wire base leaves pydantic's `extra="ignore"` in force — **so a key hung off `serverInfo`
+  that `Implementation` does not declare is discarded before any client reads it.**
+- `Tool` serializes as `name`, `title`, `description`, `inputSchema`, `outputSchema`,
+  `annotations`, `icons`, `_meta`. 🔴 `outputSchema` was missing from this line and its absence
+  read as "the protocol has no such field".
+- `CallToolResult` serializes as `content`, `structuredContent`, `isError`. A client validates
+  `structuredContent` against the tool's `outputSchema` only when `isError` is false, and
+  *raises* when a tool that declares an output schema returns no structured content.
+- `ListToolsResult` is a `PaginatedResult` **and** a `CacheableResult`; on `2026-07-28`
+  `ttlMs` and `cacheScope` are required on the wire.
+- `ServerCapabilities` carries `tools`, `resources`, `prompts`, `logging`, `completions`,
+  `experimental`, `extensions`, `tasks`.
+
+### 🔴 The decision's predicted cost came due, and this is the evidence it asked for
+
+The `[DECISION: ...]` above accepted one honest risk in writing: *"the SDK tracks
+protocol-version changes and negotiation edge cases, and a hand-rolled handshake can be subtly
+wrong in a way that fails at connection time rather than in a test."* Its mitigation was that
+the wire format "was read from the SDK's own type definitions rather than remembered" — the
+list above.
+
+On 2026-09-08 a single review pass found **four** defects in the hand-rolled layer, and three of
+them were facts this list either got wrong or never carried:
+
+1. `2026-07-28` offered on the `initialize` path, where it does not exist.
+2. `2025-11-25` absent from the supported set, downgrading current clients two revisions.
+3. Build identity hung off `serverInfo`, discarded in transit by every SDK-based client.
+4. `params` as a by-position array — permitted by JSON-RPC 2.0 — read as an object, raising
+   `AttributeError` out of `serve()` and ending the session.
+
+So the mitigation was not sufficient: reading the types once, by hand, produced a list that was
+right about what it covered and silently short of what it did not. The decision's revisit clause
+is *"user can revisit if the handshake proves brittle in practice."* **It has.** The re-examination
+is filed as issue #32, and it turns on a unit this note did not price separately: `mcp-types`
+is separately installable and resolves to six packages with no transport of any kind, against the
+29-package figure that (correctly) ruled out `mcp` itself.
 
 ---
 
