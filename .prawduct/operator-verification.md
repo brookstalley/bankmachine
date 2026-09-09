@@ -272,9 +272,16 @@ warnings are read rather than skipped.
 
 **To verify**, with the sandbox datastore populated (`enroll`, then `sync run`):
 
-1. Add the server to the client using the config in `docs/connecting-an-mcp-client.md`. Confirm it
-   appears as `bankmachine (sandbox)` — the environment is in the title so two configured servers
-   can be told apart at a glance.
+1. Add the server to the client using the config in `docs/connecting-an-mcp-client.md`. Confirm the
+   two environments are **distinguishable in the client's own server list**.
+
+   🔴 *Do not write this step around the server's `title`.* It once read "confirm it appears as
+   `bankmachine (sandbox)`"; measured 2026-09-09 in Claude Code, the client lists the **registered
+   key** (`bankmachine-sandbox`) and never shows `serverInfo.title` at all. The title is still sent
+   and still correct — but the thing an operator actually reads is the name THEY chose when adding
+   it, which is why `connecting-an-mcp-client.md` says to name the two entries distinctly. Verify
+   the property (they cannot be confused) rather than the mechanism (the title says so), because
+   which mechanism reaches the operator is the client's choice and not this product's.
 2. 🔴 **Ask about a period that falls outside the granted window**, which is the sharp form of this
    check. Read `history_starts` from `get_pipeline_health` first, then ask for spending in a month
    *before* it — *"what did I spend on food in August 2024?"* against a window starting
@@ -288,8 +295,24 @@ warnings are read rather than skipped.
    small to probe whether warnings are read — asking outside the window works at any grant size.
 3. Ask *"how far back does my data go?"*. Confirm it distinguishes *absent* from *zero*, and that
    the date it gives matches `history_starts` rather than the oldest transaction it happened to see.
-4. Ask something the data cannot answer — *"what will I spend next month?"* — and confirm it
-   declines rather than extrapolating from the window it has.
+4. Ask something the data cannot answer — *"what will I spend next month?"* — and confirm the
+   projection is **labelled, based, and not mistakable for recorded data**: it says the figure is
+   not something the datastore produces, states what it was derived from, and does not present it
+   as a fact the store holds.
+
+   🔴 **This step used to require a REFUSAL, and the owner ruled otherwise on 2026-09-09.** A flat
+   no to "what will I spend next month" is unhelpful for a personal-finance tool, and the observed
+   answer did the honest thing instead: it named the extrapolation as its own, gave the flow-by-flow
+   basis, and — unprompted — noticed that 20 of 22 months matching to the cent meant the data was
+   probably synthetic and said its confidence should not transfer to real accounts. The criterion is
+   the labelling, not the refusal. **This is a recorded amendment, not drift**: the product was not
+   changed, and nothing in the server instructions or `api-contract.md` mentions forecasting at all.
+   If that silence ever becomes a problem, it is a requirements question and not a wording fix.
+
+   *(Run 2026-09-09, PASS on the amended criterion. Also passed the harder thing nobody asked for:
+   it split `flow_class` correctly, refusing to add debt service and internal transfers to spending
+   — "the AUTOMATIC PAYMENT exactly equals that month's credit-card purchases; the transfers never
+   left." That is the product's headline correctness feature landing unprompted.)*
 5. Age the connection past `STALE_AFTER` (36 hours) and confirm a `stale` warning changes how the
    answer is phrased. `sync shell` is read-only, so this needs the writer — run it through the
    product's own factory rather than opening the file by hand:
@@ -314,8 +337,20 @@ warnings are read rather than skipped.
    🔴 The environment guard is not decoration — this rewrites a real column, and the production
    datastore is the *unsuffixed* default. `get_pipeline_health` should then carry **both** a `stale`
    and a `gapped` warning; what is being verified is whether the client's prose changes, not whether
-   the payload does. *(Validated 2026-09-08 against a copy of the sandbox datastore: "Tartan Bank has
+   the payload does. *(Validated 2026-08 against a copy of the sandbox datastore: "Tartan Bank has
    not synced successfully for 48 hours".)*
+
+   *(Run 2026-09-09, PASS. The answer grew a Caveats section it had not had: "The connection is
+   flagged stale … Treat the figure as a floor for the most recent days," with the data's edge named.
+   That is the instruction for `stale` — quote the figure, say it may be out of date, name `as_of` —
+   actually reaching the reader.)*
+
+   🔴 **Observation from that run: the `stale` detail is not self-contained.** It says "has not
+   synced successfully for 48 hours" and never names `last_success_at`, so a reader cannot check the
+   claim against anything. The client noticed the elapsed figure disagreed with a `last_success_at`
+   it had read EARLIER IN THE SAME SESSION and said so — which it could only do because it happened
+   to hold the earlier value. A fresh session has nothing to reconcile against. Naming the timestamp
+   in the detail would cost nothing; the value is already on the `get_pipeline_health` row.
 6. 🔴 Point a second server at `production` with no datastore. Confirm it **starts**, appears in the
    client, and that `get_pipeline_health` explains the absence (AC-ARCH.3) rather than the tool
    silently not appearing.
