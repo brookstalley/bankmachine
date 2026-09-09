@@ -1619,6 +1619,12 @@ def _median_interval(days: list[int]) -> float | None:
     Fewer than two transactions means no interval exists at all. That is None
     rather than zero, because zero would read as "posts every day" and make
     every subsequent quiet hour a finding.
+
+    🔴 Zero is a REAL answer here, distinct from that None: an account whose
+    transactions cluster on the same dates has a median interval of 0 days, and
+    it means "posts more than once a day" rather than "cadence unknown". The
+    caller floors the divisor rather than this function flooring the
+    measurement, so the number that rides out is the one that was measured.
     """
     if not days:
         return None
@@ -1703,13 +1709,26 @@ def coverage_report(config: Config) -> Answer:
                 if facts.last_transaction_date is None
                 else (today - facts.last_transaction_date).days
             )
+            # 🔴 The DIVISOR is floored at one day; the reported median is not.
+            # A busy feed -- a card or checking account posting several rows on
+            # the same date -- has a median interval of literally 0, and the
+            # branch that guarded the division by returning null answered
+            # "cadence unknown, silence not exceeded" for it no matter how long
+            # the feed had been dead. That is the account class MOST likely to
+            # stop syncing, answered `false` by the tool whose whole job is to
+            # notice. A day is the smallest unit `posted_date` can express, so
+            # "posts daily or better" is the strongest cadence this data can
+            # state, and one full day of silence is then a missed cycle.
+            #
+            # The median itself still rides out as measured, including 0: it is
+            # the true cadence, and flooring what is REPORTED would be inventing
+            # a number to make the arithmetic tidy.
+            cadence = None if median is None else max(median, 1.0)
             # The quantity the ruling names, stated as a number rather than
             # collapsed into a boolean: 28 days silent on a 30-day cycle is
             # "genuinely borderline", and a flag is exactly what destroys that.
             ratio = (
-                None
-                if median is None or days_silent is None or median == 0
-                else round(days_silent / median, 3)
+                None if cadence is None or days_silent is None else round(days_silent / cadence, 3)
             )
             rows.append(
                 {
@@ -1761,13 +1780,45 @@ FLOW_CLASSES: tuple[str, ...] = ("external_spend", "internal_transfer", "debt_se
 
 #: The holder moving their own money between their own accounts. Measured at 61%
 #: of the two-year total -- $164,400 of $267,693 -- which is why a raw outflow
-#: figure over this store reads nearly three times what was actually spent.
+#: figure over this store reads several times what was actually spent.
 _INTERNAL_TRANSFER_CATEGORIES: frozenset[str] = frozenset({"TRANSFER_IN", "TRANSFER_OUT"})
 
 #: Servicing a debt rather than buying anything. Measured as ~100% credit-card
 #: payoff, which is a DOUBLE count: the card purchases the payment settles are
 #: already counted under the categories they were spent in.
 _DEBT_SERVICE_CATEGORIES: frozenset[str] = frozenset({"LOAN_PAYMENTS"})
+
+#: Every `source_category_primary` this mapping has actually been designed
+#: against, observed in the sandbox datastore on 2026-09-09.
+#:
+#: 🔴 **An enumeration over a FOREIGN vocabulary, and therefore checked rather
+#: than trusted.** The two sets above name three of these values; the rest reach
+#: `external_spend` through the `else_` branch, and that branch is silent by
+#: construction -- a category nobody classified is indistinguishable from one
+#: deliberately left as spending. `tests/test_money_summary.py` holds this tuple
+#: against the categories the store actually contains, so a value entering the
+#: data without a decision being made about it goes RED rather than quietly
+#: inflating the one figure this tool tells an agent to quote.
+#:
+#: 🔴 **The residual limit, stated rather than papered over:** this checks the
+#: data this repo can see. A category arriving in an operator's own store that
+#: has never appeared here still falls to `external_spend` with nothing saying
+#: so. That is the conservative direction on this surface's own principle -- an
+#: overcount gets questioned and an undercount gets believed -- but it is a
+#: fallback, not a classification, and a real taxonomy feed is what would close
+#: it properly.
+KNOWN_SOURCE_CATEGORIES: tuple[str, ...] = (
+    "FOOD_AND_DRINK",
+    "GENERAL_MERCHANDISE",
+    "INCOME",
+    "LOAN_PAYMENTS",
+    "PERSONAL_CARE",
+    "RENT_AND_UTILITIES",
+    "TRANSFER_IN",
+    "TRANSFER_OUT",
+    "TRANSPORTATION",
+    "TRAVEL",
+)
 
 
 def _flow_class() -> ColumnElement[str]:

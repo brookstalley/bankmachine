@@ -358,17 +358,31 @@ Required tools:
 | `get_pipeline_health` | Per-connection sync status, last success, error codes, per-account coverage window, row counts, staleness flags, rule anomalies |
 | `list_accounts` | Accounts with type, institution, mask, current balance, lifecycle state |
 | `query_transactions` | Filtered rows (date range, account, category, amount range, merchant search). Paginated, capped |
-| `spending_summary` | Aggregated by category/merchant/account over a period, with period-over-period comparison |
-| `cashflow_summary` | Income vs outflow by month |
-| `balance_history` | Balance time series per account or aggregate |
-| `net_worth` | Assets minus liabilities over time, investments included |
+| `money_summary` | Money in and out over a period, grouped by category, merchant, account, month or flow class, per currency |
+| `balance_history` | Value over time, per account or aggregated as net worth, investments included |
 | `list_holdings` | Current investment positions with cost basis where available |
 | `find_recurring` | Detected recurring charges with cadence, amount drift, last-seen |
 | `get_coverage_report` | Per account: first and last transaction date, gaps against the account's own cadence, source breakdown |
 
-*(Build status 2026-09-08: `get_pipeline_health`, `list_accounts`, `query_transactions` and
-`spending_summary` are implemented in first slice; the other six are not yet built, and the descope
-— including what the shipped four do not yet carry — is recorded in `.prawduct/artifacts/api-contract.md`.)*
+*(Build status 2026-09-09: `get_pipeline_health`, `list_accounts`, `query_transactions`,
+`money_summary` and `get_coverage_report` are implemented; `balance_history`, `list_holdings` and
+`find_recurring` are not yet built, and the descope — including what the shipped tools do not yet
+carry — is recorded in `.prawduct/artifacts/api-contract.md`.)*
+
+> **Amendment (2026-09-09, ratified by `api-contract.md` § Direction's fourth norm).** This table
+> went from ten tools to eight. 🔴 **A tool's boundary is drawn where the answer *shape* changes,
+> never where the question changes**, and two pairs here were near-twins by that test:
+> `spending_summary` and `cashflow_summary` are one grouped aggregate — cashflow-by-month is that
+> aggregate grouped by month with inflows kept — and they merge into **`money_summary`**;
+> `net_worth` is `balance_history` aggregated across accounts, and merges into it.
+>
+> 🔴 **Recorded HERE because this section is the contract of record.** `boundary-patterns.md`
+> designates §5 "the product's public API contract" and `api-contract.md` describes itself against
+> it, so a merged tool that traced up to a requirement naming a different tool would send the next
+> builder to write `cashflow_summary` — the tool this norm merged away. The derivation is
+> `.prawduct/artifacts/discovery-mcp-tool-surface.md`; the merge shipped in
+> `mcp-answer-scope-completion`. The `balance_history`/`net_worth` merge is **specification only**:
+> neither is built, and the owner's 2026-09-08 ruling excludes both from that build.
 
 > **Amendment (2026-09-08, owner ruling).** `get_coverage_report`'s gap rule was **"gaps >7 days"**
 > and is now **gaps measured against each account's own cadence** — a per-account threshold derived

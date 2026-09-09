@@ -112,19 +112,29 @@ def _sync_body(dates: list[str]) -> bytes:
     ).encode()
 
 
-def _seed(config: Config, *, spacing_days: int = 30, count: int = 4) -> list[str]:
+def _seed(
+    config: Config, *, spacing_days: int = 30, count: int = 4, silent_days: int = 0
+) -> list[str]:
     """Two accounts through the real derivers; one gets a regular cadence.
 
     🔴 Derived rather than hand-inserted, like every other fixture here: the
     schema enforces provenance with a CHECK, so hand-built rows would encode
     this test's assumptions about that constraint instead of exercising it.
 
+    `spacing_days=0` puts every row on ONE date, which is the busy-feed shape
+    whose median interval is genuinely 0 -- unreachable from the sandbox, which
+    is entirely monthly. `silent_days` then moves the whole run into the past,
+    because a zero cadence only says something when the feed has since gone
+    quiet: the two together are the case where "posts many times a day" meets
+    "has posted nothing for two months".
+
     Returns the dates written, newest last, so a test can assert against the
     cadence it asked for rather than against a number copied from here.
     """
     now = now_utc()
     days = [
-        str(now.date() - timedelta(days=spacing_days * offset)) for offset in reversed(range(count))
+        str(now.date() - timedelta(days=spacing_days * offset + silent_days))
+        for offset in reversed(range(count))
     ]
     with writer_connection(config) as conn:
         institution_pk = conn.execute(
@@ -209,7 +219,6 @@ def test_an_account_that_never_had_a_transaction_says_so_on_its_own_row(
 def test_listing_accounts_warns_when_one_of_them_has_no_coverage(
     initialized_config: Config,
 ) -> None:
-    wire = _call(initialized_config, "list_accounts", {})["structuredContent"]
     _seed(initialized_config)
     wire = _call(initialized_config, "list_accounts", {})["structuredContent"]
     assert "accounts_without_coverage" in _kinds(wire)
@@ -460,3 +469,57 @@ def test_the_coverage_walk_reaches_accounts_with_no_transactions(
     assert set(coverage) == {1, 2}, "an account fell out of the coverage walk"
     assert coverage[2].uncovered is True
     assert coverage[1].uncovered is False
+
+
+def test_an_account_that_posts_many_times_a_day_can_still_go_silent(
+    initialized_config: Config,
+) -> None:
+    """🔴 The busiest feeds are the ones most likely to stop, and they answered `false`.
+
+    An account whose rows cluster on the same dates has a median interval of
+    genuinely 0 days. Dividing by it is undefined, so the guard returned a null
+    ratio and `silence_exceeds_cadence: false` — permanently, however long the
+    feed had been dead. A card or checking feed is exactly that shape, and it is
+    the account class whose silence matters most, so the tool whose stated job
+    is to notice trailing silence was blind on its most important case.
+
+    Unreachable from the sandbox, which is entirely monthly. That is why this
+    fixture puts three rows on one date and then walks the whole run 60 days
+    into the past.
+    """
+    _seed(initialized_config, spacing_days=0, count=3, silent_days=60)
+    row = {
+        r["account_id"]: r
+        for r in _call(initialized_config, "get_coverage_report", {})["structuredContent"]["rows"]
+    }[1]
+
+    # The measured cadence rides out as measured: 0 means "posts more than once
+    # a day", which is the opposite of null's "no interval exists".
+    assert row["median_interval_days"] == 0
+    assert row["days_silent"] == 60
+    # 🔴 The divisor is floored at a day, so 60 days of silence against a
+    # daily-or-better cadence is 60 missed cycles rather than an unanswerable
+    # question.
+    assert row["silence_ratio"] == 60.0
+    assert row["silence_exceeds_cadence"] is True
+
+
+def test_a_busy_account_that_posted_today_is_not_reported_silent(
+    initialized_config: Config,
+) -> None:
+    """The positive control for the floor, without which it would flag everything.
+
+    Flooring the divisor makes silence easy to exceed, so the case that must
+    still read `false` is asserted beside the one that must read `true` — a floor
+    that flagged a live feed would trade a blind spot for a false alarm on every
+    busy account in the store.
+    """
+    _seed(initialized_config, spacing_days=0, count=3, silent_days=0)
+    row = {
+        r["account_id"]: r
+        for r in _call(initialized_config, "get_coverage_report", {})["structuredContent"]["rows"]
+    }[1]
+    assert row["median_interval_days"] == 0
+    assert row["days_silent"] == 0
+    assert row["silence_ratio"] == 0.0
+    assert row["silence_exceeds_cadence"] is False

@@ -38,10 +38,23 @@ REPO_ROOT = Path(__file__).parents[2]
 README = REPO_ROOT / "README.md"
 CLIENT_GUIDE = REPO_ROOT / "docs" / "connecting-an-mcp-client.md"
 API_CONTRACT = REPO_ROOT / ".prawduct" / "artifacts" / "api-contract.md"
+REQUIREMENTS = REPO_ROOT / "docs" / "system-requirements.md"
 
 #: The surfaces that tell a reader what this server offers. A surface that
 #: carries no claim at all is a failure of this list, not a pass.
-DOCUMENTING_SURFACES = (README, CLIENT_GUIDE, API_CONTRACT)
+#:
+#: 🔴 `system-requirements.md` was ADDED after the merge shipped, because its
+#: absence is what let the merge miss it. The sweep updated exactly the
+#: sentences this guard parses and every unguarded sibling stayed at ten tools —
+#: so §5 still listed `spending_summary` and `cashflow_summary` as separately
+#: required and never named `money_summary`, while `boundary-patterns.md`
+#: designates §5 "the product's public API contract" and `api-contract.md`
+#: describes itself against it. The built tool therefore traced up to a
+#: requirement specifying a different tool, and the next builder reading it
+#: would have written `cashflow_summary` — the tool the norm merged away.
+#: **The remedy for a claim site the guard cannot see is to give it to the
+#: guard, not to remember it.**
+DOCUMENTING_SURFACES = (README, CLIENT_GUIDE, API_CONTRACT, REQUIREMENTS)
 
 #: The contract's tool table, which is the specification and therefore the
 #: source of "the ten". Read from the section that introduces it rather than
@@ -99,6 +112,18 @@ NAMED_CLAIMS = (
         "the sentence naming what is not built yet",
         re.compile(r"specified tools\.\*\*(.*?)are not built yet", re.DOTALL),
         ("unbuilt",),
+    ),
+    Claim(
+        REQUIREMENTS,
+        "the §5 tool table, which is the contract of record",
+        re.compile(r"\| Tool \| Returns \|\n\|---\|---\|\n(\|.*?)\n\n", re.DOTALL),
+        ("specified",),
+    ),
+    Claim(
+        REQUIREMENTS,
+        "the §5 build-status parenthetical",
+        re.compile(r"\*\(Build status [\d-]+: (.*?) are implemented", re.DOTALL),
+        ("built",),
     ),
     Claim(
         API_CONTRACT,

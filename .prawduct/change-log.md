@@ -34,6 +34,58 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-09: One aggregate that answers spending, income and cashflow — and says which is which
+
+<!-- prawduct: scope=mcp-answer-scope-completion -->
+
+**Why:** three different things were all being called spending, and the surface could not tell them
+apart. Measured over the sandbox store's full 24 months, `spending_summary` reported $267,692.77 of
+outflow. $164,400.00 of that is the account holder moving money between their own accounts and
+$50,484.00 is credit-card payoff settling purchases already counted under the categories they were
+spent in. **Actual spending is $52,808.77 — one fifth of the number the tool returned.** Separately,
+the tool filtered `amount_minor < 0`, so an inflow had no row to appear in at all: a travel category
+of offsetting charges and credits reported $12,000 spent against a true net of $0, and nothing in the
+payload could reveal the 24 credits behind it.
+
+**🔴 Removed, and this is the one departure from "never remove or repurpose a field":** the tool
+`spending_summary` and its row field `spent_minor_units`. Both are gone. `api-contract.md` §
+Surface Inventory grades every MCP tool `experimental`, where removing one is the policy working
+rather than a violation; single consumer, pre-production, no deprecation window owed.
+
+**What ships:**
+
+- **`money_summary`** replaces `spending_summary`. One row shape for every grouping —
+  `category | merchant | account | month | flow_class` — carrying `inflow_minor_units` and
+  `outflow_minor_units` as positive magnitudes with `net_minor_units` operator-signed, per currency.
+  Currency groups and is never summed across.
+- **`flow_class`** on every row: `external_spend`, `internal_transfer`, `debt_service`, read from
+  `source_category_primary` and never from `category_override`. A grouping dimension under *every*
+  `group_by`, because the class is not a function of the group — an account holds a transfer and a
+  coffee — and an optional field is refused by the tool-boundary norm.
+- **`totals`**, a new envelope key: the window's outflow split three ways, per currency. The three
+  sum to the window's total outflow, which is what proves the classification keeps every row rather
+  than filtering some away.
+- **`get_coverage_report`** built, and per-account coverage on every `list_accounts` row. Nine of
+  fourteen sandbox accounts have never had a transaction — 82% of the balance sheet by magnitude —
+  and `query_transactions(account_id=9)` answered `[]`, which reads as "no payments found" and is
+  false.
+- **`accounts_without_coverage`**, a new request-scoped warning kind.
+- **Two registration guards.** A parameter name may not mean two types across the surface (#30's
+  A3), and a tool whose row schema declares a field it does not require is refused — which is what
+  makes the tool-boundary norm self-enforcing rather than a sentence the next builder has to
+  remember.
+
+**Records, because they live only in a plan that archives:**
+`test_spending_sums_outflow_only_and_reports_magnitudes` was **deleted** with the tool it named, and
+the AC-4.2 go-red case was **retargeted** to
+`test_the_aggregate_reports_both_directions_as_magnitudes` rather than dropped — the guarantee did
+not change, only the code and the test carrying it. That case had gone stale in both halves at once,
+its anchor moved by a reformat and its test deleted by the merge.
+
+**Closes:** #18, #19, #20, #21, #24, #30, #35. **#34 stays open** — it asks for `rule-applied` to be
+emitted, and the ruling here is classify-do-not-filter, so nothing may emit it: the kind means an
+account rule filtered rows *out* of an aggregate, and this excludes nothing.
+
 ## 2026-09-09: Where a tool's boundary is drawn
 
 <!-- prawduct: scope=mcp-tool-surface-norm -->

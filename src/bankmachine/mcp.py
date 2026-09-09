@@ -33,7 +33,7 @@ from typing import IO, Any
 
 from bankmachine import mcp_resources, query
 from bankmachine.build_id import build_identity
-from bankmachine.cli.exit_codes import EXIT_OK
+from bankmachine.cli.exit_codes import EXIT_ERROR, EXIT_OK
 from bankmachine.config import Config
 from bankmachine.logging_setup import get_logger
 from bankmachine.store.connection import inspect
@@ -618,8 +618,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "name": "money_summary",
             "title": "Money in and out, grouped",
             "description": (
-                "How much money moved in a date window, grouped by category, merchant, "
-                "account or month. 🔴 BOTH DIRECTIONS on every row: `inflow_minor_units` and "
+                "How much money moved in a date window, grouped by whichever of the "
+                "`group_by` values you need — the parameter's own enum is the list. "
+                "🔴 BOTH DIRECTIONS on every row: `inflow_minor_units` and "
                 "`outflow_minor_units` are positive magnitudes, and `net_minor_units` is "
                 "signed from the account holder's point of view. Ask this for spending (read "
                 "`outflow`), for income (read `inflow`), and for cashflow (`group_by=month` "
@@ -747,8 +748,11 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "median_interval_days": {
                         "type": ["number", "null"],
                         "description": (
-                            "this account's own posting cadence; null under two transactions, "
-                            "because no interval exists rather than because it posts daily"
+                            "this account's own posting cadence in days; null under two "
+                            "transactions, because no interval exists rather than because it "
+                            "posts daily. 0 is a real answer and means the opposite of null: "
+                            "the account posts more than once a day, and a single day of "
+                            "silence is already a missed cycle"
                         ),
                     },
                     "days_silent": {
@@ -1511,7 +1515,33 @@ def cmd_mcp(config: Config, _args: argparse.Namespace) -> int:
 
     So the unhealthy state is logged and carried into every answer as a warning
     rather than raised.
+
+    🔴 **A malformed TOOL SURFACE is the opposite case and refuses here.** An
+    unreadable datastore is a data condition the operator can fix without
+    touching this code, so the server reports it; a tool whose row schema cannot
+    be described strictly can only be introduced by a code change, and there is
+    no answer it could give about itself that is worth serving. Building the
+    definitions here is what makes `ToolRegistrationError` the startup failure
+    its own docstring claims: nothing else calls `_tool_definitions()` before the
+    read loop, so without this the earliest either guard could fire is the
+    client's first `tools/list` -- outside `_handle`'s `try`, escaping the loop,
+    and taking the session with it. That is the operator's tool vanishing
+    mid-session, which is the one outcome this module names as worse than any
+    wrong answer.
     """
+    try:
+        _tool_definitions()
+    except ToolRegistrationError:
+        # Logged with the traceback rather than re-raised: this process is a
+        # subprocess a client launched, so its stderr is the only place an
+        # operator can read WHY the tool never appeared, and an unhandled
+        # exception there is a stack trace with the reason buried in it.
+        logger.exception("refusing to serve: the tool surface cannot be described strictly")
+        # 🔴 `2` -- "could not run", not `1` "ran and found a problem". The
+        # 1/2 split is a machine interface the scheduler reads, and a surface
+        # that cannot be described is this process failing to start rather than
+        # a datastore it looked at and disliked.
+        return EXIT_ERROR
     status = inspect(config)
     if not status.healthy:
         logger.warning(

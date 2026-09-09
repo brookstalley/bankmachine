@@ -153,6 +153,38 @@ def _converse(config: Config, requests: list[dict[str, Any]]) -> list[dict[str, 
     return [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
 
 
+def _every_tool() -> tuple[str, ...]:
+    """Every built tool, DERIVED from the registry rather than listed here.
+
+    🔴 Five "every tool" loops in this file named their tools as string
+    literals, and `get_coverage_report` was added to none of them — so a tool
+    built specifically to answer "what data exists" had no proof it answered at
+    all against a store that cannot be read, and nothing failed to say so. A
+    literal list is an enumeration of a set the code already owns, and it goes
+    stale by SILENCE: the loop keeps passing over the tools it still names.
+
+    Derived, the next tool cannot be omitted by forgetting. The extraction
+    asserts it found something, because a derivation that returns empty is a
+    loop that checks nothing while reporting green.
+    """
+    names = tuple(sorted(d["name"] for d in mcp._tool_definitions()))
+    assert names, "the registry produced no tools, so every loop over this checks nothing"
+    return names
+
+
+def _every_tool_except(*excluded: str) -> tuple[str, ...]:
+    """The complement, for the claims that are true of one tool and false of the rest.
+
+    Asserts the exclusions were actually present: naming a tool that does not
+    exist would silently widen the loop to everything, which reads as a stricter
+    test than it is.
+    """
+    names = _every_tool()
+    missing = set(excluded) - set(names)
+    assert not missing, f"excluded {sorted(missing)}, which the registry does not build"
+    return tuple(name for name in names if name not in excluded)
+
+
 def _call(config: Config, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
     replies = _converse(
         config,
@@ -684,7 +716,7 @@ def test_every_answer_names_the_environment_it_came_from(initialized_config: Con
     """
     _seed(initialized_config)
 
-    for name in ("list_accounts", "query_transactions", "money_summary", "get_pipeline_health"):
+    for name in _every_tool():
         wire = _call(initialized_config, name)["structuredContent"]
         assert wire["environment"] == "sandbox", name
         assert wire["as_of"], name
@@ -945,7 +977,7 @@ def test_every_tool_answers_against_a_missing_datastore(config: Config) -> None:
     A consumer that called `list_accounts` first would otherwise see a crash
     where the health tool would have explained itself.
     """
-    for name in ("list_accounts", "query_transactions", "money_summary", "get_pipeline_health"):
+    for name in _every_tool():
         wire = _call(config, name)["structuredContent"]
         assert wire["rows"] == [], name
         assert any(w["kind"] == "partial" for w in wire["warnings"]), name
@@ -1676,7 +1708,7 @@ def test_every_answer_says_which_build_produced_it(initialized_config: Config) -
     """
     _seed(initialized_config)
 
-    for tool in ("list_accounts", "query_transactions", "money_summary", "get_pipeline_health"):
+    for tool in _every_tool():
         build = _call(initialized_config, tool)["structuredContent"]["build"]
 
         # An exact set: a missing key and a null value are different answers, and
@@ -2080,7 +2112,7 @@ def test_the_capped_tool_describes_its_cap_and_the_aggregate_does_not() -> None:
     described = {d["name"]: d["description"] for d in mcp._tool_definitions()}
 
     assert mcp._TRUNCATION_NOTE in described["query_transactions"]
-    for name in ("money_summary", "list_accounts", "get_pipeline_health"):
+    for name in _every_tool_except("query_transactions"):
         assert mcp._TRUNCATION_NOTE not in described[name], name
 
 
@@ -2282,7 +2314,7 @@ def test_the_cursor_is_advertised_on_the_capped_tool_and_nowhere_else() -> None:
     which is the only thing an agent reads.
     """
     assert "cursor" in mcp._permitted_arguments("query_transactions")
-    for name in ("money_summary", "list_accounts", "get_pipeline_health"):
+    for name in _every_tool_except("query_transactions"):
         assert "cursor" not in mcp._permitted_arguments(name), name
 
 

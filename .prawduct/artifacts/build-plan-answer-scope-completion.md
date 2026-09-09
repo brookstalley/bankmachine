@@ -19,6 +19,7 @@ governed_by:
       - "🔴 a tool's boundary is drawn where the answer shape changes → BINDING, and this plan is the norm's first application AND its one migration. C4 merges `spending_summary` into the grouped aggregate. C2's split of `list_accounts` from `get_coverage_report` is the norm's second guardrail deciding, not a preference"
       - "additive changes only; never remove or repurpose an existing field → 🔴 DEPARTURE, recorded: C4 removes the tool `spending_summary` and its `spent_minor_units` row field. Permitted because § Surface Inventory grades every MCP tool `experimental`, where 'removing one is the policy working, not a violation', and the § Direction norm that licenses the merge states the migration explicitly. Single consumer, pre-production, no deprecation window owed"
       - "raw-row cap ~500 hard; aggregates unpaginated → conforms; no cap moves and the merged aggregate stays unpaginated, bounded by its grouping"
+      - "🔴 a caller-supplied `group_by` reaches SQL → conforms by CONSTRUCTION, stated because the shape invites the opposite reading. `group_by` is never interpolated: it selects among expressions this module builds, it is checked against the closed `GROUPINGS` tuple before any expression is chosen, and an unknown value raises `BadGroupingError` at the boundary rather than reaching the statement. `test_an_unknown_grouping_is_refused_by_name_rather_than_defaulted` and `test_the_advertised_groupings_are_the_ones_the_query_layer_accepts` hold both halves, the second deriving the advertised enum from `GROUPINGS` so the surface cannot advertise a value the query layer refuses"
   - artifact: data-model
     dispositions:
       - "🔴 every stored amount is signed from the operator's point of view → BINDING ON C4. `inflow_minor` and `outflow_minor` are reported as positive magnitudes with direction carried by the field NAME, while `net_minor` stays operator-signed. Stated because the merged tool is the first place both conventions meet in one row, and a row mixing them silently is exactly the defect this cluster exists to remove"
@@ -27,12 +28,17 @@ governed_by:
       - "a source value is never overwritten in place; local interpretation lives in its own column → conforms, and C3 depends on it: `flow_class` is local interpretation derived at read time from `source_category_*` and account type, and writes nothing"
       - "a transaction is never hard-deleted; removal is a soft delete → conforms; every new read filters `removed_at IS NULL`, including the coverage walk. 🔴 A coverage report that counted soft-deleted rows would report coverage the analysis surface cannot see"
       - "the daily balance and holdings series are append-only → inapplicable; this plan writes no row"
+      - "every silver row is either aggregator-sourced or manually imported and carries its evidence → conforms, and it is READ here rather than merely respected: `get_coverage_report`'s `source_breakdown` reports every account's rows by `source`, derived from `PROVENANCE_SOURCES` so a third provenance cannot appear on the wire without appearing in that constant first"
+      - "a migration's DDL is frozen once written, and the Core metadata and that DDL describe the same tables → inapplicable; this plan adds no column, no table and no migration. Every field it ships is computed at read time"
   - artifact: nonfunctional-requirements
     dispositions:
       - "🔴 MCP aggregate tool response under ~1s over 24 months → MEASURED IN C2, not assumed. C2 puts a per-account aggregate on `list_accounts`, the most-called tool. `mcp-count-latency-2026-09-08.md` prices comparable grouped reads at ~17ms at 10k rows, but that figure was measured for a different statement and `learnings.md` forbids inheriting it. C2's Done-when measures the walk"
   - artifact: security-model
     dispositions:
       - "no personal data in the repo → conforms; every figure in this plan comes from the sandbox fixture and the preferences guard covers it"
+      - "🔴 secrets live only in the OS keychain and nothing returns one into a log, an exception or a payload → conforms, and it is load-bearing on this diff rather than paperwork: the two registration guards raise `ToolRegistrationError` carrying a tool name, a field name and a schema path, and `cmd_mcp` logs that refusal with `logger.exception` on a subprocess whose stderr the operator reads. None of those values is caller-supplied or credential-derived — they are this module's own literals — and no new code path touches `secrets.py` or a connection's `credential_ref`"
+      - "log redaction happens at the formatter and over-redacts by design → conforms, unchanged; the one new log line added by this plan goes through the same formatter as every other, and nothing here configures, bypasses or narrows redaction"
+      - "🔴 the aggregator's API is the only network destination → conforms, and it is checked rather than asserted: every deliverable reads the local datastore, `mcp.py` and `query.py` gain no import that can reach a socket, and `test_only_the_connector_reaches_the_network.py` holds that for the whole tree with a go-red case that plants an `ssl` import in `query.py`"
 ---
 
 # Build plan — completing the answer-scope cluster
@@ -64,6 +70,17 @@ integration conflicts.
 
 ## Status
 
+<!--
+🔴 Headings are `### Chunk NN:` because that is the form the record-lint's
+deliverable check addresses. With `## A — …` it found no chunk at all and
+produced NO answer — not a pass, not a failure — so nothing in the diff was ever
+graded against a declared deliverable set, and a check that could not run is
+indistinguishable from one that passed. The letters stay in the heading and in
+the boxes below because every commit message, the change-log and both handoffs
+already cite them; renumbering those would be rewriting history to match a
+parser.
+-->
+
 - [x] **A — The per-account coverage signal, and the two tools that read it** (C2 · #19, #35)
 - [x] **B — One aggregate tool, both directions, currency-grouped** (C4 · #20, #21)
 - [x] **C — `flow_class`, so "spending" stops meaning three different things** (C3 · #18)
@@ -93,7 +110,7 @@ rename, confined to chunk B and chunk E]`
 
 ---
 
-## A — The per-account coverage signal, and the two tools that read it
+### Chunk 01: The per-account coverage signal, and the two tools that read it (chunk A)
 
 **Closes #19 and #35.** `discovery-mcp-answer-scope.md` C2, plus the split ruled by
 `api-contract.md` § Direction's fourth norm.
@@ -191,7 +208,7 @@ surface, called deliberately, and that is the right place for the cost.
 
 ---
 
-## B — One aggregate tool, both directions, currency-grouped
+### Chunk 02: One aggregate tool, both directions, currency-grouped (chunk B)
 
 **Closes #20 and #21.** `discovery-mcp-answer-scope.md` C4, re-pointed by the tool-boundary norm.
 🔴 **This chunk IS the norm's migration** — the one departure this plan records against
@@ -224,7 +241,7 @@ the discovery already flags this as vetoable); `spending_summary` is gone from
 
 ---
 
-## C — `flow_class`, so "spending" stops meaning three different things
+### Chunk 03: `flow_class`, so "spending" stops meaning three different things (chunk C)
 
 **Closes #18.** `discovery-mcp-answer-scope.md` C3, landing on chunk B's row.
 
@@ -338,7 +355,7 @@ in the sandbox, so it is a rule about the future rather than about today's data.
 
 ---
 
-## D — The guards that make the norm self-enforcing, and the go-red cases nothing had
+### Chunk 04: The guards that make the norm self-enforcing, and the go-red cases nothing had (chunk D)
 
 Two halves, both about proof rather than behaviour.
 
@@ -398,7 +415,7 @@ was written rather than discovered by a red suite.
 
 ---
 
-## E — The claim-site sweep, and the artifacts that describe an eight-tool surface
+### Chunk 05: The claim-site sweep, and the artifacts that describe an eight-tool surface (chunk E)
 
 🔴 **Amendment: this chunk could not be last, and the guard is what proved it.** The plan
 sequenced E last so every count would be written against the final built set. But

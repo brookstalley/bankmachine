@@ -214,14 +214,20 @@ into the archive, which is what keeps this structural rather than remembered.
 ### MCP Tool Surface — *first slice built 2026-09-08; build step 7*
 
 **Producer:** `src/bankmachine/mcp.py` — stdio JSON-RPC, no SDK dependency
-(`api-notes-plaid.md` §18), reading through `src/bankmachine/query.py`. Four of
-the ten tools ship; the descope is recorded in `api-contract.md`.
+(`api-notes-plaid.md` §18), reading through `src/bankmachine/query.py`. Not every
+specified tool ships; which do, and the descope, are recorded in `api-contract.md`.
 **Consumer:** an MCP client, and through it an analyst agent.
-**Contract:** `system-requirements.md` §5 — the ten tools, aggregate-first, with
+**Contract:** `system-requirements.md` §5 — the tools, aggregate-first, with
 a freshness stamp on every response (AC-9.2), explicit warnings over gapped or
 degraded data (AC-9.3), and stated units, sign conventions and applied rules
-(AC-9.4). This *is* the product's public API contract; `api-contract.md` is the
-artifact that will hold it, and it does not exist yet.
+(AC-9.4). This *is* the product's public API contract, and `api-contract.md` now
+holds it — the two are held to the same built set by
+`tests/preferences/test_the_documented_tool_surface_is_the_built_one.py`.
+
+🔴 **No count is spelled here, on purpose.** §5's table is the authority and the
+guard reads it; a number repeated in this entry is one nobody updates when the
+table moves, which is exactly how this entry came to claim "four of the ten"
+long after both halves had stopped being true.
 
 ### Derivation Seam — the contract the aggregator's derivers are written against
 

@@ -24,7 +24,7 @@ artifact; §0 and §5 of `docs/system-requirements.md` carry that content.
 `sync shell`, `enroll`, `connections`, `sync run`, `mcp`. The **MCP surface exists in first slice**:
 five of the eight tools below are implemented and three are specification only, recorded as a dated
 descope under the tool table. This contract is therefore *description* for most of the CLI, *both*
-for the four shipped tools, and *specification* for the remaining six — and each operation below
+for the five shipped tools, and *specification* for the remaining three — and each operation below
 says which.
 Writing it now is the point: introducing an error model or a versioning handle after consumers exist
 is a breaking change.
@@ -170,11 +170,11 @@ Every tool is safe and idempotent, trivially — nothing writes.
 > step 5, which has not started. The other four are analysis conveniences whose data is already in
 > the datastore.
 >
-> **What the shipped four do not yet carry**, also descoped rather than silently unimplemented:
+> **What the shipped tools do not yet carry**, also descoped rather than silently unimplemented:
 > `query_transactions` is specified paginated with category, amount-range and merchant filters and
-> currently offers a date range, an account and a hard cap; `spending_summary` is specified with
-> merchant and account breakdowns and period-over-period comparison and currently aggregates by
-> category over one window.
+> currently offers a date range, an account and a hard cap; `money_summary` is specified with
+> period-over-period comparison and does not yet offer it — it does now carry the merchant, account,
+> month and flow-class groupings, both directions, and per-currency rows.
 >
 > The `experimental` tier permits these changes without a version bump. It does not permit them
 > going unrecorded, which is what this amendment exists to prevent.
@@ -183,21 +183,26 @@ Every tool is safe and idempotent, trivially — nothing writes.
 and `get_coverage_report` exist so the analyst agent can **establish completeness *before* answering**.
 The product's headline goal is not "answer the question" but "answer it, or say why you should not."
 
-> **Amendment (2026-09-09, #30 — the table above is superseded but deliberately not yet rewritten).**
+> **Amendment (2026-09-09, #30 — applied; the table above now lists eight).**
 > § Direction's fourth norm draws a tool boundary where the answer *shape* changes, and applying it
-> re-factors this specification from ten tools to eight: `cashflow_summary` merges into a grouped
-> aggregate tool alongside `spending_summary`, and `net_worth` merges into the time series alongside
-> `balance_history`. Neither merge costs a published `outputSchema`; both eliminate a near-twin pair.
-> `discovery-mcp-tool-surface.md` carries the derivation and the row shape that permits each merge.
+> re-factored this specification from ten tools to eight: `cashflow_summary` merged into a grouped
+> aggregate tool alongside `spending_summary` — both are now **`money_summary`** — and `net_worth`
+> merges into the time series alongside `balance_history`. Neither merge costs a published
+> `outputSchema`; both eliminate a near-twin pair. `discovery-mcp-tool-surface.md` carries the
+> derivation and the row shape that permits each merge.
 >
-> 🔴 **The table still lists ten because the table is a load-bearing input, not prose.**
+> 🔴 **The table could not move ahead of the code, and the guard is what enforced that.**
 > `test_the_documented_tool_surface_is_the_built_one.py` derives the *specified* set from these rows
 > and the *built* set from `_tool_definitions()`, then asserts built ⊆ specified. Rewriting the rows
-> ahead of the code would drop `spending_summary` from the specification while it is still on the
-> wire, and the guard would fail — correctly. **The table, the counts every surface spells, and the
-> "two of these ten" sentence above all move in the same commit as the merge**, which is chunk C4 of
-> `discovery-mcp-answer-scope.md`. That commit owes the claim-site sweep across this document, the
-> README and the client guide; the guard names each site it reads.
+> early would have dropped `spending_summary` from the specification while it was still on the wire,
+> and the guard would have failed — correctly. So the table, every spelled count and the "two of
+> these eight" sentence moved in the SAME commit as the merge. The plan had sequenced that sweep
+> last; the guard proved it had to be atomic, which is the guard doing its job rather than obstructing.
+>
+> 🔴 **`money_summary`'s parent requirement is `docs/system-requirements.md` §5**, amended the same
+> day. That section is the contract of record — `boundary-patterns.md` designates it so — and a
+> merged tool tracing up to a requirement that named a different tool is how the next builder ends
+> up writing the tool this norm removed.
 
 ### CLI — the operator surface
 
@@ -473,6 +478,40 @@ and zero, so the key set a consumer branches on never depends on the store's hea
 One institution may hold many accounts with different coverage windows, and an institution-level
 summary hides exactly that.
 
+🔴 **Every `list_accounts` row carries `first_transaction_date`, `last_transaction_date` and
+`transaction_count` — always, not behind a parameter.** Measured: nine of fourteen sandbox accounts
+have never had a transaction, 82% of the balance sheet by magnitude, and nothing in any payload said
+so. `query_transactions(account_id=9)` answered `[]`, which is indistinguishable from a quiet month,
+while three fields actively implied the opposite — `coverage.accounts` counted all fourteen, health
+reported the connection `active`, and the only warning was about depth rather than breadth. An agent
+that never thought to call the verification tool is exactly that failure, so completeness rides the
+answer rather than a channel nobody reads. **A null date means NO TRANSACTION HAS EVER BEEN
+RECORDED, never "no activity"; `transaction_count` is `0` rather than null, because a null would be
+a second spelling of the same fact.**
+
+🔴 **The cost was measured before the parameter was ruled out, not after.** The walk costs 3.0ms at
+the expected 10k-row volume against an 18.2ms end-to-end `list_accounts` and a ~1s target
+(`mcp-coverage-latency-2026-09-09.md`). Cost was the only argument for making completeness something
+a caller had to ask for.
+
+**`get_coverage_report` is the verification surface built on the same producer**, and carries the
+analysis `list_accounts` does not: `median_interval_days` (this account's own posting cadence),
+`days_silent`, `silence_ratio`, `silence_exceeds_cadence`, and `source_breakdown` by provenance.
+🔴 **One producer feeds both** — built twice they can disagree, and a verification surface that
+contradicts the analysis surface is worse than one that is absent.
+
+🔴 **Trailing silence against the account's own cadence, not an enumeration of gaps between
+transactions.** The earlier "gaps > 7 days" rule was falsified by measurement: every sandbox account
+is monthly, so two of them exceeded 7 days on 100% of their intervals — ~146 findings and no signal.
+The ratio is reported as a NUMBER rather than collapsed into a flag, because 28 days silent on a
+30-day cycle is genuinely borderline and a boolean is what destroys that.
+`silence_exceeds_cadence` is one full missed cycle, because one cycle is the only non-arbitrary
+unit. **The divisor is floored at one day**: an account whose rows cluster on the same dates has a
+median interval of literally 0, and dividing by it left the busiest feeds — the ones most likely to
+stop — answering "not silent" however long they had been dead. The reported median is not floored;
+0 is a true cadence meaning "posts more than once a day", which is the opposite of null's "no
+interval exists".
+
 ### Provenance survives into every result (AC-7.4)
 
 Manually imported rows are distinguishable from aggregator-sourced rows in **every** query result.
@@ -522,15 +561,29 @@ three-week-old hole in the data and answer confidently.
 | `window_extends_past_coverage` | The window asked for reaches past the covered end — today, or the last transaction when that is later |
 | `rows_truncated` | The request matched more rows than the cap returned, and the answer holds only the newest of them |
 | `counted_during_change` | A write landed between the row read and the count read, so the two describe moments a fraction apart |
+| `accounts_without_coverage` | An account in the scope of THIS request has never had a transaction recorded, so its empty result means data not present, never no activity |
 
-🔴 **The four window/row kinds are REQUEST-scoped; the connection kinds above them are
-CONNECTION-scoped, and the distinction is the reason they exist.** A connection-scoped warning describes the standing state of the pipeline,
+🔴 **The window/row/account kinds below the line are REQUEST-scoped; the connection kinds above them
+are CONNECTION-scoped, and the distinction is the reason they exist.** A connection-scoped warning describes the standing state of the pipeline,
 so it rides every response equally — measurement found the `gapped` notice arriving
 character-for-character identical on a window wholly inside coverage, a window wholly outside it, a
 future window, and a query for an account that does not exist. It is therefore true and useless: it
 cannot tell a caller whether *this* answer is the degraded one, and a field that fires on every
 response trains its reader to skip it. A request-scoped warning fires only when the request it rides
 on actually crosses the boundary it names, so its presence is information and **so is its absence**.
+
+🔴 **`accounts_without_coverage` is request-scoped for exactly that reason, and the obvious reading
+is wrong.** "This account has never had a transaction" looks like standing state of the store, and
+therefore connection-scoped — but a fifth kind riding every response equally would reproduce the
+defect the paragraph above records. It fires only when *this* request's scope actually contains an
+uncovered account: on `list_accounts` when the listing holds one, and on
+`query_transactions(account_id=N)` when the account asked about has none.
+
+🔴 **This table is prose and `query.WARNING_KINDS` is the code; nothing holds them together.**
+`test_the_warning_vocabulary_is_closed.py` scans source only, so a kind added to the vocabulary
+without being added here goes unnoticed — which is how `accounts_without_coverage` was missing from
+this table for a full work cycle after it shipped. Adding a kind means editing both until something
+derives one from the other.
 
 Added additively under the evolution rules below (new warning codes need no version bump; consumers
 must tolerate a code they do not recognize), so AC-9.3's list — itself a minimum — is unamended.

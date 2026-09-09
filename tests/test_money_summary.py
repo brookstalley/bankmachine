@@ -12,13 +12,14 @@ import json
 from typing import Any
 
 import pytest
+from sqlalchemy import select
 
 from bankmachine import query
 from bankmachine.config import Config
 from bankmachine.connector import TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.store.derivation import apply_response
-from bankmachine.store.engine import writer_connection
+from bankmachine.store.engine import reader_connection, writer_connection
 from bankmachine.store.schema import transactions
 from bankmachine.store.types import minor_units, now_utc
 from test_mcp import _call, _seed
@@ -448,3 +449,48 @@ def test_a_window_that_holds_no_money_carries_an_empty_totals_block(
     assert wire["rows"] == []
     assert wire["totals"] == []
     assert wire["warnings"], "an empty answer must say why it is empty"
+
+
+def test_the_classified_categories_are_ones_the_taxonomy_actually_contains() -> None:
+    """🔴 A typo in either set classifies nothing, and looks exactly like a rule.
+
+    `_DEBT_SERVICE_CATEGORIES = {"LOAN_PAYMENT"}` — singular — would send every
+    card payoff to `external_spend` and inflate the one figure this tool tells
+    an agent to quote, with every other test still green because they seed the
+    same misspelling from the same mental model. Held against the recorded
+    vocabulary instead, which is the shape `PROVENANCE_SOURCES` already uses one
+    file away.
+    """
+    classified = query._INTERNAL_TRANSFER_CATEGORIES | query._DEBT_SERVICE_CATEGORIES
+    unknown = classified - set(query.KNOWN_SOURCE_CATEGORIES)
+    assert not unknown, f"these are classified but are not in the taxonomy: {sorted(unknown)}"
+    # The two classes are exclusive: a value in both would have its class decided
+    # by the order of the CASE arms rather than by a decision anyone recorded.
+    assert not (query._INTERNAL_TRANSFER_CATEGORIES & query._DEBT_SERVICE_CATEGORIES)
+
+
+def test_no_category_reaches_external_spend_without_a_decision(
+    initialized_config: Config,
+) -> None:
+    """🔴 The `else_` branch is silent by construction — this is what breaks the silence.
+
+    A category nobody classified is indistinguishable from one deliberately left
+    as spending: both arrive as `external_spend`, with no warning, no log and no
+    test going red. So the vocabulary is held against what the store actually
+    contains, and a value entering the data without a decision being made about
+    it fails here instead of quietly inflating
+    `external_spend_outflow_minor_units`.
+    """
+    _seed_every_flow_class(initialized_config)
+    with reader_connection(initialized_config) as conn:
+        present = {
+            str(row[0])
+            for row in conn.execute(select(transactions.c.source_category_primary).distinct()).all()
+            if row[0] is not None
+        }
+    assert present, "the store held no categories, so this checked nothing"
+    undecided = present - set(query.KNOWN_SOURCE_CATEGORIES)
+    assert not undecided, (
+        f"{sorted(undecided)} reach `external_spend` through the fallback rather than through "
+        f"a decision; classify them or record them in KNOWN_SOURCE_CATEGORIES"
+    )

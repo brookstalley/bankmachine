@@ -20,16 +20,26 @@ half that fails silently in the direction of looking finished.
 
 from __future__ import annotations
 
+import argparse
 import copy
 from typing import Any
 
 import pytest
 
 from bankmachine import mcp
+from bankmachine.config import Config
 
 
 def _definitions() -> list[dict[str, Any]]:
     return copy.deepcopy(mcp._tool_definitions())
+
+
+#: These two cases never reach the datastore: `cmd_mcp` checks the tool surface
+#: BEFORE it inspects the store, which is itself the ordering under test — a
+#: malformed surface is a code defect with no answer worth serving, while an
+#: unusable store is a data condition the server reports. The shared `config`
+#: fixture supplies a valid Config whose store does not exist, which is exactly
+#: the case that must still reach serving.
 
 
 def test_the_shipped_surface_registers_without_refusal() -> None:
@@ -158,3 +168,57 @@ def test_no_path_can_obtain_an_unvalidated_definition() -> None:
     source = inspect.getsource(mcp._tool_definitions)
     assert "_refuse_colliding_parameters(definitions)" in source
     assert "_refuse_optional_row_fields(definitions)" in source
+
+
+def test_an_undescribable_surface_refuses_at_startup_rather_than_mid_session(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 The refusal needs a channel, and without this one it had none.
+
+    `ToolRegistrationError` calls itself a startup failure, but nothing built
+    the definitions at startup: the earliest either guard could fire was the
+    client's first `tools/list`, which sits outside `_handle`'s `try` and
+    outside anything `serve` wraps — so the exception escaped the read loop and
+    ENDED THE SESSION. That is the operator's tool vanishing mid-session, the
+    one outcome this module's own comments name as worse than any wrong answer,
+    and it would have arrived with no log line saying which tool caused it.
+
+    Building the surface in `cmd_mcp` is what makes the docstring's claim true.
+    Asserted by never reaching `serve`, and by the exit code being `2` — "could
+    not run" — rather than `1`, which the scheduler reads as a degraded feed.
+    """
+    from bankmachine import mcp as mcp_module
+    from bankmachine.cli.exit_codes import EXIT_ERROR
+
+    served: list[object] = []
+    monkeypatch.setattr(
+        mcp_module,
+        "serve",
+        lambda *a, **k: served.append(a) or 0,  # type: ignore[func-returns-value]
+    )
+
+    def undescribable() -> list[dict[str, Any]]:
+        raise mcp_module.ToolRegistrationError("money_summary's rows[] declares ['x']")
+
+    monkeypatch.setattr(mcp_module, "_tool_definitions", undescribable)
+
+    exit_code = mcp_module.cmd_mcp(config, argparse.Namespace())
+
+    assert exit_code == EXIT_ERROR, "a surface that cannot be described is 'could not run'"
+    assert served == [], "the read loop was entered, so the refusal would reach a client mid-call"
+
+
+def test_a_describable_surface_still_reaches_the_read_loop(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The positive control: a guard that refused everything would pass the case above."""
+    from bankmachine import mcp as mcp_module
+
+    served: list[object] = []
+    monkeypatch.setattr(
+        mcp_module,
+        "serve",
+        lambda *a, **k: served.append(a) or 0,  # type: ignore[func-returns-value]
+    )
+    assert mcp_module.cmd_mcp(config, argparse.Namespace()) == 0
+    assert served, "the real surface registers, so cmd_mcp must reach serving"

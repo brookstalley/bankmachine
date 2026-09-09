@@ -83,6 +83,7 @@ REGISTRATION = "tests/preferences/test_an_undescribable_tool_is_refused_at_regis
 TRUNCATION_TESTS = "tests/test_query_truncation.py"
 WINDOW_TESTS = "tests/test_query_window.py"
 AGGREGATE_TESTS = "tests/test_money_summary.py"
+COVERAGE_TESTS = "tests/test_account_coverage.py"
 BACKUP = pathlib.Path("src/bankmachine/store/backup.py")
 BACKUP_TESTS = "tests/store/test_backup.py"
 CREDENTIALS_TESTS = "tests/preferences/test_no_credentials_tracked.py"
@@ -1125,6 +1126,36 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "            )\n"
         "        if last_success is None:",
         f"{MCP_TESTS}::test_two_connections_in_the_same_state_are_still_told_apart",
+    ),
+    (
+        "cadence: a feed posting many times a day can still be reported silent",
+        QUERY,
+        "            cadence = None if median is None else max(median, 1.0)",
+        "            cadence = median",
+        f"{COVERAGE_TESTS}::test_an_account_that_posts_many_times_a_day_can_still_go_silent",
+    ),
+    (
+        "registration: an undescribable surface refuses at STARTUP, with a channel",
+        MCP,
+        "    try:\n        _tool_definitions()\n    except ToolRegistrationError:",
+        "    try:\n        pass\n    except ToolRegistrationError:",
+        f"{REGISTRATION}::test_an_undescribable_surface_refuses_at_startup_rather_than_mid_session",
+    ),
+    (
+        "flow class: a category nobody classified cannot reach the fallback unnoticed",
+        QUERY,
+        '    "TRANSPORTATION",\n    "TRAVEL",\n)',
+        '    "TRAVEL",\n)',
+        f"{AGGREGATE_TESTS}::test_no_category_reaches_external_spend_without_a_decision",
+    ),
+    (
+        # Derivation, not enumeration: the break removes a tool from the loop's
+        # source, which is what a literal list would have let happen silently.
+        "test reach: the every-tool loops derive their tools from the registry",
+        MCP,
+        '            "name": "get_coverage_report",',
+        '            "name": "get_coverage_report_RENAMED",',
+        f"{MCP_TESTS}::test_every_tool_answers_against_a_missing_datastore",
     ),
     (
         "backup destination: an existing file is never overwritten",
