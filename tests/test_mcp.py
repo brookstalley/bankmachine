@@ -2222,3 +2222,337 @@ def test_the_instructions_say_how_to_reach_what_a_truncated_answer_left_behind(
     assert "`next_cursor`" in instructions
     assert "`cursor`" in instructions
     assert mcp._TRUNCATION_NOTE.count("`next_cursor`") >= 1
+
+
+# --------------------------------------------------------------------------
+# The answer's shape, published (`outputSchema`)
+# --------------------------------------------------------------------------
+
+
+#: The JSON Schema keywords `_violations` below understands, and therefore the
+#: whole of what a published schema may use. A validator that skips a keyword it
+#: does not recognize reports success over a payload nothing checked, and the
+#: green is what stops anyone looking -- so the schemas are held to this set by a
+#: test rather than the validator being trusted to have kept up with them.
+_IMPLEMENTED_KEYWORDS = frozenset(
+    {"type", "properties", "required", "additionalProperties", "items", "enum", "description"}
+)
+
+_PRIMITIVES: dict[str, type] = {"object": dict, "array": list, "string": str, "null": type(None)}
+
+
+def _is_of_type(value: Any, name: str) -> bool:
+    """One JSON Schema primitive, with Python's bool/int overlap taken back out.
+
+    `True` is an `int` in Python and `1` is a boolean nowhere on the wire, so a
+    check leaning on `isinstance` alone would accept `truncated: 1` and
+    `pending: 3` -- the class of thing a published schema exists to refuse.
+    """
+    if name == "boolean":
+        return isinstance(value, bool)
+    if name == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if name == "number":
+        return isinstance(value, int | float) and not isinstance(value, bool)
+    return isinstance(value, _PRIMITIVES[name])
+
+
+def _violations(value: Any, schema: dict[str, Any], path: str = "") -> list[str]:
+    """Every place a payload disagrees with a schema, in the subset the schemas use.
+
+    🔴 Written here rather than reached for. `jsonschema` would be a sixth direct
+    dependency against a product that guards that number, and what a test needs
+    is these six keywords -- the guard above is what keeps the shortcut honest
+    by failing the moment a schema uses a seventh.
+
+    Returns the disagreements rather than raising, so a payload that is wrong in
+    four places names all four instead of one at a time.
+    """
+    where = path or "<root>"
+    declared = schema.get("type")
+    if declared is not None:
+        names = declared if isinstance(declared, list) else [declared]
+        if not any(_is_of_type(value, name) for name in names):
+            # Returned rather than accumulated: nothing below can say anything
+            # true about a value that is not even the right shape.
+            return [f"{where}: expected {declared}, got {type(value).__name__}"]
+    errors: list[str] = []
+    if "enum" in schema and value not in schema["enum"]:
+        errors.append(f"{where}: {value!r} is not one of {schema['enum']}")
+    if isinstance(value, dict):
+        properties: dict[str, Any] = schema.get("properties", {})
+        errors += [
+            f"{where}.{key}: required, and absent"
+            for key in schema.get("required", [])
+            if key not in value
+        ]
+        if schema.get("additionalProperties") is False:
+            errors += [
+                f"{where}.{key}: not permitted here" for key in value if key not in properties
+            ]
+        for key, subschema in properties.items():
+            if key in value:
+                errors += _violations(value[key], subschema, f"{where}.{key}")
+    if isinstance(value, list) and "items" in schema:
+        for index, item in enumerate(value):
+            errors += _violations(item, schema["items"], f"{where}[{index}]")
+    return errors
+
+
+def _keywords(schema: dict[str, Any]) -> set[str]:
+    """Every keyword the schema uses, at every depth."""
+    used = set(schema)
+    for subschema in schema.get("properties", {}).values():
+        used |= _keywords(subschema)
+    if "items" in schema:
+        used |= _keywords(schema["items"])
+    return used
+
+
+#: One call per tool that reaches the parts of the envelope a schema can get
+#: wrong. The window is deliberately wider than the seeded data, so the clamp
+#: fires and `effective_window` carries real bounds beside a window caveat; and
+#: `_seed` grants less history than it requests, so a `gapped` warning populates
+#: the two optional keys a caveat can carry. A validation run over payloads
+#: whose every optional half is absent checks only the half that cannot fail.
+_LIVE_CALLS: tuple[tuple[str, dict[str, Any]], ...] = (
+    ("list_accounts", {}),
+    ("query_transactions", {"since": "2020-01-01", "until": "2030-12-31"}),
+    ("spending_summary", {"since": "2020-01-01", "until": "2030-12-31"}),
+    ("get_pipeline_health", {}),
+)
+
+
+def test_every_tool_publishes_the_shape_of_the_answer_it_returns(
+    initialized_config: Config,
+) -> None:
+    """🔴 The envelope was described to an agent only in prose, and prose is what gets trimmed.
+
+    `outputSchema` is where the protocol takes the same statement in a form a
+    client can check rather than read, so it survives a context budget that the
+    handshake text does not. Delivered through the real `tools/list` as well as
+    read off the definitions: the schema is assembled per definition, and an
+    assembly step can be right in the function and absent from the reply.
+
+    Root `type: "object"` because that is what the protocol restricts an output
+    schema to, and a root of any other type is dropped by a client that parses
+    the field into its declared type.
+    """
+    advertised = {tool["name"]: tool.get("outputSchema") for tool in mcp._tool_definitions()}
+    replies = _converse(
+        initialized_config,
+        [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        ],
+    )
+    on_the_wire = {tool["name"]: tool.get("outputSchema") for tool in replies[1]["result"]["tools"]}
+
+    assert on_the_wire == advertised
+    assert on_the_wire, "no tools were advertised, so this checked nothing"
+    for name, schema in on_the_wire.items():
+        assert schema is not None, f"{name} publishes no output schema"
+        assert schema["type"] == "object", name
+
+
+def test_the_published_schemas_use_only_keywords_the_checking_here_implements() -> None:
+    """🔴 A keyword nothing implements is a rule that silently stops being enforced.
+
+    The validation below is this repo's own, so its blind spots are this repo's
+    to notice: an unrecognized keyword is not an error there, it is simply
+    skipped, and every payload then passes the rule it states. This is what
+    makes the shortcut safe to keep -- a schema that reaches for a seventh
+    keyword fails here rather than passing everywhere.
+    """
+    used: set[str] = set()
+    for definition in mcp._tool_definitions():
+        used |= _keywords(definition["outputSchema"])
+
+    assert used, "no keywords were collected, so the walk found nothing"
+    assert used <= _IMPLEMENTED_KEYWORDS, (
+        f"the schemas use {sorted(used - _IMPLEMENTED_KEYWORDS)}, which nothing here checks; "
+        f"a payload violating those keywords would validate"
+    )
+
+
+def test_a_real_answer_from_every_tool_validates_against_its_own_schema(
+    initialized_config: Config,
+) -> None:
+    """🔴 The real payload, from the real loop, against the schema the same session published.
+
+    A schema checked against a fixture shaped like an answer agrees with the
+    fixture. What a validating client actually does is take the tool's published
+    `outputSchema` and hold `structuredContent` to it -- so that is what happens
+    here, because a schema that has drifted from its payload is worse than no
+    schema at all: the client rejects a good answer.
+    """
+    _seed(initialized_config)
+    schemas = {d["name"]: d["outputSchema"] for d in mcp._tool_definitions()}
+    seen: list[dict[str, Any]] = []
+
+    for tool, arguments in _LIVE_CALLS:
+        wire = _call(initialized_config, tool, arguments)["structuredContent"]
+        seen.append(wire)
+
+        assert wire["rows"], f"{tool} answered with no rows, so the row schema checked nothing"
+        assert _violations(wire, schemas[tool]) == [], tool
+
+    assert {tool for tool, _ in _LIVE_CALLS} == set(schemas), "a tool went unchecked"
+    # The optional halves have to have been reached, or this run proved only
+    # that the required keys are required.
+    caveats = [caveat for wire in seen for caveat in wire["warnings"]]
+    assert any("connection_id" in caveat for caveat in caveats), (
+        "no warning named its connection, so the optional keys of a caveat went unchecked"
+    )
+    assert any(wire.get("effective_window", {}).get("effective", {}).get("since") for wire in seen)
+
+
+def test_an_answer_from_an_unreadable_store_validates_too(config: Config) -> None:
+    """🔴 AC-ARCH.3's answer is still an answer, and a client validates it like any other.
+
+    The missing-datastore path is the one place the envelope is assembled by a
+    different function, and it is the path a consumer meets before anything else
+    has gone right. A schema that only described the healthy shape would have
+    the client reject the one answer that explains why the rest are empty.
+    """
+    assert not config.datastore_path.exists()
+    schemas = {d["name"]: d["outputSchema"] for d in mcp._tool_definitions()}
+
+    for tool, arguments in _LIVE_CALLS:
+        wire = _call(config, tool, arguments)["structuredContent"]
+
+        assert wire["rows"] == [], tool
+        assert _violations(wire, schemas[tool]) == [], tool
+
+
+def test_a_truncated_page_validates_with_the_cursor_it_carries(
+    initialized_config: Config,
+) -> None:
+    """The one optional key inside `truncation`, which no complete answer emits.
+
+    `next_cursor` is present when and only when there is another page, so every
+    other check here runs over payloads that do not have it -- and a schema is
+    only ever wrong about the key that is absent from the sample.
+    """
+    _seed_many(initialized_config, 130)
+    schema = next(
+        d["outputSchema"] for d in mcp._tool_definitions() if d["name"] == "query_transactions"
+    )
+
+    wire = _call(initialized_config, "query_transactions", {"limit": 10})["structuredContent"]
+
+    assert wire["truncation"]["next_cursor"], "the page carried no cursor, so this checked nothing"
+    assert _violations(wire, schema) == []
+
+
+def test_the_conditional_keys_are_published_exactly_where_an_answer_carries_them(
+    initialized_config: Config,
+) -> None:
+    """🔴 A key's presence in the schema is a statement about the TOOL, and it has to be true.
+
+    `api-contract.md` fixes an absent `effective_window` as "this tool takes no
+    window" and an absent `truncation` as "this tool returns every row it
+    found". A single schema permitting both on every tool would publish the
+    opposite of that for three of these four, and a consumer reading the schema
+    to decide whether to pass a window would get no answer from it.
+
+    The expectation is read off the payload rather than from a table written
+    here, because a table is a second description of the same fact and it is the
+    one that stops matching. The schema is hand-written in `mcp` and the payload
+    is assembled in `query`: two independent statements, compared.
+    """
+    _seed(initialized_config)
+    schemas = {d["name"]: d["outputSchema"] for d in mcp._tool_definitions()}
+    carried: dict[str, set[str]] = {"effective_window": set(), "truncation": set()}
+
+    for tool, arguments in _LIVE_CALLS:
+        wire = _call(initialized_config, tool, arguments)["structuredContent"]
+        schema = schemas[tool]
+        for key in carried:
+            if key in wire:
+                carried[key].add(tool)
+            assert (key in schema["properties"]) is (key in wire), (
+                f"{tool}'s schema and its answer disagree about whether it carries {key}"
+            )
+            assert (key in schema["required"]) is (key in wire), (
+                f"{tool} may omit {key}, which makes its presence say nothing"
+            )
+        sibling = "transactions_in_effective_window"
+        assert (sibling in schema["properties"]["coverage"]["properties"]) is (
+            sibling in wire["coverage"]
+        ), f"{tool}'s coverage block and its schema disagree about {sibling}"
+
+    # Both keys have to have been seen on some tools and not others, or the
+    # comparison above agreed with itself over an empty distinction.
+    for key, tools in carried.items():
+        assert tools, f"no tool carried {key}"
+        assert tools != set(schemas), f"every tool carried {key}"
+
+
+def test_the_checking_rejects_the_shapes_the_schemas_forbid(initialized_config: Config) -> None:
+    """🔴 Validation that cannot fail is a test that cannot fail.
+
+    Every other check here reports success, and none of them can tell "the
+    payload matches" from "the checking is a no-op". So each rule the schemas
+    lean on is broken on purpose, one key at a time, against a REAL answer --
+    including the two that carry this chunk's argument: an unwindowed tool's
+    schema must refuse a window, and a windowed tool's must refuse an answer
+    without one.
+    """
+    _seed(initialized_config)
+    schemas = {d["name"]: d["outputSchema"] for d in mcp._tool_definitions()}
+    windowed = _call(initialized_config, "query_transactions")["structuredContent"]
+    unwindowed = _call(initialized_config, "list_accounts")["structuredContent"]
+    assert _violations(windowed, schemas["query_transactions"]) == []
+    assert _violations(unwindowed, schemas["list_accounts"]) == []
+
+    mutants: list[tuple[str, dict[str, Any], dict[str, Any]]] = [
+        (
+            "a windowed answer with its window dropped",
+            {key: value for key, value in windowed.items() if key != "effective_window"},
+            schemas["query_transactions"],
+        ),
+        (
+            "an unwindowed tool answering with a window",
+            {**unwindowed, "effective_window": windowed["effective_window"]},
+            schemas["list_accounts"],
+        ),
+        (
+            "an uncapped tool answering with a truncation block",
+            {**unwindowed, "truncation": windowed["truncation"]},
+            schemas["list_accounts"],
+        ),
+        (
+            "an envelope key nobody published",
+            {**unwindowed, "spending_limit": 100},
+            schemas["list_accounts"],
+        ),
+        (
+            "a warning kind outside the vocabulary",
+            {**unwindowed, "warnings": [{"kind": "probably_fine", "detail": "a made-up kind"}]},
+            schemas["list_accounts"],
+        ),
+        (
+            "a count where a flag belongs",
+            {**windowed, "truncation": {**windowed["truncation"], "truncated": 1}},
+            schemas["query_transactions"],
+        ),
+        (
+            "a row missing one of its fields",
+            {
+                **unwindowed,
+                "rows": [
+                    {k: v for k, v in unwindowed["rows"][0].items() if k != "current_minor_units"}
+                ],
+            },
+            schemas["list_accounts"],
+        ),
+        (
+            "a coverage bound that came back as a number",
+            {**unwindowed, "coverage": {**unwindowed["coverage"], "transactions": "seven"}},
+            schemas["list_accounts"],
+        ),
+    ]
+
+    for label, payload, schema in mutants:
+        assert _violations(payload, schema), f"{label} was accepted"
