@@ -175,10 +175,13 @@ does not recognize the datastore's version refuses to serve, so the datastore mu
 5. `bankmachine store status` — exit 0, and the reported schema version is the new one.
 6. Reconnect the MCP client and `launchctl load` the agent.
 
-**Migration 003 (`accounts.last_seen_date`, FR-9) is the first one this procedure has been written
-for.** It backfills nothing, so the first sync after the upgrade is what repopulates the column;
+**Migrations 003 (`accounts.last_seen_date`, FR-9) and 004 (`connections.roster_observed_date`,
+AC-12.4) are what this procedure has been written for, and they have the same shape** — additive
+nullable columns, no backfill, forward-only.** Neither backfills anything, so the first sync after the upgrade is what repopulates the columns;
 until then every account reads as still-reported, which is the pre-migration answer rather than a
-wrong one. The MCP server and the CLI must be upgraded *with* the datastore — an older reader
+wrong one. 🔴 **004 has one extra consequence worth expecting**: until that first sync, no connection
+has a recorded roster observation, so nothing is measured as absent and no `roster_observed_empty`
+can fire — the upgrade window reads as "we have not looked yet", which is exactly what it is. The MCP server and the CLI must be upgraded *with* the datastore — an older reader
 refuses to serve, which is the norm working rather than a fault.
 
 **Rollback** is `git checkout` plus `uv sync`. There is nothing deployed to roll back — but note that

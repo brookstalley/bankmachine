@@ -1212,8 +1212,12 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # producer's own tests.
         "sign convention: pipeline_health passes its measurement rather than re-reading",
         QUERY,
-        "            extra_caveats=signs.caveats(conn, measured=measured),",
-        "            extra_caveats=signs.caveats(conn),",
+        # Re-anchored 2026-09-09: adding the empty-roster finding beside this
+        # call reflowed `extra_caveats=` onto its own line, so the old
+        # whole-argument anchor stopped matching. The mutation is unchanged --
+        # drop `measured=` and the surface re-reads what it was handed.
+        "                signs.caveats(conn, measured=measured)",
+        "                signs.caveats(conn)",
         f"{SIGN_TESTS}::test_pipeline_health_measures_once_even_when_a_second_scan_would_differ",
     ),
     (

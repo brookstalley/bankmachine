@@ -640,6 +640,58 @@ def test_every_coverage_row_states_its_stranded_count_even_when_it_is_zero(
         assert row["oldest_stranded_hold"] is None, row
 
 
+def test_the_coverage_report_derives_its_calendar_day_once(
+    initialized_config: Config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 One `today` for the whole report, proved with a clock that MOVES.
+
+    `coverage_report` measures stranded holds against a cutoff and its coverage
+    rows against a `today`, and it used to read the clock separately for each --
+    thirty-two lines apart, under a comment asserting that one `today` covers
+    every row. A report assembled across midnight then answered about two
+    different days in one payload, with nothing in it to say so.
+
+    🔴 A frozen clock cannot see this: two reads of a stopped clock agree, so
+    such a test passes whether the code reads once or twice. This clock advances
+    a full day per read, which is what makes a second read observable at all.
+
+    **Two reads are correct and the count is the discriminator.** One derives the
+    report's calendar day; one is `_answer`'s `as_of`, the instant the envelope
+    was produced -- a different fact, and not a calendar day. The defect made
+    three. The change that flips this test: derive a calendar day from the clock
+    a second time anywhere in `coverage_report` instead of passing the one
+    `today` down.
+    """
+    _seed(initialized_config)
+    # Old enough to stay stranded on any day this clock reports, so a
+    # disagreement between reads shows up as a moved cutoff and never as the
+    # hold dropping out of the answer entirely.
+    _hold(initialized_config, "hold-ancient", "25.00", days_ago=120)
+
+    # Reached through the module rather than the symbol, because monkeypatching must
+    # replace what `query` itself calls, not this test's own reference to it.
+    real = query.now_utc  # type: ignore[attr-defined]
+    reads: list[Any] = []
+
+    def a_clock_that_advances_one_day_per_read() -> Any:
+        reads.append(None)
+        return real() + timedelta(days=len(reads) - 1)
+
+    monkeypatch.setattr(query, "now_utc", a_clock_that_advances_one_day_per_read)
+
+    coverage = _call(initialized_config, "get_coverage_report", {})["structuredContent"]
+
+    assert len(reads) == 2, (
+        f"`coverage_report` read the clock {len(reads)} times; exactly two are accounted for -- "
+        f"the report's own calendar day, and `_answer`'s `as_of` instant. Every extra read can "
+        f"land on a different day, so the report answers about two days at once, which is what "
+        f"its own comment says must not happen. Hoist the one `today` above its first reader."
+    )
+    stranded = [row for row in coverage["rows"] if row["stranded_holds"]]
+    assert stranded, "the fixture stopped reaching the stranded path; this guard now proves nothing"
+
+
 def test_a_stranded_hold_on_a_non_active_account_is_counted_but_not_asked_about(
     initialized_config: Config,
 ) -> None:

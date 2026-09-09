@@ -110,10 +110,10 @@ survive the reversal rather than being deleted with it.
 ## Status
 
 - [x] **00 · The amendment, the column's type, the new warning kind, and one deletion** *(coordinator)*
-- [ ] **01 · The roster observation, recorded — #51** *(delegate, worktree)*
+- [x] **01 · The roster observation, recorded — #51** *(delegate, worktree)*
 - [x] **02 · The contract describes everything it publishes — #52** *(delegate, worktree)*
 - [x] **03 · Hold state: two shapes, priced — #53** *(delegate, worktree, discovery only)*
-- [ ] **04 · Integration** *(coordinator)*
+- [x] **04 · Integration** *(coordinator)*
 
 **Context.** Chunk 00 closed 2026-09-09 at `66189da`, after two review rounds. Both found the same
 class of defect — **prose still asserting the design the amendment had just replaced** — first in
@@ -350,6 +350,26 @@ Merges the three worktrees, then pays the cross-partition requirements that no d
   caught.** It gets its own acceptance line below.
 - The full suite, `verify_norms_go_red.py` in full (~10 min; **never piped to `tail`** — that returns
   tail's exit code, not its), and `/prawduct:critic cumulative`.
+
+#### Chunk 04 as-built — what integration actually caught
+
+**Seam (a): CLEAN, and re-derived rather than accepted.** C1 reported adding no wire field; the
+published-name walk returns **93** both before and after its merge, and the now-unconditional
+contract guard passes. The seam was still worth naming — the check is seconds and the failure it
+catches is a published field guarded by nothing.
+
+**Seam (c): fixed, and it needed a guard the fix's own point of view would not have produced.**
+`coverage_report` now derives its calendar day once, above its first reader. 🔴 The first guard I
+wrote counted clock reads and asserted ONE — and failed at two, because `_answer`'s `as_of` is a
+legitimate second read of a different fact. **Two is correct; the defect made three**, and the count
+is the discriminator. A frozen clock cannot see any of this: two reads of a stopped clock agree, so
+the clock in the guard advances a day per read. Seen red by reintroducing the exact defect.
+
+🔴 **One pre-existing go-red anchor drifted, caught in two seconds by the harness guard rather than
+in ten minutes by the harness.** C1's health emitter reflowed `extra_caveats=signs.caveats(conn,
+measured=measured),` onto its own line, so a case aimed at that whole argument stopped matching. Re-
+aimed **and re-proved red by hand** — a matching anchor only shows the text is findable, never that
+the mutation still bites.
 
 **Done when:** the suite is green and recorded; every go-red case is RED; requirements (a) and (c)
 are each verified by re-derivation rather than by a delegate's report; chunk 03's discovery is marked proposed

@@ -1733,8 +1733,14 @@ def coverage_report(config: Config) -> Answer:
         # The soft-delete exclusion a windowed caller would get from
         # `_transaction_filters` is declared inside `_stranded_holds` instead, so
         # passing no filters here narrows nothing it should not.
+        # 🔴 One "today" for this whole report, read ONCE and here, before the
+        # first reader of it. Reading the clock again lower down would let a
+        # report straddling midnight measure its stranded holds against one day
+        # and its coverage rows against the next -- two answers in one payload,
+        # differing by a day, with nothing in the payload to explain it.
+        today = calendar_date(now_utc().date())
         stranded_by_account: dict[int, list[StrandedHold]] = {}
-        for hold in _stranded_holds(conn, today=calendar_date(now_utc().date())):
+        for hold in _stranded_holds(conn, today=today):
             stranded_by_account.setdefault(hold.account_id, []).append(hold)
         named = {
             int(account_id): name
@@ -1762,11 +1768,6 @@ def coverage_report(config: Config) -> Answer:
         ).all():
             sources.setdefault(int(account_id), {})[str(source)] = int(count)
 
-        # 🔴 One "today" for every row. Reading the clock per account would let a
-        # report straddle midnight and hand back rows measured against two
-        # different days, which is a difference nobody could explain from the
-        # payload.
-        today = calendar_date(now_utc().date())
         rows: list[dict[str, Any]] = []
         for account_id in sorted(coverage):
             facts = coverage[account_id]
