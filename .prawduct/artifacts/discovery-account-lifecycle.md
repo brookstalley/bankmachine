@@ -359,8 +359,8 @@ lifecycle axis and should be built the same way**, down to the shared fragment �
 |---|---|---|
 | `lifecycle` | `string`, enum | The verdict. Vocabulary below |
 | `closed_date` | `["string","null"]` | The stored `accounts.closed_date`; null when none is recorded |
-| `last_seen_in_roster` | `["string","null"]` | The date the institution last listed this account; null for an import-only account with no connection |
-| `roster_last_observed` | `["string","null"]` | The date this account's connection's roster was last successfully observed; null for an import-only account |
+| `last_seen_in_roster` | `["string","null"]` | The date the institution last listed this account; null when no roster observation stands behind the account (import-only, or a connection never yet observed) |
+| `roster_last_observed` | `["string","null"]` | The date this account's connection's roster was last successfully observed; null when no roster observation stands behind the account (import-only, or a connection never yet observed) |
 
 **Vocabulary — three values, all reachable:**
 
@@ -376,15 +376,21 @@ lifecycle axis and should be built the same way**, down to the shared fragment �
   `last_seen_in_roster` and is not a fact about today.*
 
 **A fourth value (`unknown`) was considered and rejected as unreachable.** An aggregator account
-exists only because a roster listed it, so `roster_last_observed` is never null for one; an
+exists only because a roster listed it, so it always has a roster basis in principle; an
 import-only account is fully operator-owned and is honestly `active` until the operator says
 otherwise. An unreachable enum member is a liability on this surface — the multi-currency refusal path
 is already this repo's cautionary case — so the null on `roster_last_observed` carries "no roster
 basis" instead, which is a fact the row can state rather than a state it has to invent.
 
-**`no_longer_reported` is derived, not stored**, and the derivation is one comparison:
-`last_seen_in_roster < roster_last_observed`. Both operands ride the row, so the verdict is auditable
-from the payload alone — the `silence_ratio` rule applied again.
+**`no_longer_reported` is derived, not stored**, and the derivation is one comparison plus one null
+case: `last_seen_in_roster < roster_last_observed`, **or** `last_seen_in_roster` is null while the
+connection carries an observation. Both operands ride the row, so the verdict is auditable from the
+payload alone — the `silence_ratio` rule applied again.
+
+> 🔴 **Amended 2026-09-09 (see the supersession block above).** `roster_last_observed` is null for
+> any aggregator account whose connection has never been observed, which is every one of them between
+> migration 004 and that connection's next successful sync. `data-model.md` and `api-contract.md`
+> carry the same null case; this paragraph said "never null" until it did not.
 
 ### `outputSchema`
 
@@ -422,8 +428,16 @@ order-independent, which is the specific care `derivers.py:86–94` says retirem
 column and no second writer. It also gives AC-12.5's whole-roster clause **by construction rather
 than by a guard**: if every account of a connection vanishes at once, the maximum moves with them and
 nothing is ever older than it, so nothing is marked absent. That is the property worth having, and it
-is the reason to prefer this over a `connections.roster_observed_at` column, which would have to have
+is the reason to prefer this over a stored per-connection column, which would have to have
 the same case written into it by hand.
+
+> 🔴 **Superseded 2026-09-09 by the owner's ruling on #51, and the paragraph above is kept as the
+> argument that lost.** The stored column is specified as `connections.roster_observed_date` (a calendar
+> date -- `roster_observed_at` was considered and rejected, since its only use is a comparison
+> against `last_seen_date`). What defeated the reasoning above is that the "by construction" property
+> it prizes is the DEFECT at one account: a maximum over the accounts that were listed moves with
+> them, so when a single-account connection's only account vanishes there is nothing behind it and
+> the absence is inexpressible -- the ordinary case, not an exotic one. See AC-12.4/12.5/12.5a.
 
 **The alternative that avoids the migration was considered and is rejected.** `balances_daily` gets a
 row per account per day from every roster derivation, so `max(as_of_date)` per account is a working
@@ -583,7 +597,12 @@ Three points of contact, offered so the two sets can be checked for contradictio
 
 ## Shared-artifact deltas for the integrator
 
-Nothing below was applied. Every entry is a proposal, and the placement questions are flagged rather
+🔴 **Read each entry's own status before acting on it — this preamble is no longer true of all of
+them.** Entries 4 and 5 are marked APPLIED 2026-09-09 and must not be applied again, and **delta 3b
+below is SUPERSEDED**: its proposed text carries "never when a connection's entire roster is absent",
+which is precisely the whole-roster clause AC-12.5 replaced on 2026-09-09. Applying it would restore
+the design this discovery's own supersession block records as reversed. What follows was written as a
+proposal set, and the placement questions are flagged rather
 than resolved — the integrator owns placement and conflict resolution.
 
 ### 1. `docs/system-requirements.md` — where the AC-12.x block goes
@@ -704,6 +723,12 @@ settles.
 > an **observation** and is not a closure claim, because the aggregator reports no closure signal at
 > all. Absence is measured within one connection, against a successful roster observation only, and
 > never when a connection's entire roster is absent.
+
+🔴 **SUPERSEDED 2026-09-09 — do NOT apply this delta.** Its final clause is the whole-roster clause,
+and AC-12.5 replaced it: an empty roster now marks every account on the connection absent AND raises
+`roster_observed_empty`. `data-model.md` already carries the amended text. Kept rather than deleted
+because it is the record of what was proposed, and a reader who finds it must be able to see why it
+was not applied — but re-applying it restores the exact failure FR-9 exists to remove.
 
 ### 4. `.prawduct/artifacts/mcp-production-readiness.md` — a correction to its own tracking note
 

@@ -38,10 +38,17 @@ from bankmachine import query
 from bankmachine.config import Config
 from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS
+from bankmachine.store import derivation
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import writer_connection
 from bankmachine.store.rebuild import rebuild
-from bankmachine.store.schema import accounts, connections, institutions
+from bankmachine.store.schema import (
+    accounts,
+    balances_daily,
+    connections,
+    institutions,
+    transactions,
+)
 from bankmachine.store.types import CalendarDate, UtcInstant, calendar_date, now_utc
 
 # 🔴 Imported rather than copied, exactly as `test_account_coverage.py` does it:
@@ -509,15 +516,28 @@ def test_a_connection_whose_roster_was_not_fetched_marks_nothing_absent(
     )
 
 
-def test_a_connection_whose_whole_roster_vanishes_marks_nothing_absent(
+def test_a_connection_whose_whole_roster_comes_back_empty_marks_every_account_absent(
     initialized_config: Config,
 ) -> None:
-    """🔴 AC-12.5's important clause, and it holds by construction.
+    """🔴 AC-12.5's whole-roster clause, REPLACED by the 2026-09-09 amendment.
 
-    Fourteen simultaneous closures is not a thing that happens. If every account
-    of a connection stops being listed at once, the connection's own maximum
-    moves with them and nothing is ever older than it — which is a property of
-    how the maximum is computed rather than a guard someone remembered to write.
+    The clause this replaces said a connection whose entire roster is absent
+    marks nothing absent, on the ground that fourteen simultaneous closures is
+    not a thing that happens. What the amendment refuses is not that argument
+    but the single channel that forced it: with only the account rows to speak
+    through, the old design had to suppress the account-level truth to avoid
+    publishing the connection-level lie.
+
+    Both are now said. Every account is marked absent, because the balance
+    beside each one froze on the day it was last reported and a reader of
+    `list_accounts` needs that; and the connection raises
+    `roster_observed_empty` beside them, which is what distinguishes fourteen
+    closures from a broken feed. Publishing the first without the second is the
+    mass-closure lie the old clause correctly feared.
+
+    🔴 The two observations DIFFER by thirty days on purpose. Read against one
+    observation the assertion below confirms whatever the code does; it is the
+    empty roster MOVING the record that makes every account behind it.
     """
     later = now_utc()
     earlier = UtcInstant(later - timedelta(days=30))
@@ -526,10 +546,287 @@ def test_a_connection_whose_whole_roster_vanishes_marks_nothing_absent(
     # A successful fetch that lists nothing at all.
     _observe(initialized_config, connection_id, [], at=later)
 
-    rows = _rows(initialized_config)
+    wire = _wire(initialized_config)
+    rows = {row["name"]: row for row in wire["rows"]}
 
-    assert {row["lifecycle"] for row in rows.values()} == {"active"}
-    assert {row["roster_last_observed"] for row in rows.values()} == {str(earlier.date())}
+    assert {row["lifecycle"] for row in rows.values()} == {"no_longer_reported"}
+    assert {row["last_seen_in_roster"] for row in rows.values()} == {str(earlier.date())}
+    assert {row["roster_last_observed"] for row in rows.values()} == {str(later.date())}, (
+        "the empty roster must advance the CONNECTION's recorded observation; derived from "
+        "the accounts it would move with them and nothing could ever be behind it"
+    )
+    assert "roster_observed_empty" in _kinds(wire), (
+        "every balance was published as frozen with nothing saying the roster came back "
+        "empty, which reads as a household closing all of its accounts at once"
+    )
+
+
+def test_a_single_account_connections_only_account_is_reported_absent(
+    initialized_config: Config,
+) -> None:
+    """🔴 The failure FR-9 removes, which used to survive INSIDE FR-9. #51.
+
+    One connection, one account, and the institution stops listing it. At N=1
+    the whole roster and the one account are the same thing, so the clause that
+    suppressed a vanished whole roster suppressed this — and one account closing
+    is entirely ordinary. The result was an account reporting `active`
+    indefinitely beside a balance that froze months ago, which is precisely the
+    wrong number this feature exists to refuse.
+
+    🔴 It is fixed by WHERE the observation comes from, not by a special case
+    for N=1. Measured against a maximum over the connection's own accounts, the
+    only account's own date IS the maximum and it can never fall behind itself.
+    Measured against the connection's recorded observation, it can.
+    """
+    later = now_utc()
+    earlier = UtcInstant(later - timedelta(days=30))
+    connection_id = _enroll(initialized_config)
+    _observe(initialized_config, connection_id, [KEPT], at=earlier)
+    _observe(initialized_config, connection_id, [], at=later)
+
+    rows = _rows(initialized_config)
+    assert len(rows) == 1, f"the fixture did not produce a one-account connection: {list(rows)}"
+    only = rows[f"Account {KEPT}"]
+
+    assert only["lifecycle"] == "no_longer_reported", (
+        "a one-account connection's only account reported active after its roster stopped "
+        "listing it, which is the N=1 blind spot the amendment closes"
+    )
+    assert only["last_seen_in_roster"] == str(earlier.date())
+    assert only["roster_last_observed"] == str(later.date())
+
+
+def test_the_only_account_of_a_shrunk_connection_reaches_the_flagged_magnitude(
+    initialized_config: Config,
+) -> None:
+    """🔴 The newly-absent account has to reach AC-12.8's figure, not just its row.
+
+    The population the flagged magnitude is computed over changes as a result of
+    this amendment, and that is the norm working rather than a side effect: an
+    account at a one-account connection that reported `active` forever was a
+    stored balance reported with the wrong lifecycle, and it was silently inside
+    every total. Include-and-flag is only safe if the reader is handed the
+    figure to subtract, so the figure has to move when the verdict does.
+    """
+    later = now_utc()
+    earlier = UtcInstant(later - timedelta(days=30))
+    connection_id = _enroll(initialized_config)
+    _observe(initialized_config, connection_id, [KEPT], at=earlier)
+    _observe(initialized_config, connection_id, [], at=later)
+
+    coverage = _wire(initialized_config)["coverage"]
+
+    assert coverage["accounts"] == 1, "the count must still include the non-active account"
+    assert coverage["accounts_not_active"] == 1
+    assert coverage["not_active_balance_minor_units"] == [
+        {"currency": "USD", "current_minor_units": 11094}
+    ], (
+        "the frozen balance of the only account on the connection is missing from the "
+        "magnitude, so a reader handed the total cannot subtract what it includes"
+    )
+
+
+def test_an_empty_roster_says_which_connection_and_which_accounts(
+    initialized_config: Config,
+) -> None:
+    """AC-12.5a on the answer that draws on it, not only on the health surface.
+
+    🔴 The ruling of 2026-09-09 rejected `get_pipeline_health` as the SOLE home:
+    a consumer reading `list_accounts` would see frozen balances and never learn
+    the roster came back empty, and an agent cannot see a caveat that is not in
+    the payload. The warning names the connection and the accounts, because
+    "something is wrong somewhere" is a warning nobody can act on.
+    """
+    later = now_utc()
+    earlier = UtcInstant(later - timedelta(days=30))
+    connection_id = _enroll(initialized_config)
+    _observe(initialized_config, connection_id, [KEPT, DROPPED], at=earlier)
+    _observe(initialized_config, connection_id, [], at=later)
+
+    wire = _wire(initialized_config)
+    caveat = next(c for c in wire["warnings"] if c["kind"] == "roster_observed_empty")
+    account_ids = sorted(str(row["account_id"]) for row in wire["rows"])
+
+    assert caveat["connection_id"] == connection_id
+    assert "SUCCESSFULLY" in caveat["detail"]
+    for account_id in account_ids:
+        assert account_id in caveat["detail"], caveat["detail"]
+
+
+def test_an_empty_roster_names_an_operator_closed_account_without_assigning_it_the_verdict(
+    initialized_config: Config,
+) -> None:
+    """🔴 The caveat names the accounts; it does not tell the reader what they are.
+
+    The scope this emitter is handed mixes both non-active values, and they mean
+    opposite things about the roster: `no_longer_reported` is the institution
+    having stopped listing an account, while `closed` is the operator's own
+    declaration and is no evidence about a roster at all (AC-12.6). Flattening
+    them tells an operator that an account they closed themselves may be the
+    victim of a broken feed, and asks them to go and confirm it -- the exact
+    conflation `_not_active_caveat` refuses two hundred lines away.
+
+    🔴 And it must NOT be fixed by filtering the closed ones out of the scope: a
+    connection whose only accounts are operator-closed still had its roster come
+    back empty, and it would then emit a caveat naming nobody.
+
+    The change that flips this test: restore any wording that asserts one
+    lifecycle verdict over every account named.
+    """
+    later = now_utc()
+    earlier = UtcInstant(later - timedelta(days=30))
+    connection_id = _enroll(initialized_config)
+    _observe(initialized_config, connection_id, [KEPT, DROPPED], at=earlier)
+    _declare_closed(initialized_config, KEPT)
+    _observe(initialized_config, connection_id, [], at=later)
+
+    wire = _wire(initialized_config)
+    caveat = next(c for c in wire["warnings"] if c["kind"] == "roster_observed_empty")
+    by_id = {int(row["account_id"]): row for row in wire["rows"]}
+    closed = [i for i, row in by_id.items() if row["lifecycle"] == "closed"]
+    assert closed, "the fixture stopped producing an operator-closed account; this proves nothing"
+
+    for account_id in by_id:
+        assert str(account_id) in caveat["detail"], caveat["detail"]
+    assert "are all marked no longer reported" not in caveat["detail"], (
+        "the caveat asserted one verdict over accounts whose rows carry two different ones. "
+        f"Row {closed[0]} says lifecycle='closed' -- the operator's own declaration -- while "
+        f"the warning calls it no-longer-reported: {caveat['detail']}"
+    )
+
+
+def test_a_retired_connection_raises_no_empty_roster_warning_it_could_never_clear(
+    initialized_config: Config,
+) -> None:
+    """🔴 A warning that can never stop firing is the "true and useless" defect.
+
+    An empty roster is itself a reason to retire a connection and re-enroll, so
+    this sequence is ordinary rather than exotic. Once retired there is no later
+    non-empty roster read to move the observation, so the condition can only
+    clear by never having fired: every `list_accounts`, `query_transactions` and
+    `get_coverage_report` answer would carry it forever, and the health surface
+    would keep asking the operator to pursue a connection the product itself
+    records as removed at the aggregator.
+
+    That is precisely what `envelope.py`'s split into connection-scoped and
+    request-scoped kinds exists to prevent -- a warning riding every answer
+    equally teaches its reader to skip it -- and `_connection_caveats` already
+    settles the repo's answer with `retired_at IS NULL`.
+
+    The change that flips this test: drop the retirement filter from
+    `_connections_with_an_empty_roster`, the one producer both emitters read.
+    """
+    later = now_utc()
+    earlier = UtcInstant(later - timedelta(days=30))
+    connection_id = _enroll(initialized_config)
+    _observe(initialized_config, connection_id, [KEPT, DROPPED], at=earlier)
+    _observe(initialized_config, connection_id, [], at=later)
+
+    assert "roster_observed_empty" in _kinds(_wire(initialized_config)), (
+        "the fixture never raised the warning while live, so retiring it proves nothing"
+    )
+
+    with writer_connection(initialized_config) as conn:
+        conn.execute(
+            update(connections)
+            .where(connections.c.connection_id == connection_id)
+            .values(status="retired", retired_at=now_utc())
+        )
+
+    assert "roster_observed_empty" not in _kinds(_wire(initialized_config)), (
+        "a retired connection still raises the empty-roster warning. Nothing can ever clear "
+        "it -- a retired connection has no next roster read -- so it rides every answer "
+        "forever and the health surface keeps naming an institution the operator has already "
+        "removed"
+    )
+
+
+def test_a_request_over_a_healthy_roster_does_not_carry_the_empty_roster_warning(
+    initialized_config: Config,
+) -> None:
+    """🔴 Request-scoped, like every kind it sits beside.
+
+    A kind riding every answer equally is the `gapped` defect this vocabulary
+    records: character-for-character identical on four unrelated questions, true
+    and useless for telling a caller whether THIS answer was the degraded one.
+    An answer over a connection whose roster listed something must be silent.
+    """
+    later = now_utc()
+    earlier = UtcInstant(later - timedelta(days=30))
+    connection_id = _enroll(initialized_config)
+    _observe(initialized_config, connection_id, [KEPT, DROPPED], at=earlier)
+    # One account drops out, but the roster still listed something.
+    _observe(initialized_config, connection_id, [KEPT], at=later)
+
+    wire = _wire(initialized_config)
+
+    assert "account_no_longer_active" in _kinds(wire), (
+        "the fixture produced no absent account, so the assertion below proves nothing"
+    )
+    assert "roster_observed_empty" not in _kinds(wire), (
+        "a roster that listed an account was reported as having come back empty"
+    )
+
+
+def test_the_health_surface_names_a_connection_whose_roster_came_back_empty(
+    initialized_config: Config,
+) -> None:
+    """🔴 AC-12.5a's second surface, as a finding about a NAMED connection.
+
+    A broken feed that returns success is exactly what a health check is for,
+    and this tool reads `connections`, `sync_state` and the sign measurement --
+    none of which can tell such a connection from a healthy one. It would report
+    it healthy, while the guidance for this very warning sends an agent here.
+
+    🔴 The second connection is the case the answer-side emitter can NEVER
+    reach: its roster has come back empty from the first read, so it holds no
+    account, so no request scope can contain one. A health check that could not
+    see the emptiest connection would be quietest exactly where it matters.
+    """
+    later = now_utc()
+    earlier = UtcInstant(later - timedelta(days=30))
+    shrunk = _enroll(initialized_config, source_connection_id="item-shrunk")
+    never = _enroll(initialized_config, source_connection_id="item-never")
+    healthy = _enroll(initialized_config, source_connection_id="item-healthy")
+    _observe(initialized_config, shrunk, [KEPT], at=earlier)
+    _observe(initialized_config, shrunk, [], at=later)
+    _observe(initialized_config, never, [], at=later)
+    _observe(initialized_config, healthy, ["acct-fine"], at=later)
+
+    wire = _wire(initialized_config, "get_pipeline_health")
+    named = {
+        c["connection_id"]: c for c in wire["warnings"] if c["kind"] == "roster_observed_empty"
+    }
+
+    assert set(named) == {shrunk, never}, (
+        f"the health surface reported empty rosters for {sorted(named)}; the connection whose "
+        f"roster listed an account must not be named and the one that has never listed one "
+        f"must be"
+    )
+    assert named[never]["institution"] == "Bank of item-never", (
+        "an operator with ten institutions cannot act on a bare connection number"
+    )
+    assert healthy not in named
+
+
+def test_the_answer_surface_cannot_see_the_connection_that_never_listed_anything(
+    initialized_config: Config,
+) -> None:
+    """🔴 The two emitters are not one emitter reused, and this is the difference.
+
+    The answer-side warning is request-scoped: it fires where THIS request's
+    scope holds an account on such a connection. A connection whose roster has
+    come back empty every time it was read holds no account at all, so it is
+    unreachable from that scope by construction -- which is exactly why the
+    health surface derives the fact from `connections` instead, and why deleting
+    the referral from the warning's guidance would have left a real gap.
+    """
+    never = _enroll(initialized_config, source_connection_id="item-never")
+    _observe(initialized_config, never, [], at=now_utc())
+
+    assert _rows(initialized_config) == {}
+    assert "roster_observed_empty" not in _kinds(_wire(initialized_config))
+    assert "roster_observed_empty" in _kinds(_wire(initialized_config, "get_pipeline_health"))
 
 
 def test_an_import_only_account_has_no_roster_to_be_absent_from(
@@ -636,6 +933,84 @@ def test_a_rebuild_does_not_undo_the_operators_declaration(
     rebuild(initialized_config, derivers=ALL_DERIVERS)
 
     assert _rows(initialized_config)[f"Account {DROPPED}"]["lifecycle"] == "closed"
+
+
+#: The derivation version that shipped before `_record_roster_observation` existed.
+#: 🔴 A fixed historical fact, deliberately not written as `DERIVATION_VERSION - 1`:
+#: a relative stamp moves with the constant, so the archived rows and the running
+#: build can never carry the same version and the test below would pass whether or
+#: not the bump was made. It does not change when the version bumps again.
+_VERSION_THAT_SHIPPED_WITHOUT_THE_ROSTER_OBSERVATION = 2
+
+
+def test_a_store_derived_before_the_roster_column_rebuilds_instead_of_rolling_back(
+    initialized_config: Config,
+) -> None:
+    """🔴 The upgrade procedure's own remedy, asserted against the tool that runs it.
+
+    `operational-spec.md` tells an operator to run `bankmachine store rebuild`
+    when a connection is not syncing, because that is what closes migration
+    004's window on a connection that will never sync again -- the one whose
+    absent accounts matter most. **A documented remedy that fails is worse than
+    no remedy**, so it is asserted here rather than trusted.
+
+    The rebuild MUST move the digest: replaying the archive turns
+    `connections.roster_observed_date` from null into a date, and
+    `content_digest` walks every table. Whether that is a defect or the point
+    turns entirely on the derivation version -- `change_was_expected` is false
+    only when the replaced rows were derived by the version that just re-derived
+    them. So the bump owed by `_record_roster_observation` (`derivation.py` names
+    "a newly-populated column" as exactly this trigger) is what makes the remedy
+    work, and without it the operator gets a rollback blaming deriver impurity.
+
+    🔴 **The existing rebuild tests cannot catch this and this one is not
+    redundant with them.** They replay through the same deriver that produced
+    their rows, at the same version, so their digest cannot move. This one
+    stamps the derived rows at the PREVIOUS version and clears the column, which
+    is the only shape a real upgraded store has.
+
+    🔴 The stamped version is a fixed historical number, NOT
+    `DERIVATION_VERSION - 1`. Written relatively it moves with the constant, so
+    the stamp and the build can never collide and the test passes whether or not
+    the bump was made -- which is what the first version of this test did.
+
+    The change that flips this test: return `DERIVATION_VERSION` to the value
+    the archived rows carry.
+    """
+    _shrinking_roster(initialized_config)
+
+    with writer_connection(initialized_config) as conn:
+        # The store as it stands the moment migration 004 finishes: the column
+        # exists and is empty, and every derived row predates the deriver that
+        # fills it. The older version is REGISTERED rather than written as a
+        # bare id, because a real upgraded store has that row -- it is what
+        # derived its rows.
+        previous = derivation.ensure_derivation_version(
+            conn,
+            version=_VERSION_THAT_SHIPPED_WITHOUT_THE_ROSTER_OBSERVATION,
+            description="the version that shipped before the roster observation",
+        )
+        conn.execute(update(connections).values(roster_observed_date=None))
+        for table in (transactions, balances_daily):
+            conn.execute(update(table).values(derivation_version_id=previous))
+
+    report = rebuild(initialized_config, derivers=ALL_DERIVERS)
+
+    assert report.content_changed, (
+        "the rebuild did not move the digest, so this test is no longer exercising the "
+        "upgrade window it exists for -- check that the column was actually cleared"
+    )
+    assert report.change_was_expected, (
+        "`store rebuild` would refuse and roll back on a store upgraded across migration 004, "
+        "so the remedy operational-spec.md tells the operator to run does not run. Bump "
+        "DERIVATION_VERSION in the commit that populates a new column"
+    )
+    with writer_connection(initialized_config) as conn:
+        observed = conn.execute(select(connections.c.roster_observed_date)).scalars().all()
+    assert any(value is not None for value in observed), (
+        "the rebuild succeeded but left the roster observation empty, so the window it is "
+        "prescribed to close stays open"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -907,15 +1282,24 @@ def test_a_store_that_cannot_be_read_still_carries_the_lifecycle_key_set(
 
 
 def _migrated_but_unsynced(config: Config) -> None:
-    """Roll every account back to the state migration 003 leaves them in.
+    """Roll the store back to the state migrations 003 and 004 leave it in.
 
-    Written by clearing the column rather than by skipping the observation,
-    because the accounts have to EXIST -- which before migration 003 they did,
-    each with a `first_seen_date` and no `last_seen_date` at all.
+    Written by clearing the columns rather than by skipping the observation,
+    because the rows have to EXIST -- which before the migrations they did, each
+    account with a `first_seen_date` and no `last_seen_date`, and each connection
+    with no record of a roster ever having been read.
+
+    🔴 BOTH halves are cleared, and clearing only one would not be this state.
+    A connection carrying an observation whose accounts carry none is the
+    steady-state "the roster was read and none of these was in it" -- the exact
+    detection this feature exists for -- not the upgrade window, and a fixture
+    that produced it here would assert the opposite of what these tests claim.
     """
     with writer_connection(config) as conn:
         cleared = conn.execute(update(accounts).values(last_seen_date=None)).rowcount
+        unobserved = conn.execute(update(connections).values(roster_observed_date=None)).rowcount
     assert cleared, "no account rows were reset, so this fixture is not the state it claims"
+    assert unobserved, "no connection rows were reset, so this fixture is not the state it claims"
 
 
 def test_no_account_is_called_closed_before_its_connection_is_observed_once(

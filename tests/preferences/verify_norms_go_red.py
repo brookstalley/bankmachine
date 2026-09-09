@@ -1212,8 +1212,12 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # producer's own tests.
         "sign convention: pipeline_health passes its measurement rather than re-reading",
         QUERY,
-        "            extra_caveats=signs.caveats(conn, measured=measured),",
-        "            extra_caveats=signs.caveats(conn),",
+        # Re-anchored 2026-09-09: adding the empty-roster finding beside this
+        # call reflowed `extra_caveats=` onto its own line, so the old
+        # whole-argument anchor stopped matching. The mutation is unchanged --
+        # drop `measured=` and the surface re-reads what it was handed.
+        "                signs.caveats(conn, measured=measured)",
+        "                signs.caveats(conn)",
         f"{SIGN_TESTS}::test_pipeline_health_measures_once_even_when_a_second_scan_would_differ",
     ),
     (
@@ -1258,6 +1262,42 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "test_an_account_the_roster_stopped_listing_is_reported_no_longer_reported",
     ),
     (
+        # 🔴 A warning nothing can ever clear is the "true and useless" defect
+        # the two warning tuples exist to prevent. A retired connection has no
+        # next roster read, so the condition ends only by never starting.
+        # Anchors on the one shared producer both emitters read.
+        "AC-12.5a: a retired connection raises no empty-roster warning it could never clear",
+        QUERY,
+        "    observed = {cid: date for cid, date in observed.items() if cid in live}",
+        "    observed = dict(observed)",
+        f"{LIFECYCLE_TESTS}::"
+        "test_a_retired_connection_raises_no_empty_roster_warning_it_could_never_clear",
+    ),
+    (
+        # 🔴 AC-12.6: `closed` is the operator's own declaration and is no
+        # evidence about a roster. Flattening it into the empty-roster caveat
+        # asks an operator to re-confirm a closure they made themselves.
+        "AC-12.6: the empty-roster caveat asserts no verdict over the accounts it names",
+        QUERY,
+        'f"accounts at all. Account(s) "',
+        'f"accounts at all, so account(s) are all marked no longer reported: "',
+        f"{LIFECYCLE_TESTS}::"
+        "test_an_empty_roster_names_an_operator_closed_account_without_assigning_it_the_verdict",
+    ),
+    (
+        # 🔴 AC-5.3: losslessness is only well-defined against a recorded
+        # version. A deriver that fills a new column without a bump makes
+        # `store rebuild` refuse and roll back -- which is the remedy the
+        # upgrade procedure prescribes for the connection that never syncs
+        # again, so the documented fix would fail on the store it is for.
+        "AC-5.3: a newly-populated column bumps the derivation version",
+        pathlib.Path("src/bankmachine/store/derivation.py"),
+        "DERIVATION_VERSION = 3",
+        "DERIVATION_VERSION = 2",
+        f"{LIFECYCLE_TESTS}::"
+        "test_a_store_derived_before_the_roster_column_rebuilds_instead_of_rolling_back",
+    ),
+    (
         "AC-12.7: a non-active account's silence is closure, not a coverage finding",
         QUERY,
         "                        False if ratio is None or not lifecycle[account_id].active "
@@ -1288,6 +1328,115 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "    if not account_ids:\n        return []",
         "    if True:\n        return []",
         f"{LIFECYCLE_TESTS}::test_the_magnitude_is_signed_and_grouped_by_currency",
+    ),
+    # -- #51: the roster observation, RECORDED rather than derived ----------
+    #
+    # 🔴 Eight cases rather than two, because the amendment of 2026-09-09 is a
+    # write path, a read path and two emitters on two surfaces, and each fails
+    # silently in its own direction. The write path failing leaves nothing to
+    # measure against; the read path failing puts the N=1 blind spot back; an
+    # emitter's producer failing publishes frozen balances with no way to tell a
+    # broken feed from a household closing its accounts; and an emitter's CALL
+    # SITE failing ships a finished, correct, tested producer that nothing
+    # invokes. The last is why four of these anchor on a call rather than on the
+    # code it reaches: a test that exercised the producer directly would stay
+    # green with the call site reverted.
+    (
+        # 🔴 Guarded on the roster being non-empty, which is the regression, not
+        # deleted outright: the non-empty case must stay GREEN, or the case
+        # proves only that something records an observation somewhere.
+        "AC-12.5a: an EMPTY roster is a successful observation and is recorded as one",
+        CONNECTOR_DERIVERS,
+        "    _record_roster_observation(conn, response)",
+        "    _record_roster_observation(conn, response) if listed else None",
+        f"{DERIVER_TESTS}::test_a_roster_that_lists_nothing_still_records_the_observation",
+    ),
+    (
+        # The connection half of the property the account half already carries.
+        # An observation that moves BACKWARDS on a replay puts accounts a later
+        # roster listed behind it -- a fabricated closure produced by replay
+        # order alone.
+        "AC-12.4: a connection's roster observation is a maximum, not the latest replay",
+        CONNECTOR_DERIVERS,
+        "                observed if recorded is None else max(calendar_date(recorded), observed)",
+        "                observed",
+        f"{DERIVER_TESTS}::"
+        "test_the_roster_observation_is_a_maximum_so_a_replay_cannot_move_it_back",
+    ),
+    (
+        # 🔴 The break is the design the amendment REVERSED, written out in
+        # full, rather than a constant that makes the read return nothing. The
+        # regression this case exists to catch is somebody restoring the derived
+        # maximum because it needs no column and cannot disagree with its rows --
+        # and under it every other lifecycle test still passes, which is exactly
+        # why the N=1 case had to be written before it could be caught.
+        "AC-12.5: absence is measured against the RECORDED observation, at N=1 too",
+        QUERY,
+        "            select(connections.c.connection_id, connections.c.roster_observed_date)",
+        "            select(accounts.c.connection_id, func.max(accounts.c.last_seen_date, "
+        "type_=accounts.c.last_seen_date.type)).where(accounts.c.connection_id.is_not(None))"
+        ".group_by(accounts.c.connection_id)",
+        f"{LIFECYCLE_TESTS}::test_a_single_account_connections_only_account_is_reported_absent",
+    ),
+    (
+        # 🔴 A separate case because the norm it certifies names the figure
+        # separately. The amendment CHANGES the population the flagged magnitude
+        # is computed over, and a verdict that moved without the figure moving
+        # leaves a reader told a total includes something and handed nothing to
+        # subtract. The case above mutates the same line and asserts the
+        # verdict; this one asserts the money.
+        "AC-12.8: the newly-absent only account reaches the flagged magnitude",
+        QUERY,
+        "            select(connections.c.connection_id, connections.c.roster_observed_date)",
+        "            select(accounts.c.connection_id, func.max(accounts.c.last_seen_date, "
+        "type_=accounts.c.last_seen_date.type)).where(accounts.c.connection_id.is_not(None))"
+        ".group_by(accounts.c.connection_id)",
+        f"{LIFECYCLE_TESTS}::"
+        "test_the_only_account_of_a_shrunk_connection_reaches_the_flagged_magnitude",
+    ),
+    (
+        "AC-12.5a: the answer that draws on an empty roster says so (producer)",
+        QUERY,
+        "        if entry.roster_observed_empty and entry.connection_id is not None:",
+        "        if False:",
+        f"{LIFECYCLE_TESTS}::test_an_empty_roster_says_which_connection_and_which_accounts",
+    ),
+    (
+        # 🔴 Anchored on the CALL, and this is the half that fails invisibly.
+        # A producer with no caller is a finished, tested, correct function that
+        # never runs, and every test written against it stays green. The anchor
+        # carries the two lines after it because the same term appears at three
+        # call sites and the harness replaces only the first.
+        "AC-12.5a: the answer that draws on an empty roster says so (call site)",
+        QUERY,
+        "                + _roster_observed_empty_caveat(not_active)\n"
+        "            ),\n            lifecycle=lifecycle,",
+        "                + []\n            ),\n            lifecycle=lifecycle,",
+        f"{LIFECYCLE_TESTS}::test_an_empty_roster_says_which_connection_and_which_accounts",
+    ),
+    (
+        # A separate producer from the one above rather than the same one
+        # reused, because the trigger differs: a health check's own envelope is
+        # not a request scope, and the connection whose roster has come back
+        # empty from the first read holds no account for a request scope to
+        # contain.
+        "AC-12.5a: get_pipeline_health names the connection whose roster was empty (producer)",
+        QUERY,
+        '        if int(row["connection_id"]) in empty',
+        "        if False",
+        f"{LIFECYCLE_TESTS}::"
+        "test_the_health_surface_names_a_connection_whose_roster_came_back_empty",
+    ),
+    (
+        # The call-site half on the second surface, for the reason the first
+        # surface has one.
+        "AC-12.5a: get_pipeline_health names the connection whose roster was empty (call site)",
+        QUERY,
+        "                + _roster_observed_empty_findings(rows, "
+        "_connections_with_an_empty_roster(conn))",
+        "                + []",
+        f"{LIFECYCLE_TESTS}::"
+        "test_the_health_surface_names_a_connection_whose_roster_came_back_empty",
     ),
     # ----------------------------------------------------------------------
     # Pending-transaction semantics on the read path (#22, AC-13.1-13.7). No

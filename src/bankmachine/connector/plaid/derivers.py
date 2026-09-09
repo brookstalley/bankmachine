@@ -728,6 +728,51 @@ def derive_accounts(conn: SAConnection, response: RawResponse, context: Derivati
             institution_id=int(institution_id),
             entry=entry,
         )
+    # 🔴 AC-12.5a: recorded AFTER the loop and OUTSIDE it, so a roster that
+    # listed nothing still advances the observation. An empty `/accounts/get`
+    # is a successful observation of zero accounts, not a failed fetch, and the
+    # state that must not exist is the third one -- a response that type-checks,
+    # runs this loop zero times, and leaves no record that anyone looked.
+    _record_roster_observation(conn, response)
+
+
+def _record_roster_observation(conn: SAConnection, response: RawResponse) -> None:
+    """AC-12.4: this connection's roster was READ, whatever it turned out to list.
+
+    🔴 **The half that says *we looked*.** `accounts.last_seen_date` says *and
+    this is what we found*, and the two are separate records rather than one,
+    because deriving this from that collapses them: a maximum over the accounts
+    that were listed moves with them, so a roster listing nothing leaves nothing
+    behind it and "the roster was observed, and this account was not in it"
+    becomes inexpressible exactly when it is true. At a one-account connection
+    that is the ordinary case.
+
+    🔴 **A monotone MAXIMUM, for the reason `last_seen_date` is one**: a repaired
+    connection, a backfill and a manual re-derive all hand this deriver
+    responses in whatever order they were archived, and an observation that
+    moved backwards on a replay would mark accounts absent that a later roster
+    had listed. Order-independence is a property of how the column is computed,
+    not of today's `ORDER BY`.
+
+    A calendar date taken from `response.received_at` rather than from a clock,
+    like every other date this module writes -- `connections.last_success_at`
+    is a different fact (a sync attempt succeeding) and is not touched here.
+    """
+    observed = _as_of(response.received_at)
+    recorded = conn.execute(
+        select(connections.c.roster_observed_date).where(
+            connections.c.connection_id == response.connection_id
+        )
+    ).scalar_one()
+    conn.execute(
+        update(connections)
+        .where(connections.c.connection_id == response.connection_id)
+        .values(
+            roster_observed_date=(
+                observed if recorded is None else max(calendar_date(recorded), observed)
+            )
+        )
+    )
 
 
 def _derive_one_account(

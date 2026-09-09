@@ -749,6 +749,82 @@ def test_when_an_account_was_last_listed_is_a_maximum_so_order_cannot_matter(
         assert row["last_seen_date"] == LATER.date()
 
 
+def test_reading_a_roster_records_when_the_connection_was_observed(
+    store: Config,
+) -> None:
+    """🔴 AC-12.4's per-connection half: the record that says *we looked*.
+
+    Without it there is nothing to measure absence against except a maximum
+    derived over the accounts that were listed, which moves with them -- so the
+    one fact AC-12.5 needs is inexpressible exactly when it is true.
+    """
+    derive(store, str(ACCOUNTS_GET), fixture("accounts_get"), received_at=RECEIVED)
+
+    observed = [row["roster_observed_date"] for row in rows(store, connections)]
+
+    assert observed == [RECEIVED.date()]
+
+
+def test_a_roster_that_lists_nothing_still_records_the_observation(
+    store: Config,
+) -> None:
+    """🔴 AC-12.5a. The state that must not exist is a successful read of nothing.
+
+    An `/accounts/get` that comes back with an empty list type-checks, runs the
+    derivation loop zero times, and -- if the observation were recorded per
+    account, or recorded only where the loop wrote something -- would leave no
+    record that anyone looked. The two facts it must be possible to tell apart
+    are "the operator de-selected every account" and "the feed broke and still
+    returned success", and neither can be reported at all if the read left no
+    trace.
+
+    The two observations DIFFER, so the assertion cannot be satisfied by the
+    first one alone: an empty roster read three days later must MOVE the date.
+    """
+    derive(store, str(ACCOUNTS_GET), fixture("accounts_get"), received_at=EARLIER)
+    derive(
+        store,
+        str(ACCOUNTS_GET),
+        _with(fixture("accounts_get"), lambda p: p.__setitem__("accounts", [])),
+        received_at=LATER,
+    )
+
+    observed = [row["roster_observed_date"] for row in rows(store, connections)]
+    seen = {row["source_account_id"]: row["last_seen_date"] for row in rows(store, accounts)}
+
+    assert observed == [LATER.date()], (
+        "a roster read that listed no accounts left the observation where it was, so the "
+        "connection is indistinguishable from one that was never read"
+    )
+    assert set(seen.values()) == {EARLIER.date()}, (
+        "an empty roster must not move any account's own last-listed date; only the "
+        "observation moves, which is what makes every account behind it"
+    )
+
+
+@settings(
+    max_examples=25, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
+@given(order=st.permutations([EARLIER, RECEIVED, LATER]))
+def test_the_roster_observation_is_a_maximum_so_a_replay_cannot_move_it_back(
+    store: Config, order: Sequence[UtcInstant]
+) -> None:
+    """🔴 AC-12.4, on the connection half, for the reason the account half is one.
+
+    A repaired connection, a backfill and a manual re-derive all hand the
+    deriver responses in whatever order they were archived. An observation that
+    moved BACKWARDS on a replay would put accounts a later roster had listed
+    behind it and report them absent -- a fabricated closure produced by replay
+    order alone.
+    """
+    for received_at in order:
+        derive(store, str(ACCOUNTS_GET), fixture("accounts_get"), received_at=received_at)
+
+    observed = [row["roster_observed_date"] for row in rows(store, connections)]
+
+    assert observed == [LATER.date()]
+
+
 def test_the_first_roster_observation_records_both_ends_at_the_same_date(
     store: Config,
 ) -> None:

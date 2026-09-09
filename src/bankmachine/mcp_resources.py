@@ -270,6 +270,27 @@ _GUIDANCE: dict[str, _Guidance] = {
             "equally consistent with the account being de-selected from sharing."
         ),
     ),
+    "roster_observed_empty": _Guidance(
+        means=(
+            "a connection contributing to this answer was read successfully and listed no "
+            "accounts at all -- the roster call worked and came back empty, which is not the "
+            "same as the roster call failing"
+        ),
+        for_this_answer=(
+            "every account on that connection is separately marked no-longer-reported, so "
+            "their balances are all frozen as of the dates their rows name. Two very "
+            "different things produce this and the payload cannot tell them apart: an "
+            "operator de-selected every account from sharing, or the feed broke in a way "
+            "that returns success. Only the operator knows which"
+        ),
+        act=(
+            "do NOT report this as accounts having closed. Say the connection returned an "
+            "empty roster, name it, and say the balances beside it are frozen -- then tell "
+            "the operator to confirm whether they de-selected those accounts. Call "
+            "`get_pipeline_health` for the connection-level picture before drawing any "
+            "conclusion about the household."
+        ),
+    ),
     "includes_pending_rows": _Guidance(
         means=(
             "some rows this answer drew on are authorisation holds that have not settled; "

@@ -34,6 +34,61 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-09: The roster observation is recorded, and the contract describes what it publishes
+
+<!-- prawduct: scope=production-blocker-findings -->
+
+**Why:** the previous cycle closed three production blockers and produced three findings it
+deliberately did not fix in place. One of them was a shipped answer that is knowably wrong at a real
+shape: a connection holding a single account whose account stops being listed reported `active`
+forever, beside a frozen balance, with no signal — the exact failure FR-9 exists to remove,
+surviving inside FR-9.
+
+**What shipped:**
+
+- **The roster observation is recorded per connection, not derived (`#51`, AC-12.4/12.5/12.5a).**
+  Migration 004 adds `connections.roster_observed_date`. 🔴 **A calendar date, and the name says so** —
+  `roster_observed_at` was the obvious spelling and was rejected because the column's only use is a
+  comparison against `accounts.last_seen_date`, and mixing the two types is a defect rather than a
+  conversion.
+- **AC-12.5's whole-roster clause was REPLACED, not annotated.** It said a connection whose entire
+  roster is absent marks nothing absent, justified by scale. At one account that argument inverts —
+  one closure is ordinary and it *is* the whole roster. The old criterion had **one channel**, so it
+  had to choose between publishing the account-level truth and publishing the connection-level lie,
+  and it suppressed the truth. There are now two: every account on an empty-rostered connection is
+  marked absent, **and** the connection raises the new `roster_observed_empty` kind. A reader holding
+  both can tell fourteen closures from a feed that returns success with no rows.
+- **The API contract describes every field it publishes (`#52`).** The 34 undocumented published
+  fields are described, `UNDOCUMENTED_AT_FREEZE` and its staleness guard are deleted, and the
+  remaining assertion runs unconditionally over all 93 names. It also carries an **extraction
+  contract** — which tables are authoritative, how a field name is spelled — validated by a parser
+  that recovers the same 93 names from 16 tables.
+- **A discovery for the hold-state model (`#53`), marked proposed and built by nothing.** It tested
+  the prior opinion rather than confirming it and falsified its premise: `_flow_class()` is already a
+  derived per-row enum computed in SQL, so "enum" never entailed "aggregation in Python" here. It
+  recommends SQL predicate constructors and states the strongest argument against its own
+  recommendation — that this is the shape which already failed once.
+- **Two defects found while doing the above, both fixed with guards.** `coverage_report` derived its
+  calendar day twice in one call, 32 lines apart, under a comment asserting it must not; a report
+  assembled across midnight answered about two days. And `DERIVATION_VERSION` had not been bumped for
+  either newly-populated column, so `store rebuild` — the remedy the upgrade procedure prescribes —
+  would have rolled back with `RebuildNotReproducibleError` on exactly the store it is written for.
+
+**Verification:** the go-red harness holds **171 cases, every one seen red** — 8 for the roster
+observation, one each for the retired-connection clause, AC-12.6's no-verdict clause, and the
+derivation-version bump. Suite 980.
+
+**Upgrading:** migration 004 is additive, nullable and forward-only, and it opens a window 003 did
+not. Accounts that a pre-004 store already reported absent read `active` again until their
+connection's next successful sync — and for a connection that never syncs again, **until an operator
+runs `bankmachine store rebuild`**, which the upgrade procedure now says to do. Expect it to report a
+content change.
+
+**What this does NOT close:** `#53` ends with a recommendation and nothing built. `#47` stays open
+with its Expected narrowed — the contract guard is a whole-document backtick sweep, and **76 of 93
+published names would keep it green even with their whole description deleted; 17 are load-bearing.**
+Replacing the sweep with the extraction contract's parser fixes both that and `#47`'s own direction.
+
 ## 2026-09-09: Three answers that could be wrong in silence now say so on the wire
 
 <!-- prawduct: scope=production-blockers -->

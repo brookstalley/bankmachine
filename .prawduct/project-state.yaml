@@ -179,7 +179,7 @@ product_definition:
       description: "Drop an institution from the roster without deleting its history; the account is marked inactive with an end date so closed accounts do not read as permanent coverage gaps."
       priority: must-have
     - name: "Rebuild normalized tables from raw"
-      description: "`sync rebuild` re-derives silver from bronze at a recorded derivation version."
+      description: "`store rebuild` re-derives silver from bronze at a recorded derivation version."
       priority: must-have
 
   scope:

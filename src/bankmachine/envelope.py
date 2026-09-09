@@ -120,6 +120,16 @@ REQUEST_SCOPED_KINDS: tuple[str, ...] = (
     # state is disclosed as a per-connection verdict on the verification surface,
     # which is where "we cannot tell yet" belongs.
     "sign_convention_unverified",
+    # A connection's roster was read successfully and listed NO accounts. Every
+    # account on it is separately marked absent, which is the account-level
+    # truth; this kind is the connection-level anomaly beside it, and the pair
+    # is the point. Fourteen frozen balances and a broken feed look identical
+    # from the account rows alone -- AC-12.5 used to suppress the account-level
+    # truth to avoid publishing that ambiguity, which made a one-account
+    # connection unable to report its only account absent at all.
+    # Request-scoped, on the same test as its neighbours: it fires only when
+    # THIS request's scope actually holds an account on such a connection.
+    "roster_observed_empty",
 )
 
 #: The warning vocabulary the API contract fixes. Named here as a tuple rather
