@@ -31,14 +31,16 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import Text, and_, case, cast, func, or_, select
 from sqlalchemy.engine import Connection as SAConnection
+from sqlalchemy.sql import ColumnElement
 
 from bankmachine.build_id import build_identity
 from bankmachine.config import Config
 from bankmachine.store.connection import inspect
 from bankmachine.store.engine import reader_connection
 from bankmachine.store.schema import (
+    PROVENANCE_SOURCES,
     TRANSACTIONS_DOMAIN,
     accounts,
     balances_daily,
@@ -47,7 +49,7 @@ from bankmachine.store.schema import (
     sync_state,
     transactions,
 )
-from bankmachine.store.types import UtcInstant, calendar_date, now_utc
+from bankmachine.store.types import CalendarDate, UtcInstant, calendar_date, now_utc
 
 #: How long since a connection's last successful sync before its data is called
 #: stale. A day and a half: the scheduled job runs nightly, so one missed run is
@@ -101,6 +103,14 @@ REQUEST_SCOPED_KINDS: tuple[str, ...] = (
     # defect. It is reported instead of smoothed away: a consumer comparing two
     # calls seconds apart deserves to know a write landed between them.
     "counted_during_change",
+    # 🔴 Request-scoped, and deliberately not connection-scoped even though "this
+    # account has never had a transaction" is standing state of the store. A kind
+    # riding every response equally is the defect the comment above records: the
+    # `gapped` notice arrived character-for-character identical on four
+    # unrelated questions, true and useless. This one fires only when THIS
+    # request's scope actually holds an uncovered account, so an empty answer
+    # about such an account carries it and an ordinary quiet window does not.
+    "accounts_without_coverage",
 )
 
 #: The warning vocabulary the API contract fixes. Named here as a tuple rather
@@ -800,6 +810,14 @@ class Answer:
     #: sight to hide it. Aggregates write `None` truthfully:
     #: `api-contract.md` fixes them as unpaginated, bounded by the grouping.
     truncation: Truncation | None
+    #: 🔴 No default, and it sits before `coverage` for the same reason the two
+    #: fields above do: a defaulted field here could be forgotten, and the
+    #: forgetting would look exactly like a tool that truthfully has no totals.
+    #: `None` means this tool answers with rows alone. An empty LIST means this
+    #: tool carries a totals block and there was nothing in the window to put in
+    #: it -- a distinction a consumer branching on the key's presence depends on,
+    #: because `api-contract.md` fixes a key's absence as information.
+    totals: list[dict[str, Any]] | None
     coverage: dict[str, Any] = field(default_factory=dict)
 
     def to_wire(self) -> dict[str, Any]:
@@ -827,6 +845,12 @@ class Answer:
             # absent `effective_window` says "this tool takes no window". A
             # consumer branching on the key gets a true answer either way.
             **({} if self.truncation is None else {"truncation": self.truncation.to_wire()}),
+            # Before `rows`, because it is what a reader should meet FIRST: the
+            # headline this tool exists to correct is that a raw outflow total
+            # can be several times the money that actually went out the door,
+            # and a decomposition placed after several hundred rows is one
+            # nobody reaches.
+            **({} if self.totals is None else {"totals": self.totals}),
             "rows": self.rows,
         }
 
@@ -964,12 +988,144 @@ def _coverage(conn: SAConnection) -> dict[str, Any]:
     }
 
 
+@dataclass(frozen=True, slots=True)
+class AccountCoverage:
+    """What the store holds for ONE account, so an empty answer about it is legible.
+
+    🔴 The absence this describes is the finding. Nine of fourteen sandbox
+    accounts have never had a transaction -- 82% of the balance sheet by
+    magnitude -- and `query_transactions(account_id=9)` answered `[]` with
+    nothing saying so, which reads as "no payments found" and is false. Three
+    fields actively implied the opposite: `coverage.accounts` counted all
+    fourteen, health reported the connection active, and the only warning was
+    about depth rather than breadth (#19, AC-9.5).
+
+    `transaction_count` is `0` rather than null for an account with nothing,
+    because a null would be a second way to spell the same fact and a consumer
+    would have to handle both. The dates are null because there is genuinely no
+    date -- present and null, never dropped, like every other nullable on the
+    wire.
+    """
+
+    account_id: int
+    first_transaction_date: CalendarDate | None
+    last_transaction_date: CalendarDate | None
+    transaction_count: int
+
+    @property
+    def uncovered(self) -> bool:
+        """No transaction has ever been recorded for this account.
+
+        A property rather than a comparison written at each site: "counts as
+        uncovered" is a rule, and a rule spelled three times is a rule that
+        stops agreeing with itself.
+        """
+        return self.transaction_count == 0
+
+    def to_wire(self) -> dict[str, Any]:
+        """The three fields every account row carries, in every tool that carries them."""
+        return {
+            "first_transaction_date": _iso_or_none(self.first_transaction_date),
+            "last_transaction_date": _iso_or_none(self.last_transaction_date),
+            "transaction_count": self.transaction_count,
+        }
+
+
+def _account_coverage(conn: SAConnection) -> dict[int, AccountCoverage]:
+    """The per-account coverage facts, for EVERY account, computed once.
+
+    🔴 One producer with two readers, and that is the requirement rather than a
+    tidiness preference. `list_accounts` needs these facts so an agent that never
+    thought to call the verification surface still learns an account is empty
+    (#19); `get_coverage_report` needs the same facts plus the gap analysis
+    built on them (#35). Computed twice they can disagree, and a verification
+    surface that contradicts the analysis surface is worse than one that is
+    missing.
+
+    🔴 **Every account appears, including the ones with no transactions**, which
+    is why the join is an outer join and why `removed_at IS NULL` sits in the
+    join condition rather than in a `WHERE`. In a `WHERE` it would filter away
+    the null-transaction side of the outer join and the accounts this function
+    exists to report would silently vanish from its own result -- the failure
+    would look exactly like an account having coverage.
+
+    Soft-deleted rows are excluded for the same reason every other reader
+    excludes them: a coverage report counting rows the analysis surface cannot
+    see would promise data no query can return.
+
+    One grouped read against `transactions_by_account_date`, which is the index
+    `data-model.md` names for exactly this walk.
+    """
+    result = conn.execute(
+        select(
+            accounts.c.account_id,
+            func.min(transactions.c.posted_date),
+            func.max(transactions.c.posted_date),
+            func.count(transactions.c.transaction_id),
+        )
+        .select_from(
+            accounts.outerjoin(
+                transactions,
+                (transactions.c.account_id == accounts.c.account_id)
+                & transactions.c.removed_at.is_(None),
+            )
+        )
+        .group_by(accounts.c.account_id)
+    ).all()
+    return {
+        int(row[0]): AccountCoverage(
+            account_id=int(row[0]),
+            # 🔴 Narrowed, never `_parse_coverage_date`. That helper reads a
+            # bound back off the rendered wire dict and takes a `str`; an
+            # aggregate over a `CalendarDateColumn` comes back as a plain
+            # `date`, verified rather than assumed. Passing one to the other
+            # returns None for every account and every coverage date on the
+            # surface goes null -- a failure indistinguishable from a store with
+            # no transactions, which is the exact answer this function exists to
+            # tell apart.
+            first_transaction_date=None if row[1] is None else calendar_date(row[1]),
+            last_transaction_date=None if row[2] is None else calendar_date(row[2]),
+            transaction_count=int(row[3]),
+        )
+        for row in result
+    }
+
+
+def _uncovered_caveat(uncovered: list[AccountCoverage]) -> list[Caveat]:
+    """The warning that names the accounts an answer could not have data for.
+
+    🔴 Request-scoped: it fires only when THIS request's scope holds an
+    uncovered account. A kind riding every response equally is the defect
+    `CONNECTION_SCOPED_KINDS` records above -- the `gapped` notice arrived
+    character-for-character identical on four unrelated questions, true and
+    useless for telling a caller whether this answer was the degraded one.
+
+    Names the ids, because "some accounts have no data" is a warning nobody can
+    act on and the caller's next move is to ask about a different account.
+    """
+    if not uncovered:
+        return []
+    ids = ", ".join(
+        str(coverage.account_id) for coverage in sorted(uncovered, key=lambda c: c.account_id)
+    )
+    return [
+        Caveat(
+            kind="accounts_without_coverage",
+            detail=(
+                f"no transaction has ever been recorded for account(s) {ids}; an empty or "
+                f"absent result for them means DATA NOT PRESENT, never no activity"
+            ),
+        )
+    ]
+
+
 def _covered_rows(conn: SAConnection, *, since: date, until: date) -> int:
     """How many transactions lie inside the window this answer actually covered.
 
-    🔴 Store-wide, never narrowed by `account_id`. Per-account coverage is its
-    own issue (#19) with its own shape; reporting a half of it here would leave
-    that work amending a field this chunk just shipped.
+    🔴 Store-wide, never narrowed by `account_id`. Per-account coverage is a
+    different fact with a different shape and it rides the account ROW -- see
+    `AccountCoverage` -- so narrowing this figure would leave a caller with two
+    fields that disagree about what "coverage" counts.
 
     Counted over the EFFECTIVE bounds, which is what makes it a coverage fact
     rather than a restatement of `matching`: it answers "how much data does this
@@ -1011,6 +1167,8 @@ def _answer(
     *,
     requested_window: tuple[date | None, date | None] | None,
     truncation: Truncation | None,
+    totals: list[dict[str, Any]] | None = None,
+    extra_caveats: list[Caveat] | None = None,
 ) -> Answer:
     """One answer, and the one place a window is reconciled against coverage.
 
@@ -1019,6 +1177,18 @@ def _answer(
     than in each query function because this is where `_coverage` is already
     computed -- one read, one reconciliation, and no second mechanism for a
     later windowed tool to drift from.
+
+    `extra_caveats` carries request-scoped warnings a caller derived from rows
+    this function never sees -- the uncovered-account notice is the first. It
+    defaults to `None` rather than being required, unlike `requested_window`,
+    because "this tool takes no window" is a fact worth forcing a writer to
+    state, while "this request raised nothing extra" is the ordinary case.
+
+    `totals` defaults for the same reason and sits on the same side of that line:
+    a tool that carries one is the exception here, and the block is computed from
+    rows this function never sees. What it must NOT be given is a total this
+    function could derive itself -- it is passed in precisely so it is summed
+    from the caller's own returned rows and cannot disagree with them.
     """
     now = now_utc()
     coverage = _coverage(conn)
@@ -1057,11 +1227,13 @@ def _answer(
             _pipeline_warnings(conn, now)
             + ([] if window is None else window.caveats)
             + ([] if truncation is None else truncation.caveats)
+            + (extra_caveats or [])
         ),
         environment=config.environment,
         as_of=now,
         effective_window=window,
         truncation=truncation,
+        totals=totals,
         coverage=coverage,
     )
 
@@ -1072,6 +1244,7 @@ def _unusable(
     *,
     requested_window: tuple[date | None, date | None] | None,
     truncation: Truncation | None,
+    totals: list[dict[str, Any]] | None = None,
 ) -> Answer:
     """🔴 An answer about a datastore that cannot be read. AC-ARCH.3.
 
@@ -1109,6 +1282,13 @@ def _unusable(
         # nothing was returned, nothing was readable to match, and the answer was
         # not truncated. It is empty for a reason the warning states.
         truncation=truncation,
+        # 🔴 An empty LIST for a tool that carries totals, never `None` and never
+        # omitted -- the same rule the coverage zeroes below follow, for the same
+        # reason. Dropping the key when the store is unreadable would move the
+        # wire shape at exactly the moment a consumer is trying to work out what
+        # went wrong, and one branching on the key would conclude this tool has
+        # no totals rather than that there was nothing to total.
+        totals=totals,
         warnings=[
             Caveat(
                 kind="partial",
@@ -1187,6 +1367,7 @@ def list_accounts(config: Config) -> Answer:
             )
             .order_by(institutions.c.name, accounts.c.name)
         ).all()
+        coverage = _account_coverage(conn)
         rows = [
             {
                 "account_id": int(r[0]),
@@ -1202,10 +1383,36 @@ def list_accounts(config: Config) -> Answer:
                 "current_minor_units": None if r[7] is None else int(r[7]),
                 "currency": r[8],
                 "balance_as_of": None if r[9] is None else str(r[9]),
+                # 🔴 On EVERY row, never behind a parameter. The failure #19
+                # describes is an agent that never thought to ask the
+                # verification surface, so a caller who has to opt in is a
+                # caller who still gets the misleading answer. This is
+                # `api-contract.md` § Direction's second norm applied per
+                # account: incompleteness rides the answer, not a channel
+                # nobody reads.
+                **coverage[int(r[0])].to_wire(),
             }
             for r in result
         ]
-        return _answer(config, conn, rows, requested_window=None, truncation=None)
+        uncovered = [c for c in coverage.values() if c.uncovered]
+        return _answer(
+            config,
+            conn,
+            rows,
+            requested_window=None,
+            truncation=None,
+            extra_caveats=_uncovered_caveat(uncovered),
+        )
+
+
+class BadGroupingError(ValueError):
+    """A `group_by` naming no grouping this tool implements.
+
+    Refused rather than defaulted: silently falling back to `category` would
+    answer a different question from the one asked, and the caller would have no
+    way to tell -- the same failure mode as a misspelled `since` returning the
+    all-time aggregate.
+    """
 
 
 class UnknownAccountError(ValueError):
@@ -1373,6 +1580,19 @@ def list_transactions(
                 account_id=account_id,
             )
         )
+        # 🔴 Scoped to the account ASKED ABOUT, not to every empty account in the
+        # store. `query_transactions(account_id=9)` returning `[]` is #19's own
+        # repro -- "am I paying down my mortgage?" answering "no payments found",
+        # honest-looking and false -- and this is the call where the notice has
+        # to arrive. An unscoped query says nothing here: its empty window is an
+        # ordinary result, and naming nine irrelevant accounts on every page of
+        # every walk is the character-for-character noise the connection scope
+        # already taught this codebase not to emit.
+        uncovered = (
+            [c for c in (_account_coverage(conn).get(account_id),) if c is not None and c.uncovered]
+            if account_id is not None
+            else []
+        )
         return _answer(
             config,
             conn,
@@ -1383,62 +1603,447 @@ def list_transactions(
             truncation=Truncation.over(
                 returned=len(rows), counted=matching, resume_from=resume_from
             ),
+            extra_caveats=_uncovered_caveat(uncovered),
         )
 
 
-def spending_by_category(
-    config: Config, *, since: date | None = None, until: date | None = None
-) -> Answer:
-    """🔴 An aggregate, which is the shape AC-4.2 asks the tool surface to prefer.
+def _median_interval(days: list[int]) -> float | None:
+    """The middle gap between consecutive transactions, or None when there is none.
 
-    Money *out* only: this sums negative amounts and reports them as positive
-    magnitudes, because "spending" is a question about outflow and mixing
-    refunds in would answer a different one. The sign convention is what makes
-    that a filter rather than a per-account special case.
+    🔴 Median rather than mean, and per account rather than global, because the
+    cadence it describes is a claim about THIS account. A salary account posting
+    fortnightly and a card posting daily have nothing to say about each other,
+    and a mean is dragged by the single long silence the report exists to find --
+    the outlier would raise the very threshold meant to catch it.
+
+    Fewer than two transactions means no interval exists at all. That is None
+    rather than zero, because zero would read as "posts every day" and make
+    every subsequent quiet hour a finding.
+
+    🔴 Zero is a REAL answer here, distinct from that None: an account whose
+    transactions cluster on the same dates has a median interval of 0 days, and
+    it means "posts more than once a day" rather than "cadence unknown". The
+    caller floors the divisor rather than this function flooring the
+    measurement, so the number that rides out is the one that was measured.
+    """
+    if not days:
+        return None
+    ordered = sorted(days)
+    middle = len(ordered) // 2
+    if len(ordered) % 2 == 1:
+        return float(ordered[middle])
+    return (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def coverage_report(config: Config) -> Answer:
+    """🔴 The verification surface's second half, per account. AC-9.5, #35.
+
+    `api-contract.md` names `get_pipeline_health` and this tool together as "the
+    verification surface, not the analysis surface", existing so an analyst agent
+    can establish completeness BEFORE answering -- the product's headline goal
+    being "answer it, or say why you should not." Only health shipped, so the
+    product made a two-part promise and delivered one part.
+
+    Per account, never per institution (AC-9.5): one institution may hold many
+    accounts with different coverage windows, and an institution-level summary
+    hides exactly that.
+
+    🔴 **Trailing silence, not an enumeration of gaps between transactions.**
+    AC-9.1 specified "gaps > 7 days" and measurement falsified it: every account
+    in this store is monthly, so a 7-day rule fires on 100% of CD's and Money
+    Market's intervals and yields ~146 findings with no signal. A per-account
+    threshold applied to the same enumeration would reproduce that noise in a
+    more defensible-looking form. What carries information is how long an account
+    has been quiet measured against its own cadence, which is what
+    `silence_ratio` reports.
+
+    🔴 Shares `_account_coverage` with `list_accounts` rather than recomputing:
+    two producers can disagree, and a verification surface that contradicts the
+    analysis surface is worse than one that is absent.
     """
     problem = _readable(config)
     if problem is not None:
-        # An aggregate is unpaginated by contract, bounded by the grouping
-        # rather than by a row cap, so there is no truncation to report.
-        return _unusable(config, problem, requested_window=(since, until), truncation=None)
+        return _unusable(config, problem, requested_window=None, truncation=None)
     with reader_connection(config) as conn:
+        coverage = _account_coverage(conn)
+        named = {
+            int(account_id): name
+            for account_id, name in conn.execute(
+                select(accounts.c.account_id, accounts.c.name)
+            ).all()
+        }
+        posted: dict[int, list[CalendarDate]] = {}
+        for account_id, posted_date in conn.execute(
+            select(transactions.c.account_id, transactions.c.posted_date)
+            .where(transactions.c.removed_at.is_(None))
+            .order_by(transactions.c.account_id, transactions.c.posted_date)
+        ).all():
+            if posted_date is not None:
+                # Narrowed for the same reason `_account_coverage` narrows: this
+                # column comes back a date, and the wire-dict parser beside it
+                # takes a string. Silently emptying this map would make every
+                # median null and every account look cadence-less.
+                posted.setdefault(int(account_id), []).append(calendar_date(posted_date))
+        sources: dict[int, dict[str, int]] = {}
+        for account_id, source, count in conn.execute(
+            select(transactions.c.account_id, transactions.c.source, func.count())
+            .where(transactions.c.removed_at.is_(None))
+            .group_by(transactions.c.account_id, transactions.c.source)
+        ).all():
+            sources.setdefault(int(account_id), {})[str(source)] = int(count)
+
+        # 🔴 One "today" for every row. Reading the clock per account would let a
+        # report straddle midnight and hand back rows measured against two
+        # different days, which is a difference nobody could explain from the
+        # payload.
+        today = calendar_date(now_utc().date())
+        rows: list[dict[str, Any]] = []
+        for account_id in sorted(coverage):
+            facts = coverage[account_id]
+            dates = posted.get(account_id, [])
+            median = _median_interval(
+                [(later - earlier).days for earlier, later in zip(dates, dates[1:], strict=False)]
+            )
+            days_silent = (
+                None
+                if facts.last_transaction_date is None
+                else (today - facts.last_transaction_date).days
+            )
+            # 🔴 The DIVISOR is floored at one day; the reported median is not.
+            # A busy feed -- a card or checking account posting several rows on
+            # the same date -- has a median interval of literally 0, and the
+            # branch that guarded the division by returning null answered
+            # "cadence unknown, silence not exceeded" for it no matter how long
+            # the feed had been dead. That is the account class MOST likely to
+            # stop syncing, answered `false` by the tool whose whole job is to
+            # notice. A day is the smallest unit `posted_date` can express, so
+            # "posts daily or better" is the strongest cadence this data can
+            # state, and one full day of silence is then a missed cycle.
+            #
+            # The median itself still rides out as measured, including 0: it is
+            # the true cadence, and flooring what is REPORTED would be inventing
+            # a number to make the arithmetic tidy.
+            cadence = None if median is None else max(median, 1.0)
+            # The quantity the ruling names, stated as a number rather than
+            # collapsed into a boolean: 28 days silent on a 30-day cycle is
+            # "genuinely borderline", and a flag is exactly what destroys that.
+            ratio = (
+                None if cadence is None or days_silent is None else round(days_silent / cadence, 3)
+            )
+            rows.append(
+                {
+                    "account_id": account_id,
+                    "account": named.get(account_id),
+                    **facts.to_wire(),
+                    "median_interval_days": median,
+                    "days_silent": days_silent,
+                    "silence_ratio": ratio,
+                    # 🔴 One full missed cycle, because it is the only
+                    # non-arbitrary unit. Choosing 0.9 so the borderline pair
+                    # flags would reinvent the constant the ruling removed;
+                    # `silence_ratio` is what surfaces them instead.
+                    "silence_exceeds_cadence": (False if ratio is None else ratio > 1.0),
+                    # Present and zeroed rather than omitted: a source with no
+                    # rows for this account is a fact, and a missing key would
+                    # make a consumer guess whether it meant zero or unknown.
+                    "source_breakdown": {
+                        source: sources.get(account_id, {}).get(source, 0)
+                        for source in PROVENANCE_SOURCES
+                    },
+                }
+            )
+        return _answer(
+            config,
+            conn,
+            rows,
+            requested_window=None,
+            truncation=None,
+            extra_caveats=_uncovered_caveat([c for c in coverage.values() if c.uncovered]),
+        )
+
+
+#: How a money aggregate may be grouped. A closed set because it reaches SQL:
+#: the grouping is an expression this module builds, never a column name a
+#: caller supplies, so an unknown value is refused at the boundary rather than
+#: interpolated.
+GROUPINGS: tuple[str, ...] = ("category", "merchant", "account", "month", "flow_class")
+
+#: The three ways money can move, from the account holder's point of view.
+#: Ordered as a reader wants them: what left the household first, then the two
+#: kinds of movement that look like spending in a raw total and are not.
+#:
+#: 🔴 Local interpretation, derived at read time and written nowhere.
+#: `data-model.md` keeps the aggregator's taxonomy unmodified in its own column,
+#: and this reads that column rather than replacing it -- so a re-classification
+#: is a code change with a diff, not a silent rewrite of history.
+FLOW_CLASSES: tuple[str, ...] = ("external_spend", "internal_transfer", "debt_service")
+
+#: The holder moving their own money between their own accounts. Measured at 61%
+#: of the two-year total -- $164,400 of $267,693 -- which is why a raw outflow
+#: figure over this store reads several times what was actually spent.
+_INTERNAL_TRANSFER_CATEGORIES: frozenset[str] = frozenset({"TRANSFER_IN", "TRANSFER_OUT"})
+
+#: Servicing a debt rather than buying anything. Measured as ~100% credit-card
+#: payoff, which is a DOUBLE count: the card purchases the payment settles are
+#: already counted under the categories they were spent in.
+_DEBT_SERVICE_CATEGORIES: frozenset[str] = frozenset({"LOAN_PAYMENTS"})
+
+#: Every `source_category_primary` this mapping has actually been designed
+#: against, observed in the sandbox datastore on 2026-09-09.
+#:
+#: 🔴 **An enumeration over a FOREIGN vocabulary, and therefore checked rather
+#: than trusted.** The two sets above name three of these values; the rest reach
+#: `external_spend` through the `else_` branch, and that branch is silent by
+#: construction -- a category nobody classified is indistinguishable from one
+#: deliberately left as spending. `tests/test_money_summary.py` holds this tuple
+#: against the categories the store actually contains, so a value entering the
+#: data without a decision being made about it goes RED rather than quietly
+#: inflating the one figure this tool tells an agent to quote.
+#:
+#: 🔴 **The residual limit, stated rather than papered over:** this checks the
+#: data this repo can see. A category arriving in an operator's own store that
+#: has never appeared here still falls to `external_spend` with nothing saying
+#: so. That is the conservative direction on this surface's own principle -- an
+#: overcount gets questioned and an undercount gets believed -- but it is a
+#: fallback, not a classification, and a real taxonomy feed is what would close
+#: it properly.
+KNOWN_SOURCE_CATEGORIES: tuple[str, ...] = (
+    "FOOD_AND_DRINK",
+    "GENERAL_MERCHANDISE",
+    "INCOME",
+    "LOAN_PAYMENTS",
+    "PERSONAL_CARE",
+    "RENT_AND_UTILITIES",
+    "TRANSFER_IN",
+    "TRANSFER_OUT",
+    "TRANSPORTATION",
+    "TRAVEL",
+)
+
+
+def _flow_class() -> ColumnElement[str]:
+    """Which side of the household boundary this money crossed.
+
+    🔴 **Classify, do not filter** -- the owner's ruling on #18. Every row is
+    kept and gains a class; nothing is dropped, precisely so there is no
+    invisible undercount. That is also why this emits no `rule-applied` warning:
+    that kind means "an account rule filtered rows OUT of an aggregate, the
+    total excludes them on purpose", and nothing here excludes anything, so
+    saying it would be a false statement about the answer carrying it.
+
+    🔴 **Read from `source_category_primary`, NEVER from `category_override`.**
+    An override is local interpretation of what a transaction was *for*; the
+    flow class is about whose money moved and in which direction. Letting a
+    re-categorisation reclassify a transfer as spending would reintroduce the
+    overcount through the back door -- silently, and in the direction that
+    inflates.
+
+    An unrecognised or null category falls to `external_spend`. That is the
+    conservative direction on this surface's own principle: an overcount gets
+    questioned and an undercount gets believed. Null is measured at 0.00% here,
+    so this is a rule about categories not yet invented rather than about
+    today's data.
+    """
+    return case(
+        (
+            transactions.c.source_category_primary.in_(sorted(_INTERNAL_TRANSFER_CATEGORIES)),
+            "internal_transfer",
+        ),
+        (
+            transactions.c.source_category_primary.in_(sorted(_DEBT_SERVICE_CATEGORIES)),
+            "debt_service",
+        ),
+        else_="external_spend",
+    )
+
+
+def _flow_class_totals(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The window's OUTFLOW split three ways, per currency.
+
+    🔴 **Summed from the rows this answer returns, never from a second query.**
+    A second read against a live store is taken at a different instant from the
+    rows beside it, and a total that contradicts the rows under it is worse than
+    no total at all -- a reader has no way to tell which of the two is wrong.
+    Summed here, the three classes add to the window's total outflow by
+    construction, and that identity is also the proof the classification
+    PARTITIONS the rows rather than quietly dropping some.
+
+    🔴 **Per currency, because the ruling on aggregates is that currency groups
+    and never sums.** One integer spanning two currencies is not a wrong number,
+    it is not a number.
+
+    Every currency present carries all three keys, zero where a class did not
+    appear: a zero is a real answer -- "nothing serviced a debt this window" --
+    and a missing key would leave a reader unable to tell that from a class this
+    tool forgot to compute.
+    """
+    totals: dict[str, dict[str, int]] = {}
+    for row in rows:
+        entry = totals.setdefault(
+            str(row["currency"]),
+            {f"{flow}_outflow_minor_units": 0 for flow in FLOW_CLASSES},
+        )
+        entry[f"{row['flow_class']}_outflow_minor_units"] += int(row["outflow_minor_units"])
+    # Sorted so two identical stores answer identically; the wire order of an
+    # array is information a consumer may rely on even when it should not.
+    return [{"currency": currency, **entry} for currency, entry in sorted(totals.items())]
+
+
+def money_summary(
+    config: Config,
+    *,
+    since: date | None = None,
+    until: date | None = None,
+    group_by: str = "category",
+) -> Answer:
+    """Money moved in a window, grouped, with BOTH directions on every row.
+
+    🔴 **Both directions, because a one-directional aggregate cannot be corrected
+    by its reader.** A tool that filtered to outflow would leave an inflow with
+    no row to appear in, so a category of offsetting charges and credits reports
+    its gross as though that were the cost: measured here, a travel category
+    showed $12,000 spent against a true net of $0, and nothing in the payload
+    could reveal the 24 credits behind it. Gross and net side by side is what
+    makes that answerable.
+
+    🔴 One tool rather than two, by `api-contract.md` § Direction's fourth norm:
+    cashflow-by-month is this same aggregate grouped by month with inflows kept,
+    so the two answer one row shape and a boundary between them would be drawn
+    where the QUESTION changes rather than where the answer's shape does.
+
+    🔴 **Direction is carried by the field NAME; sign is carried by `net_minor`.**
+    `inflow_minor` and `outflow_minor` are positive magnitudes — "how much came
+    in", "how much went out" — while `net_minor` stays signed from the account
+    holder's point of view, as `data-model.md` requires of a stored amount. This
+    row is the first place the two conventions meet, and a row that mixed them
+    silently would be the very class of defect this work removes.
+
+    🔴 **Currency groups; it never sums.** The owner's 2026-09-08 ruling, made
+    once for every aggregate tool: a window spanning two currencies returns
+    per-currency rows rather than one meaningless integer. Conversion is
+    explicitly not chosen — it needs a rate source, a rate date policy, and
+    somewhere to record that decision, which is a different scope from carrying
+    a field.
+    """
+    if group_by not in GROUPINGS:
+        raise BadGroupingError(f"group_by must be one of {', '.join(GROUPINGS)}, not {group_by!r}")
+    problem = _readable(config)
+    if problem is not None:
+        # An aggregate is unpaginated by contract, bounded by the grouping
+        # rather than by a row cap, so there is no truncation to report. The
+        # totals block is present and EMPTY: this tool carries one, and an
+        # unreadable store is a reason for it to hold nothing rather than a
+        # reason for the key to vanish.
+        return _unusable(
+            config, problem, requested_window=(since, until), truncation=None, totals=[]
+        )
+    with reader_connection(config) as conn:
+        # Annotated as the general expression type both branches produce: the
+        # first assignment would otherwise fix the name to `coalesce` and the
+        # account branch's plain column would not fit it.
+        key: ColumnElement[Any]
+        label: ColumnElement[Any]
+        if group_by == "category":
+            key = func.coalesce(
+                transactions.c.category_override,
+                transactions.c.source_category_primary,
+                "UNCATEGORIZED",
+            )
+            label = key
+        elif group_by == "merchant":
+            key = func.coalesce(transactions.c.merchant_name, transactions.c.description, "UNKNOWN")
+            label = key
+        elif group_by == "account":
+            # The id is the key a caller can act on; the name is for reading.
+            key = cast(transactions.c.account_id, Text)
+            label = accounts.c.name
+        elif group_by == "flow_class":
+            # The degenerate grouping: the class is already a dimension of every
+            # row below, so grouping BY it is the roll-up to just the three. Key
+            # and label are the same string because the class has no id and no
+            # prettier name -- inventing one would be a second vocabulary for
+            # the same three values.
+            key = _flow_class()
+            label = key
+        else:
+            # `posted_date` is stored as `YYYY-MM-DD` text that sorts as a date,
+            # so the month is its first seven characters -- no date arithmetic,
+            # and no dialect function to disagree about.
+            key = func.substr(transactions.c.posted_date, 1, 7)
+            label = key
+
         statement = (
             select(
+                key.label("group_key"),
+                label.label("group_label"),
+                transactions.c.currency,
+                # 🔴 A GROUPING DIMENSION on every grouping, not a field bolted
+                # onto one. The class is not a function of the group for any
+                # value of `group_by`: a merchant takes both a purchase and a
+                # refund, an account holds a transfer and a coffee, a month
+                # holds all three by definition -- and even a category can split,
+                # because the category key reads `category_override` first while
+                # the class is ruled to read the source column only. Attaching
+                # one row's class to a group that spans classes would state it
+                # for the others; making it OPTIONAL is refused by
+                # `api-contract.md` § Direction's fourth norm, which merges tools
+                # only where one strict row schema covers every parameter value.
+                # Grouping finer is the only way out that keeps both promises.
+                _flow_class().label("flow_class"),
+                func.count().label("transactions"),
+                # 🔴 Positive magnitudes, both of them. `amount_minor` is
+                # operator-signed, so outflow is the negative half negated --
+                # and doing that here rather than in Python keeps the sum and
+                # the count over one pass of one predicate set.
                 func.coalesce(
-                    transactions.c.category_override,
-                    transactions.c.source_category_primary,
-                    "UNCATEGORIZED",
-                ).label("category"),
-                func.count().label("count"),
-                func.sum(transactions.c.amount_minor).label("total"),
+                    func.sum(
+                        case(
+                            (transactions.c.amount_minor > 0, transactions.c.amount_minor), else_=0
+                        )
+                    ),
+                    0,
+                ).label("inflow"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (transactions.c.amount_minor < 0, -transactions.c.amount_minor), else_=0
+                        )
+                    ),
+                    0,
+                ).label("outflow"),
+                func.coalesce(func.sum(transactions.c.amount_minor), 0).label("net"),
             )
-            # 🔴 The shared predicates, plus this tool's own. Rebuilding the
-            # soft-delete and window clauses by hand here is how "there is only
-            # one place to add a filter" quietly becomes three: a maintainer
-            # adding a predicate at the named single place would get it in the
-            # rows and the count and silently NOT here, and two tools would then
-            # disagree about which rows exist — a precise wrong number, not an
-            # error. The outflow clause rides on top because it is what makes
-            # this tool a SPENDING question rather than a transaction one.
-            # `after` is None because an aggregate is unpaginated by contract,
-            # bounded by its grouping rather than by a row cap, so there is no
-            # page for a cursor to resume.
-            .where(
-                *_transaction_filters(since=since, until=until, account_id=None, after=None),
-                transactions.c.amount_minor < 0,
-            )
-            .group_by("category")
+            .select_from(transactions.join(accounts))
+            # 🔴 The shared predicates and NOTHING else -- in particular no
+            # direction filter. A `WHERE amount_minor < 0` here would leave an
+            # inflow with no row to appear in at all, which is unreachable
+            # rather than merely unaggregated. Direction is a COLUMN on the row,
+            # so both halves are always answerable.
+            .where(*_transaction_filters(since=since, until=until, account_id=None, after=None))
+            .group_by("group_key", "group_label", transactions.c.currency, "flow_class")
             .order_by(func.sum(transactions.c.amount_minor))
         )
         rows = [
             {
-                "category": r[0],
-                "transactions": int(r[1]),
-                "spent_minor_units": abs(int(r[2])),
+                "group_key": str(r[0]),
+                "group_label": str(r[1]),
+                "currency": r[2],
+                "flow_class": str(r[3]),
+                "transactions": int(r[4]),
+                "inflow_minor_units": int(r[5]),
+                "outflow_minor_units": int(r[6]),
+                "net_minor_units": int(r[7]),
             }
             for r in conn.execute(statement).all()
         ]
-        return _answer(config, conn, rows, requested_window=(since, until), truncation=None)
+        return _answer(
+            config,
+            conn,
+            rows,
+            requested_window=(since, until),
+            truncation=None,
+            totals=_flow_class_totals(rows),
+        )
 
 
 def pipeline_health(config: Config) -> Answer:

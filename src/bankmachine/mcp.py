@@ -33,10 +33,11 @@ from typing import IO, Any
 
 from bankmachine import mcp_resources, query
 from bankmachine.build_id import build_identity
-from bankmachine.cli.exit_codes import EXIT_OK
+from bankmachine.cli.exit_codes import EXIT_ERROR, EXIT_OK
 from bankmachine.config import Config
 from bankmachine.logging_setup import get_logger
 from bankmachine.store.connection import inspect
+from bankmachine.store.schema import PROVENANCE_SOURCES
 
 logger = get_logger("mcp")
 
@@ -114,7 +115,7 @@ _WINDOW_NOTE = (
     "result there is not a zero."
 )
 
-#: 🔴 On `query_transactions` alone. `spending_summary` is an aggregate, fixed
+#: 🔴 On `query_transactions` alone. `money_summary` is an aggregate, fixed
 #: unpaginated by `api-contract.md` and bounded by its grouping, so saying this
 #: there would describe a cap it does not have.
 #: Shortened for the reason `_WINDOW_NOTE` is, and kept longer than it because
@@ -158,7 +159,7 @@ _READ_ONLY_ANNOTATIONS: dict[str, Any] = {
 
 
 def _output_schema(
-    row_properties: dict[str, dict[str, Any]], *, windowed: bool, capped: bool
+    row_properties: dict[str, dict[str, Any]], *, windowed: bool, capped: bool, totals: bool
 ) -> dict[str, Any]:
     """One tool's answer, published as a schema so the shape outlives the prose.
 
@@ -177,7 +178,9 @@ def _output_schema(
     windowed tool REQUIRES its window here and an unwindowed one cannot carry
     one at all, which is what `additionalProperties: False` says.
     `coverage.transactions_in_effective_window` follows the same condition,
-    because `query` keys it off the same one.
+    because `query` keys it off the same one. `totals` is the third such flag and
+    has no default for the same reason the other two do not: a tool acquires the
+    key by saying so, never by a writer forgetting to say otherwise.
 
     🔴 **Every level is closed and every unconditional key required**, and the
     strictness is the mechanism rather than a preference: a key that reaches the
@@ -319,6 +322,41 @@ def _output_schema(
             "additionalProperties": False,
         }
         required.append("truncation")
+    if totals:
+        properties["totals"] = {
+            "type": "array",
+            "description": (
+                "🔴 READ THIS BEFORE QUOTING A SPENDING FIGURE. The window's OUTFLOW split "
+                "three ways, one entry per currency: what actually left the household, what "
+                "only moved between the holder's own accounts, and what serviced a debt. "
+                "Only `external_spend_outflow_minor_units` is spending — an internal "
+                "transfer never left, and debt service settles purchases already counted "
+                "under the categories they were spent in, so summing all three double-counts. "
+                "The three add up to the window's total outflow in that currency, which is "
+                "how you can check them against the rows"
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "currency": {"type": "string"},
+                    # The vocabulary itself rather than a copy of it, exactly as
+                    # the warning `enum` above takes `WARNING_KINDS`: a class
+                    # retyped here would start refusing answers this server sends
+                    # the first time a fourth one is classified.
+                    **{
+                        f"{flow}_outflow_minor_units": {
+                            "type": "integer",
+                            "description": "a positive magnitude, in minor units",
+                        }
+                        for flow in query.FLOW_CLASSES
+                    },
+                },
+                "required": ["currency"]
+                + [f"{flow}_outflow_minor_units" for flow in query.FLOW_CLASSES],
+                "additionalProperties": False,
+            },
+        }
+        required.append("totals")
     return {
         "type": "object",
         "properties": properties,
@@ -327,8 +365,142 @@ def _output_schema(
     }
 
 
+#: The per-account coverage facts, spelled ONCE for the two tools that carry
+#: them. `list_accounts` carries them so an agent that never thought to ask the
+#: verification surface still learns an account is empty; `get_coverage_report`
+#: carries them beside the cadence analysis built on them. One producer feeds
+#: both (`query._account_coverage`), and one schema fragment describes both --
+#: two copies would drift and a client would reject one tool's honest answer.
+def _coverage_row_fields() -> dict[str, dict[str, Any]]:
+    """A fresh dict per call, like every other schema fragment here."""
+    return {
+        "first_transaction_date": {
+            "type": ["string", "null"],
+            "description": "null means NO TRANSACTION HAS EVER BEEN RECORDED, never 'no activity'",
+        },
+        "last_transaction_date": {"type": ["string", "null"]},
+        "transaction_count": {
+            "type": "integer",
+            "description": "0 is a real answer: the account has no transaction data at all",
+        },
+    }
+
+
+class ToolRegistrationError(RuntimeError):
+    """A surface that cannot be described strictly, refused before it is advertised.
+
+    🔴 A startup failure rather than a runtime surprise, which is the whole
+    point of both checks below. The alternative is a tool that registers
+    cleanly and then answers a caller with a payload its own published schema
+    rejects -- discovered by whoever asked the unlucky question, in production,
+    with nothing pointing at the definition that caused it.
+    """
+
+
+def _refuse_colliding_parameters(definitions: list[dict[str, Any]]) -> None:
+    """#30's A3: one parameter name may not mean two types across this surface.
+
+    🔴 The failure this prevents is a SELECTION failure, not a validation one.
+    An agent that has learned `since` is a `YYYY-MM-DD` string on one tool
+    carries that to the next; a surface where the same name is an integer
+    somewhere else teaches something false, and the payload it sends back is
+    refused for a reason that reads as its own mistake. Names are the vocabulary
+    a caller reasons in, so a collision is a defect in the surface even though
+    each tool is internally consistent.
+
+    Types only, not descriptions: two tools may well phrase `since` differently
+    for their own domain, and forcing one wording would be a style rule wearing
+    a guard's clothes.
+    """
+    declared: dict[str, dict[str, str]] = {}
+    for definition in definitions:
+        name = str(definition["name"])
+        properties: dict[str, Any] = definition["inputSchema"].get("properties", {})
+        for parameter, spec in properties.items():
+            declared.setdefault(parameter, {})[name] = str(spec.get("type"))
+    for parameter, by_tool in sorted(declared.items()):
+        if len(set(by_tool.values())) > 1:
+            rendered = ", ".join(
+                f"{tool} declares {kind}" for tool, kind in sorted(by_tool.items())
+            )
+            raise ToolRegistrationError(
+                f"the parameter {parameter!r} means two different types on this surface "
+                f"({rendered}); one name must mean one thing, or a caller that learned it "
+                f"on one tool sends the wrong shape to the next"
+            )
+
+
+def _refuse_optional_row_fields(definitions: list[dict[str, Any]]) -> None:
+    """Guardrail 1 of `api-contract.md` § Direction's fourth norm, made structural.
+
+    🔴 **This is what makes the norm self-enforcing rather than a sentence the
+    next builder has to remember**, and it is why the norm survives the
+    thirtieth capability. The norm merges tools only where ONE strict row schema
+    covers every parameter value; a row field that is present under one
+    `group_by` and absent under another is the merge being made anyway, and it
+    is invisible in review because each individual answer looks fine.
+
+    🔴 **Nullable is fine; ABSENT is not.** A field typed `["string", "null"]`
+    is present and null, and a consumer reading it learns something. A field
+    that is simply missing is indistinguishable from a field the server forgot,
+    and this contract fixes a key's absence as information -- which only holds
+    while absence is a property of the TOOL rather than of the answer.
+
+    Rows only. The envelope has keys that are deliberately conditional across
+    tools, and a warning carries `connection_id` only when it is about one
+    connection -- both are absence used as information at a level this norm does
+    not speak about. The norm is about the row shape a merge has to unify, so
+    that is what is checked.
+    """
+    for definition in definitions:
+        name = str(definition["name"])
+        rows: dict[str, Any] = definition["outputSchema"]["properties"]["rows"]
+        _refuse_loose_object(rows.get("items", {}), tool=name, path="rows[]")
+
+
+def _refuse_loose_object(schema: dict[str, Any], *, tool: str, path: str) -> None:
+    """One object level of a row, and every object nested inside it.
+
+    Recursive because a row that carries a block is exactly where the check
+    would otherwise stop looking: `additionalProperties` on the outer object
+    says nothing about the shape of a value inside it.
+    """
+    if schema.get("type") != "object":
+        return
+    properties: dict[str, Any] = schema.get("properties", {})
+    required = set(schema.get("required", []))
+    optional = sorted(set(properties) - required)
+    if optional:
+        raise ToolRegistrationError(
+            f"{tool}'s {path} declares {optional} without requiring them, so the field is "
+            f"present on some answers and absent on others; make it nullable if it can have "
+            f"no value, but a row schema with an optional field cannot cover every parameter "
+            f"value and the tool must not be merged"
+        )
+    if schema.get("additionalProperties") is not False:
+        raise ToolRegistrationError(
+            f"{tool}'s {path} does not close `additionalProperties`, so a key can reach the "
+            f"wire without reaching the published schema and this row's absences stop meaning "
+            f"anything"
+        )
+    for field_name, spec in properties.items():
+        child = f"{path}.{field_name}"
+        if spec.get("type") == "object":
+            _refuse_loose_object(spec, tool=tool, path=child)
+        elif spec.get("type") == "array":
+            _refuse_loose_object(spec.get("items", {}), tool=tool, path=f"{child}[]")
+
+
 def _tool_definitions() -> list[dict[str, Any]]:
-    """The tool surface. 🔴 Every one of them reads; none of them writes."""
+    """The tool surface. 🔴 Every one of them reads; none of them writes.
+
+    🔴 The two refusals below run HERE, in the one function that produces a
+    definition, rather than at startup beside `serve`. Registration is not an
+    event this server has -- `tools/list`, the derived reference documents and
+    every test build the surface by calling this -- so a check anywhere else
+    would be a check some caller could route around. Refusing here means no code
+    path can obtain a definition that was never validated.
+    """
     definitions: list[dict[str, Any]] = [
         {
             "name": "list_accounts",
@@ -359,9 +531,13 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                     "currency": {"type": ["string", "null"]},
                     "balance_as_of": {"type": ["string", "null"]},
+                    # 🔴 On every row, never behind a parameter: the failure this
+                    # closes is an agent that never thought to ask.
+                    **_coverage_row_fields(),
                 },
                 windowed=False,
                 capped=False,
+                totals=False,
             ),
         },
         {
@@ -435,15 +611,28 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 },
                 windowed=True,
                 capped=True,
+                totals=False,
             ),
         },
         {
-            "name": "spending_summary",
-            "title": "Spending by category",
+            "name": "money_summary",
+            "title": "Money in and out, grouped",
             "description": (
-                "Total outflow per category in a date window. Sums only money leaving, "
-                "reported as positive magnitudes in INTEGER MINOR UNITS -- refunds and "
-                "income are excluded, because 'spending' is a question about outflow. "
+                "How much money moved in a date window, grouped by whichever of the "
+                "`group_by` values you need — the parameter's own enum is the list. "
+                "🔴 BOTH DIRECTIONS on every row: `inflow_minor_units` and "
+                "`outflow_minor_units` are positive magnitudes, and `net_minor_units` is "
+                "signed from the account holder's point of view. Ask this for spending (read "
+                "`outflow`), for income (read `inflow`), and for cashflow (`group_by=month` "
+                "and read all three). 🔴 A category whose outflow is large and whose net is "
+                "near zero is money that came back -- refunds or transfers -- so quote `net` "
+                "when the question is 'how much did this cost me'. Rows are per currency and "
+                "are never summed across currencies. 🔴 Rows also split by `flow_class`, so "
+                "one month or one merchant can return up to three rows: a transfer between "
+                "the holder's own accounts never left, and a credit-card payment settles "
+                "purchases already counted under the categories they were spent in. Neither "
+                "is spending, and both can dwarf it. Read `totals` before quoting any "
+                "spending figure, and quote `external_spend_outflow_minor_units` from it. "
                 + _WINDOW_NOTE
             ),
             "inputSchema": {
@@ -451,20 +640,60 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "properties": {
                     "since": {"type": "string", "description": "inclusive start, YYYY-MM-DD"},
                     "until": {"type": "string", "description": "inclusive end, YYYY-MM-DD"},
+                    "group_by": {
+                        "type": "string",
+                        "enum": list(query.GROUPINGS),
+                        "description": "how to group the rows; defaults to category",
+                    },
                 },
                 "additionalProperties": False,
             },
             "outputSchema": _output_schema(
                 {
-                    "category": {"type": "string"},
+                    "group_key": {
+                        "type": "string",
+                        "description": (
+                            "the group this row is for -- an account id when grouping by "
+                            "account, a YYYY-MM month when grouping by month"
+                        ),
+                    },
+                    "group_label": {
+                        "type": "string",
+                        "description": "the same group, named for reading",
+                    },
+                    "currency": {"type": "string"},
+                    "flow_class": {
+                        "type": "string",
+                        "enum": list(query.FLOW_CLASSES),
+                        "description": (
+                            "whether this money left the household (`external_spend`), only "
+                            "moved between the holder's own accounts "
+                            "(`internal_transfer`), or serviced a debt (`debt_service`). "
+                            "🔴 Rows are split by this under EVERY grouping, so one month "
+                            "or one account can return up to three rows and summing them "
+                            "gives back the conflated figure this field exists to separate"
+                        ),
+                    },
                     "transactions": {"type": "integer"},
-                    "spent_minor_units": {
+                    "inflow_minor_units": {
                         "type": "integer",
-                        "description": "outflow in MINOR UNITS, as a positive magnitude",
+                        "description": "money IN over this window, a positive magnitude",
+                    },
+                    "outflow_minor_units": {
+                        "type": "integer",
+                        "description": "money OUT over this window, a positive magnitude",
+                    },
+                    "net_minor_units": {
+                        "type": "integer",
+                        "description": (
+                            "inflow minus outflow, signed from the account holder's point of "
+                            "view: negative is money lost over the window"
+                        ),
                     },
                 },
                 windowed=True,
                 capped=False,
+                totals=True,
             ),
         },
         {
@@ -494,6 +723,70 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 },
                 windowed=False,
                 capped=False,
+                totals=False,
+            ),
+        },
+        {
+            "name": "get_coverage_report",
+            "title": "Coverage report",
+            "description": (
+                "🔴 The other half of the verification surface. Per account: the first and "
+                "last transaction recorded, how many there are, the account's own posting "
+                "cadence, and how long it has been silent measured against that cadence. "
+                "Call this before concluding an account has no activity -- a "
+                "`transaction_count` of 0 means NO DATA WAS EVER RECORDED for it, which is a "
+                "different answer from 'nothing happened' and the two are indistinguishable "
+                "anywhere else. `silence_ratio` above 1 means a full posting cycle has been "
+                "missed; a ratio near 1 is worth a second look even when the flag is false."
+            ),
+            "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+            "outputSchema": _output_schema(
+                {
+                    "account_id": {"type": "integer"},
+                    "account": {"type": ["string", "null"]},
+                    **_coverage_row_fields(),
+                    "median_interval_days": {
+                        "type": ["number", "null"],
+                        "description": (
+                            "this account's own posting cadence in days; null under two "
+                            "transactions, because no interval exists rather than because it "
+                            "posts daily. 0 is a real answer and means the opposite of null: "
+                            "the account posts more than once a day, and a single day of "
+                            "silence is already a missed cycle"
+                        ),
+                    },
+                    "days_silent": {
+                        "type": ["integer", "null"],
+                        "description": "days since the last recorded transaction",
+                    },
+                    "silence_ratio": {
+                        "type": ["number", "null"],
+                        "description": (
+                            "`days_silent` against this account's own cadence. A NUMBER rather "
+                            "than a flag on purpose: 28 days silent on a 30-day cycle is "
+                            "borderline, and a boolean is what would hide that"
+                        ),
+                    },
+                    "silence_exceeds_cadence": {
+                        "type": "boolean",
+                        "description": "a full posting cycle has been missed (ratio above 1)",
+                    },
+                    "source_breakdown": {
+                        "type": "object",
+                        "description": (
+                            "rows by provenance; a source with none is present and 0, never "
+                            "omitted, so 0 cannot be confused with unknown"
+                        ),
+                        "properties": {
+                            source: {"type": "integer"} for source in PROVENANCE_SOURCES
+                        },
+                        "required": list(PROVENANCE_SOURCES),
+                        "additionalProperties": False,
+                    },
+                },
+                windowed=False,
+                capped=False,
+                totals=False,
             ),
         },
     ]
@@ -503,6 +796,8 @@ def _tool_definitions() -> list[dict[str, Any]]:
         # is how three of them stay right. A fresh dict per tool because these
         # go out as part of a mutable structure a caller may edit.
         definition["annotations"] = dict(_READ_ONLY_ANNOTATIONS)
+    _refuse_colliding_parameters(definitions)
+    _refuse_optional_row_fields(definitions)
     return definitions
 
 
@@ -560,6 +855,23 @@ def _calendar_date(arguments: dict[str, object], field: str) -> date | None:
         raise BadArgumentError(
             f"{field} must be a calendar date in YYYY-MM-DD form, got {raw!r}"
         ) from None
+
+
+def _text(arguments: dict[str, object], field: str, default: str) -> str:
+    """Narrow a string argument, refusing anything that is not one.
+
+    The same reason `_whole_number` exists: under `object`, an unnarrowed value
+    cannot reach the query layer at all, so a caller sending `{"group_by": 3}`
+    gets a sentence naming the field instead of a type error raised from inside
+    a dispatch lambda. The VALUE is checked further down, where the closed set
+    that constrains it lives -- this only guarantees a string arrives.
+    """
+    raw = arguments.get(field)
+    if raw is None:
+        return default
+    if not isinstance(raw, str):
+        raise BadArgumentError(f"{field} must be a string, got {type(raw).__name__}")
+    return raw
 
 
 def _whole_number(
@@ -663,6 +975,7 @@ def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> q
     # against the request it accompanies and this is the call that compares the
     # two. A cursor narrowed first would have nothing to be checked against.
     cursor = _cursor(arguments, since=since, until=until, account_id=account_id)
+    grouping = _text(arguments, "group_by", "category")
     handlers: dict[str, Callable[..., query.Answer]] = {
         "list_accounts": lambda: query.list_accounts(config),
         "query_transactions": lambda: query.list_transactions(
@@ -673,8 +986,11 @@ def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> q
             limit=limit if limit is not None else 100,
             after=cursor,
         ),
-        "spending_summary": lambda: query.spending_by_category(config, since=since, until=until),
+        "money_summary": lambda: query.money_summary(
+            config, since=since, until=until, group_by=grouping
+        ),
         "get_pipeline_health": lambda: query.pipeline_health(config),
+        "get_coverage_report": lambda: query.coverage_report(config),
     }
     handler = handlers.get(name)
     if handler is None:
@@ -779,9 +1095,13 @@ def _instructions(config: Config) -> str:
         f"| `window_extends_past_coverage` | your window reaches past the last data | the tail "
         f"is unanswered, not quiet |\n"
         f"| `rows_truncated` | rows were left behind | do NOT sum or count these rows; page "
-        f"with `next_cursor` until `truncated` is false, or ask `spending_summary` instead |\n"
+        f"with `next_cursor` until `truncated` is false, or ask `money_summary` instead |\n"
         f"| `counted_during_change` | a write landed while the answer was assembled | rows and "
-        f"counts are from adjacent moments; re-ask if the two must reconcile exactly |\n\n"
+        f"counts are from adjacent moments; re-ask if the two must reconcile exactly |\n"
+        f"| `accounts_without_coverage` | an account in scope has NEVER had a transaction "
+        f"recorded | its empty result means DATA NOT PRESENT, never no activity. Do not answer "
+        f"'no payments found' about it -- say the account has no transaction data at all, and "
+        f"call `get_coverage_report` for the per-account picture |\n\n"
         f"WHAT EVERY ANSWER CARRIES\n"
         f"| field | read it for |\n"
         f"|---|---|\n"
@@ -807,9 +1127,18 @@ def _instructions(config: Config) -> str:
         f"`cursor` with the SAME window and account, and keep going until `truncated` is "
         f"false. The cursor is OPAQUE -- never build or edit one -- and it is present when and "
         f"only when there is more to read.\n\n"
-        f"🔴 **Absence of `effective_window` or `truncation` is a fact, not a gap**: that tool "
-        f"takes no window, or returns every row it found. Each tool publishes an "
-        f"`outputSchema` saying which it carries.\n\n"
+        f"A CLASSIFYING tool adds `totals` — one entry per currency, splitting the window's "
+        f"OUTFLOW three ways. 🔴 **Quote `external_spend_outflow_minor_units` when asked what "
+        f"was spent.** `internal_transfer_outflow_minor_units` is the holder moving their own "
+        f"money between their own accounts and never left; "
+        f"`debt_service_outflow_minor_units` settles card purchases already counted under the "
+        f"categories they were spent in. Adding the three together double-counts, and the two "
+        f"that are not spending can be several times larger than the one that is. The three "
+        f"DO sum to the window's total outflow, which is how you check them against "
+        f"`rows`.\n\n"
+        f"🔴 **Absence of `effective_window`, `truncation` or `totals` is a fact, not a gap**: "
+        f"that tool takes no window, returns every row it found, or does not classify money. "
+        f"Each tool publishes an `outputSchema` saying which it carries.\n\n"
         f"The full detail is SERVED rather than repeated here — read it by URI when you need "
         f"it, at no cost when you do not: `{mcp_resources.ENVELOPE_URI}` is every field and "
         f"which tools carry it; `{mcp_resources.WARNINGS_URI}` is every warning kind with what "
@@ -981,8 +1310,8 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
         if name not in _tool_names():
             # Resolved BEFORE the call, so that a `KeyError` raised anywhere
             # BENEATH the query layer is not answered "no tool named
-            # 'spending_summary'" -- which is a false statement about a tool
-            # that exists, delivered as a protocol error nobody can act on.
+            # 'money_summary'" -- which is a false statement about a tool that
+            # exists, delivered as a protocol error nobody can act on.
             return _error(message_id, _METHOD_NOT_FOUND, f"no tool named {name!r}")
         try:
             answer = _dispatch_tool(config, name, arguments)
@@ -991,6 +1320,7 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
             query.UnknownAccountError,
             query.InvertedWindowError,
             query.MalformedCursorError,
+            query.BadGroupingError,
         ) as exc:
             # Ahead of the broad catch. The message is the caller's to act on,
             # so it is rendered without the exception class name -- and it is
@@ -1185,7 +1515,33 @@ def cmd_mcp(config: Config, _args: argparse.Namespace) -> int:
 
     So the unhealthy state is logged and carried into every answer as a warning
     rather than raised.
+
+    🔴 **A malformed TOOL SURFACE is the opposite case and refuses here.** An
+    unreadable datastore is a data condition the operator can fix without
+    touching this code, so the server reports it; a tool whose row schema cannot
+    be described strictly can only be introduced by a code change, and there is
+    no answer it could give about itself that is worth serving. Building the
+    definitions here is what makes `ToolRegistrationError` the startup failure
+    its own docstring claims: nothing else calls `_tool_definitions()` before the
+    read loop, so without this the earliest either guard could fire is the
+    client's first `tools/list` -- outside `_handle`'s `try`, escaping the loop,
+    and taking the session with it. That is the operator's tool vanishing
+    mid-session, which is the one outcome this module names as worse than any
+    wrong answer.
     """
+    try:
+        _tool_definitions()
+    except ToolRegistrationError:
+        # Logged with the traceback rather than re-raised: this process is a
+        # subprocess a client launched, so its stderr is the only place an
+        # operator can read WHY the tool never appeared, and an unhandled
+        # exception there is a stack trace with the reason buried in it.
+        logger.exception("refusing to serve: the tool surface cannot be described strictly")
+        # 🔴 `2` -- "could not run", not `1` "ran and found a problem". The
+        # 1/2 split is a machine interface the scheduler reads, and a surface
+        # that cannot be described is this process failing to start rather than
+        # a datastore it looked at and disliked.
+        return EXIT_ERROR
     status = inspect(config)
     if not status.healthy:
         logger.warning(

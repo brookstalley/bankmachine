@@ -214,6 +214,27 @@ against this fixture would be verified against nothing.
 
 Ordered by dependency. Each ends with `/prawduct:critic chunk`.
 
+> **Amendment (2026-09-09, #30).** `api-contract.md` § Direction gained a fourth norm after C1
+> shipped: **a tool's boundary is drawn where the answer shape changes, never where the question
+> changes.** C2 is unaffected — it already splits `list_accounts` from `get_coverage_report`, and the
+> norm's second guardrail independently confirms that split, since verification and analysis are
+> different domains. **C3 and C4 are re-pointed rather than rescoped:**
+>
+> - **C4 no longer builds `cashflow_summary` as its own tool.** Cashflow-by-month is the grouped
+>   aggregate shape with inflows kept, so it and `spending_summary` become one tool whose rows are
+>   `{group_key, group_label, currency, transactions, inflow_minor, outflow_minor, net_minor}` and
+>   whose `group_by` selects `category | merchant | account | month`. #20's unreachable inflows and
+>   #21's currency land as fields of that one row rather than as two changes to two tools.
+> - **C3's `flow_class` lands on the merged tool's row and becomes a grouping**, not a field bolted
+>   onto `spending_summary` alone. The chunk's substance — the three-way `external_spend` /
+>   `internal_transfer` / `debt_service` distinction and `total_external_spend`, on the
+>   `balance_class` precedent — is unchanged and still ruled.
+>
+> 🔴 **C4 also inherits the claim-site sweep.** It is the commit that rewrites the contract's tool
+> table from ten rows to eight, and every count spelled across the README, the client guide and
+> `api-contract.md` moves with it; `test_the_documented_tool_surface_is_the_built_one.py` names each
+> site. The derivation is `discovery-mcp-tool-surface.md`.
+
 **C1 — the time and row axes.** `effective_window` (the requested window beside the one the data
 could answer over) with its two request-scoped warning kinds, window-scoped transaction counts,
 `returned` / `matching` / `truncated`, and cursor pagination. → closes #16, #17.

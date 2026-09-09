@@ -18,8 +18,8 @@ rather than a formality.
 **Scope:** one developer, one machine, your own Plaid credentials. Not a service, not
 multi-user, not distributed.
 
-**Status:** build steps 1–4 are complete and four of the ten specified MCP tools are
-serving (`docs/system-requirements.md` §8); the other six are recorded as descoped in
+**Status:** build steps 1–4 are complete and five of the eight specified MCP tools are
+serving (`docs/system-requirements.md` §5); the other three are recorded as descoped in
 `.prawduct/artifacts/api-contract.md`.
 
 ## Install

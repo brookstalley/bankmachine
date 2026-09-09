@@ -22,9 +22,9 @@ artifact; §0 and §5 of `docs/system-requirements.md` carry that content.
 
 **Build status** *(2026-09-08)*. The **CLI exists** through build step 4 — `store`, `connector`,
 `sync shell`, `enroll`, `connections`, `sync run`, `mcp`. The **MCP surface exists in first slice**:
-four of the ten tools below are implemented and six are specification only, recorded as a dated
+five of the eight tools below are implemented and three are specification only, recorded as a dated
 descope under the tool table. This contract is therefore *description* for most of the CLI, *both*
-for the four shipped tools, and *specification* for the remaining six — and each operation below
+for the five shipped tools, and *specification* for the remaining three — and each operation below
 says which.
 Writing it now is the point: introducing an error model or a versioning handle after consumers exist
 is a breaking change.
@@ -34,13 +34,16 @@ is a breaking change.
 ## Direction
 
 Norms. These bind future work; departure is a recorded decision, never silent
-(`/prawduct:methodology norms`). Ratified 2026-09-07 by the owner.
+(`/prawduct:methodology norms`). The first three ratified 2026-09-07 by the owner; the
+fourth born 2026-09-09, and it is the only one carrying a migration.
 
-🔴 **Two of the three are born before the surface they govern exists** — the MCP tool layer is build
-step 7. That is deliberate and has direct precedent here: `architecture.md`'s four norms were also
-born before any code, and the point of ratifying early is that step 7 gets **built to** them rather
-than discovering them afterwards. No retroactivity decision applies, because there is nothing yet to
-migrate or grandfather.
+🔴 **The norms ratified 2026-09-07 were born before the surface they govern existed** — the MCP tool
+layer was build step 7. That is deliberate and has direct precedent here: `architecture.md`'s norms
+were also born before any code, and the point of ratifying early is that the build gets **built to**
+them rather than discovering them afterwards. No retroactivity decision applied to those, because
+there was nothing yet to migrate or grandfather. **The fourth is the exception and says so in its
+own entry:** it was born against a surface that already shipped, and it carried one migration, now
+paid.
 
 - **The MCP surface is read-only. There are no mutation tools, and adding one is not a decision this
   norm leaves open.**
@@ -74,6 +77,37 @@ migrate or grandfather.
   place where an ops shortcut reproduces the exact bug the product exists to prevent.
   Status: steady-state.
 
+- **A tool's boundary is drawn where the answer *shape* changes — never where the question changes.**
+  Two guardrails carry it: a merge is permitted only when **one strict row schema covers every
+  parameter value with no optional fields** (nullable is fine — a null field is present and null,
+  never dropped; *absent* is not), and within one shape, **merge only across questions that share a
+  domain**. Verification and analysis are different domains, as this document already declares them.
+  Why: the owner directed "minimize tools, use actions to cover related capabilities", and applied
+  literally that destroys what the per-tool `outputSchema` buys — MCP allows one schema per tool, and
+  the schemas are per-tool precisely so a key's ABSENCE is information. Both the tool-per-question and
+  the action-parameter extremes assume a boundary tracks the *question*; that shared premise is what
+  fails. Factoring on answer shape satisfies the directive in substance while making the schema
+  property a **consequence** of the rule rather than something defended against it: a tool defined by
+  its answer shape has one answer shape by construction, and two tools can never become near-twins,
+  because if they were they would share a shape and already be one tool. Capabilities grow fast; row
+  entities do not. The first guardrail is checkable at registration, so the norm enforces itself
+  rather than resting on the judgment of whoever adds the next tool.
+  🔴 **Enforced structurally since 2026-09-09**, not merely checkable: `mcp._refuse_optional_row_fields`
+  refuses a definition whose row schema declares a field it does not require, and it runs inside
+  `_tool_definitions()` — the one function that hands out a definition — so no caller can route
+  around it. `mcp._refuse_colliding_parameters` sits beside it for #30's A3, because both fail for
+  one reason: a surface that cannot be described strictly should not be advertised. The check is
+  scoped to ROWS. The stronger rule — every declared property required, everywhere in the schema —
+  refuses the shipped surface, because a warning carries `connection_id` only when it is about one
+  connection; that is absence-as-information at the envelope level, which this norm does not govern.
+  🔴 **Retroactive, and its one migration is PAID:** `spending_summary` was its own tool and is now
+  `money_summary`, the grouped aggregate. Every MCP tool is `experimental` (§ Surface Inventory),
+  where "removing one is the policy working, not a violation", so the migration cost no version bump
+  and opened no deprecation window. No other shipped tool changed shape.
+  Born 2026-09-09, from #30. Derivation and the alternatives priced against it:
+  `discovery-mcp-tool-surface.md`.
+  Status: steady-state.
+
 ---
 
 ## Overview & Surface Type
@@ -99,7 +133,7 @@ codes are a machine contract**, not just operator ergonomics.
 
 ## Operations
 
-### MCP tool surface — the ten tools (§5) · *four built, six specified*
+### MCP tool surface — the eight tools (§5) · *five built, three specified*
 
 🔴 **Read-only. No mutation tools. No exceptions.** (Vetting a comparable server surfaced 19 mutation
 tools including `delete_transaction` with no undo. Not reproducing that.)
@@ -113,44 +147,61 @@ Raw-row access exists but is paginated and hard-capped.
 | `get_pipeline_health` | Per-connection sync status, last success, error codes, per-account coverage window, row counts, staleness flags, rule anomalies | yes |
 | `list_accounts` | Accounts with type, institution, mask, current balance, lifecycle state | yes |
 | `query_transactions` | Filtered rows (date range, account, category, amount range, merchant search). **Paginated, capped** | yes |
-| `spending_summary` | Aggregated by category / merchant / account over a period, with period-over-period comparison | yes |
-| `cashflow_summary` | Income vs. outflow by month | yes |
-| `balance_history` | Balance time series per account or aggregate | yes |
-| `net_worth` | Assets minus liabilities over time, investments included | yes |
+| `money_summary` | Money in and out over a period, grouped by category / merchant / account / month / flow class, per currency, and split by flow class under every grouping | yes |
+| `balance_history` | Value over time, per account or aggregated as net worth, investments included | yes |
 | `list_holdings` | Current investment positions with cost basis where available | yes |
 | `find_recurring` | Detected recurring charges with cadence, amount drift, last-seen | yes |
-| `get_coverage_report` | Per account: first and last transaction date, gaps against the account's own cadence, source breakdown | yes |
+| `get_coverage_report` | Per account: first and last transaction, posting cadence, and trailing silence measured against it | yes |
 
 Every tool is safe and idempotent, trivially — nothing writes.
 
-> **Amendment (2026-09-08, build step 7's first slice).** 🔴 **Four of these ten ship; six do not
-> yet.** Built: `get_pipeline_health`, `list_accounts`, `query_transactions`, `spending_summary`.
-> Not built: `cashflow_summary`, `balance_history`, `net_worth`, `list_holdings`, `find_recurring`,
-> `get_coverage_report`.
+> **Amendment (2026-09-08, build step 7's first slice; revised 2026-09-09).** 🔴 **Five of these
+> eight ship; three do not yet.** Built: `get_pipeline_health`, `list_accounts`,
+> `query_transactions`, `money_summary`, `get_coverage_report`.
+> Not built: `balance_history`, `list_holdings`, `find_recurring`.
 >
 > Recorded as a descope rather than left to be noticed, because the same commit updated the README
 > and `architecture.md` to say the MCP surface was "built and serving" — which is true of a surface
 > and not of *this* surface, and a reader comparing the two would have found the contract claiming
 > ten and the code answering four with nothing saying which was current.
 >
-> **Two of the six are not ordinary omissions.** `get_coverage_report` is half the verification
-> surface this document names two paragraphs above — the product's headline goal is "answer it, or
-> say why you should not", and the coverage half of that is missing. `list_holdings` waits on build
-> step 5, which has not started. The other four are analysis conveniences whose data is already in
-> the datastore.
+> **`get_coverage_report` was the sharpest of these omissions and is now BUILT.** It is half the
+> verification surface this document names two paragraphs above — the product's headline goal is
+> "answer it, or say why you should not", and the coverage half of that was missing. Of what
+> remains, `list_holdings` waits on build step 5, which has not started; `balance_history` and
+> `find_recurring` are analysis conveniences whose data is already in the datastore.
 >
-> **What the shipped four do not yet carry**, also descoped rather than silently unimplemented:
+> **What the shipped tools do not yet carry**, also descoped rather than silently unimplemented:
 > `query_transactions` is specified paginated with category, amount-range and merchant filters and
-> currently offers a date range, an account and a hard cap; `spending_summary` is specified with
-> merchant and account breakdowns and period-over-period comparison and currently aggregates by
-> category over one window.
+> currently offers a date range, an account and a hard cap; `money_summary` is specified with
+> period-over-period comparison and does not yet offer it — it does now carry the merchant, account,
+> month and flow-class groupings, both directions, and per-currency rows.
 >
 > The `experimental` tier permits these changes without a version bump. It does not permit them
 > going unrecorded, which is what this amendment exists to prevent.
 
-🔴 **Two of these ten are the verification surface, not the analysis surface.** `get_pipeline_health`
+🔴 **Two of these eight are the verification surface, not the analysis surface.** `get_pipeline_health`
 and `get_coverage_report` exist so the analyst agent can **establish completeness *before* answering**.
 The product's headline goal is not "answer the question" but "answer it, or say why you should not."
+
+> **Amendment (2026-09-09, #30 — applied; the table above now lists eight).**
+> § Direction's fourth norm draws a tool boundary where the answer *shape* changes, and applying it
+> re-factored this specification from ten tools to eight: `cashflow_summary` merged into a grouped
+> aggregate tool alongside `spending_summary` — both are now **`money_summary`** — and `net_worth`
+> merges into the time series alongside `balance_history`. Neither merge costs a published
+> `outputSchema`; both eliminate a near-twin pair. `discovery-mcp-tool-surface.md` carries the
+> derivation and the row shape that permits each merge.
+>
+> 🔴 **The table and the code move in the SAME commit, and the guard enforces it.**
+> `test_the_documented_tool_surface_is_the_built_one.py` derives the *specified* set from these rows
+> and the *built* set from `_tool_definitions()`, then asserts built ⊆ specified. Rewriting the rows
+> ahead of the code drops a tool from the specification while it is still on the wire, and the guard
+> fails — correctly. A rename is therefore never a two-commit job.
+>
+> 🔴 **`money_summary`'s parent requirement is `docs/system-requirements.md` §5**, amended the same
+> day. That section is the contract of record — `boundary-patterns.md` designates it so — and a
+> merged tool tracing up to a requirement that named a different tool is how the next builder ends
+> up writing the tool this norm removed.
 
 ### CLI — the operator surface
 
@@ -251,7 +302,8 @@ refusing "show me 2024" against a store beginning 2024-09-16 refuses an ordinary
 enrollment's cost — history that cannot be bought back — has no analogue here. Ruled 2026-09-08:
 clamp, and say so in band. `effective_window` plus its request-scoped warning is the saying so.
 
-**What it fixes.** `spending_summary` over a window preceding coverage returned no rows, and
+**What it fixes.** `spending_summary` — the tool `money_summary` replaced — over a window preceding
+coverage returned no rows, and
 "you spent nothing" and "this is not knowable" were the same payload — measured across four
 acceptance rounds as the most believable wrong answer this surface can produce.
 
@@ -375,10 +427,90 @@ than an error. The sibling is present on exactly the answers that carry `effecti
 when the datastore cannot be read, so the key set a consumer branches on never depends on the store's
 health.
 
+### An aggregate says which money actually left, and it classifies rather than filters (#18)
+
+🔴 **Every `money_summary` row carries `flow_class`** — `external_spend`, `internal_transfer` or
+`debt_service` — and the class is a *grouping dimension under every value of `group_by`*, not a
+field that appears on one grouping and is guessed on the others. It has to be: an account holds a
+transfer and a coffee, a month holds all three by definition, and even a category can split,
+because the category key reads `category_override` first while the class is fixed to read
+`source_category_primary` only. Attaching one row's class to a group that spans classes would
+state it for the others, and making the field *optional* is refused by § Direction's fourth norm,
+which merges tools only where one strict row schema covers every parameter value. The consequence
+is accepted and is the point: one month can return three rows per currency where it returned one.
+
+🔴 **Classify, do not filter.** Every row is kept and gains a class; nothing is dropped, precisely
+so there is no invisible undercount. That is also why this emits no `rule-applied` warning —
+that kind means an account rule filtered rows *out* of an aggregate, and a tool that excludes
+nothing saying so would be a false statement about the answer carrying it.
+
+🔴 **The class is read from the source column, never from `category_override`.** An override is
+local interpretation of what a transaction was *for*; the flow class is about whose money moved and
+in which direction. Letting a re-categorisation reclassify a transfer as spending would reintroduce
+the overcount through the back door, silently and in the direction that inflates. An unrecognised
+or null category falls to `external_spend`, which is the conservative direction on this surface's
+own principle: an overcount gets questioned and an undercount gets believed.
+
+### A classifying tool carries `totals`, per currency, and the three add up
+
+🔴 **`money_summary` gains a `totals` block** — one entry per currency, carrying the window's
+*outflow* under each of the three classes. `external_spend_outflow_minor_units` is the figure to
+quote when asked what was spent; the other two are money that never left the holder's accounts or
+that settles purchases already counted under the categories they were spent in, so summing all
+three double-counts.
+
+🔴 **Measured against the sandbox store on 2026-09-09, over its full 24 months:** $267,692.77 of
+outflow, of which $164,400.00 is internal transfer and $50,484.00 is debt service — leaving
+**$52,808.77 of actual spending, one fifth of the raw figure.** That is the whole of #18 in one
+line, and it is why the headline rides the envelope rather than waiting for a caller to derive it
+from rows they may never read. The ratio is a property of this fixture and not a constant; what the
+contract fixes is that the decomposition is always present, never the size of the gap.
+
+The three sum to the window's total outflow in that currency, and that identity is the contract:
+it is what proves the classification *partitions* the rows rather than quietly dropping some.
+🔴 **Per currency, never one integer across currencies**, by the ruling that governs every
+aggregate here — a summed integer over two currencies is not a wrong number, it is not a number.
+The block is present and empty when the datastore cannot be read, exactly as `coverage` is present
+and zero, so the key set a consumer branches on never depends on the store's health.
+
 ### Coverage is reported per account, never per institution (AC-9.5)
 
 One institution may hold many accounts with different coverage windows, and an institution-level
 summary hides exactly that.
+
+🔴 **Every `list_accounts` row carries `first_transaction_date`, `last_transaction_date` and
+`transaction_count` — always, not behind a parameter.** Measured: nine of fourteen sandbox accounts
+have never had a transaction, 82% of the balance sheet by magnitude, and nothing in any payload said
+so. `query_transactions(account_id=9)` answered `[]`, which is indistinguishable from a quiet month,
+while three fields actively implied the opposite — `coverage.accounts` counted all fourteen, health
+reported the connection `active`, and the only warning was about depth rather than breadth. An agent
+that never thought to call the verification tool is exactly that failure, so completeness rides the
+answer rather than a channel nobody reads. **A null date means NO TRANSACTION HAS EVER BEEN
+RECORDED, never "no activity"; `transaction_count` is `0` rather than null, because a null would be
+a second spelling of the same fact.**
+
+🔴 **The cost was measured before the parameter was ruled out, not after.** The walk costs 3.0ms at
+the expected 10k-row volume against an 18.2ms end-to-end `list_accounts` and a ~1s target
+(`mcp-coverage-latency-2026-09-09.md`). Cost was the only argument for making completeness something
+a caller had to ask for.
+
+**`get_coverage_report` is the verification surface built on the same producer**, and carries the
+analysis `list_accounts` does not: `median_interval_days` (this account's own posting cadence),
+`days_silent`, `silence_ratio`, `silence_exceeds_cadence`, and `source_breakdown` by provenance.
+🔴 **One producer feeds both** — built twice they can disagree, and a verification surface that
+contradicts the analysis surface is worse than one that is absent.
+
+🔴 **Trailing silence against the account's own cadence, not an enumeration of gaps between
+transactions.** The earlier "gaps > 7 days" rule was falsified by measurement: every sandbox account
+is monthly, so two of them exceeded 7 days on 100% of their intervals — ~146 findings and no signal.
+The ratio is reported as a NUMBER rather than collapsed into a flag, because 28 days silent on a
+30-day cycle is genuinely borderline and a boolean is what destroys that.
+`silence_exceeds_cadence` is one full missed cycle, because one cycle is the only non-arbitrary
+unit. **The divisor is floored at one day**: an account whose rows cluster on the same dates has a
+median interval of literally 0, and dividing by it left the busiest feeds — the ones most likely to
+stop — answering "not silent" however long they had been dead. The reported median is not floored;
+0 is a true cadence meaning "posts more than once a day", which is the opposite of null's "no
+interval exists".
 
 ### Provenance survives into every result (AC-7.4)
 
@@ -429,15 +561,29 @@ three-week-old hole in the data and answer confidently.
 | `window_extends_past_coverage` | The window asked for reaches past the covered end — today, or the last transaction when that is later |
 | `rows_truncated` | The request matched more rows than the cap returned, and the answer holds only the newest of them |
 | `counted_during_change` | A write landed between the row read and the count read, so the two describe moments a fraction apart |
+| `accounts_without_coverage` | An account in the scope of THIS request has never had a transaction recorded, so its empty result means data not present, never no activity |
 
-🔴 **The four window/row kinds are REQUEST-scoped; the connection kinds above them are
-CONNECTION-scoped, and the distinction is the reason they exist.** A connection-scoped warning describes the standing state of the pipeline,
+🔴 **The window/row/account kinds below the line are REQUEST-scoped; the connection kinds above them
+are CONNECTION-scoped, and the distinction is the reason they exist.** A connection-scoped warning describes the standing state of the pipeline,
 so it rides every response equally — measurement found the `gapped` notice arriving
 character-for-character identical on a window wholly inside coverage, a window wholly outside it, a
 future window, and a query for an account that does not exist. It is therefore true and useless: it
 cannot tell a caller whether *this* answer is the degraded one, and a field that fires on every
 response trains its reader to skip it. A request-scoped warning fires only when the request it rides
 on actually crosses the boundary it names, so its presence is information and **so is its absence**.
+
+🔴 **`accounts_without_coverage` is request-scoped for exactly that reason, and the obvious reading
+is wrong.** "This account has never had a transaction" looks like standing state of the store, and
+therefore connection-scoped — but a fifth kind riding every response equally would reproduce the
+defect the paragraph above records. It fires only when *this* request's scope actually contains an
+uncovered account: on `list_accounts` when the listing holds one, and on
+`query_transactions(account_id=N)` when the account asked about has none.
+
+🔴 **This table is prose and `query.WARNING_KINDS` is the code; nothing holds them together.**
+`test_the_warning_vocabulary_is_closed.py` scans source only, so a kind added to the vocabulary
+without being added here goes unnoticed — which is how `accounts_without_coverage` was missing from
+this table for a full work cycle after it shipped. Adding a kind means editing both until something
+derives one from the other.
 
 Added additively under the evolution rules below (new warning codes need no version bump; consumers
 must tolerate a code they do not recognize), so AC-9.3's list — itself a minimum — is unamended.
@@ -550,20 +696,18 @@ Retention: additive-first; removal of a `stable` member defers to a major versio
 The public contract, declared rather than inferred. Members not listed are internal and carry no
 promise. `experimental` means *this may break* — removing one is the policy working, not a violation.
 
-**MCP tools** — all `experimental` until the §7 verification gate passes. As of 2026-09-08 four of
-the ten are implemented (`get_pipeline_health`, `list_accounts`, `query_transactions`,
-`spending_summary`) and six are still specification only; see the amendment under the tool table
-above for what is descoped and why. `experimental` therefore means two different things in this
-list, and the distinction is worth keeping in view: for the shipped four it means *this may break*,
-and for the other six it means *this does not exist yet*:
+**MCP tools** — all `experimental` until the §7 verification gate passes. As of 2026-09-09 five of
+the eight are implemented (`get_pipeline_health`, `list_accounts`, `query_transactions`,
+`money_summary`, `get_coverage_report`) and three are still specification only; see the amendment
+under the tool table above for what is descoped and why. `experimental` therefore means two
+different things in this list, and the distinction is worth keeping in view: for the shipped five it
+means *this may break*, and for the other three it means *this does not exist yet*:
 
 - `get_pipeline_health` — experimental
 - `list_accounts` — experimental
 - `query_transactions` — experimental
-- `spending_summary` — experimental
-- `cashflow_summary` — experimental
+- `money_summary` — experimental
 - `balance_history` — experimental
-- `net_worth` — experimental
 - `list_holdings` — experimental
 - `find_recurring` — experimental
 - `get_coverage_report` — experimental

@@ -153,6 +153,66 @@ def _converse(config: Config, requests: list[dict[str, Any]]) -> list[dict[str, 
     return [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
 
 
+def _every_tool() -> tuple[str, ...]:
+    """Every built tool, DERIVED from the registry rather than listed here.
+
+    🔴 Five "every tool" loops in this file named their tools as string
+    literals, and `get_coverage_report` was added to none of them — so a tool
+    built specifically to answer "what data exists" had no proof it answered at
+    all against a store that cannot be read, and nothing failed to say so. A
+    literal list is an enumeration of a set the code already owns, and it goes
+    stale by SILENCE: the loop keeps passing over the tools it still names.
+
+    Derived, the next tool cannot be omitted by forgetting. The extraction
+    asserts it found something, because a derivation that returns empty is a
+    loop that checks nothing while reporting green.
+    """
+    names = tuple(sorted(d["name"] for d in mcp._tool_definitions()))
+    assert names, "the registry produced no tools, so every loop over this checks nothing"
+    return names
+
+
+def _tools_requiring(key: str) -> tuple[str, ...]:
+    """The tools whose published schema REQUIRES an envelope key.
+
+    🔴 Read from what each tool publishes, not listed here. `api-contract.md`
+    fixes a key's absence as information — no `effective_window` means the tool
+    takes no window, no `truncation` means it returns every row it found, no
+    `totals` means it does not classify money — and the tests below assert the
+    WIRE against exactly that claim. Derived, they hold every tool to its own
+    published contract and a new one is covered the day it registers; listed,
+    they hold whichever tools someone remembered.
+
+    Empty is a defect rather than a vacuous pass: every key this is asked about
+    is one some tool carries, so a derivation returning nothing means the schema
+    stopped saying what this file thinks it says.
+    """
+    names = tuple(
+        str(d["name"])
+        for d in mcp._tool_definitions()
+        if key in d["outputSchema"].get("required", [])
+    )
+    assert names, f"no tool requires {key!r}, so every loop keyed on it checks nothing"
+    return names
+
+
+#: A window wider than the seeded data, so a windowed tool actually clamps.
+_A_WINDOW: dict[str, Any] = {"since": "2024-01-01", "until": "2024-06-30"}
+
+
+def _every_tool_except(*excluded: str) -> tuple[str, ...]:
+    """The complement, for the claims that are true of one tool and false of the rest.
+
+    Asserts the exclusions were actually present: naming a tool that does not
+    exist would silently widen the loop to everything, which reads as a stricter
+    test than it is.
+    """
+    names = _every_tool()
+    missing = set(excluded) - set(names)
+    assert not missing, f"excluded {sorted(missing)}, which the registry does not build"
+    return tuple(name for name in names if name not in excluded)
+
+
 def _call(config: Config, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
     replies = _converse(
         config,
@@ -607,16 +667,17 @@ def test_an_unknown_method_is_a_method_not_found(initialized_config: Config) -> 
 def test_no_tool_mutates_anything(initialized_config: Config) -> None:
     """🔴 The ratified norm: no mutation tools, and adding one is not open.
 
-    Asserted over the tool list itself rather than over the four names, so a
-    fifth tool that wrote would have to be named in this test to pass — the
-    same construction that makes the endpoint-properties test hold.
+    Asserted over the tool list itself rather than over a roster of names, so a
+    new tool that wrote would have to be named in this test to pass — the same
+    construction that makes the endpoint-properties test hold.
     """
     tools = mcp._tool_definitions()
     assert {t["name"] for t in tools} == {
         "list_accounts",
         "query_transactions",
-        "spending_summary",
+        "money_summary",
         "get_pipeline_health",
+        "get_coverage_report",
     }, "the shipped subset of the api-contract tool surface"
     forbidden = ("create", "update", "delete", "remove", "write", "set_", "transfer", "pay")
     for tool in tools:
@@ -683,7 +744,7 @@ def test_every_answer_names_the_environment_it_came_from(initialized_config: Con
     """
     _seed(initialized_config)
 
-    for name in ("list_accounts", "query_transactions", "spending_summary", "get_pipeline_health"):
+    for name in _every_tool():
         wire = _call(initialized_config, name)["structuredContent"]
         assert wire["environment"] == "sandbox", name
         assert wire["as_of"], name
@@ -699,7 +760,7 @@ def test_a_shortfall_rides_the_success_path_as_a_warning(initialized_config: Con
     """
     _seed(initialized_config, granted=90)
 
-    wire = _call(initialized_config, "spending_summary")["structuredContent"]
+    wire = _call(initialized_config, "money_summary")["structuredContent"]
 
     gapped = [w for w in wire["warnings"] if w["kind"] == "gapped"]
     assert gapped, "a 90-against-730 shortfall was reported as a complete answer"
@@ -747,7 +808,7 @@ def test_an_empty_datastore_says_so_rather_than_answering_zero(
     Without this, an unconfigured install reports zero spending and looks like a
     frugal month.
     """
-    wire = _call(initialized_config, "spending_summary")["structuredContent"]
+    wire = _call(initialized_config, "money_summary")["structuredContent"]
 
     assert wire["rows"] == []
     assert any("no connections are enrolled" in w["detail"] for w in wire["warnings"])
@@ -759,20 +820,56 @@ def test_an_empty_datastore_says_so_rather_than_answering_zero(
 # --------------------------------------------------------------------------
 
 
-def test_spending_sums_outflow_only_and_reports_magnitudes(initialized_config: Config) -> None:
-    """Refunds and income are excluded, because "spending" asks about outflow.
+def test_the_aggregate_reports_both_directions_as_magnitudes(initialized_config: Config) -> None:
+    """🔴 Inflow is REACHABLE, and outflow is still separable from it (#20).
 
-    The sign convention is what makes that a filter rather than a per-account
-    special case.
+    This tool's predecessor filtered to `amount_minor < 0`, so income had no row
+    to appear in at all — a consumer could not recover it by any question, which
+    is why the fix had to be a column rather than a second tool. The outflow
+    figures below are the same ones that behaviour produced; what is new is that
+    `INCOME` is now present rather than absent, and that every row says which
+    direction its money went.
+
+    Both are positive magnitudes and `net_minor_units` carries the sign, which
+    is the one row where `data-model.md`'s operator-signed convention and the
+    reporting convention meet.
     """
     _seed(initialized_config)
 
-    rows = _call(initialized_config, "spending_summary")["structuredContent"]["rows"]
+    rows = _call(initialized_config, "money_summary")["structuredContent"]["rows"]
+    by_category = {r["group_label"]: r for r in rows}
 
-    by_category = {r["category"]: r["spent_minor_units"] for r in rows}
-    assert by_category == {"GENERAL_MERCHANDISE": 8940, "FOOD_AND_DRINK": 1200}
-    assert "INCOME" not in by_category, "a deposit was counted as spending"
-    assert all(r["spent_minor_units"] > 0 for r in rows), "magnitudes, not signed totals"
+    assert by_category["GENERAL_MERCHANDISE"]["outflow_minor_units"] == 8940
+    assert by_category["FOOD_AND_DRINK"]["outflow_minor_units"] == 1200
+    assert by_category["INCOME"]["inflow_minor_units"] == 25000, (
+        "a deposit is still unreachable, which is the defect #20 records"
+    )
+
+    assert all(r["outflow_minor_units"] >= 0 for r in rows), "magnitudes, not signed totals"
+    assert all(r["inflow_minor_units"] >= 0 for r in rows), "magnitudes, not signed totals"
+    # 🔴 Direction lives in the field name; the SIGN lives here, and only here.
+    assert by_category["INCOME"]["net_minor_units"] == 25000
+    assert by_category["FOOD_AND_DRINK"]["net_minor_units"] == -1200
+
+
+def test_a_category_that_nets_to_nothing_says_so(initialized_config: Config) -> None:
+    """🔴 The failure this tool exists to make impossible.
+
+    A category of offsetting charges and credits reported its GROSS as though
+    that were the cost — measured at $12,000 against a true net of $0, by two
+    independent acceptance passes reaching the same figure by different routes.
+    Nothing in the old payload could reveal the credits, because the rows they
+    would have appeared in were filtered away before grouping.
+    """
+    _seed(initialized_config)
+    rows = _call(initialized_config, "money_summary")["structuredContent"]["rows"]
+    totals = {r["group_label"]: r for r in rows}
+
+    gross_out = sum(r["outflow_minor_units"] for r in rows)
+    gross_in = sum(r["inflow_minor_units"] for r in rows)
+    net = sum(r["net_minor_units"] for r in rows)
+    assert net == gross_in - gross_out, "gross and net disagree, so one of them is unusable"
+    assert totals["INCOME"]["outflow_minor_units"] == 0
 
 
 def test_amount_fields_say_they_are_minor_units(initialized_config: Config) -> None:
@@ -908,7 +1005,7 @@ def test_every_tool_answers_against_a_missing_datastore(config: Config) -> None:
     A consumer that called `list_accounts` first would otherwise see a crash
     where the health tool would have explained itself.
     """
-    for name in ("list_accounts", "query_transactions", "spending_summary", "get_pipeline_health"):
+    for name in _every_tool():
         wire = _call(config, name)["structuredContent"]
         assert wire["rows"] == [], name
         assert any(w["kind"] == "partial" for w in wire["warnings"]), name
@@ -917,10 +1014,12 @@ def test_every_tool_answers_against_a_missing_datastore(config: Config) -> None:
 @pytest.mark.parametrize(
     ("tool", "arguments", "expects_window"),
     [
-        ("query_transactions", {"since": "2024-01-01", "until": "2024-06-30"}, True),
-        ("spending_summary", {"since": "2024-01-01", "until": "2024-06-30"}, True),
-        ("list_accounts", {}, False),
-        ("get_pipeline_health", {}, False),
+        (
+            name,
+            _A_WINDOW if name in _tools_requiring("effective_window") else {},
+            name in _tools_requiring("effective_window"),
+        )
+        for name in _every_tool()
     ],
 )
 def test_an_unreadable_store_still_reports_whether_the_tool_takes_a_window(
@@ -968,7 +1067,7 @@ def test_the_missing_datastore_warning_says_the_zeroes_mean_nothing_read(
     unless the warning distinguishes them, and only one of them is a fact about
     the operator's money.
     """
-    wire = _call(config, "spending_summary")["structuredContent"]
+    wire = _call(config, "money_summary")["structuredContent"]
 
     detail = " ".join(w["detail"] for w in wire["warnings"])
     assert "nothing could be read" in detail
@@ -1073,12 +1172,12 @@ def test_a_date_window_filters_rather_than_failing(initialized_config: Config) -
 
     inside = _call(
         initialized_config,
-        "spending_summary",
+        "money_summary",
         {"since": str(today - timedelta(days=1)), "until": str(today + timedelta(days=1))},
     )
     before = _call(
         initialized_config,
-        "spending_summary",
+        "money_summary",
         {"since": "2020-01-01", "until": "2020-12-31"},
     )
 
@@ -1115,7 +1214,7 @@ def test_a_malformed_date_is_refused_with_a_sentence_a_caller_can_act_on(
     """
     _seed(initialized_config)
 
-    result = _call(initialized_config, "spending_summary", {"since": "August 2024"})
+    result = _call(initialized_config, "money_summary", {"since": "August 2024"})
 
     assert result["isError"] is True
     message = result["content"][0]["text"]
@@ -1284,7 +1383,7 @@ def test_an_argument_the_tool_does_not_advertise_is_refused(initialized_config: 
     """
     _seed(initialized_config)
 
-    result = _call(initialized_config, "spending_summary", {"sinceX": "2024-09-09"})
+    result = _call(initialized_config, "money_summary", {"sinceX": "2024-09-09"})
 
     assert result["isError"] is True
     message = result["content"][0]["text"]
@@ -1294,7 +1393,7 @@ def test_an_argument_the_tool_does_not_advertise_is_refused(initialized_config: 
     # another as text, `in` cannot tell them apart.
     _, _, accepted = message.partition("It accepts: ")
     assert accepted, f"the refusal does not say what is accepted: {message!r}"
-    assert set(accepted.strip().split(", ")) == {"since", "until"}, (
+    assert set(accepted.strip().split(", ")) == {"group_by", "since", "until"}, (
         f"the refusal offered {accepted.strip()!r}"
     )
     assert result["structuredContent"]["error"]["code"] == "invalid_argument"
@@ -1506,7 +1605,7 @@ def test_the_permitted_arguments_are_read_from_the_advertised_schema() -> None:
 def test_a_keyerror_beneath_the_query_layer_is_not_reported_as_an_unknown_tool(
     initialized_config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """🔴 It said "no tool named 'spending_summary'" — a false statement about a real tool.
+    """🔴 It said "no tool named 'money_summary'" — a false statement about a real tool.
 
     The unknown-tool guard used to wrap the handler CALL, so any `KeyError`
     raised inside the query layer surfaced as JSON-RPC -32601. A consumer acting
@@ -1516,9 +1615,9 @@ def test_a_keyerror_beneath_the_query_layer_is_not_reported_as_an_unknown_tool(
     def explode(*args: Any, **kwargs: Any) -> None:
         raise KeyError("a column the deriver expected")
 
-    monkeypatch.setattr(query, "spending_by_category", explode)
+    monkeypatch.setattr(query, "money_summary", explode)
 
-    result = _call(initialized_config, "spending_summary")
+    result = _call(initialized_config, "money_summary")
 
     assert result["isError"] is True
     assert result["structuredContent"]["error"]["code"] == "internal_error"
@@ -1528,7 +1627,7 @@ def test_every_unrecognized_argument_is_named_at_once(initialized_config: Config
     """Two typos should cost one round trip, not two."""
     _seed(initialized_config)
 
-    result = _call(initialized_config, "spending_summary", {"sinceX": "x", "untilX": "y"})
+    result = _call(initialized_config, "money_summary", {"sinceX": "x", "untilX": "y"})
 
     assert result["isError"] is True
     message = result["content"][0]["text"]
@@ -1564,7 +1663,7 @@ def test_a_window_whose_end_precedes_its_start_is_refused(initialized_config: Co
     """
     _seed(initialized_config)
 
-    for tool in ("spending_summary", "query_transactions"):
+    for tool in ("money_summary", "query_transactions"):
         result = _call(initialized_config, tool, {"since": "2026-07-31", "until": "2026-07-01"})
 
         assert result["isError"] is True, f"{tool} answered a backwards window"
@@ -1639,7 +1738,7 @@ def test_every_answer_says_which_build_produced_it(initialized_config: Config) -
     """
     _seed(initialized_config)
 
-    for tool in ("list_accounts", "query_transactions", "spending_summary", "get_pipeline_health"):
+    for tool in _every_tool():
         build = _call(initialized_config, tool)["structuredContent"]["build"]
 
         # An exact set: a missing key and a null value are different answers, and
@@ -1782,7 +1881,7 @@ def _request_kinds(wire: dict[str, Any]) -> list[str]:
     return [w["kind"] for w in wire["warnings"] if w["kind"] in request_scoped]
 
 
-@pytest.mark.parametrize("tool", ["query_transactions", "spending_summary"])
+@pytest.mark.parametrize("tool", ["query_transactions", "money_summary"])
 def test_a_windowed_answer_states_the_window_it_covered(
     initialized_config: Config, tool: str
 ) -> None:
@@ -1804,7 +1903,7 @@ def test_a_windowed_answer_states_the_window_it_covered(
     assert wire["effective_window"]["effective"]["until"] == today
 
 
-@pytest.mark.parametrize("tool", ["query_transactions", "spending_summary"])
+@pytest.mark.parametrize("tool", ["query_transactions", "money_summary"])
 def test_a_window_inside_coverage_carries_no_window_warning(
     initialized_config: Config, tool: str
 ) -> None:
@@ -1846,7 +1945,7 @@ def test_an_empty_answer_outside_coverage_is_told_apart_from_a_zero(
 ) -> None:
     """🔴 The single most believable wrong answer this surface can produce.
 
-    `spending_summary` over a window that precedes coverage returns no rows.
+    `money_summary` over a window that precedes coverage returns no rows.
     "You spent nothing" and "this is not knowable" were the same payload; the
     effective window plus its warning are what separate them.
     """
@@ -1854,7 +1953,7 @@ def test_an_empty_answer_outside_coverage_is_told_apart_from_a_zero(
 
     wire = _call(
         initialized_config,
-        "spending_summary",
+        "money_summary",
         {"since": "2024-01-01", "until": "2024-06-30"},
     )["structuredContent"]
 
@@ -1863,7 +1962,7 @@ def test_an_empty_answer_outside_coverage_is_told_apart_from_a_zero(
     assert wire["effective_window"]["effective"] == {"since": None, "until": None}
 
 
-@pytest.mark.parametrize("tool", ["list_accounts", "get_pipeline_health"])
+@pytest.mark.parametrize("tool", _every_tool_except(*_tools_requiring("effective_window")))
 def test_an_unwindowed_tool_reports_no_window_at_all(initialized_config: Config, tool: str) -> None:
     """The key is ABSENT, not null.
 
@@ -1889,7 +1988,7 @@ def test_the_two_windowed_tools_describe_the_window_in_one_shared_sentence() -> 
     described = {
         d["name"]: d["description"]
         for d in mcp._tool_definitions()
-        if d["name"] in {"query_transactions", "spending_summary"}
+        if d["name"] in {"query_transactions", "money_summary"}
     }
 
     assert len(described) == 2
@@ -1993,13 +2092,13 @@ def test_the_aggregate_carries_no_truncation_block_over_the_wire(
     """🔴 `api-contract.md` fixes aggregates as unpaginated, and absence is how that is said."""
     _seed_many(initialized_config, 130)
 
-    wire = _call(initialized_config, "spending_summary")["structuredContent"]
+    wire = _call(initialized_config, "money_summary")["structuredContent"]
 
     assert "truncation" not in wire
     assert _request_kinds(wire) == []
 
 
-@pytest.mark.parametrize("tool", ["list_accounts", "get_pipeline_health"])
+@pytest.mark.parametrize("tool", _every_tool_except(*_tools_requiring("truncation")))
 def test_an_uncapped_tool_carries_no_truncation_block_over_the_wire(
     initialized_config: Config, tool: str
 ) -> None:
@@ -2043,13 +2142,13 @@ def test_the_capped_tool_describes_its_cap_and_the_aggregate_does_not() -> None:
     described = {d["name"]: d["description"] for d in mcp._tool_definitions()}
 
     assert mcp._TRUNCATION_NOTE in described["query_transactions"]
-    for name in ("spending_summary", "list_accounts", "get_pipeline_health"):
+    for name in _every_tool_except("query_transactions"):
         assert mcp._TRUNCATION_NOTE not in described[name], name
 
 
 @pytest.mark.parametrize(
     ("tool", "expects_truncation"),
-    [("query_transactions", True), ("spending_summary", False), ("list_accounts", False)],
+    [("query_transactions", True), ("money_summary", False), ("list_accounts", False)],
 )
 def test_an_unreadable_store_still_reports_whether_the_tool_is_capped(
     config: Config, tool: str, expects_truncation: bool
@@ -2245,7 +2344,7 @@ def test_the_cursor_is_advertised_on_the_capped_tool_and_nowhere_else() -> None:
     which is the only thing an agent reads.
     """
     assert "cursor" in mcp._permitted_arguments("query_transactions")
-    for name in ("spending_summary", "list_accounts", "get_pipeline_health"):
+    for name in _every_tool_except("query_transactions"):
         assert "cursor" not in mcp._permitted_arguments(name), name
 
 
@@ -2361,8 +2460,9 @@ def _keywords(schema: dict[str, Any]) -> set[str]:
 _LIVE_CALLS: tuple[tuple[str, dict[str, Any]], ...] = (
     ("list_accounts", {}),
     ("query_transactions", {"since": "2020-01-01", "until": "2030-12-31"}),
-    ("spending_summary", {"since": "2020-01-01", "until": "2030-12-31"}),
+    ("money_summary", {"since": "2020-01-01", "until": "2030-12-31"}),
     ("get_pipeline_health", {}),
+    ("get_coverage_report", {}),
 )
 
 
@@ -2879,3 +2979,108 @@ def test_by_position_params_are_refused_rather_than_ending_the_session(
 
     assert replies[1]["error"]["code"] == -32600
     assert replies[2]["id"] == 3, "the session ended, which is the tool disappearing mid-session"
+
+
+def _seed_second_connection(config: Config, *, degraded: bool) -> None:
+    """A second institution and connection, so two warnings can be told apart.
+
+    🔴 #24's defect is not that a warning lacks a field — it is that with one
+    connection the field can never be shown to DO anything. A single-connection
+    fixture attributes every warning correctly by having only one answer
+    available, which is the shape `learnings.md` names: a setup that cannot
+    trigger the thing it tests passes forever.
+    """
+    now = now_utc()
+    with writer_connection(config) as conn:
+        institution_pk = conn.execute(
+            institutions.insert().values(
+                source_institution_id="ins_222222",
+                name="Second Wombat Credit Union",
+                first_seen_at=now,
+                last_seen_at=now,
+            )
+        ).inserted_primary_key
+        assert institution_pk is not None
+        conn.execute(
+            connections.insert().values(
+                institution_id=int(institution_pk[0]),
+                source_connection_id="item-second",
+                credential_ref="connection:sandbox:item-second",
+                capabilities="[]",
+                requested_history_days=730,
+                granted_history_days=730,
+                status="degraded" if degraded else "active",
+                last_success_at=None if degraded else now,
+                last_error_code="TransportError" if degraded else None,
+                last_error_at=now if degraded else None,
+                enrolled_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+
+def test_a_warning_names_which_of_two_connections_it_describes(
+    initialized_config: Config,
+) -> None:
+    """🔴 #24, and the reason it could not be closed by the field alone.
+
+    The first connection is granted 90 of 730 requested days, so it warns
+    `gapped`; the second is granted its full window and fails instead, so it
+    warns `degraded`. A consumer facing five institutions has to answer "which
+    one is the gap in" — with one connection that question has a right answer by
+    default, which is why the field shipped unproven.
+
+    The assertion is that the two warnings are ATTRIBUTED, not merely that each
+    carries a key: same kind or not, they must name different connections, and
+    the names must be the ones that own the conditions.
+    """
+    _seed(initialized_config)
+    _seed_second_connection(initialized_config, degraded=True)
+
+    warnings = _call(initialized_config, "list_accounts")["structuredContent"]["warnings"]
+    # Grouped rather than keyed: one connection can be several things at once —
+    # a connection that has never synced AND is failing is truthfully both — and
+    # a dict keyed on institution would silently keep whichever came last.
+    attributed: dict[str, list[dict[str, Any]]] = {}
+    for warning in warnings:
+        if "institution" in warning:
+            attributed.setdefault(warning["institution"], []).append(warning)
+    assert set(attributed) == {"First Platypus Bank", "Second Wombat Credit Union"}, warnings
+
+    # The shortfall belongs to the connection that was short, and the failure to
+    # the connection that failed — swapped attribution would send a reader to
+    # the wrong institution with a plausible-looking sentence.
+    assert "gapped" in {w["kind"] for w in attributed["First Platypus Bank"]}
+    assert "degraded" in {w["kind"] for w in attributed["Second Wombat Credit Union"]}
+    assert "gapped" not in {w["kind"] for w in attributed["Second Wombat Credit Union"]}
+    assert {w["connection_id"] for w in attributed["First Platypus Bank"]} == {1}
+    assert {w["connection_id"] for w in attributed["Second Wombat Credit Union"]} == {2}
+    # 🔴 And no detail is byte-identical across the two, which is the failure
+    # round 3 named: a warning repeated verbatim trains a consumer to ignore it.
+    first = {w["detail"] for w in attributed["First Platypus Bank"]}
+    second = {w["detail"] for w in attributed["Second Wombat Credit Union"]}
+    assert not (first & second), "a detail reads the same for two institutions"
+
+
+def test_two_connections_in_the_same_state_are_still_told_apart(
+    initialized_config: Config,
+) -> None:
+    """The harder half: same kind, same condition, two institutions.
+
+    Different kinds could be distinguished by kind alone, so a guard that only
+    ever saw `gapped` beside `degraded` would pass while attribution was broken.
+    Two connections failing the same way is where the identifying fields are the
+    only thing that separates them.
+    """
+    _seed(initialized_config, degraded=True)
+    _seed_second_connection(initialized_config, degraded=True)
+
+    warnings = _call(initialized_config, "list_accounts")["structuredContent"]["warnings"]
+    degraded = [w for w in warnings if w["kind"] == "degraded"]
+    assert len(degraded) == 2, warnings
+    assert {w["institution"] for w in degraded} == {
+        "First Platypus Bank",
+        "Second Wombat Credit Union",
+    }
+    assert {w["connection_id"] for w in degraded} == {1, 2}

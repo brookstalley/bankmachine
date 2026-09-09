@@ -79,6 +79,11 @@ MCP_TESTS = "tests/test_mcp.py"
 NO_STDOUT = "tests/preferences/test_the_server_never_writes_to_stdout.py"
 TOOL_SURFACE = "tests/preferences/test_the_documented_tool_surface_is_the_built_one.py"
 VOCABULARY = "tests/preferences/test_the_warning_vocabulary_is_closed.py"
+REGISTRATION = "tests/preferences/test_an_undescribable_tool_is_refused_at_registration.py"
+TRUNCATION_TESTS = "tests/test_query_truncation.py"
+WINDOW_TESTS = "tests/test_query_window.py"
+AGGREGATE_TESTS = "tests/test_money_summary.py"
+COVERAGE_TESTS = "tests/test_account_coverage.py"
 BACKUP = pathlib.Path("src/bankmachine/store/backup.py")
 BACKUP_TESTS = "tests/store/test_backup.py"
 CREDENTIALS_TESTS = "tests/preferences/test_no_credentials_tracked.py"
@@ -856,11 +861,21 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         f"{MCP_TESTS}::test_an_unmeasured_window_is_reported_differently_from_no_shortfall",
     ),
     (
-        "AC-4.2: spending sums outflow only, never net movement",
+        # 🔴 Retargeted when the merge landed, not deleted. Both halves of this
+        # case had gone stale at once -- the anchor moved under a reformat and
+        # the test it named was replaced along with `spending_summary` -- and a
+        # stale case is a SURVIVOR, so the harness reports it rather than
+        # passing quietly. The guarantee itself did not change: outflow is the
+        # negative half reported as a positive magnitude, and a predicate that
+        # swept in the positive half too would make every inflow subtract from
+        # the money that went out.
+        "AC-4.2: outflow sums the negative half only, as a positive magnitude",
         QUERY,
-        "                transactions.c.amount_minor < 0,",
-        "                transactions.c.amount_minor != 0,",
-        f"{MCP_TESTS}::test_spending_sums_outflow_only_and_reports_magnitudes",
+        "                            (transactions.c.amount_minor < 0, "
+        "-transactions.c.amount_minor), else_=0",
+        "                            (transactions.c.amount_minor != 0, "
+        "-transactions.c.amount_minor), else_=0",
+        f"{MCP_TESTS}::test_the_aggregate_reports_both_directions_as_magnitudes",
     ),
     (
         # 🔴 The anchor is a whole statement rather than a fragment spanning a
@@ -963,6 +978,189 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "from dataclasses import dataclass, field",
         "import ssl\n\nfrom dataclasses import dataclass, field",
         f"{NETWORK_TESTS}::test_nothing_outside_the_connector_can_reach_the_network",
+    ),
+    # 🔴 The C1 block below was written from an AUDIT of where the cases were,
+    # not from a failure. 120 cases and not one touched the clamp, `truncation`,
+    # the cursor condition, the window-scoped sibling or the absence rules --
+    # every one of them a judgment call, all of them shipped, and none of them
+    # ever proven able to fail. A guarantee whose test has never been red is a
+    # claim; these are the claims that were oldest.
+    (
+        "C1 clamp: a start before coverage is pulled forward, not answered as asked",
+        QUERY,
+        "    effective_since = earliest if since is None else max(since, earliest)",
+        "    effective_since = earliest if since is None else since",
+        f"{WINDOW_TESTS}::test_a_start_before_coverage_is_named_and_clamped",
+    ),
+    (
+        "C1 clamp: an end past coverage is pulled back, not answered as asked",
+        QUERY,
+        "    effective_until = covered_end if until is None else min(until, covered_end)",
+        "    effective_until = covered_end if until is None else until",
+        f"{WINDOW_TESTS}::test_an_end_after_today_is_named_and_clamped",
+    ),
+    (
+        "C1 clamp: the covered end follows a row dated ahead of today",
+        QUERY,
+        "    covered_end = today if latest is None or latest < today else latest",
+        "    covered_end = today",
+        f"{WINDOW_TESTS}::test_the_covered_end_follows_the_data_when_a_row_is_dated_after_today",
+    ),
+    (
+        "C1 truncation: `truncated` is true exactly when rows are missing",
+        QUERY,
+        "        return self.returned < self.matching",
+        "        return self.returned <= self.matching",
+        f"{TRUNCATION_TESTS}::test_an_untruncated_answer_reports_false_and_equal_counts",
+    ),
+    (
+        "C1 truncation: `matching` is floored at the rows already in hand",
+        QUERY,
+        "            matching=max(counted, returned),",
+        "            matching=counted,",
+        f"{TRUNCATION_TESTS}::test_a_count_that_lags_the_rows_is_reconciled_rather_than_refused",
+    ),
+    (
+        "C1 cursor: a cursor rides an answer only when there is a next page",
+        QUERY,
+        "        if not self.truncated or self.resume_from is None:",
+        "        if self.resume_from is None:",
+        f"{TRUNCATION_TESTS}::test_a_complete_answer_offers_no_cursor_to_follow",
+    ),
+    (
+        # The break is the exact defect the code's own comment names: narrowing
+        # the store-wide figure in place instead of adding a sibling beside it.
+        "C1 coverage: the window-scoped count is a SIBLING, never a narrowing",
+        QUERY,
+        '            "transactions_in_effective_window": (',
+        '            "transactions": (',
+        f"{TRUNCATION_TESTS}::"
+        "test_the_window_scoped_count_is_a_sibling_and_leaves_the_store_wide_one_alone",
+    ),
+    (
+        "C1 absence: an uncapped tool carries no truncation block at all",
+        QUERY,
+        "            **({} if self.truncation is None else "
+        '{"truncation": self.truncation.to_wire()}),',
+        '            **({"truncation": {}} if self.truncation is None else '
+        '{"truncation": self.truncation.to_wire()}),',
+        f"{TRUNCATION_TESTS}::test_an_uncapped_tool_carries_no_truncation_block",
+    ),
+    (
+        "registration: a parameter name meaning two types is refused (#30 A3)",
+        MCP,
+        "        if len(set(by_tool.values())) > 1:",
+        "        if False:",
+        f"{REGISTRATION}::test_a_parameter_meaning_two_types_is_refused",
+    ),
+    (
+        "registration: an optional row field is refused (norm guardrail 1)",
+        MCP,
+        "    optional = sorted(set(properties) - required)",
+        "    optional = []",
+        f"{REGISTRATION}::test_a_row_field_that_is_present_on_some_answers_is_refused",
+    ),
+    (
+        "registration: the row check descends into a block on the row",
+        MCP,
+        "            _refuse_loose_object(spec, tool=tool, path=child)",
+        "            pass",
+        f"{REGISTRATION}::test_an_optional_field_nested_inside_a_row_block_is_refused",
+    ),
+    (
+        "registration: a row that leaves additionalProperties open is refused",
+        MCP,
+        '    if schema.get("additionalProperties") is not False:',
+        "    if False:",
+        f"{REGISTRATION}::test_a_row_that_leaves_additional_properties_open_is_refused",
+    ),
+    (
+        "registration: the refusals sit in the one function that hands out definitions",
+        MCP,
+        "    _refuse_optional_row_fields(definitions)\n    return definitions",
+        "    return definitions",
+        f"{REGISTRATION}::test_no_path_can_obtain_an_unvalidated_definition",
+    ),
+    (
+        # The break is the back door the mapping's comment names: an override
+        # says what a transaction was FOR, so letting it decide the flow class
+        # reclassifies a transfer as spending, silently and upward.
+        "flow class: the class reads the source column, never category_override",
+        QUERY,
+        "            transactions.c.source_category_primary.in_("
+        "sorted(_INTERNAL_TRANSFER_CATEGORIES)),",
+        "            transactions.c.category_override.in_(sorted(_INTERNAL_TRANSFER_CATEGORIES)),",
+        f"{AGGREGATE_TESTS}::test_a_re_categorisation_cannot_move_a_transfer_into_spending",
+    ),
+    (
+        "flow class: the three totals partition the outflow rather than sampling it",
+        QUERY,
+        "        entry[f\"{row['flow_class']}_outflow_minor_units\"] += "
+        'int(row["outflow_minor_units"])',
+        "        entry[f\"{row['flow_class']}_outflow_minor_units\"] += 0",
+        f"{AGGREGATE_TESTS}::test_the_three_totals_partition_the_windows_outflow",
+    ),
+    (
+        "flow class: an unknown category falls to external spend, never off the edge",
+        QUERY,
+        '        else_="external_spend",',
+        '        else_="internal_transfer",',
+        f"{AGGREGATE_TESTS}::test_an_unrecognised_category_falls_to_external_spend",
+    ),
+    (
+        # 🔴 #24's whole point: with ONE connection the field cannot be shown to
+        # do anything, so a mutation that hard-codes the name has to be caught by
+        # a fixture holding two. The anchor ends at the next branch, which is what
+        # makes it the degraded warning's own rather than any of the four
+        # identical attribution lines below it.
+        "#24: a warning names WHICH connection it describes, not a fixed one",
+        QUERY,
+        "                    connection_id=connection_id,\n"
+        "                    institution=name,\n"
+        "                )\n"
+        "            )\n"
+        "        if last_success is None:",
+        "                    connection_id=connection_id,\n"
+        '                    institution="First Platypus Bank",\n'
+        "                )\n"
+        "            )\n"
+        "        if last_success is None:",
+        f"{MCP_TESTS}::test_two_connections_in_the_same_state_are_still_told_apart",
+    ),
+    (
+        "cadence: a feed posting many times a day can still be reported silent",
+        QUERY,
+        "            cadence = None if median is None else max(median, 1.0)",
+        "            cadence = median",
+        f"{COVERAGE_TESTS}::test_an_account_that_posts_many_times_a_day_can_still_go_silent",
+    ),
+    (
+        "registration: an undescribable surface refuses at STARTUP, with a channel",
+        MCP,
+        "    try:\n        _tool_definitions()\n    except ToolRegistrationError:",
+        "    try:\n        pass\n    except ToolRegistrationError:",
+        f"{REGISTRATION}::test_an_undescribable_surface_refuses_at_startup_rather_than_mid_session",
+    ),
+    (
+        # 🔴 The break removes a category the FIXTURE actually contains. The
+        # first version of this case removed `TRANSPORTATION`, which the seed
+        # never writes -- so the guard could not have noticed, the case reported
+        # GREEN, and the harness caught a hole in its own new case rather than
+        # in the code. A break the fixture cannot reach proves nothing.
+        "flow class: a category nobody classified cannot reach the fallback unnoticed",
+        QUERY,
+        '    "FOOD_AND_DRINK",\n    "GENERAL_MERCHANDISE",',
+        '    "GENERAL_MERCHANDISE",',
+        f"{AGGREGATE_TESTS}::test_no_category_reaches_external_spend_without_a_decision",
+    ),
+    (
+        # Derivation, not enumeration: the break removes a tool from the loop's
+        # source, which is what a literal list would have let happen silently.
+        "test reach: the every-tool loops derive their tools from the registry",
+        MCP,
+        '            "name": "get_coverage_report",',
+        '            "name": "get_coverage_report_RENAMED",',
+        f"{MCP_TESTS}::test_every_tool_answers_against_a_missing_datastore",
     ),
     (
         "backup destination: an existing file is never overwritten",

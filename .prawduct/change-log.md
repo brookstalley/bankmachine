@@ -34,6 +34,111 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-09: One aggregate that answers spending, income and cashflow — and says which is which
+
+<!-- prawduct: scope=mcp-answer-scope-completion -->
+
+**Why:** three different things were all being called spending, and the surface could not tell them
+apart. Measured over the sandbox store's full 24 months, `spending_summary` reported $267,692.77 of
+outflow. $164,400.00 of that is the account holder moving money between their own accounts and
+$50,484.00 is credit-card payoff settling purchases already counted under the categories they were
+spent in. **Actual spending is $52,808.77 — one fifth of the number the tool returned.** Separately,
+the tool filtered `amount_minor < 0`, so an inflow had no row to appear in at all: a travel category
+of offsetting charges and credits reported $12,000 spent against a true net of $0, and nothing in the
+payload could reveal the 24 credits behind it.
+
+**🔴 Removed, and this is the one departure from "never remove or repurpose a field":** the tool
+`spending_summary` and its row field `spent_minor_units`. Both are gone. `api-contract.md` §
+Surface Inventory grades every MCP tool `experimental`, where removing one is the policy working
+rather than a violation; single consumer, pre-production, no deprecation window owed.
+
+**What ships:**
+
+- **`money_summary`** replaces `spending_summary`. One row shape for every grouping —
+  `category | merchant | account | month | flow_class` — carrying `inflow_minor_units` and
+  `outflow_minor_units` as positive magnitudes with `net_minor_units` operator-signed, per currency.
+  Currency groups and is never summed across.
+- **`flow_class`** on every row: `external_spend`, `internal_transfer`, `debt_service`, read from
+  `source_category_primary` and never from `category_override`. A grouping dimension under *every*
+  `group_by`, because the class is not a function of the group — an account holds a transfer and a
+  coffee — and an optional field is refused by the tool-boundary norm.
+- **`totals`**, a new envelope key: the window's outflow split three ways, per currency. The three
+  sum to the window's total outflow, which is what proves the classification keeps every row rather
+  than filtering some away.
+- **`get_coverage_report`** built, and per-account coverage on every `list_accounts` row. Nine of
+  fourteen sandbox accounts have never had a transaction — 82% of the balance sheet by magnitude —
+  and `query_transactions(account_id=9)` answered `[]`, which reads as "no payments found" and is
+  false.
+- **`accounts_without_coverage`**, a new request-scoped warning kind.
+- **Two registration guards.** A parameter name may not mean two types across the surface (#30's
+  A3), and a tool whose row schema declares a field it does not require is refused — which is what
+  makes the tool-boundary norm self-enforcing rather than a sentence the next builder has to
+  remember.
+
+**Records, because they live only in a plan that archives:**
+`test_spending_sums_outflow_only_and_reports_magnitudes` was **deleted** with the tool it named, and
+the AC-4.2 go-red case was **retargeted** to
+`test_the_aggregate_reports_both_directions_as_magnitudes` rather than dropped — the guarantee did
+not change, only the code and the test carrying it. That case had gone stale in both halves at once,
+its anchor moved by a reformat and its test deleted by the merge.
+
+**Closes:** #18, #19, #21, #24, #30, #35.
+
+🔴 **#20 does NOT close, and an earlier draft of this entry wrongly claimed it did.** Its Expected is
+"builds `cashflow_summary`, and gives `query_transactions` merchant/text, category and amount-range
+filters plus cursor pagination". The aggregate and the pagination landed; the three filters did not,
+so of #20's own three repro questions only two are answerable — "did I get a refund from Walmart"
+still is not, because there is no merchant or text filter to find it with.
+
+**#34 stays open** — it asks for `rule-applied` to be emitted, and the ruling here is
+classify-do-not-filter, so nothing may emit it: the kind means an account rule filtered rows *out*
+of an aggregate, and this excludes nothing.
+
+## 2026-09-09: Where a tool's boundary is drawn
+
+<!-- prawduct: scope=mcp-tool-surface-norm -->
+
+**Why:** #30 recorded an owner directive — "minimize tools, use actions to cover related
+capabilities" — together with the conflict it implies. MCP allows one `outputSchema` per tool,
+and the wave before this one made schemas per-tool precisely so a key's ABSENCE is information.
+Behind an action parameter one schema must cover every action's envelope, so it degrades to the
+loosest common shape and that property dies. The decision had to land before the remaining tools
+were designed rather than during.
+
+**The owner rejected all three options offered** — keep per-tool schemas and stay wide,
+consolidate and lose them, or merge only where it happened to be free — on the ground that the
+project is young and should accept no tech debt. That reframed the question from which horn is
+cheaper at ten tools to which rule is still right at thirty capabilities.
+
+**The finding is that the conflict is false, because both horns share a wrong premise.** Each
+assumes a tool boundary tracks the *question asked* — one tool per question, or one tool for all
+of them. Every answer here is one envelope plus `rows`, and what differs between tools is the row
+shape: ten specified tools hold seven distinct row entities. Capabilities grow fast; row entities
+do not.
+
+**The norm: a tool's boundary is drawn where the answer shape changes, never where the question
+changes.** Two guardrails carry it — a merge needs one strict row schema covering every parameter
+value with no optional fields, and within a shape, merging only across questions sharing a domain.
+The first is checkable at registration, so the norm enforces itself. The per-tool `outputSchema`
+survives as a *consequence* rather than as something defended: a tool defined by its answer shape
+has one answer shape by construction, and two tools can never become near-twins, because if they
+were they would share a shape and already be one tool.
+
+**Applied, ten specified tools become eight** with no schema loss and both near-twin pairs gone.
+`cashflow_summary` merges into a grouped aggregate beside `spending_summary`; `net_worth` merges
+into the time series beside `balance_history`. 🔴 **The time-series merge failed guardrail 1 on
+the specified shapes and was admitted only after a unifying row was found** — which is the
+guardrail working rather than being worked around. The one merge the rule was expected to make and
+did not is `list_accounts` + `get_coverage_report`: same row entity, but verification and analysis
+are different domains, and the coverage signal crosses the split instead, closing #19 by
+construction.
+
+**The contract's tool table was left unrewritten by this entry's own commit, deliberately.** It is a
+load-bearing input — the surface guard derives the *specified* set from those rows and asserts
+built ⊆ specified — so rewriting it ahead of the code would have dropped `spending_summary` from the
+specification while it was still on the wire. The table, every spelled count, and the claim-site
+sweep moved in the same commit as the merge, which is the `mcp-answer-scope-completion` entry above.
+
 ## 2026-09-08: The MCP surface says what it is, and what to do about what it says
 
 <!-- prawduct: scope=mcp-alignment -->

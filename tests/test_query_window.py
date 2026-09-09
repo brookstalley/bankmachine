@@ -205,7 +205,7 @@ def test_one_open_bound_is_filled_from_coverage(
 def test_a_window_entirely_before_coverage_reports_no_effective_window() -> None:
     """The exact call an acceptance round called the most believable wrong answer.
 
-    `spending_summary{since:2024-01-01, until:2024-06-30}` returns no rows
+    `money_summary{since:2024-01-01, until:2024-06-30}` returns no rows
     against coverage that begins 2024-09-16. "You spent nothing" and "this is
     not knowable" are the same payload today. A backwards effective window
     (start after end) would be worse than none, because it reads like a window.

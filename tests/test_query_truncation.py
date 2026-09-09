@@ -366,7 +366,7 @@ def test_every_reader_of_transactions_shares_the_one_predicate_list(
     """🔴 The promise is "one place to add a filter", so every reader must use it.
 
     `_transaction_filters` was introduced for `list_transactions`'s two
-    statements, and for a while that was all it covered: `spending_by_category`
+    statements, and for a while that was all it covered: `money_summary`
     and `_covered_rows` each rebuilt the soft-delete and window clauses by hand,
     so there were three places to add a filter and the docstring's promise held
     only for the pair it was written about. A maintainer adding a predicate at
@@ -387,7 +387,7 @@ def test_every_reader_of_transactions_shares_the_one_predicate_list(
     fragments = _shared_predicate_texts(since=since, until=until)
 
     query.list_transactions(seeded_config, since=since, until=until, limit=MAX_ROWS)
-    query.spending_by_category(seeded_config, since=since, until=until)
+    query.money_summary(seeded_config, since=since, until=until)
 
     windowed = [
         sql
@@ -845,7 +845,7 @@ def test_an_aggregate_carries_no_truncation_block(seeded_config: Config) -> None
     have, and `truncated: false` on every response is the invariant warning
     measurement already showed a reader learns to skip.
     """
-    answer = query.spending_by_category(seeded_config)
+    answer = query.money_summary(seeded_config)
 
     assert answer.truncation is None
     assert "truncation" not in answer.to_wire()
@@ -860,7 +860,7 @@ def test_an_uncapped_tool_carries_no_truncation_block(seeded_config: Config, too
     assert "truncation" not in answer.to_wire()
 
 
-@pytest.mark.parametrize("tool", ["list_transactions", "spending_by_category"])
+@pytest.mark.parametrize("tool", ["list_transactions", "money_summary"])
 def test_an_unreadable_store_does_not_move_the_windowed_wire_shape(
     config: Config, tool: str
 ) -> None:
