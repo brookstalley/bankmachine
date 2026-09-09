@@ -34,6 +34,50 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-09: Three answers that could be wrong in silence now say so on the wire
+
+<!-- prawduct: scope=production-blockers -->
+
+**Why:** three answers this product gives were plausible, well-formed, and capable of being
+wrong with no signal at all. A balance frozen since an account stopped being reported still
+read as current. A spending total silently mixed authorisation holds in with settled money.
+A signed amount from a connection whose direction had never been observed against a known
+inflow was trusted as if it had been. Each is the failure mode the §7 verification gate
+exists to prevent — incompleteness that looks like completeness — and each was carrying a
+`blocks:production` label for that reason.
+
+**What shipped:**
+
+- **An account says when it was last seen, and what that means (FR-9, AC-12.1-12.9).** Four
+  always-present row fields and a three-value vocabulary that names the *observation* rather
+  than the conclusion; `no_longer_reported` is derived at read time and never stored, because
+  it is a statement about the gap between now and the last sync, not a fact about the account.
+  One producer feeds both `list_accounts` and `get_coverage_report`, so the two cannot disagree.
+  Migration 003 adds the column; migration 002's DDL is untouched.
+- **The owner's include-and-flag ruling, and the norm born on it.** A total over account
+  balances INCLUDES non-active accounts and states what they contributed — a count and a
+  per-currency signed magnitude, both always present and empty rather than absent. The
+  recommendation on file was the opposite and was not taken; both arguments survive in
+  `discovery-account-lifecycle.md`. The magnitude is the load-bearing half: without it this
+  is *classify, do not filter* arriving as its own failure mode.
+- **Pending money is separated from settled money everywhere it is summed (AC-13.1-13.7).**
+  Every aggregate says how much of itself is an unsettled hold. A settlement updates
+  `amount_minor` in place — the source correcting its own earlier figure, not us
+  reinterpreting it — and both raw responses stay in `raw_responses`, so the hold amount is
+  never lost and the row stays rebuildable.
+- **A per-connection sign-convention check (AC-14.1-14.6).** It reports a *measured*
+  inversion against a known inflow; it never auto-corrects, because a stored source value is
+  not ours to rewrite.
+- **The go-red harness, and a guard on the harness itself.** 160 cases, every one seen red.
+  A second test proves each case still reaches its target in about a second, which caught two
+  anchors that `ruff format` had reflowed out from under.
+
+**What this does NOT close.** None of `#40`, `#22` or `#23` closes here, and merging this does
+not take `blocks:production` off any of them. Each keeps a production-data tail — AC-13.8,
+AC-13.9, AC-14.7, AC-14.8, AC-14.9 — enqueued as VRF-005 and VRF-006, and those are performed
+by the operator against real accounts. `#40` additionally ships with its `closed` lifecycle
+value reachable in the read path and unreachable in the product, filed as `#48`.
+
 ## 2026-09-09: The wire envelope becomes its own module, before the next tool lands
 
 <!-- prawduct: scope=envelope-module-split -->
