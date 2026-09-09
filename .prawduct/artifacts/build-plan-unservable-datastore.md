@@ -237,6 +237,12 @@ already on the working tree:
   blocker **item 8**, which is the finding this plan fixes. Item 8 is marked FIXED here because the
   fix and the entry landing apart would leave the readiness document asserting an open blocker
   against a build that closed it.
+- `operator-verification.md` — the VRF-004 session run against the live sandbox after this plan's
+  text was written: steps 1-5 judged, step 6's product half verified and its client half not, so
+  VRF-004 stays pending. Two of its criteria were CHANGED rather than merely answered — step 1 no
+  longer asserts the server's `title` (Claude Code lists the registered key and never shows it), and
+  step 4 no longer requires a refusal of a forecast, on the owner's ruling of 2026-09-09. Both are
+  recorded in the entry as amendments rather than left to read as drift.
 - `build-plan-production-blockers.md` — a `### Status` heading promoted to `## Status`. That plan's
   ticks were nested one level too deep, so governance read a fully-ticked plan as having chunks
   outstanding. Unrelated to this fix and committed alongside it rather than stranded.

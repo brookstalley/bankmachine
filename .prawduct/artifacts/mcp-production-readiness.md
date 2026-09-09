@@ -275,11 +275,11 @@ discover in production.
    found by driving the server rather than by reading it.** This item was not in the original
    seven because the acceptance session probed a store the build could serve, and that is the only
    state in which the defect is invisible. A populated datastore at a schema version this build
-   does not serve is reported to the client as a **success**: `isError` false, no JSON-RPC error,
+   does not serve was reported to the client as a **success**: `isError` false, no JSON-RPC error,
    `rows: []`, and every `coverage` figure zero, with the diagnosis carried only in `warnings`.
-   Measured against this machine's sandbox store — schema 2, build serves 4, **14 accounts and 388
-   transactions present** — every tool answers as though the household owned nothing. An agent that
-   does not parse `warnings` reports "you have no accounts" and "you spent nothing", which is the
+   Measured against this machine's sandbox store — schema 2, build served 4, **14 accounts and 388
+   transactions present** — every tool answered as though the household owned nothing. An agent that
+   does not parse `warnings` reported "you have no accounts" and "you spent nothing", which is the
    plausible-and-wrong shape § *Where my confidence comes from* argues is the whole risk.
 
    **Why it is a blocker rather than an annoyance:** schema mismatch is the ORDINARY state of a
@@ -290,16 +290,19 @@ discover in production.
    **Why it is a ruling and not just a fix.** `architecture.md` § Direction carries a steady-state
    norm — *a process that does not recognize the datastore's schema version refuses to serve,
    loudly ... answers `get_pipeline_health` with a hard error instead of serving queries* — whose
-   stated why is this exact failure. AC-ARCH.3's carve-out is narrower than the code applies it:
-   the requirement says **"empty or missing"**, and both go-red cases that enforce it anchor to
-   tests named for a *missing* datastore. `query._readable` collapses all five of
-   `connection.inspect`'s distinct problems into one path, so the missing-store carve-out is
-   applied to a populated store as well. 🔴 **The fix must not simply zero-out differently:**
+   stated why is this exact failure. AC-ARCH.3's carve-out was narrower than the code
+   applied it: the requirement says **"empty or missing"**, and both go-red cases that enforce
+   it anchor to tests named for a *missing* datastore. `query._readable` collapsed all five of
+   `connection.inspect`'s distinct problems into one path, so the missing-store carve-out reached
+   a populated store as well. The fix could not simply zero-out differently either:
    `api-contract.md` § Direction separately pins the unreadable path's coverage as
-   present-and-zero, with two `verify_norms_go_red.py` cases. Which way this resolves — honour the
-   norm for the schema-mismatch state while AC-ARCH.3's empty/missing path keeps answering, or
-   amend the norm with a recorded reason — is the owner's, and **amending the norm to match the
-   code is the move that is not available.**
+   present-and-zero, with two `verify_norms_go_red.py` cases.
+
+   🔴 **The owner ruled on 2026-09-09: honour the norm.** A store that is not there keeps
+   AC-ARCH.3's answer-with-zeroes carve-out; every other unservable state refuses. The norm was
+   NOT amended to match the code — that move was never available — and the ruling is recorded in
+   `build-plan-unservable-datastore.md` § *The ruling this plan was unblocked by*. It is why that
+   branch exists, and it is settled: **this is not an open question.**
 
 ---
 

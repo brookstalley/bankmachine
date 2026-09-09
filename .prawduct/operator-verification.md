@@ -337,7 +337,7 @@ warnings are read rather than skipped.
    🔴 The environment guard is not decoration — this rewrites a real column, and the production
    datastore is the *unsuffixed* default. `get_pipeline_health` should then carry **both** a `stale`
    and a `gapped` warning; what is being verified is whether the client's prose changes, not whether
-   the payload does. *(Validated 2026-08 against a copy of the sandbox datastore: "Tartan Bank has
+   the payload does. *(Validated 2026-09-08 against a copy of the sandbox datastore: "Tartan Bank has
    not synced successfully for 48 hours".)*
 
    *(Run 2026-09-09, PASS. The answer grew a Caveats section it had not had: "The connection is
