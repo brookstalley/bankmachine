@@ -89,7 +89,6 @@ UNDOCUMENTED_AT_FREEZE: frozenset[str] = frozenset(
     {
         "account",
         "aggregator",
-        "balance_as_of",
         "category",
         "category_is_override",
         "date",
@@ -103,15 +102,11 @@ UNDOCUMENTED_AT_FREEZE: frozenset[str] = frozenset(
         "last_error_code",
         "last_success_at",
         "manual",
-        "mask",
         "merchant",
-        "name",
         "net_minor_units",
         "outflow_minor_units",
         "requested_history_days",
         "retired",
-        "subtype",
-        "type",
     }
 )
 

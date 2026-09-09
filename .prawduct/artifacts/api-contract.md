@@ -717,6 +717,28 @@ here.
 | `truncated` | boolean | `returned < matching`, derived rather than stored |
 | `next_cursor` | string | opaque state to pass back as `cursor` for the next page. Present when and only when `truncated` is true, so its presence is the loop condition |
 
+**Fields — `rows[]`** *(`list_accounts`)*.
+
+| Field | Type | Means |
+|---|---|---|
+| `account_id` | integer | this store's own id for the account, and the value `query_transactions(account_id=…)` takes. Opaque — it is not the institution's id |
+| `institution` | string | the institution's name as this store records it. A display name, never a key: two connections at one institution share it, so it identifies nothing on its own |
+| `name` | string | the account's own name, as the institution reports it. Operator-facing text — it can change under a caller and is not an identifier |
+| `mask` | string, nullable | the last four digits of the account number, and 🔴 **the only fragment of an account number stored anywhere in this product**. Null when the institution reports none |
+| `type` | string | the account's kind — 🔴 **in the SOURCE's vocabulary, retained verbatim and not normalised.** Two aggregators would spell the same kind differently, and translating would invent a value nobody reported. Do not branch arithmetic on it: `balance_class` is the field that carries whether the balance is owned or owed |
+| `subtype` | string, nullable | the source's finer classification, on the same terms; null when it reports none |
+| `balance_class` | string | `asset` or `liability` — this store's own classification of which way the balance points, operator-correctable and the field a report partitions on |
+| `current_minor_units` | integer, nullable | the latest recorded balance, in MINOR UNITS and operator-signed, so a card balance is negative. Null when no balance has ever been recorded for the account. 🔴 Read it with `lifecycle`: on a non-active account this figure is FROZEN and is not a fact about today |
+| `currency` | string, nullable | the currency that balance is in; null on the same condition as the balance |
+| `balance_as_of` | string, nullable | the date of the balance snapshot `current_minor_units` came from, `YYYY-MM-DD`; null when there is none. 🔴 It is a property of the BALANCE, not of the answer — `as_of` on the envelope says when the answer was assembled, and on a stale or non-active account the two are far apart. That distance is the whole signal |
+| `first_transaction_date` | string, nullable | the oldest transaction recorded for this account, `YYYY-MM-DD`. 🔴 Null means NO TRANSACTION HAS EVER BEEN RECORDED, never "no activity" |
+| `last_transaction_date` | string, nullable | the newest transaction recorded for this account, `YYYY-MM-DD`; null on the same condition |
+| `transaction_count` | integer | how many transactions this store holds for the account. `0` rather than null, because a null here would be a second spelling of the same fact |
+| `lifecycle` | string | `active`, `closed`, or `no_longer_reported` — see § *A classifying tool carries `totals`* and FR-9. `no_longer_reported` names an OBSERVATION and not a closure; `closed` is the operator's own declaration and is the only value that asserts one |
+| `closed_date` | string, nullable | when the operator recorded this account as closed; null when none has been recorded, **including** for an account that is merely no longer reported |
+| `last_seen_in_roster` | string, nullable | the date this account was last listed by its institution; null for an import-only account, which has no roster behind it. A DIFFERENT fact from `last_transaction_date` and often a much later one — neither may be derived from the other |
+| `roster_last_observed` | string, nullable | the date this account's institution's roster was last successfully observed; null for an import-only account. Read against `last_seen_in_roster`: the two being equal is what makes an account `active`, and the earlier one is the whole derivation of `no_longer_reported`, so the verdict can be re-derived from the row without a second call |
+
 ### Pagination and caps
 
 | | Value |
