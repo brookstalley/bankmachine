@@ -172,17 +172,42 @@ def _pipeline_warnings(conn: SAConnection, now: UtcInstant) -> list[Caveat]:
 
 
 def _coverage(conn: SAConnection) -> dict[str, Any]:
-    """What the datastore actually holds, so an empty answer can be told from an empty world."""
+    """What the datastore actually holds, so an empty answer can be told from an empty world.
+
+    🔴 **`accounts` keeps counting every account, and states what the non-active
+    ones contributed** (AC-12.8, and `api-contract.md` § Direction's fifth norm,
+    whose one named retroactivity debt this is). It was an unfiltered `COUNT(*)`
+    sitting between two counts that both filter, which is the norm's failure mode
+    exactly: the figure was neither wrong nor legible, because nothing beside it
+    said whether a frozen balance was in it.
+
+    The treatment was ruled **include and flag**, over exclude-and-state, on the
+    asymmetry in detectability: an included frozen balance is correctable by any
+    reader handed the flag and the figure, while an exclusion is invisible by
+    construction -- the total is simply smaller, and no field can point at what
+    is not there. 🔴 **The magnitude is the load-bearing half, not the flag**, so
+    both figures are present and zero rather than absent when nothing qualifies.
+    A warning without the figure tells a consumer something is wrong and leaves
+    it unable to do anything about it.
+    """
     span = conn.execute(
         select(func.min(transactions.c.posted_date), func.max(transactions.c.posted_date)).where(
             transactions.c.removed_at.is_(None)
         )
     ).one()
+    not_active = [entry for entry in _account_lifecycle(conn).values() if not entry.active]
     return {
         "connections": conn.execute(
             select(func.count()).select_from(connections).where(connections.c.retired_at.is_(None))
         ).scalar_one(),
         "accounts": conn.execute(select(func.count()).select_from(accounts)).scalar_one(),
+        # A count, so the reader can perform the subtraction this system refuses
+        # to perform for them. 0 is a real answer and means every account is
+        # still being reported.
+        "accounts_not_active": len(not_active),
+        "not_active_balance_minor_units": _not_active_balances(
+            conn, [entry.account_id for entry in not_active]
+        ),
         "transactions": conn.execute(
             select(func.count())
             .select_from(transactions)
@@ -191,6 +216,57 @@ def _coverage(conn: SAConnection) -> dict[str, Any]:
         "earliest_transaction": None if span[0] is None else str(span[0]),
         "latest_transaction": None if span[1] is None else str(span[1]),
     }
+
+
+def _not_active_balances(conn: SAConnection, account_ids: list[int]) -> list[dict[str, Any]]:
+    """The signed magnitude the non-active accounts contribute to a balance total.
+
+    🔴 **Per currency, never one integer across currencies**, by the ruling that
+    governs every aggregate on this surface: a summed integer over two currencies
+    is not a wrong number, it is not a number. An empty list is the "and zero
+    rather than absent" case -- the key is always present, exactly as
+    `money_summary`'s `totals` is present and empty when there is nothing to put
+    in it, so the key set a consumer branches on never depends on the store's
+    contents.
+
+    🔴 **Signed from the operator's point of view**, like every stored amount, so
+    a frozen credit-card balance subtracts and a frozen deposit balance adds. A
+    reader handed a magnitude with the sign stripped could not tell whether
+    removing these accounts would raise or lower the figure, which is the whole
+    use the flag exists for.
+
+    The latest recorded balance per account, which is the same figure
+    `list_accounts` puts on the row -- the account stopped being reported, so its
+    last capture is all there is and there will not be another.
+    """
+    if not account_ids:
+        return []
+    latest = (
+        select(
+            balances_daily.c.account_id,
+            func.max(balances_daily.c.as_of_date).label("as_of_date"),
+        )
+        .where(balances_daily.c.account_id.in_(account_ids))
+        .group_by(balances_daily.c.account_id)
+        .subquery()
+    )
+    rows = conn.execute(
+        select(balances_daily.c.currency, func.sum(balances_daily.c.current_minor))
+        .select_from(
+            balances_daily.join(
+                latest,
+                (balances_daily.c.account_id == latest.c.account_id)
+                & (balances_daily.c.as_of_date == latest.c.as_of_date),
+            )
+        )
+        .group_by(balances_daily.c.currency)
+    ).all()
+    # Sorted so two identical stores answer identically; the wire order of an
+    # array is information a consumer may rely on even when it should not.
+    return [
+        {"currency": str(row[0]), "current_minor_units": int(row[1])}
+        for row in sorted(rows, key=lambda r: str(r[0]))
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,6 +370,213 @@ def _account_coverage(conn: SAConnection) -> dict[int, AccountCoverage]:
         )
         for row in result
     }
+
+
+#: 🔴 The lifecycle vocabulary, spelled ONCE. Every value names an OBSERVATION
+#: and none of them names a conclusion the aggregator did not report (AC-12.2).
+#:
+#: `mcp.py` publishes this tuple as the row field's `enum` rather than retyping
+#: it, on the `FLOW_CLASSES` and `GROUPINGS` precedent: a copy over there would
+#: start refusing answers this server sends the first time a fourth value is
+#: classified here.
+#:
+#: A fourth value -- `unknown` -- was considered and rejected as unreachable. An
+#: aggregator account exists only because a roster listed it, so it always has a
+#: roster basis; an import-only account is fully operator-owned and is honestly
+#: `active` until the operator says otherwise. The null on `roster_last_observed`
+#: carries "no roster basis" instead, which is a fact the row can state rather
+#: than a state it would have to invent.
+LIFECYCLE_VALUES: tuple[str, ...] = ("active", "closed", "no_longer_reported")
+
+
+@dataclass(frozen=True, slots=True)
+class AccountLifecycle:
+    """Whether ONE account's balance is still a fact about today. FR-9.
+
+    🔴 The failure this describes is the quietest one on this surface. A closed
+    card's last recorded balance keeps arriving as a current balance forever:
+    nothing throws, the number is well-formed, and the only thing wrong with it
+    is that it stopped being true on a date nobody published. A liability that
+    was paid off still reads as debt owed; an asset emptied into another enrolled
+    account is counted twice.
+
+    🔴 **The dates ride beside the verdict** (AC-12.3), so `no_longer_reported`
+    is re-derivable from the row without a second call -- `last_seen_in_roster <
+    roster_last_observed` is the whole derivation. That is the `silence_ratio`
+    ruling applied again: a number lets a reader see a borderline case, and a
+    bare flag is what destroys that.
+    """
+
+    account_id: int
+    lifecycle: str
+    closed_date: CalendarDate | None
+    last_seen_in_roster: CalendarDate | None
+    roster_last_observed: CalendarDate | None
+
+    @property
+    def active(self) -> bool:
+        """Whether this account's balance and silence still describe today.
+
+        A property rather than a comparison written at each site, for the reason
+        `AccountCoverage.uncovered` is one: "counts as non-active" is a rule, and
+        a rule spelled four times is a rule that stops agreeing with itself.
+        """
+        return self.lifecycle == "active"
+
+    def to_wire(self) -> dict[str, Any]:
+        """The four fields every account row carries, in every tool that carries them."""
+        return {
+            "lifecycle": self.lifecycle,
+            "closed_date": iso_or_none(self.closed_date),
+            "last_seen_in_roster": iso_or_none(self.last_seen_in_roster),
+            "roster_last_observed": iso_or_none(self.roster_last_observed),
+        }
+
+
+def _account_lifecycle(conn: SAConnection) -> dict[int, AccountLifecycle]:
+    """The per-account lifecycle facts, for EVERY account, computed once.
+
+    🔴 One producer with two readers, exactly as `_account_coverage` is, and for
+    the recorded reason rather than for tidiness: `list_accounts` needs these
+    facts so an agent that never thought to call the verification surface still
+    learns a balance is frozen (AC-12.1), and `get_coverage_report` needs the
+    same facts to tell a retired account's silence from a hole (AC-12.7). Built
+    twice they can disagree, and a verification surface that contradicts the
+    analysis surface is worse than one that is absent.
+
+    🔴 **`no_longer_reported` is derived here and never stored.** Storing it
+    would make it a claim this system had written down, and the next replay of
+    the archive could contradict it; derived, it is a statement about the
+    observations the store currently holds, which is the only thing that is
+    actually known.
+
+    **AC-12.5's three clauses hold by construction, not by three guards.**
+    `roster_last_observed` for a connection is the maximum of its own accounts'
+    `last_seen_in_roster`, so:
+
+    * a connection whose roster could not be fetched moves no date at all, and
+      nothing becomes older than a maximum that did not move;
+    * a connection whose *entire* roster vanishes at once moves the maximum with
+      it, so nothing is ever older than it -- fourteen simultaneous closures is
+      not a thing that happens, and the connection-level failure it really is
+      already has a home in `get_pipeline_health`; and
+    * an account with no connection (the FR-7 import path) has no roster to be
+      absent from, so both dates are null and the comparison is never reached.
+
+    A `connections.roster_observed_at` column would have needed each of those
+    three written into it by hand. This is `learnings.md` § *Guarantees by
+    construction*: the property is a consequence of how the number is computed.
+    """
+    result = conn.execute(
+        select(
+            accounts.c.account_id,
+            accounts.c.connection_id,
+            accounts.c.lifecycle_status,
+            accounts.c.closed_date,
+            accounts.c.first_seen_date,
+            accounts.c.last_seen_date,
+        )
+    ).all()
+
+    observed: dict[int, CalendarDate | None] = {}
+    seen: dict[int, CalendarDate | None] = {}
+    for row in result:
+        connection_id = None if row[1] is None else int(row[1])
+        # 🔴 The transitional rule migration 003 traded a backfill for. A null
+        # `last_seen_date` predates the migration, and reading it as
+        # `first_seen_date` is true by construction: the account was listed at
+        # least once, on that date. It retires itself -- one post-migration sync
+        # repopulates every account its rosters still name, and a null surviving
+        # that belongs to an account no roster has listed since, which is exactly
+        # what this function is looking for.
+        last_seen = None if connection_id is None else calendar_date(row[5] or row[4])
+        seen[int(row[0])] = last_seen
+        if connection_id is not None and last_seen is not None:
+            current = observed.get(connection_id)
+            observed[connection_id] = last_seen if current is None else max(current, last_seen)
+
+    lifecycle: dict[int, AccountLifecycle] = {}
+    for row in result:
+        account_id = int(row[0])
+        connection_id = None if row[1] is None else int(row[1])
+        last_seen = seen[account_id]
+        roster = None if connection_id is None else observed.get(connection_id)
+        # 🔴 AC-12.6: the operator's declaration outranks the derived signal, and
+        # it is checked FIRST rather than merged with it. `_OPERATOR_OWNED` keeps
+        # the accounts deriver from writing this column, and `accounts` carries no
+        # `derivation_version_id`, so `store.rebuild` classifies it as a dimension
+        # and never empties it -- the declaration survives a rebuild because of
+        # what the table is, not because of a rule someone remembered. The
+        # observation still rides the row beside it as evidence.
+        if str(row[2]) != "active":
+            value = "closed"
+        elif last_seen is not None and roster is not None and last_seen < roster:
+            value = "no_longer_reported"
+        else:
+            value = "active"
+        lifecycle[account_id] = AccountLifecycle(
+            account_id=account_id,
+            lifecycle=value,
+            # Narrowed rather than passed through, for the reason
+            # `_account_coverage` narrows: these come back as plain `date`
+            # objects and the wire renderer beside them takes the typed one.
+            closed_date=None if row[3] is None else calendar_date(row[3]),
+            last_seen_in_roster=last_seen,
+            roster_last_observed=roster,
+        )
+    return lifecycle
+
+
+def _not_active_caveat(lifecycle: list[AccountLifecycle]) -> list[Caveat]:
+    """The warning that names the accounts whose balances stopped being facts.
+
+    🔴 Request-scoped, and deliberately not connection-scoped even though "this
+    account is closed" is standing state of the store. `api-contract.md` records
+    the defect a fifth always-on kind would reproduce: the `gapped` notice
+    arrived character-for-character identical on four unrelated questions, true
+    and useless for telling a caller whether THIS answer was the degraded one.
+    So it fires only where this request's scope actually holds such an account --
+    the same rule, and the same two call sites, as `_uncovered_caveat`.
+
+    Names the ids and splits them by which value they carry, because the two
+    mean different things to a reader: `closed` is the operator's own
+    declaration, and `no_longer_reported` is only the institution having stopped
+    listing the account, which is equally consistent with de-selection from
+    sharing. A caller told "some accounts are inactive" can act on neither.
+    """
+    if not lifecycle:
+        return []
+
+    def ids(value: str) -> str:
+        return ", ".join(
+            str(entry.account_id)
+            for entry in sorted(lifecycle, key=lambda e: e.account_id)
+            if entry.lifecycle == value
+        )
+
+    declared = ids("closed")
+    unreported = ids("no_longer_reported")
+    parts = []
+    if declared:
+        parts.append(f"account(s) {declared} are declared closed by the operator")
+    if unreported:
+        parts.append(
+            f"account(s) {unreported} are no longer listed by their institution's most recent "
+            f"successful roster observation, which is consistent with closure and equally "
+            f"consistent with de-selection from sharing"
+        )
+    return [
+        Caveat(
+            kind="account_no_longer_active",
+            detail=(
+                "; ".join(parts) + ". Their balances froze on the date each row names and are "
+                "not facts about today. Any total over balances INCLUDES them on purpose -- "
+                "`coverage.accounts_not_active` and "
+                "`coverage.not_active_balance_minor_units` are what they contributed, so quote "
+                "that magnitude beside the total rather than presenting the total alone"
+            ),
+        )
+    ]
 
 
 def _uncovered_caveat(uncovered: list[AccountCoverage]) -> list[Caveat]:
@@ -509,6 +792,14 @@ def _unusable(
         coverage={
             "connections": 0,
             "accounts": 0,
+            # 🔴 Present and zero for the reason every other figure here is:
+            # AC-12.8 fixes these two as always-present, and a store that cannot
+            # be read is precisely when a consumer branching on a key's presence
+            # would take the wrong branch. The empty list is the honest zero for
+            # a per-currency figure -- no currency held anything, because nothing
+            # was readable, and the `partial` warning above is what says so.
+            "accounts_not_active": 0,
+            "not_active_balance_minor_units": [],
             "transactions": 0,
             "earliest_transaction": None,
             "latest_transaction": None,
@@ -573,6 +864,7 @@ def list_accounts(config: Config) -> Answer:
             .order_by(institutions.c.name, accounts.c.name)
         ).all()
         coverage = _account_coverage(conn)
+        lifecycle = _account_lifecycle(conn)
         rows = [
             {
                 "account_id": int(r[0]),
@@ -596,17 +888,25 @@ def list_accounts(config: Config) -> Answer:
                 # account: incompleteness rides the answer, not a channel
                 # nobody reads.
                 **coverage[int(r[0])].to_wire(),
+                # 🔴 On EVERY row too, and for the same argument #19 settled for
+                # coverage (AC-12.1). The balance two fields up is the field this
+                # one qualifies: a caller who has to opt into the lifecycle is a
+                # caller who still sums a frozen balance into net worth. The
+                # dates ride with the verdict so the verdict is re-derivable
+                # from the row (AC-12.3).
+                **lifecycle[int(r[0])].to_wire(),
             }
             for r in result
         ]
         uncovered = [c for c in coverage.values() if c.uncovered]
+        not_active = [entry for entry in lifecycle.values() if not entry.active]
         return _answer(
             config,
             conn,
             rows,
             requested_window=None,
             truncation=None,
-            extra_caveats=_uncovered_caveat(uncovered),
+            extra_caveats=_uncovered_caveat(uncovered) + _not_active_caveat(not_active),
         )
 
 
@@ -871,6 +1171,11 @@ def coverage_report(config: Config) -> Answer:
         return _unusable(config, problem, requested_window=None, truncation=None)
     with reader_connection(config) as conn:
         coverage = _account_coverage(conn)
+        # 🔴 The same producer `list_accounts` reads, for the reason the line
+        # above shares one: two producers can disagree, and a verification
+        # surface that contradicts the analysis surface is worse than one that
+        # is absent (AC-12.7).
+        lifecycle = _account_lifecycle(conn)
         named = {
             int(account_id): name
             for account_id, name in conn.execute(
@@ -940,6 +1245,7 @@ def coverage_report(config: Config) -> Answer:
                     "account_id": account_id,
                     "account": named.get(account_id),
                     **facts.to_wire(),
+                    **lifecycle[account_id].to_wire(),
                     "median_interval_days": median,
                     "days_silent": days_silent,
                     "silence_ratio": ratio,
@@ -947,7 +1253,20 @@ def coverage_report(config: Config) -> Answer:
                     # non-arbitrary unit. Choosing 0.9 so the borderline pair
                     # flags would reinvent the constant the ruling removed;
                     # `silence_ratio` is what surfaces them instead.
-                    "silence_exceeds_cadence": (False if ratio is None else ratio > 1.0),
+                    #
+                    # 🔴 **AC-12.7: a non-active account's trailing silence is
+                    # identified as closure, not reported as a coverage finding.**
+                    # The account stopped being reported, so its silence is the
+                    # expected consequence of that rather than a hole in the
+                    # data, and today the flag grows permanently true and can
+                    # never go back. The RATIO is left as measured rather than
+                    # nulled: it is the evidence, and `silence_ratio`'s own
+                    # ruling is that a number lets a reader see what a boolean
+                    # destroys. The lifecycle fields on this row are what say
+                    # why the flag is false.
+                    "silence_exceeds_cadence": (
+                        False if ratio is None or not lifecycle[account_id].active else ratio > 1.0
+                    ),
                     # Present and zeroed rather than omitted: a source with no
                     # rows for this account is a fact, and a missing key would
                     # make a consumer guess whether it meant zero or unknown.
@@ -963,7 +1282,13 @@ def coverage_report(config: Config) -> Answer:
             rows,
             requested_window=None,
             truncation=None,
-            extra_caveats=_uncovered_caveat([c for c in coverage.values() if c.uncovered]),
+            extra_caveats=(
+                _uncovered_caveat([c for c in coverage.values() if c.uncovered])
+                # Both fire together on a closed account that never had a
+                # transaction. They are both true and they say different things,
+                # and neither suppresses the other.
+                + _not_active_caveat([e for e in lifecycle.values() if not e.active])
+            ),
         )
 
 

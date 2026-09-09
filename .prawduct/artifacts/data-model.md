@@ -278,12 +278,20 @@ exact failure AC-11.8 exists to prevent.
 | `lifecycle_status` | text | `active` \| `inactive` | |
 | `opened_date` | calendar date | nullable | |
 | `first_seen_date` | calendar date | required | |
-| `closed_date` | calendar date | nullable, `>= first_seen_date` | |
+| `closed_date` | calendar date | nullable, `>= first_seen_date` | Operator-owned, like `lifecycle_status` |
 | `source` | text | `aggregator` \| `manual` | Provenance, never lost (AC-7.4) |
 | `created_at` / `updated_at` | UTC instant | required | |
+| `last_seen_date` | calendar date | nullable | 🔴 The date this account was last listed on a successful roster observation, as a **monotone maximum** (AC-12.4). Migration 003; last in column order because `ALTER TABLE` appends |
 
 - `(source = 'aggregator') <= (source_account_id IS NOT NULL)`.
 - Partial unique index `accounts_source_identity ON (connection_id, source_account_id) WHERE source_account_id IS NOT NULL`.
+- 🔴 **`last_seen_date` is nullable and was not backfilled.** Migration 003's `apply` issues DDL
+  only, per the runner's contract, and a backfill is DML. The read path carries the transitional
+  rule instead: `query._account_lifecycle` reads a null as `first_seen_date`, which is true by
+  construction — the account was listed at least once, on that date. **The rule retires itself**
+  once one post-migration sync has repopulated every account its rosters still name; a null
+  surviving that belongs to an account no roster has listed since, which is exactly what the read
+  path is looking for. Nothing has to remember to remove it.
 
 🔴 **Why `balance_class` exists as data rather than being derived from `account_type`.** `net_worth`
 is an enumerated consumer of this schema and `account_type` cannot answer it: the types are the
@@ -502,15 +510,54 @@ securities ──1:N──> holdings
 `retired` is terminal for *syncing*, not for data: retiring never deletes history, and a retired
 connection's accounts keep every row they had.
 
-### Account lifecycle (AC-6.5)
+### Account lifecycle (AC-6.5, FR-9)
+
+**Two axes, and keeping them apart is the design.** One is what the *operator declared*; the other
+is what the *institution last did*. They are stored separately, and only the read path combines them.
 
 ```
-  active ──── closed/retired ────> inactive   (closed_date set)
+  stored (operator's):   active ──── retire ────> inactive   (closed_date set)
+
+  observed (roster's):   last_seen_date, a monotone MAXIMUM per account
+                         roster_last_observed = MAX(last_seen_date) over the connection's accounts
 ```
 
-🔴 **A retired account's dormant period must not read as a permanent coverage gap.** The coverage
-report reads `lifecycle_status` and `closed_date` so a post-closure silence is *identified as
-closure*, not reported as a hole.
+The value on the wire is derived from both, at read time, and is **never stored**:
+
+| `lifecycle` | Means | Reached by |
+|---|---|---|
+| `active` | Declared active, and listed on this connection's most recent successful roster | the ordinary case |
+| `closed` | `lifecycle_status = 'inactive'` | 🔴 the **operator's declaration only** — the one value that asserts a closure |
+| `no_longer_reported` | Declared active, but `last_seen_date < roster_last_observed` | derived from the observations |
+
+🔴 **`no_longer_reported` names the observation, never the conclusion (AC-12.2).** The aggregator
+publishes no closure signal, so a value called `closed` computed from absence would be a confident
+wrong number. Absence is equally consistent with closure, with the account being de-selected from
+sharing, and with the institution changing what it shares — and the schema field's own description
+says so, in the payload.
+
+🔴 **AC-12.5 holds by construction, not by three guards.** `roster_last_observed` is a maximum over
+the connection's *own* accounts, so a connection that could not be fetched moves no date and marks
+nothing absent; a connection whose *entire* roster vanishes moves the maximum with it, so nothing is
+ever older than it; and an import-only account has no connection, so both dates are null and the
+comparison is never reached. A `connections.roster_observed_at` column would have needed each of
+those three written in by hand.
+
+🔴 **The operator's declaration outranks the derived signal, and a rebuild never undoes it
+(AC-12.6).** `_OPERATOR_OWNED` keeps the accounts deriver out of `lifecycle_status`, and `accounts`
+carries no `derivation_version_id` — so `store.rebuild` classifies it as a dimension and never
+empties it. The observation still rides the row beside the declaration, as evidence.
+
+⚠️ **`closed` is reachable in the read path and unreachable in the product.** No CLI command and no
+MCP path can set `lifecycle_status` — the MCP surface is read-only by norm, and no `accounts retire`
+command exists. Until one does, the system can report what it suspects and the operator cannot
+confirm it.
+
+🔴 **A retired account's dormant period must not read as a permanent coverage gap (AC-12.7).**
+`get_coverage_report` reads the same producer `list_accounts` does (`query._account_lifecycle`) and
+leaves `silence_exceeds_cadence` false for a non-active account. The `silence_ratio` beside it is
+still reported as measured: it is the evidence, and nulling it would destroy the number the ruling
+on that field exists to preserve.
 
 ### Transaction lifecycle (AC-2.2, AC-2.3)
 

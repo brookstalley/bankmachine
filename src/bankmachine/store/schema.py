@@ -112,6 +112,18 @@ accounts = Table(
     Column("source", Text, nullable=False),
     Column("created_at", UtcInstantColumn, nullable=False),
     Column("updated_at", UtcInstantColumn, nullable=False),
+    # 🔴 Last, not beside `first_seen_date` where it reads better. It arrived in
+    # migration 003 through `ALTER TABLE ... ADD COLUMN`, which appends, and the
+    # drift guard compares this list against `PRAGMA table_info` *in order*.
+    # Moving it up would make two correct descriptions of one correct database
+    # disagree.
+    #
+    # AC-12.4: the date this account was last listed on a successful roster
+    # observation, taken as a monotone MAXIMUM the way `first_seen_date` is taken
+    # as a minimum -- which is what makes an archive replay order-independent.
+    # Nullable because migration 003 backfilled nothing; `query._account_lifecycle`
+    # carries the transitional rule that reads a null as `first_seen_date`.
+    Column("last_seen_date", CalendarDateColumn, nullable=True),
 )
 
 Index(

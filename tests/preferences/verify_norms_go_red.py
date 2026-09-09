@@ -87,6 +87,7 @@ TRUNCATION_TESTS = "tests/test_query_truncation.py"
 WINDOW_TESTS = "tests/test_query_window.py"
 AGGREGATE_TESTS = "tests/test_money_summary.py"
 COVERAGE_TESTS = "tests/test_account_coverage.py"
+LIFECYCLE_TESTS = "tests/test_account_lifecycle.py"
 BACKUP = pathlib.Path("src/bankmachine/store/backup.py")
 BACKUP_TESTS = "tests/store/test_backup.py"
 CREDENTIALS_TESTS = "tests/preferences/test_no_credentials_tracked.py"
@@ -1186,6 +1187,51 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "INVERTED_ABOVE_SHARE: float = 0.5",
         "INVERTED_ABOVE_SHARE: float = 1.5",
         f"{SIGN_TESTS}::test_the_positive_control_is_reported",
+    ),
+    # -- FR-9 (#40): account lifecycle -------------------------------------
+    #
+    # 🔴 Four cases rather than one, because #40 is a population path, a read
+    # path and a treatment ruling, and each fails silently in its own direction.
+    # A break in the deriver leaves every account permanently current; a break in
+    # the read path leaves the state unreachable; a break in the coverage report
+    # turns a closure back into a permanent finding; a break in the envelope
+    # figure leaves the count legible to nobody. All four look finished.
+    (
+        # 🔴 Anchored on the ORDER-INDEPENDENCE property, not on the drop test
+        # beside it. The drop case never reaches the update arm for the account
+        # that dropped -- nothing writes its row, which is the whole mechanism --
+        # so it stays green with the maximum deleted. Measured: it did.
+        "AC-12.4: when an account was last listed is a maximum, not the latest replay",
+        CONNECTOR_DERIVERS,
+        "                seen_date if last_seen_date is None else max(last_seen_date, seen_date)",
+        "                seen_date",
+        f"{DERIVER_TESTS}::"
+        "test_when_an_account_was_last_listed_is_a_maximum_so_order_cannot_matter",
+    ),
+    (
+        "AC-12.9: an account absent from the latest roster is no_longer_reported",
+        QUERY,
+        "        elif last_seen is not None and roster is not None and last_seen < roster:",
+        "        elif False:",
+        f"{LIFECYCLE_TESTS}::"
+        "test_an_account_the_roster_stopped_listing_is_reported_no_longer_reported",
+    ),
+    (
+        "AC-12.7: a non-active account's silence is closure, not a coverage finding",
+        QUERY,
+        "                        False if ratio is None or not lifecycle[account_id].active "
+        "else ratio > 1.0",
+        "                        False if ratio is None else ratio > 1.0",
+        f"{LIFECYCLE_TESTS}::"
+        "test_a_non_active_accounts_silence_is_not_reported_as_a_coverage_finding",
+    ),
+    (
+        "AC-12.8: the account count says how many of itself are not active",
+        QUERY,
+        '        "accounts_not_active": len(not_active),',
+        '        "accounts_not_active": 0,',
+        f"{LIFECYCLE_TESTS}::"
+        "test_the_envelope_counts_every_account_and_says_how_many_are_not_active",
     ),
 ]
 
