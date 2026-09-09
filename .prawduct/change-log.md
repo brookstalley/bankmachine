@@ -34,6 +34,59 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-09: A store this build cannot serve refuses, instead of answering zero
+
+<!-- prawduct: scope=unservable-datastore -->
+
+**Why:** a populated datastore at a schema version this build does not serve was reported to the
+client as a **success** — `isError` false, no JSON-RPC error, `rows: []`, every `coverage` figure
+zero, with the diagnosis carried only in `warnings`. Measured against this machine's sandbox store —
+schema 2, build serving 4, **14 accounts and 388 transactions present** — every tool answered as
+though the household owned nothing. An agent that does not parse `warnings` reports "you have no
+accounts" and "you spent nothing", which is the failure this product exists to prevent. Found by
+driving the server, not by reading it: the acceptance session had probed a store the build could
+serve, and that is the only state in which the defect is invisible.
+
+**What changed:**
+
+- 🔴 **`_readable`'s one-line collapse was the whole defect.** `connection.inspect` distinguished
+  five states and returned one value, so the answer-with-zeroes carve-out written for a MISSING
+  store reached a populated one. `inspect` now reports **which** state it found (`DatastoreProblem`)
+  and `_readable` branches on that value rather than on the wording of a sentence.
+- Every unservable state refuses through one choke point, reaching the client as `isError: true`
+  with the stable code `datastore_unservable`. **A store that is merely MISSING keeps AC-ARCH.3's
+  answer-with-zeroes carve-out** — it has no data to misreport — and that split is the owner's
+  ruling of 2026-09-09, recorded in the build plan.
+- 🔴 **`SCHEMA_BEHIND_BUILD` and `SCHEMA_AHEAD_OF_BUILD` are separate values, and collapsing them
+  is a defect with a specific victim.** `migrate()` is forward-only, so "run the migrations" does
+  literally nothing for a store a newer build already migrated — the operator runs the command, is
+  told there was nothing to apply, and never learns the real fix is to upgrade the reader.
+- 🔴 **One remedy map, because four callers each got the rare states wrong.** The cumulative review
+  found `cli/connections.py`, `cli/connector.py`, `cli/sync_run.py` and `cli/enroll.py` each
+  composing their own remedy, and all four prescribing `bankmachine store init` for *every*
+  unhealthy state — including the two where it is actively wrong: it applies nothing to a store
+  ahead of this build, and it refuses, correctly, to mint a key for a store that already exists.
+  `_REMEDIES`/`remedy_for` now live beside `DatastoreProblem`, and both the MCP layer and all four
+  commands compose their own diagnosis around the same action clause. An import-time guard fails the
+  build if a sixth state ships without a remedy. **The durable part is why it survived:** each caller
+  got the common state right and the rare ones wrong, so no single site looked defective on its own.
+- **A remedy that promised a log entry nobody wrote.** The fallback told the operator the
+  file-level diagnosis "is also in the log" while `query` logged nowhere and `cmd_mcp` wrote
+  `status.problem` only at startup — so for the state that branch exists for, a store going bad
+  while a long-lived server runs, the sentence sent them somewhere empty. Made true rather than
+  deleted, and now asserted from both sides: the diagnosis IS in the log and IS NOT on the wire.
+- **No remedy names `store rebuild`**, which is recorded as having rolled back on this shape of
+  store, and a guard test holds that.
+
+**Verification.** 1021 tests, 172 norm breaks red, ruff and mypy strict clean. Four review rounds
+(one `chunk`, one `cumulative`, two `verify-resolutions`) ending 0 blocking / 0 findings. VRF-004
+steps 1-5 run against the live sandbox; step 6's product half verified and its client half not run,
+so VRF-004 remains pending along with VRF-003.
+
+**Owed at merge:** #57 and #58 close as shipped. 🔴 **#57's scope grew during the cycle** — it now
+covers the CLI as well as the MCP surface, and closing it silently would leave the issue reading
+narrower than what shipped.
+
 ## 2026-09-09: The roster observation is recorded, and the contract describes what it publishes
 
 <!-- prawduct: scope=production-blocker-findings -->
