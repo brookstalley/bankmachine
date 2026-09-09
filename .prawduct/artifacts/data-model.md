@@ -234,6 +234,7 @@ Every normalized row in the silver layer carries `derivation_version_id NOT NULL
 | `granted_history_days` | int | integer-or-null | 🔴 What was actually granted — **may be less**, and the delta is a recorded gap (AC-11.8). **Null means not yet known, never no shortfall** (AC-1.3a) |
 | `status` | text | `active` \| `degraded` \| `retired` | |
 | `last_success_at` | UTC instant | nullable | |
+| `roster_observed_date` | calendar date | nullable | 🔴 The date this connection's roster was last successfully READ (AC-12.4). Null means never observed, which marks nothing absent. Migration 004 |
 | `last_error_code` / `last_error_at` | text / UTC instant | nullable | |
 | `enrolled_at` | UTC instant | required | |
 | `retired_at` | UTC instant | nullable | Set iff `status = 'retired'` |
@@ -538,8 +539,24 @@ is what the *institution last did*. They are stored separately, and only the rea
   stored (operator's):   active ──── retire ────> inactive   (closed_date set)
 
   observed (roster's):   last_seen_date, a monotone MAXIMUM per account
-                         roster_last_observed = MAX(last_seen_date) over the connection's accounts
+                         roster_observed_date, RECORDED per connection when the roster is read
 ```
+
+🔴 **The connection's observation is stored, not derived, and that is an amendment (2026-09-09).**
+It was `MAX(last_seen_date)` over the connection's own accounts. A maximum taken over the accounts
+that were listed moves with them, so a roster that comes back empty leaves nothing behind it and the
+absence becomes inexpressible exactly when it is real — which at a one-account connection is the
+ordinary case, not an exotic one. Storing it separates *we looked* from *here is what we found*.
+The argument for deriving is preserved in AC-12.4: a derived value cannot disagree with the rows it
+is computed from. It lost to a fact it could not express at any scale.
+
+🔴 **It is a CALENDAR DATE, and the name says so.** `roster_observed_at` was the obvious spelling and
+is wrong here: the value's only use is a comparison against `accounts.last_seen_date`, which is a
+calendar date, and § *Calendar dates and UTC instants never mix* makes a comparison across the two
+types a defect rather than a conversion. `connections.last_success_at` already carries the instant
+for anything that needs sync timing — and it is **not** a substitute for this column, because it
+records a sync attempt succeeding rather than a roster being read, and the two diverge whenever a
+sync succeeds without a roster call.
 
 The value on the wire is derived from both, at read time, and is **never stored**:
 
@@ -547,7 +564,7 @@ The value on the wire is derived from both, at read time, and is **never stored*
 |---|---|---|
 | `active` | Declared active, and listed on this connection's most recent successful roster | the ordinary case |
 | `closed` | `lifecycle_status = 'inactive'` | 🔴 the **operator's declaration only** — the one value that asserts a closure |
-| `no_longer_reported` | Declared active, but `last_seen_date < roster_last_observed` | derived from the observations |
+| `no_longer_reported` | Declared active, but `last_seen_date < roster_observed_date`, or `last_seen_date` is null while the connection has an observation | derived from the observations |
 
 🔴 **`no_longer_reported` names the observation, never the conclusion (AC-12.2).** The aggregator
 publishes no closure signal, so a value called `closed` computed from absence would be a confident

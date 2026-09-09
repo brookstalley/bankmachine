@@ -1144,8 +1144,8 @@ def _stranded_holds(conn: SAConnection, *, today: CalendarDate) -> list[Stranded
             # left at 1, which is exactly what the `expired` tally reads, so a
             # caller who merely FORGOT this predicate would publish every
             # long-expired hold as stranded and send the operator after money the
-            # institution already took back. One caller did. The guarantee belongs
-            # where it cannot be forgotten.
+            # institution already took back. The guarantee belongs where it cannot
+            # be forgotten.
             transactions.c.removed_at.is_(None),
             transactions.c.posted_date < cutoff,
         )

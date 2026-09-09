@@ -212,6 +212,12 @@ boundary it names — so the *absence* of one is information too:
 - `includes_pending_rows` — some contributing rows are authorisation holds that have not settled, so
   the figure can change **with no new activity at all**. Quote settled and pending separately; never
   present their sum as money spent.
+- `roster_observed_empty` — a contributing connection's roster was read **successfully** and listed
+  no accounts at all. The call worked; it came back empty. Every account on that connection reads as
+  `no_longer_reported` with a frozen balance, and two very different things produce that: the
+  operator de-selected every account from sharing, or the feed broke in a way that returns success.
+  Do **not** report it as accounts having closed — name the connection, say its roster came back
+  empty, and call `get_pipeline_health` before drawing any conclusion about the household.
 - `sign_convention_unverified` — a contributing connection was measured against the sign convention
   and its amounts run the wrong way, so on that feed income reads as spending. Name the connection
   and say its direction is in question; do **not** correct it yourself.

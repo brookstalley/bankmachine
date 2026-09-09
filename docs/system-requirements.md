@@ -382,21 +382,70 @@ the `silence_ratio` precedent, ruled on this same surface — a number lets a re
 case and a boolean is what destroys that. A consumer must be able to re-derive the verdict from the
 row without a second call.
 
-**AC-12.4 · The roster observation is recorded, so the state is reachable at all.** Each successful
-roster derivation records, per account, the date that account was last listed, as a **monotone
-maximum** — the mirror of `first_seen_date`'s minimum. *Why:* this is the requirement #40 says does
-not exist. Without a recorded observation there is no non-`active` state for the read path to read,
-and a min/max pair is what makes the record order-independent under archive replay — which is why
-the accounts deriver could not retire an account without first recording an observation to retire it
-against, and why the gap was left open rather than half-built.
+**AC-12.4 · The roster observation is recorded — per account AND per connection — so the state is
+reachable at all.** Each successful roster derivation records two things: per account, the date that
+account was last listed, as a **monotone maximum** (the mirror of `first_seen_date`'s minimum); and
+per connection, the date the roster itself was successfully observed. *Why:* the per-account half is
+the requirement #40 says does not exist — without a recorded observation there is no non-`active`
+state for the read path to read, and a min/max pair is what makes the record order-independent under
+archive replay.
 
-**AC-12.5 · Absence is measured within one connection, against a successful observation, and never
-against silence.** A connection whose roster could not be fetched marks nothing absent. A connection
-whose *entire* roster is absent marks nothing absent. An account with no connection — the FR-7
-import-only path — is never marked absent. *Why:* each clause removes a way for a pipeline failure to
-be reported as a household event. The whole-roster clause is the important one: fourteen simultaneous
-closures is not a thing that happens, and the connection-level failure it really is already has a
-home in `get_pipeline_health`.
+🔴 **The per-connection half was added by amendment on 2026-09-09, reversing this criterion's
+original choice to DERIVE it.** The original derived the connection's observation as the maximum over
+its own accounts' dates, and that derivation is what AC-12.5's whole-roster clause rested on. The
+argument for deriving was real and is preserved rather than deleted: a derived value cannot
+disagree with the rows it is computed from, and it needs no column, no migration and no write path.
+**It was reversed because a derived maximum cannot express the one fact AC-12.5 needs at every
+scale** — *the roster was observed, and this account was not in it*. A maximum taken over the
+accounts that were listed moves with them, so when none are listed there is nothing behind it, and
+the absence becomes inexpressible exactly when it is real. Storing the observation separates
+"we looked" from "here is what we found", which is the distinction the whole criterion turns on.
+`connections.last_success_at` is not that fact: it records a sync attempt succeeding, not a roster
+being read, and the two diverge whenever a sync succeeds without a roster call.
+
+**AC-12.5 · Absence is measured within one connection, against the RECORDED observation, and never
+against silence — and it holds at every roster size.** An account is absent when the connection's
+recorded roster observation is later than that account's own last-listed date. A connection whose
+roster could not be fetched records no observation and therefore marks nothing absent. An account
+with no connection — the FR-7 import-only path — has no roster to be absent from and is never marked
+absent. *Why:* each clause removes a way for a pipeline failure to be reported as a household event,
+and measuring against a recorded observation rather than a derived maximum is what makes the measure
+independent of how many accounts a connection has.
+
+🔴 **The whole-roster clause is REPLACED by this amendment, not annotated.** It read: *a connection
+whose entire roster is absent marks nothing absent*, justified by scale — fourteen simultaneous
+closures is not a thing that happens, so a vanished roster is a pipeline failure and belongs to
+`get_pipeline_health`. **That argument does not survive at one account.** One account closing is
+entirely ordinary and it IS the whole roster, so the clause made a single-account connection report
+`active` indefinitely beside a frozen balance — the exact failure FR-9 exists to remove, surviving
+inside FR-9. The argument also weakened continuously as the roster shrank and never said where it
+stopped, which is the tell that it was a heuristic standing in for a missing fact rather than a
+criterion.
+
+🔴 **What replaces it does not discard the old clause's insight; it stops collapsing two facts into
+one answer.** A successfully observed EMPTY roster now yields **both**:
+
+1. **Every account on that connection is marked absent.** This is the account-level truth and it is
+   what a reader of `list_accounts` needs, because the balance beside each one froze on the day it
+   was last reported.
+2. **The connection raises `roster_observed_empty`.** This is the connection-level anomaly — the
+   thing the old clause was really trying to say — and it is what distinguishes fourteen closures
+   from a broken feed.
+
+The old criterion had only one channel, so it had to choose, and it chose to suppress the
+account-level truth to avoid publishing the connection-level lie. With two channels there is nothing
+to trade: a consumer sees fourteen frozen balances *and* sees that the roster came back empty, and
+can tell which story it is. Suppressing (1) is what produced the N=1 failure; publishing (1) without
+(2) would produce the mass-closure lie the old clause correctly feared.
+
+**AC-12.5a · An empty roster is a successful observation of zero accounts, and is recorded as one.**
+A roster response listing no accounts advances the connection's recorded observation and raises
+`roster_observed_empty`. It is never treated as a failed fetch. *Why:* the two are genuinely
+different events and only the caller can tell them apart — an operator who de-selected every account
+produces a truthful empty roster, and a broken feed produces a lie — so the pipeline records what it
+saw and says the shape is anomalous, rather than guessing which it was. The state that must not
+exist is the third one this replaces: a roster response that type-checks, runs a loop zero times,
+and records a successful observation of nothing with no signal at all.
 
 **AC-12.6 · The operator's declaration outranks the derived signal, and a rebuild never undoes it.**
 Where a stored `lifecycle_status` and the derived observation disagree, the stored value is
