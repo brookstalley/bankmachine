@@ -74,7 +74,11 @@ SYNC_RUN = pathlib.Path("src/bankmachine/cli/sync_run.py")
 SYNC_RUN_TESTS = "tests/cli/test_sync_run.py"
 QUERY = pathlib.Path("src/bankmachine/query.py")
 MCP = pathlib.Path("src/bankmachine/mcp.py")
+CLIENT_GUIDE = pathlib.Path("docs/connecting-an-mcp-client.md")
 MCP_TESTS = "tests/test_mcp.py"
+NO_STDOUT = "tests/preferences/test_the_server_never_writes_to_stdout.py"
+TOOL_SURFACE = "tests/preferences/test_the_documented_tool_surface_is_the_built_one.py"
+VOCABULARY = "tests/preferences/test_the_warning_vocabulary_is_closed.py"
 BACKUP = pathlib.Path("src/bankmachine/store/backup.py")
 BACKUP_TESTS = "tests/store/test_backup.py"
 CREDENTIALS_TESTS = "tests/preferences/test_no_credentials_tracked.py"
@@ -857,6 +861,33 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "                transactions.c.amount_minor < 0,",
         "                transactions.c.amount_minor != 0,",
         f"{MCP_TESTS}::test_spending_sums_outflow_only_and_reports_magnitudes",
+    ),
+    (
+        # 🔴 The anchor is a whole statement rather than a fragment spanning a
+        # formatter-chosen line break, so a reformat cannot move it out from
+        # under this case.
+        "MCP: nothing on the server's import path writes to stdout",
+        QUERY,
+        "MAX_ROWS = 500",
+        'MAX_ROWS = 500\nprint("answering")',
+        f"{NO_STDOUT}::test_nothing_the_server_reaches_addresses_the_process_stdout",
+    ),
+    (
+        "MCP: a caveat names a kind the vocabulary declares",
+        QUERY,
+        'kind="stale",',
+        'kind="rate_limited",',
+        f"{VOCABULARY}::test_every_caveat_names_a_kind_the_vocabulary_declares",
+    ),
+    (
+        # Mutating the DOC rather than the code, because the drift this guard
+        # exists for runs that way round: the tool is renamed and the page that
+        # advertises it is not.
+        "MCP: the documented tool surface is the built one",
+        CLIENT_GUIDE,
+        "| `list_accounts` |",
+        "| `list_acounts` |",
+        f"{TOOL_SURFACE}::test_every_document_names_the_tools_that_are_actually_built",
     ),
     (
         "MCP: the client's protocol version is honoured when recognized",

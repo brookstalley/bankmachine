@@ -503,6 +503,24 @@ version**, which is negotiated between the writer and the reader on every open, 
 behaviour is specified above. That is an internal contract between two processes, not a consumer API,
 but it is the reason this product already has a working version-refusal habit.
 
+**A second one, and it is not this product's to choose:** the **MCP protocol revision**, negotiated
+on every `initialize`. The server offers `2024-11-05`, `2025-03-26`, `2025-06-18` and `2025-11-25`,
+honours the client's requested revision when it is one of those, and counter-offers `2025-03-26`
+otherwise.
+
+🔴 **`2026-07-28` is deliberately not offered.** It is not reachable through `initialize` at all —
+the SDK's registry partitions handshake revisions from that one, whose sessions use a stateless
+per-request envelope reached by a `server/discover` probe, and both `InitializeRequestParams` and
+`InitializeResult` are documented as removed there. Offering it agreed, on the handshake, to an era
+this server has no code for. Independently, `ListToolsResult` is a `CacheableResult` on that
+revision and its required `ttlMs`/`cacheScope` are not sent — so the claim was never serviceable
+from either end. Supporting it is a build, not a constant.
+
+🔴 **`2024-11-05` is offered on purpose, not by inertia.** The counter-offer only rescues a client
+that can speak something *newer* than it asked for; omitting the oldest revision means answering a
+client pinned there with one it cannot speak, and the spec has such a client disconnect rather than
+downgrade. Nothing this server puts on the wire distinguishes the two anyway.
+
 ---
 
 ## Deprecation & Compatibility
@@ -570,6 +588,23 @@ the inventory's criterion is *shipped and depended on*, not *which noun it start
 written on 2026-09-07, nothing schedules it yet, and its restore path has never been rehearsed. The
 `Retention:` rule defers removal of a `stable` member to a major, so grading a day-old command
 `stable` would bind the surface to a shape nobody has used in anger.
+
+**MCP resources** — the reference surface, served by URI so an agent reads it without spending a
+tool call. Both `experimental`, for the same reason the tools are:
+
+- `bankmachine://reference/warnings` — every warning kind, what it implies, and what to do about it
+- `bankmachine://reference/envelope` — every envelope field and which tools carry it
+
+🔴 **Both are DERIVED, not authored.** The warning reference walks `query.WARNING_KINDS`; the
+envelope reference renders from the tools' published `outputSchema`. A kind added to the vocabulary
+reaches the document by itself — unexplained rather than missing — which is the property that keeps
+this from becoming a third hand-maintained copy of the vocabulary.
+
+**What rides the handshake**, and is contract even though the inventory grades no member of it: the
+negotiated protocol revision (above), `serverInfo` restricted to the keys `Implementation` declares,
+and build identity in `_meta` under `bankmachine/build`. 🔴 Build identity does **not** ride
+`serverInfo` — that type declares no field for it and an SDK-based client discards what it does not
+declare, so keys placed there are dropped in transit rather than delivered.
 
 **Internal, explicitly not contract:** every `bankmachine.*` Python module. This is an application, not
 a library — importing it is not a supported use.
