@@ -1142,10 +1142,15 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         f"{REGISTRATION}::test_an_undescribable_surface_refuses_at_startup_rather_than_mid_session",
     ),
     (
+        # 🔴 The break removes a category the FIXTURE actually contains. The
+        # first version of this case removed `TRANSPORTATION`, which the seed
+        # never writes -- so the guard could not have noticed, the case reported
+        # GREEN, and the harness caught a hole in its own new case rather than
+        # in the code. A break the fixture cannot reach proves nothing.
         "flow class: a category nobody classified cannot reach the fallback unnoticed",
         QUERY,
-        '    "TRANSPORTATION",\n    "TRAVEL",\n)',
-        '    "TRAVEL",\n)',
+        '    "FOOD_AND_DRINK",\n    "GENERAL_MERCHANDISE",',
+        '    "GENERAL_MERCHANDISE",',
         f"{AGGREGATE_TESTS}::test_no_category_reaches_external_spend_without_a_decision",
     ),
     (
