@@ -167,6 +167,70 @@ class DatastoreProblem(StrEnum):
     UNREADABLE = "unreadable"
 
 
+#: What an operator should DO about each state, as an imperative clause.
+#:
+#: 🔴 One map, because the remedy is a property of the STATE and not of the
+#: surface that noticed it. Four CLI commands and the MCP tool layer each used to
+#: compose their own, and all four CLI ones said "run `bankmachine store init`"
+#: for every state -- including the two where that command is actively wrong: it
+#: applies nothing to a store already AHEAD of this build, and it refuses, on
+#: purpose, to mint a key for a store that already exists. A remedy written per
+#: caller is a remedy that gets the easy state right and the rare ones wrong,
+#: which is the shape of the defect this map exists to make unrepresentable.
+#:
+#: Each value is the ACTION only. The diagnosis in front of it belongs to the
+#: surface: the MCP layer states the environment and that nothing was read or
+#: changed while carrying no path, and the CLI states the path because a terminal
+#: is where a path is useful rather than exported.
+_REMEDIES: Final[dict[DatastoreProblem, str]] = {
+    DatastoreProblem.MISSING: "Run `bankmachine store init` to create it",
+    DatastoreProblem.NO_SCHEMA_VERSION: (
+        "Run `bankmachine store init` to apply the migrations, then `bankmachine store status` "
+        "to confirm"
+    ),
+    DatastoreProblem.SCHEMA_BEHIND_BUILD: (
+        "Run `bankmachine store init` to apply the pending migrations, then `bankmachine store "
+        "status` to confirm"
+    ),
+    DatastoreProblem.SCHEMA_AHEAD_OF_BUILD: (
+        "Update this bankmachine to the build that wrote it; do not run `bankmachine store init`, "
+        "which applies nothing here"
+    ),
+    DatastoreProblem.KEY_MISSING: (
+        "Restore the keychain entry from your backup, or move the datastore aside to start a new "
+        "one"
+    ),
+    DatastoreProblem.UNREADABLE: "Run `bankmachine store status` for the file-level diagnosis",
+}
+
+
+#: 🔴 Checked at import, so a sixth `DatastoreProblem` cannot ship without one.
+#: `_REMEDIES[problem]` would raise `KeyError` from inside an error path that is
+#: already telling the operator something went wrong -- a crash while reporting a
+#: crash, and at exactly the moment the product is least able to afford it. The
+#: enum-driven test in `tests/test_unservable_datastore.py` covers the same gap
+#: from the other side; this one costs nothing and fires before any test runs.
+_MISSING_REMEDIES = set(DatastoreProblem) - set(_REMEDIES)
+if _MISSING_REMEDIES:  # pragma: no cover - import-time guard
+    raise RuntimeError(f"DatastoreProblem members with no remedy: {sorted(_MISSING_REMEDIES)}")
+
+
+def remedy_for(problem: DatastoreProblem | None) -> str:
+    """The action clause for one unhealthy state.
+
+    Takes the enum, never the `problem` sentence: picking a remedy by matching
+    substrings of prose makes every later rewording a silent behaviour change,
+    which is the whole reason `DatastoreProblem` exists beside that sentence.
+
+    A `None` problem means healthy, and no caller should be composing a remedy at
+    all -- but `DatastoreStatus.reason` is typed optional, so this answers rather
+    than raising into an error path that is already reporting something else.
+    """
+    if problem is None:
+        return "Run `bankmachine store status` for the current state"
+    return _REMEDIES[problem]
+
+
 @dataclass(frozen=True, slots=True)
 class DatastoreStatus:
     """What `store status` reports. Nothing here raises on an absent datastore."""

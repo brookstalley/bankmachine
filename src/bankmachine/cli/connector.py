@@ -20,7 +20,7 @@ from bankmachine.connector import FetchedResponse
 from bankmachine.connector.plaid.client import PlaidClient
 from bankmachine.logging_setup import get_logger
 from bankmachine.secrets import get_plaid_secret, set_plaid_secret
-from bankmachine.store.connection import DatastoreMissingError, inspect
+from bankmachine.store.connection import DatastoreMissingError, inspect, remedy_for
 from bankmachine.store.engine import writer_connection
 from bankmachine.store.raw import record_response
 
@@ -91,8 +91,8 @@ def cmd_check(config: Config, args: argparse.Namespace) -> int:
     status = inspect(config)
     if not status.healthy:
         raise DatastoreMissingError(
-            f"datastore at {status.path} is not ready ({status.problem or 'unknown problem'}); "
-            f"run `bankmachine store init` before reaching the aggregator"
+            f"cannot reach the aggregator: the datastore at {status.path} is not ready "
+            f"({status.problem or 'unknown problem'}). {remedy_for(status.reason)}"
         )
 
     countries = args.countries or ["US"]

@@ -47,7 +47,12 @@ from bankmachine.envelope import (
     resolve_window,
 )
 from bankmachine.logging_setup import get_logger
-from bankmachine.store.connection import DatastoreProblem, DatastoreStatus, inspect
+from bankmachine.store.connection import (
+    DatastoreProblem,
+    DatastoreStatus,
+    inspect,
+    remedy_for,
+)
 from bankmachine.store.engine import reader_connection
 from bankmachine.store.schema import (
     PROVENANCE_SOURCES,
@@ -1134,8 +1139,7 @@ def _unservable_remedy(status: DatastoreStatus) -> str:
         return (
             f"the {status.environment} datastore is at schema version {status.schema_version} and "
             f"this build serves {status.supported_schema_version}. Nothing was read and nothing "
-            f"was changed. Run `bankmachine store init` to apply the pending migrations, then "
-            f"`bankmachine store status` to confirm"
+            f"was changed. {remedy_for(status.reason)}"
         )
     if status.reason is DatastoreProblem.SCHEMA_AHEAD_OF_BUILD:
         # 🔴 The opposite remedy, because migrations are forward-only. Telling
@@ -1148,15 +1152,13 @@ def _unservable_remedy(status: DatastoreStatus) -> str:
             f"the {status.environment} datastore is at schema version {status.schema_version}, "
             f"which is NEWER than the {status.supported_schema_version} this build serves — a "
             f"newer bankmachine has already migrated it. Nothing was read and nothing was "
-            f"changed, and migrations cannot run backwards. Update this bankmachine to the build "
-            f"that wrote it; do not run `bankmachine store init`, which applies nothing here"
+            f"changed, and migrations cannot run backwards. {remedy_for(status.reason)}"
         )
     if status.reason is DatastoreProblem.NO_SCHEMA_VERSION:
         return (
             f"the {status.environment} datastore records no schema version, so it is "
             f"uninitialized or a migration did not complete. Nothing was read and nothing was "
-            f"changed. Run `bankmachine store init` to apply the migrations, then "
-            f"`bankmachine store status` to confirm"
+            f"changed. {remedy_for(status.reason)}"
         )
     if status.reason is DatastoreProblem.KEY_MISSING:
         # 🔴 Deliberately does NOT say `store init`, which refuses to mint a key
@@ -1167,8 +1169,7 @@ def _unservable_remedy(status: DatastoreStatus) -> str:
         return (
             f"the {status.environment} datastore exists, but its key is not in the keychain. A key "
             f"cannot be recovered from the datastore. Nothing was read and nothing was changed. "
-            f"Restore the keychain entry from your backup, or move the datastore aside to start a "
-            f"new one"
+            f"{remedy_for(status.reason)}"
         )
     # 🔴 The fallback interpolates NOTHING from `status.problem`, and that is the
     # rule this whole function exists to hold rather than an omission. The
@@ -1186,8 +1187,8 @@ def _unservable_remedy(status: DatastoreStatus) -> str:
     logger.warning("%s datastore could not be opened: %s", status.environment, status.problem)
     return (
         f"the {status.environment} datastore exists but could not be opened. Nothing was read and "
-        f"nothing was changed. Run `bankmachine store status` for the file-level diagnosis — it "
-        f"is also in the log, where redaction applies"
+        f"nothing was changed. {remedy_for(status.reason)} — it is also in the log, where "
+        f"redaction applies"
     )
 
 

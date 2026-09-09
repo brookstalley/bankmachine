@@ -27,6 +27,7 @@ from typing import Any
 import pytest
 
 from bankmachine import envelope, mcp, query
+from bankmachine.cli import run
 from bankmachine.config import Config
 from bankmachine.secrets import (
     delete_datastore_key,
@@ -38,6 +39,7 @@ from bankmachine.store.connection import (
     DatastoreProblem,
     initializing_writer,
     inspect,
+    remedy_for,
     stamp_schema_version,
     writer,
 )
@@ -679,5 +681,82 @@ def test_the_unreadable_remedy_puts_the_diagnosis_where_it_says_it_does(
             f"and it is not there: {logged}"
         )
         assert str(cfg.datastore_path) not in message, "the path reached the wire"
+    finally:
+        _cleanup(cfg)
+
+
+#: The four commands that refuse before doing anything when the store is
+#: unservable. Each raised its own hand-written remedy until 2026-09-09, and all
+#: four said `store init` for every state.
+_CLI_GUARDED = (
+    ["connections", "list"],
+    ["connector", "check"],
+    ["sync", "run"],
+    ["enroll", "--yes"],
+)
+
+
+@pytest.mark.parametrize("argv", _CLI_GUARDED, ids=lambda a: " ".join(a))
+@pytest.mark.parametrize(
+    "problem",
+    [DatastoreProblem.SCHEMA_AHEAD_OF_BUILD, DatastoreProblem.KEY_MISSING],
+    ids=lambda p: p.value,
+)
+def test_no_cli_command_prescribes_store_init_where_it_is_wrong(
+    tmp_path: Path,
+    keychain_service: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    problem: DatastoreProblem,
+) -> None:
+    """🔴 The two states where `bankmachine store init` is not merely unhelpful but wrong.
+
+    For a store AHEAD of this build the command applies nothing — migrations are
+    forward-only — and the operator learns only that the fix they were given did
+    nothing. For a store whose key is gone `store init` REFUSES, on purpose,
+    because a fresh key would decrypt nothing; sending them there trades an exact
+    diagnosis for a turn-away.
+
+    Parametrized over both surfaces of the product deliberately. The MCP layer got
+    this right and the CLI did not, for months, because each of the four commands
+    composed its own remedy — so this asserts the property of the STATE, across
+    every command that reports it, rather than of the one caller that was fixed.
+    """
+    cfg = make_config(tmp_path / problem.value, keychain_service + problem.value)
+    cfg.datastore_path.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("BANKMACHINE_DATASTORE_PATH", str(cfg.datastore_path))
+    monkeypatch.setenv("BANKMACHINE_KEYCHAIN_SERVICE", cfg.keychain_service)
+    monkeypatch.setenv("BANKMACHINE_ENVIRONMENT", cfg.environment)
+    monkeypatch.setenv("BANKMACHINE_PLAID_CLIENT_ID", "test-client-id")
+    try:
+        _state_builders()[problem](cfg)
+        capsys.readouterr()
+
+        assert run(argv) != 0, "an unservable datastore must not be reported as success"
+        rendered = capsys.readouterr()
+        message = rendered.err + rendered.out
+
+        # Positive control: an empty capture would satisfy the assertion below
+        # while proving nothing about what the operator was told.
+        assert cfg.environment in message or "datastore" in message, (
+            f"nothing recognisable was reported, so this asserts nothing: {message!r}"
+        )
+        # 🔴 Asserted on the REMEDY, not on whether the string "store init"
+        # appears. It appears legitimately: the store layer's own diagnosis for
+        # KEY_MISSING explains that `store init` creates a key only when no
+        # datastore exists, which is the opposite of prescribing it. A bare
+        # substring cannot tell a prescription from an explanation, and the first
+        # draft of this test failed all eight cases against a CORRECT fix for
+        # exactly that reason.
+        remedy = remedy_for(problem)
+        assert message.rstrip().endswith(remedy), (
+            f"{problem.value} did not end with its own remedy, so this command is still "
+            f"composing one of its own: {message!r}"
+        )
+        assert remedy != remedy_for(DatastoreProblem.SCHEMA_BEHIND_BUILD), (
+            f"{problem.value} carries the run-the-migrations remedy, which is the defect: "
+            f"{remedy!r}"
+        )
     finally:
         _cleanup(cfg)

@@ -259,14 +259,18 @@ discover in production.
    surface**.** Every unservable state now refuses with `isError: true` and the stable code
    `datastore_unservable`, carrying a remedy chosen by state; a store that is merely MISSING keeps
    AC-ARCH.3's answer-with-zeroes carve-out. Both halves are pinned by go-red cases.
-   🔴 **The scope of "#57 closed" is the MCP surface, and saying otherwise would overstate what
-   shipped.** Four CLI sites — `cli/connections.py`, `cli/connector.py`, `cli/sync_run.py`,
-   `cli/enroll.py` — still prescribe `bankmachine store init` for *every* unhealthy state, including
-   the two this branch proved it wrong for: a store already ahead of this build applies nothing, and
-   a store whose key is gone must not be told to mint a new one. The remedy-per-state rule is
-   therefore true of the tool surface and not yet of the command line. Filed rather than folded in,
-   because the bounding construction is a state→remedy map beside `DatastoreProblem` with all sites
-   routed through it, which is its own change with its own tests. The entry stays rather than being deleted,
+   🔴 **#57 is closed for the CLI too, and that took a second pass.** The first version of this
+   entry claimed the class; a review found four CLI sites — `cli/connections.py`, `cli/connector.py`,
+   `cli/sync_run.py`, `cli/enroll.py` — still prescribing `bankmachine store init` for *every*
+   unhealthy state, including the two where it is actively wrong: it applies nothing to a store
+   ahead of this build, and it refuses, correctly, to mint a key for a store that already exists.
+   The remedy is now a **single map beside `DatastoreProblem`** (`store/connection.py`
+   `_REMEDIES`/`remedy_for`), which both the MCP layer and all four commands compose their own
+   diagnosis around — so a remedy is a property of the state rather than of whichever caller noticed
+   it. An import-time guard fails the build if a sixth state ships without one, and a parametrized
+   test drives every command against both wrong-advice states.
+   **The durable part is why it survived:** each caller wrote its own remedy, so each got the common
+   state right and the rare ones wrong, and no single site looked defective on its own. The entry stays rather than being deleted,
    because the reason it was missed is the durable part — **added 2026-09-09,
    found by driving the server rather than by reading it.** This item was not in the original
    seven because the acceptance session probed a store the build could serve, and that is the only
