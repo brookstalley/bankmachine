@@ -810,6 +810,14 @@ class Answer:
     #: sight to hide it. Aggregates write `None` truthfully:
     #: `api-contract.md` fixes them as unpaginated, bounded by the grouping.
     truncation: Truncation | None
+    #: 🔴 No default, and it sits before `coverage` for the same reason the two
+    #: fields above do: a defaulted field here could be forgotten, and the
+    #: forgetting would look exactly like a tool that truthfully has no totals.
+    #: `None` means this tool answers with rows alone. An empty LIST means this
+    #: tool carries a totals block and there was nothing in the window to put in
+    #: it -- a distinction a consumer branching on the key's presence depends on,
+    #: because `api-contract.md` fixes a key's absence as information.
+    totals: list[dict[str, Any]] | None
     coverage: dict[str, Any] = field(default_factory=dict)
 
     def to_wire(self) -> dict[str, Any]:
@@ -837,6 +845,12 @@ class Answer:
             # absent `effective_window` says "this tool takes no window". A
             # consumer branching on the key gets a true answer either way.
             **({} if self.truncation is None else {"truncation": self.truncation.to_wire()}),
+            # Before `rows`, because it is what a reader should meet FIRST: the
+            # headline this tool exists to correct is that a raw outflow total
+            # over this store reads nearly three times what was actually spent,
+            # and a decomposition placed after several hundred rows is one
+            # nobody reaches.
+            **({} if self.totals is None else {"totals": self.totals}),
             "rows": self.rows,
         }
 
@@ -1153,6 +1167,7 @@ def _answer(
     *,
     requested_window: tuple[date | None, date | None] | None,
     truncation: Truncation | None,
+    totals: list[dict[str, Any]] | None = None,
     extra_caveats: list[Caveat] | None = None,
 ) -> Answer:
     """One answer, and the one place a window is reconciled against coverage.
@@ -1168,6 +1183,12 @@ def _answer(
     defaults to `None` rather than being required, unlike `requested_window`,
     because "this tool takes no window" is a fact worth forcing a writer to
     state, while "this request raised nothing extra" is the ordinary case.
+
+    `totals` defaults for the same reason and sits on the same side of that line:
+    a tool that carries one is the exception here, and the block is computed from
+    rows this function never sees. What it must NOT be given is a total this
+    function could derive itself -- it is passed in precisely so it is summed
+    from the caller's own returned rows and cannot disagree with them.
     """
     now = now_utc()
     coverage = _coverage(conn)
@@ -1212,6 +1233,7 @@ def _answer(
         as_of=now,
         effective_window=window,
         truncation=truncation,
+        totals=totals,
         coverage=coverage,
     )
 
@@ -1222,6 +1244,7 @@ def _unusable(
     *,
     requested_window: tuple[date | None, date | None] | None,
     truncation: Truncation | None,
+    totals: list[dict[str, Any]] | None = None,
 ) -> Answer:
     """🔴 An answer about a datastore that cannot be read. AC-ARCH.3.
 
@@ -1259,6 +1282,13 @@ def _unusable(
         # nothing was returned, nothing was readable to match, and the answer was
         # not truncated. It is empty for a reason the warning states.
         truncation=truncation,
+        # 🔴 An empty LIST for a tool that carries totals, never `None` and never
+        # omitted -- the same rule the coverage zeroes below follow, for the same
+        # reason. Dropping the key when the store is unreadable would move the
+        # wire shape at exactly the moment a consumer is trying to work out what
+        # went wrong, and one branching on the key would conclude this tool has
+        # no totals rather than that there was nothing to total.
+        totals=totals,
         warnings=[
             Caveat(
                 kind="partial",
@@ -1717,7 +1747,95 @@ def coverage_report(config: Config) -> Answer:
 #: the grouping is an expression this module builds, never a column name a
 #: caller supplies, so an unknown value is refused at the boundary rather than
 #: interpolated.
-GROUPINGS: tuple[str, ...] = ("category", "merchant", "account", "month")
+GROUPINGS: tuple[str, ...] = ("category", "merchant", "account", "month", "flow_class")
+
+#: The three ways money can move, from the account holder's point of view.
+#: Ordered as a reader wants them: what left the household first, then the two
+#: kinds of movement that look like spending in a raw total and are not.
+#:
+#: 🔴 Local interpretation, derived at read time and written nowhere.
+#: `data-model.md` keeps the aggregator's taxonomy unmodified in its own column,
+#: and this reads that column rather than replacing it -- so a re-classification
+#: is a code change with a diff, not a silent rewrite of history.
+FLOW_CLASSES: tuple[str, ...] = ("external_spend", "internal_transfer", "debt_service")
+
+#: The holder moving their own money between their own accounts. Measured at 61%
+#: of the two-year total -- $164,400 of $267,693 -- which is why a raw outflow
+#: figure over this store reads nearly three times what was actually spent.
+_INTERNAL_TRANSFER_CATEGORIES: frozenset[str] = frozenset({"TRANSFER_IN", "TRANSFER_OUT"})
+
+#: Servicing a debt rather than buying anything. Measured as ~100% credit-card
+#: payoff, which is a DOUBLE count: the card purchases the payment settles are
+#: already counted under the categories they were spent in.
+_DEBT_SERVICE_CATEGORIES: frozenset[str] = frozenset({"LOAN_PAYMENTS"})
+
+
+def _flow_class() -> ColumnElement[str]:
+    """Which side of the household boundary this money crossed.
+
+    🔴 **Classify, do not filter** -- the owner's ruling on #18. Every row is
+    kept and gains a class; nothing is dropped, precisely so there is no
+    invisible undercount. That is also why this emits no `rule-applied` warning:
+    that kind means "an account rule filtered rows OUT of an aggregate, the
+    total excludes them on purpose", and nothing here excludes anything, so
+    saying it would be a false statement about the answer carrying it.
+
+    🔴 **Read from `source_category_primary`, NEVER from `category_override`.**
+    An override is local interpretation of what a transaction was *for*; the
+    flow class is about whose money moved and in which direction. Letting a
+    re-categorisation reclassify a transfer as spending would reintroduce the
+    overcount through the back door -- silently, and in the direction that
+    inflates.
+
+    An unrecognised or null category falls to `external_spend`. That is the
+    conservative direction on this surface's own principle: an overcount gets
+    questioned and an undercount gets believed. Null is measured at 0.00% here,
+    so this is a rule about categories not yet invented rather than about
+    today's data.
+    """
+    return case(
+        (
+            transactions.c.source_category_primary.in_(sorted(_INTERNAL_TRANSFER_CATEGORIES)),
+            "internal_transfer",
+        ),
+        (
+            transactions.c.source_category_primary.in_(sorted(_DEBT_SERVICE_CATEGORIES)),
+            "debt_service",
+        ),
+        else_="external_spend",
+    )
+
+
+def _flow_class_totals(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The window's OUTFLOW split three ways, per currency.
+
+    🔴 **Summed from the rows this answer returns, never from a second query.**
+    A second read against a live store is taken at a different instant from the
+    rows beside it, and a total that contradicts the rows under it is worse than
+    no total at all -- a reader has no way to tell which of the two is wrong.
+    Summed here, the three classes add to the window's total outflow by
+    construction, and that identity is also the proof the classification
+    PARTITIONS the rows rather than quietly dropping some.
+
+    🔴 **Per currency, because the ruling on aggregates is that currency groups
+    and never sums.** One integer spanning two currencies is not a wrong number,
+    it is not a number.
+
+    Every currency present carries all three keys, zero where a class did not
+    appear: a zero is a real answer -- "nothing serviced a debt this window" --
+    and a missing key would leave a reader unable to tell that from a class this
+    tool forgot to compute.
+    """
+    totals: dict[str, dict[str, int]] = {}
+    for row in rows:
+        entry = totals.setdefault(
+            str(row["currency"]),
+            {f"{flow}_outflow_minor_units": 0 for flow in FLOW_CLASSES},
+        )
+        entry[f"{row['flow_class']}_outflow_minor_units"] += int(row["outflow_minor_units"])
+    # Sorted so two identical stores answer identically; the wire order of an
+    # array is information a consumer may rely on even when it should not.
+    return [{"currency": currency, **entry} for currency, entry in sorted(totals.items())]
 
 
 def money_summary(
@@ -1761,8 +1879,13 @@ def money_summary(
     problem = _readable(config)
     if problem is not None:
         # An aggregate is unpaginated by contract, bounded by the grouping
-        # rather than by a row cap, so there is no truncation to report.
-        return _unusable(config, problem, requested_window=(since, until), truncation=None)
+        # rather than by a row cap, so there is no truncation to report. The
+        # totals block is present and EMPTY: this tool carries one, and an
+        # unreadable store is a reason for it to hold nothing rather than a
+        # reason for the key to vanish.
+        return _unusable(
+            config, problem, requested_window=(since, until), truncation=None, totals=[]
+        )
     with reader_connection(config) as conn:
         # Annotated as the general expression type both branches produce: the
         # first assignment would otherwise fix the name to `coalesce` and the
@@ -1783,6 +1906,14 @@ def money_summary(
             # The id is the key a caller can act on; the name is for reading.
             key = cast(transactions.c.account_id, Text)
             label = accounts.c.name
+        elif group_by == "flow_class":
+            # The degenerate grouping: the class is already a dimension of every
+            # row below, so grouping BY it is the roll-up to just the three. Key
+            # and label are the same string because the class has no id and no
+            # prettier name -- inventing one would be a second vocabulary for
+            # the same three values.
+            key = _flow_class()
+            label = key
         else:
             # `posted_date` is stored as `YYYY-MM-DD` text that sorts as a date,
             # so the month is its first seven characters -- no date arithmetic,
@@ -1795,6 +1926,19 @@ def money_summary(
                 key.label("group_key"),
                 label.label("group_label"),
                 transactions.c.currency,
+                # 🔴 A GROUPING DIMENSION on every grouping, not a field bolted
+                # onto one. The class is not a function of the group for any
+                # value of `group_by`: a merchant takes both a purchase and a
+                # refund, an account holds a transfer and a coffee, a month
+                # holds all three by definition -- and even a category can split,
+                # because the category key reads `category_override` first while
+                # the class is ruled to read the source column only. Attaching
+                # one row's class to a group that spans classes would state it
+                # for the others; making it OPTIONAL is refused by
+                # `api-contract.md` § Direction's fourth norm, which merges tools
+                # only where one strict row schema covers every parameter value.
+                # Grouping finer is the only way out that keeps both promises.
+                _flow_class().label("flow_class"),
                 func.count().label("transactions"),
                 # 🔴 Positive magnitudes, both of them. `amount_minor` is
                 # operator-signed, so outflow is the negative half negated --
@@ -1825,7 +1969,7 @@ def money_summary(
             # rather than merely unaggregated. Direction is a COLUMN on the row,
             # so both halves are always answerable.
             .where(*_transaction_filters(since=since, until=until, account_id=None, after=None))
-            .group_by("group_key", "group_label", transactions.c.currency)
+            .group_by("group_key", "group_label", transactions.c.currency, "flow_class")
             .order_by(func.sum(transactions.c.amount_minor))
         )
         rows = [
@@ -1833,14 +1977,22 @@ def money_summary(
                 "group_key": str(r[0]),
                 "group_label": str(r[1]),
                 "currency": r[2],
-                "transactions": int(r[3]),
-                "inflow_minor_units": int(r[4]),
-                "outflow_minor_units": int(r[5]),
-                "net_minor_units": int(r[6]),
+                "flow_class": str(r[3]),
+                "transactions": int(r[4]),
+                "inflow_minor_units": int(r[5]),
+                "outflow_minor_units": int(r[6]),
+                "net_minor_units": int(r[7]),
             }
             for r in conn.execute(statement).all()
         ]
-        return _answer(config, conn, rows, requested_window=(since, until), truncation=None)
+        return _answer(
+            config,
+            conn,
+            rows,
+            requested_window=(since, until),
+            truncation=None,
+            totals=_flow_class_totals(rows),
+        )
 
 
 def pipeline_health(config: Config) -> Answer:

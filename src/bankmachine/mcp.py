@@ -159,7 +159,7 @@ _READ_ONLY_ANNOTATIONS: dict[str, Any] = {
 
 
 def _output_schema(
-    row_properties: dict[str, dict[str, Any]], *, windowed: bool, capped: bool
+    row_properties: dict[str, dict[str, Any]], *, windowed: bool, capped: bool, totals: bool
 ) -> dict[str, Any]:
     """One tool's answer, published as a schema so the shape outlives the prose.
 
@@ -178,7 +178,9 @@ def _output_schema(
     windowed tool REQUIRES its window here and an unwindowed one cannot carry
     one at all, which is what `additionalProperties: False` says.
     `coverage.transactions_in_effective_window` follows the same condition,
-    because `query` keys it off the same one.
+    because `query` keys it off the same one. `totals` is the third such flag and
+    has no default for the same reason the other two do not: a tool acquires the
+    key by saying so, never by a writer forgetting to say otherwise.
 
     🔴 **Every level is closed and every unconditional key required**, and the
     strictness is the mechanism rather than a preference: a key that reaches the
@@ -320,6 +322,41 @@ def _output_schema(
             "additionalProperties": False,
         }
         required.append("truncation")
+    if totals:
+        properties["totals"] = {
+            "type": "array",
+            "description": (
+                "🔴 READ THIS BEFORE QUOTING A SPENDING FIGURE. The window's OUTFLOW split "
+                "three ways, one entry per currency: what actually left the household, what "
+                "only moved between the holder's own accounts, and what serviced a debt. "
+                "Only `external_spend_outflow_minor_units` is spending — an internal "
+                "transfer never left, and debt service settles purchases already counted "
+                "under the categories they were spent in, so summing all three double-counts. "
+                "The three add up to the window's total outflow in that currency, which is "
+                "how you can check them against the rows"
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "currency": {"type": "string"},
+                    # The vocabulary itself rather than a copy of it, exactly as
+                    # the warning `enum` above takes `WARNING_KINDS`: a class
+                    # retyped here would start refusing answers this server sends
+                    # the first time a fourth one is classified.
+                    **{
+                        f"{flow}_outflow_minor_units": {
+                            "type": "integer",
+                            "description": "a positive magnitude, in minor units",
+                        }
+                        for flow in query.FLOW_CLASSES
+                    },
+                },
+                "required": ["currency"]
+                + [f"{flow}_outflow_minor_units" for flow in query.FLOW_CLASSES],
+                "additionalProperties": False,
+            },
+        }
+        required.append("totals")
     return {
         "type": "object",
         "properties": properties,
@@ -387,6 +424,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 },
                 windowed=False,
                 capped=False,
+                totals=False,
             ),
         },
         {
@@ -460,6 +498,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 },
                 windowed=True,
                 capped=True,
+                totals=False,
             ),
         },
         {
@@ -474,7 +513,13 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "and read all three). 🔴 A category whose outflow is large and whose net is "
                 "near zero is money that came back -- refunds or transfers -- so quote `net` "
                 "when the question is 'how much did this cost me'. Rows are per currency and "
-                "are never summed across currencies. " + _WINDOW_NOTE
+                "are never summed across currencies. 🔴 Rows also split by `flow_class`, so "
+                "one month or one merchant can return up to three rows: a transfer between "
+                "the holder's own accounts never left, and a credit-card payment settles "
+                "purchases already counted under the categories they were spent in. Neither "
+                "is spending, and both can dwarf it. Read `totals` before quoting any "
+                "spending figure, and quote `external_spend_outflow_minor_units` from it. "
+                + _WINDOW_NOTE
             ),
             "inputSchema": {
                 "type": "object",
@@ -503,6 +548,18 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "description": "the same group, named for reading",
                     },
                     "currency": {"type": "string"},
+                    "flow_class": {
+                        "type": "string",
+                        "enum": list(query.FLOW_CLASSES),
+                        "description": (
+                            "whether this money left the household (`external_spend`), only "
+                            "moved between the holder's own accounts "
+                            "(`internal_transfer`), or serviced a debt (`debt_service`). "
+                            "🔴 Rows are split by this under EVERY grouping, so one month "
+                            "or one account can return up to three rows and summing them "
+                            "gives back the conflated figure this field exists to separate"
+                        ),
+                    },
                     "transactions": {"type": "integer"},
                     "inflow_minor_units": {
                         "type": "integer",
@@ -522,6 +579,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 },
                 windowed=True,
                 capped=False,
+                totals=True,
             ),
         },
         {
@@ -551,6 +609,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 },
                 windowed=False,
                 capped=False,
+                totals=False,
             ),
         },
         {
@@ -610,6 +669,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 },
                 windowed=False,
                 capped=False,
+                totals=False,
             ),
         },
     ]
@@ -948,9 +1008,18 @@ def _instructions(config: Config) -> str:
         f"`cursor` with the SAME window and account, and keep going until `truncated` is "
         f"false. The cursor is OPAQUE -- never build or edit one -- and it is present when and "
         f"only when there is more to read.\n\n"
-        f"🔴 **Absence of `effective_window` or `truncation` is a fact, not a gap**: that tool "
-        f"takes no window, or returns every row it found. Each tool publishes an "
-        f"`outputSchema` saying which it carries.\n\n"
+        f"A CLASSIFYING tool adds `totals` — one entry per currency, splitting the window's "
+        f"OUTFLOW three ways. 🔴 **Quote `external_spend_outflow_minor_units` when asked what "
+        f"was spent.** `internal_transfer_outflow_minor_units` is the holder moving their own "
+        f"money between their own accounts and never left; "
+        f"`debt_service_outflow_minor_units` settles card purchases already counted under the "
+        f"categories they were spent in. Adding the three together double-counts, and the two "
+        f"that are not spending can be several times larger than the one that is. The three "
+        f"DO sum to the window's total outflow, which is how you check them against "
+        f"`rows`.\n\n"
+        f"🔴 **Absence of `effective_window`, `truncation` or `totals` is a fact, not a gap**: "
+        f"that tool takes no window, returns every row it found, or does not classify money. "
+        f"Each tool publishes an `outputSchema` saying which it carries.\n\n"
         f"The full detail is SERVED rather than repeated here — read it by URI when you need "
         f"it, at no cost when you do not: `{mcp_resources.ENVELOPE_URI}` is every field and "
         f"which tools carry it; `{mcp_resources.WARNINGS_URI}` is every warning kind with what "

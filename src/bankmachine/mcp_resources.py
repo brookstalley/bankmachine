@@ -452,10 +452,14 @@ _ENVELOPE_ALWAYS = (
 _ENVELOPE_SOMETIMES = (
     "## Carried only where they are true of the tool\n\n"
     "🔴 Absence is information. No `effective_window` means that tool takes no window; no "
-    "`truncation` means it returns every row it found. A key is never omitted because the "
+    "`truncation` means it returns every row it found; no `totals` means it does not classify "
+    "the money it reports. A key is never omitted because the "
     "answer was empty — a windowed tool that could read nothing still carries the key, with "
     "null effective bounds, because 'your window and this store do not overlap' is the true "
-    "statement about a store that cannot be read."
+    "statement about a store that cannot be read, and a classifying tool that could read "
+    "nothing still carries an empty `totals` for the same reason. The list under this heading "
+    "is derived from what the tools publish; this sentence names the cases that exist today "
+    "and the list is the authority on which they are."
 )
 
 _ENVELOPE_NOTES = (

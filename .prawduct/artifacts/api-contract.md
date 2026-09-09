@@ -138,7 +138,7 @@ Raw-row access exists but is paginated and hard-capped.
 | `get_pipeline_health` | Per-connection sync status, last success, error codes, per-account coverage window, row counts, staleness flags, rule anomalies | yes |
 | `list_accounts` | Accounts with type, institution, mask, current balance, lifecycle state | yes |
 | `query_transactions` | Filtered rows (date range, account, category, amount range, merchant search). **Paginated, capped** | yes |
-| `money_summary` | Money in and out over a period, grouped by category / merchant / account / month, per currency | yes |
+| `money_summary` | Money in and out over a period, grouped by category / merchant / account / month / flow class, per currency, and split by flow class under every grouping | yes |
 | `balance_history` | Value over time, per account or aggregated as net worth, investments included | yes |
 | `list_holdings` | Current investment positions with cost basis where available | yes |
 | `find_recurring` | Detected recurring charges with cadence, amount drift, last-seen | yes |
@@ -413,6 +413,52 @@ the repurpose the evolution rules forbid: a consumer still reading it would get 
 than an error. The sibling is present on exactly the answers that carry `effective_window`, including
 when the datastore cannot be read, so the key set a consumer branches on never depends on the store's
 health.
+
+### An aggregate says which money actually left, and it classifies rather than filters (#18)
+
+🔴 **Every `money_summary` row carries `flow_class`** — `external_spend`, `internal_transfer` or
+`debt_service` — and the class is a *grouping dimension under every value of `group_by`*, not a
+field that appears on one grouping and is guessed on the others. It has to be: an account holds a
+transfer and a coffee, a month holds all three by definition, and even a category can split,
+because the category key reads `category_override` first while the class is fixed to read
+`source_category_primary` only. Attaching one row's class to a group that spans classes would
+state it for the others, and making the field *optional* is refused by § Direction's fourth norm,
+which merges tools only where one strict row schema covers every parameter value. The consequence
+is accepted and is the point: one month can return three rows per currency where it returned one.
+
+🔴 **Classify, do not filter.** Every row is kept and gains a class; nothing is dropped, precisely
+so there is no invisible undercount. That is also why this emits no `rule-applied` warning —
+that kind means an account rule filtered rows *out* of an aggregate, and a tool that excludes
+nothing saying so would be a false statement about the answer carrying it.
+
+🔴 **The class is read from the source column, never from `category_override`.** An override is
+local interpretation of what a transaction was *for*; the flow class is about whose money moved and
+in which direction. Letting a re-categorisation reclassify a transfer as spending would reintroduce
+the overcount through the back door, silently and in the direction that inflates. An unrecognised
+or null category falls to `external_spend`, which is the conservative direction on this surface's
+own principle: an overcount gets questioned and an undercount gets believed.
+
+### A classifying tool carries `totals`, per currency, and the three add up
+
+🔴 **`money_summary` gains a `totals` block** — one entry per currency, carrying the window's
+*outflow* under each of the three classes. `external_spend_outflow_minor_units` is the figure to
+quote when asked what was spent; the other two are money that never left the holder's accounts or
+that settles purchases already counted under the categories they were spent in, so summing all
+three double-counts.
+
+🔴 **Measured against the sandbox store on 2026-09-09, over its full 24 months:** $267,692.77 of
+outflow, of which $164,400.00 is internal transfer and $50,484.00 is debt service — leaving
+**$52,808.77 of actual spending, one fifth of the raw figure.** That is the whole of #18 in one
+line, and it is why the headline rides the envelope rather than waiting for a caller to derive it
+from rows they may never read. The ratio is a property of this fixture and not a constant; what the
+contract fixes is that the decomposition is always present, never the size of the gap.
+
+The three sum to the window's total outflow in that currency, and that identity is the contract:
+it is what proves the classification *partitions* the rows rather than quietly dropping some.
+🔴 **Per currency, never one integer across currencies**, by the ruling that governs every
+aggregate here — a summed integer over two currencies is not a wrong number, it is not a number.
+The block is present and empty when the datastore cannot be read, exactly as `coverage` is present
+and zero, so the key set a consumer branches on never depends on the store's health.
 
 ### Coverage is reported per account, never per institution (AC-9.5)
 

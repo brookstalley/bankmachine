@@ -271,6 +271,68 @@ interpretation of what a transaction was *for*; the flow class is about whose mo
 which direction, and letting a re-categorisation silently reclassify a transfer as spending would
 reintroduce the overcount through the back door.
 
+### Amendment: `flow_class` joins the GROUP BY of EVERY grouping, not only its own
+
+The plan says `flow_class` sits "on every row" *and* is "available as a `group_by` value", and
+those two sentences only compose one way. 🔴 **`flow_class` is not a function of the group for any
+grouping this tool offers.** A merchant can take a refund and a purchase; an account can hold a
+transfer, a card payment and a coffee; a month holds all three by definition. Even *category* can
+split, because the category key is `category_override`-first while `flow_class` is ruled to read
+`source_category_primary` only — so an override that renames a transfer does not move its class.
+
+So the field cannot be attached to a group that spans classes without picking one row's answer and
+stating it for the others. The two ways out are an *optional* field and a *finer grain*, and
+🔴 **the optional field is refused by name**: `api-contract.md` § Direction's fourth norm merges
+tools only where "one strict row schema covers every parameter value with no optional fields", and
+chunk D is about to make that refusal structural at registration. A tool that had to break the
+norm to carry this chunk's field would falsify the norm in the same batch that enforces it.
+
+**Ruled: the class is a grouping dimension always.** Every query groups by
+`(group_key, group_label, currency, flow_class)`, so `flow_class` is present, non-null and true of
+its row under all five values of `group_by`. `group_by=flow_class` is then the degenerate case
+where the key *is* the class — a roll-up, not a different shape.
+
+The cost is real and is accepted: **a month now returns up to three rows per currency where it
+returned one.** That is the finding rather than a side effect. 61% of the two-year total is the
+holder moving their own money, so a single monthly outflow figure is the exact number #18 says
+cannot be read as spending; splitting it is what makes the month answerable at all. The tool
+description carries the consequence, because a caller who sums blindly across a month's rows gets
+back precisely the conflated figure they had before.
+
+### Amendment: `total_external_spend` is per currency, and it does not ship alone
+
+Two facts make the bare scalar the discovery names ("the response gains `total_external_spend`")
+unwritable as one integer.
+
+🔴 **One number would sum across currencies**, which the owner's 2026-09-08 ruling forbids for
+every aggregate tool, and forbids it here for the reason it was made: a summed integer over two
+currencies is not a wrong number, it is not a number. So the total is **per currency**, exactly as
+the rows are.
+
+🔴 **One number alone has nothing to check it against**, and the Done-when asks for agreement "by
+construction rather than by coincidence". A lone external total agrees with the rows only if
+someone re-derives it; the three class totals *together* agree with the window's total outflow by
+partition, because every transaction has exactly one class. That identity is the check, it is
+cheap, and it fails loudly if the classification ever drops a row instead of classifying it.
+
+**The envelope gains `totals`: one entry per currency, carrying the OUTFLOW of all three classes.**
+`external_spend_outflow_minor_units` is `total_external_spend` under a name that says which half of
+the row it is — necessary because 🔴 **`external_spend` also holds external INCOME**: salary is
+neither an internal transfer nor debt service, so it falls to "everything else" and lands there as
+*inflow*. Taking the outflow half is what makes the field a spending figure rather than a net one;
+the inflow half stays visible on the rows, where the refund-versus-purchase reading chunk B built
+still works.
+
+Emitting the sibling two is not scope the plan did not ask for. It is what turns `164400` from a
+number a reader must go and find into the headline #18 is about — *"$267,693 moved, of which
+$164,400 was you paying yourself"* — on every answer, whatever the grouping, which is the precise
+sense in which "nothing says so" stops being true.
+
+**Not-yet, stated rather than assumed:** an unclassified row (`source_category_primary` null)
+falls to `external_spend`. That is the conservative direction on this surface's own principle —
+an overcount gets questioned and an undercount gets believed — and it is measured at 0.00% null
+in the sandbox, so it is a rule about the future rather than about today's data.
+
 **Done when:** each of the three classes has a test over fixture rows that actually exercise it;
 `total_external_spend` and the summed rows agree by construction rather than by coincidence.
 
