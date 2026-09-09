@@ -145,6 +145,176 @@ _READ_ONLY_ANNOTATIONS: dict[str, Any] = {
 }
 
 
+def _output_schema(
+    row_properties: dict[str, dict[str, Any]], *, windowed: bool, capped: bool
+) -> dict[str, Any]:
+    """One tool's answer, published as a schema so the shape outlives the prose.
+
+    Until this existed the envelope was described to the agent only in words --
+    in `instructions` and in each tool's description -- and words are what a
+    context budget trims first. `Tool.outputSchema` is where the protocol takes
+    the same statement in a form nothing thins out, and a client that speaks it
+    checks every answer against what was published rather than trusting it.
+
+    🔴 **Per-tool, because the envelope is per-tool.** `query.Answer` emits
+    `effective_window` and `truncation` only where they are true of the tool
+    that answered, and `api-contract.md` fixes their ABSENCE as information: no
+    `effective_window` says this tool takes no window, no `truncation` says it
+    returns every row it found. One schema with both keys merely optional would
+    publish the opposite of that -- that any tool might carry either -- so a
+    windowed tool REQUIRES its window here and an unwindowed one cannot carry
+    one at all, which is what `additionalProperties: False` says.
+    `coverage.transactions_in_effective_window` follows the same condition,
+    because `query` keys it off the same one.
+
+    🔴 **Every level is closed and every unconditional key required**, and the
+    strictness is the mechanism rather than a preference: a key that reaches the
+    wire without reaching this schema fails a test here, where a schema drifting
+    from its payload otherwise reaches a client that validates and rejects a
+    good answer. Nothing caches across the gap either -- the schema and the
+    answers it describes leave one process, in one session.
+
+    A fresh dict per call, like the annotations below: these go out inside a
+    structure a caller is free to edit.
+    """
+
+    def bounds() -> dict[str, Any]:
+        # Both ends nullable: an unbounded request has no `since`, and a window
+        # that does not overlap coverage at all has no effective bounds.
+        return {
+            "type": "object",
+            "properties": {
+                "since": {"type": ["string", "null"]},
+                "until": {"type": ["string", "null"]},
+            },
+            "required": ["since", "until"],
+            "additionalProperties": False,
+        }
+
+    coverage: dict[str, Any] = {
+        "connections": {"type": "integer"},
+        "accounts": {"type": "integer"},
+        "transactions": {
+            "type": "integer",
+            "description": "store-wide, and never narrowed by the question asked",
+        },
+        "earliest_transaction": {"type": ["string", "null"]},
+        "latest_transaction": {"type": ["string", "null"]},
+    }
+    if windowed:
+        coverage["transactions_in_effective_window"] = {
+            "type": "integer",
+            "description": (
+                "how many rows the window this answer actually covered holds -- the count to "
+                "read against a windowed question, and not narrowed by `account_id`"
+            ),
+        }
+
+    properties: dict[str, Any] = {
+        "environment": {
+            "type": "string",
+            "description": "which datastore answered, so a fixture cannot pass for real money",
+        },
+        "as_of": {"type": "string", "description": "when this answer was assembled, UTC"},
+        "build": {
+            "type": "object",
+            "description": "which code answered",
+            "properties": {
+                "version": {"type": "string"},
+                # Null means the build could not be identified, and `dirty` is
+                # then null too rather than a false claim that the tree was clean.
+                "commit": {"type": ["string", "null"]},
+                "dirty": {"type": ["boolean", "null"]},
+            },
+            "required": ["version", "commit", "dirty"],
+            "additionalProperties": False,
+        },
+        "warnings": {
+            "type": "array",
+            "description": (
+                "read these before drawing a conclusion: an answer can be perfectly "
+                "well-formed and still be computed over incomplete data"
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    # The vocabulary itself rather than a copy of it. A kind a
+                    # consumer is told to branch on is one the published schema
+                    # has to admit, and a list retyped here would start refusing
+                    # answers this server sends the first time a kind is added.
+                    "kind": {"type": "string", "enum": list(query.WARNING_KINDS)},
+                    "detail": {"type": "string"},
+                    # Both carried only by a warning about one connection: an
+                    # operator with ten institutions needs to know which went quiet.
+                    "connection_id": {"type": "integer"},
+                    "institution": {"type": "string"},
+                },
+                "required": ["kind", "detail"],
+                "additionalProperties": False,
+            },
+        },
+        "coverage": {
+            "type": "object",
+            "description": (
+                "what the store HOLDS, which is how an empty answer is told from an empty world"
+            ),
+            "properties": coverage,
+            "required": list(coverage),
+            "additionalProperties": False,
+        },
+        "rows": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": row_properties,
+                # Every key of every row, because each row is built in one place
+                # from one dict literal: a field that is null is present and
+                # null, never dropped.
+                "required": list(row_properties),
+                "additionalProperties": False,
+            },
+        },
+    }
+    required = ["environment", "as_of", "build", "warnings", "coverage", "rows"]
+    if windowed:
+        properties["effective_window"] = {
+            "type": "object",
+            "description": (
+                "the window asked for beside the window the data could answer over; the "
+                "clamp is reportorial, so it never changes a figure, only says what the "
+                "figure was computed over"
+            ),
+            "properties": {"requested": bounds(), "effective": bounds()},
+            "required": ["requested", "effective"],
+            "additionalProperties": False,
+        }
+        required.append("effective_window")
+    if capped:
+        properties["truncation"] = {
+            "type": "object",
+            "description": (
+                "how many rows matched, how many came back, and therefore whether rows were "
+                "left behind. `next_cursor` is present when and only when there is another "
+                "page to read"
+            ),
+            "properties": {
+                "returned": {"type": "integer"},
+                "matching": {"type": "integer"},
+                "truncated": {"type": "boolean"},
+                "next_cursor": {"type": "string"},
+            },
+            "required": ["returned", "matching", "truncated"],
+            "additionalProperties": False,
+        }
+        required.append("truncation")
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": False,
+    }
+
+
 def _tool_definitions() -> list[dict[str, Any]]:
     """The tool surface. 🔴 Every one of them reads; none of them writes."""
     definitions: list[dict[str, Any]] = [
@@ -159,6 +329,28 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "card balance is negative."
             ),
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+            "outputSchema": _output_schema(
+                {
+                    "account_id": {"type": "integer"},
+                    "institution": {"type": "string"},
+                    "name": {"type": "string"},
+                    "mask": {"type": ["string", "null"]},
+                    "type": {"type": "string"},
+                    "subtype": {"type": ["string", "null"]},
+                    "balance_class": {"type": "string"},
+                    "current_minor_units": {
+                        "type": ["integer", "null"],
+                        "description": (
+                            "the latest recorded balance in MINOR UNITS, null when none has "
+                            "been recorded yet"
+                        ),
+                    },
+                    "currency": {"type": ["string", "null"]},
+                    "balance_as_of": {"type": ["string", "null"]},
+                },
+                windowed=False,
+                capped=False,
+            ),
         },
         {
             "name": "query_transactions",
@@ -204,6 +396,34 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 },
                 "additionalProperties": False,
             },
+            "outputSchema": _output_schema(
+                {
+                    "transaction_id": {"type": "integer"},
+                    "account": {"type": "string"},
+                    "date": {"type": "string"},
+                    "description": {
+                        "type": "string",
+                        "description": "the institution's own string, and the authoritative one",
+                    },
+                    "merchant": {
+                        "type": ["string", "null"],
+                        "description": "the aggregator's guess at a merchant name, unvalidated",
+                    },
+                    "amount_minor_units": {
+                        "type": "integer",
+                        "description": (
+                            "MINOR UNITS, signed from the account holder's point of view: "
+                            "negative is money out"
+                        ),
+                    },
+                    "currency": {"type": "string"},
+                    "pending": {"type": "boolean"},
+                    "category": {"type": ["string", "null"]},
+                    "category_is_override": {"type": "boolean"},
+                },
+                windowed=True,
+                capped=True,
+            ),
         },
         {
             "name": "spending_summary",
@@ -222,6 +442,18 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 },
                 "additionalProperties": False,
             },
+            "outputSchema": _output_schema(
+                {
+                    "category": {"type": "string"},
+                    "transactions": {"type": "integer"},
+                    "spent_minor_units": {
+                        "type": "integer",
+                        "description": "outflow in MINOR UNITS, as a positive magnitude",
+                    },
+                },
+                windowed=True,
+                capped=False,
+            ),
         },
         {
             "name": "get_pipeline_health",
@@ -233,6 +465,24 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "window of null means NOT YET MEASURED, never 'no shortfall'."
             ),
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+            "outputSchema": _output_schema(
+                {
+                    "connection_id": {"type": "integer"},
+                    "institution": {"type": "string"},
+                    "status": {"type": "string"},
+                    "last_success_at": {"type": ["string", "null"]},
+                    "last_error_code": {"type": ["string", "null"]},
+                    "requested_history_days": {"type": ["integer", "null"]},
+                    "granted_history_days": {
+                        "type": ["integer", "null"],
+                        "description": "null means NOT YET MEASURED, never 'no shortfall'",
+                    },
+                    "history_starts": {"type": ["string", "null"]},
+                    "retired": {"type": "boolean"},
+                },
+                windowed=False,
+                capped=False,
+            ),
         },
     ]
     for definition in definitions:
@@ -640,6 +890,13 @@ def _tool_error(message_id: Any, code: str, remedy: str) -> dict[str, Any]:
     retrying with a corrected call, `internal_error` is not -- and a remedy
     sentence for the human. Both forms, because a client that renders only text
     would otherwise show an empty failure.
+
+    🔴 This payload deliberately does NOT match the tool's published
+    `outputSchema`, and shaping it so it did would be the wrong repair: that
+    schema describes an ANSWER, and a refusal is not one. A client holds
+    `structuredContent` to the schema only where `isError` is false, so the two
+    never meet -- and dressing a refusal as an answer to satisfy a check nobody
+    runs would cost the `error` block a consumer branches on.
     """
     return _result(
         message_id,
