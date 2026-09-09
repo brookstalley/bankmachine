@@ -255,10 +255,18 @@ discover in production.
    the direction it will actually run.
 
 8. ~~**A datastore this build cannot serve answers successfully, with zeroes**~~ — **FIXED
-   2026-09-09 on `fix/unservable-datastore-refuses` (#58), and #57 closed with it.** Every unservable
-   state now refuses with `isError: true` and the stable code `datastore_unservable`, carrying a
-   remedy chosen by state; a store that is merely MISSING keeps AC-ARCH.3's answer-with-zeroes
-   carve-out. Both halves are pinned by go-red cases. The entry stays rather than being deleted,
+   2026-09-09 on `fix/unservable-datastore-refuses` (#58), and #57 closed with it **on this
+   surface**.** Every unservable state now refuses with `isError: true` and the stable code
+   `datastore_unservable`, carrying a remedy chosen by state; a store that is merely MISSING keeps
+   AC-ARCH.3's answer-with-zeroes carve-out. Both halves are pinned by go-red cases.
+   🔴 **The scope of "#57 closed" is the MCP surface, and saying otherwise would overstate what
+   shipped.** Four CLI sites — `cli/connections.py`, `cli/connector.py`, `cli/sync_run.py`,
+   `cli/enroll.py` — still prescribe `bankmachine store init` for *every* unhealthy state, including
+   the two this branch proved it wrong for: a store already ahead of this build applies nothing, and
+   a store whose key is gone must not be told to mint a new one. The remedy-per-state rule is
+   therefore true of the tool surface and not yet of the command line. Filed rather than folded in,
+   because the bounding construction is a state→remedy map beside `DatastoreProblem` with all sites
+   routed through it, which is its own change with its own tests. The entry stays rather than being deleted,
    because the reason it was missed is the durable part — **added 2026-09-09,
    found by driving the server rather than by reading it.** This item was not in the original
    seven because the acceptance session probed a store the build could serve, and that is the only

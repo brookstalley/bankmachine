@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import io
 import json
+import logging
+import os
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -186,10 +188,31 @@ def _ahead_of_this_build(config: Config) -> None:
 
 
 def _unopenable_lock(config: Config) -> None:
-    """A lock file this process cannot open — the state a restore under another user leaves."""
-    lock = config.datastore_path.with_suffix(config.datastore_path.suffix + ".lock")
-    lock.write_text("")
-    lock.chmod(0o000)
+    """A lock file this process cannot open — the state a restore under another user leaves.
+
+    Uses `Config.lock_path` rather than re-deriving the suffix: the product owns
+    where that file lives, and a helper that spells it independently keeps
+    passing after the product moves it.
+    """
+    config.lock_path.write_text("")
+    config.lock_path.chmod(0o000)
+
+
+def _unbuildable_as_root(problem: DatastoreProblem) -> bool:
+    """Whether the sweeps cannot construct this state, so they must skip it.
+
+    Only UNREADABLE, and only as root: it is built by `chmod 0o000`, which root
+    ignores. The store is then perfectly readable, `inspect` correctly reports it
+    healthy, and the sweep fails on `assert status.healthy is False` — reading as
+    a product defect when it is the test's own premise that did not hold.
+    `tests/store/test_connection_norms.py` guards its three mode-000 tests the
+    same way, with `skipif`; this is a per-state skip instead, so the OTHER five
+    states keep their coverage under root rather than the whole sweep vanishing.
+
+    One home, called by both sweeps, for the reason `_state_builders` is shared:
+    a guard applied to one sweep and not the other is how they drift.
+    """
+    return problem is DatastoreProblem.UNREADABLE and os.geteuid() == 0
 
 
 def test_every_problem_the_enum_declares_is_constructed_and_remedied(
@@ -217,6 +240,8 @@ def test_every_problem_the_enum_declares_is_constructed_and_remedied(
 
     remedies: dict[DatastoreProblem, str] = {}
     for problem, build in builders.items():
+        if _unbuildable_as_root(problem):
+            continue
         cfg = make_config(tmp_path / problem.value, keychain_service + problem.value)
         cfg.datastore_path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -582,6 +607,8 @@ def test_no_refusal_in_any_state_carries_the_datastore_path(
     for problem, build in _state_builders().items():
         if problem is DatastoreProblem.MISSING:
             continue  # answers rather than refuses
+        if _unbuildable_as_root(problem):
+            continue
         cfg = make_config(tmp_path / problem.value, keychain_service + problem.value)
         cfg.datastore_path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -614,3 +641,43 @@ def _remedy_for(config: Config) -> str:
     # client that shows only one must not show less.
     assert json.dumps(result["content"]).count(message[:40]) == 1
     return message
+
+
+def test_the_unreadable_remedy_puts_the_diagnosis_where_it_says_it_does(
+    tmp_path: Path, keychain_service: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """🔴 The one branch that makes a claim about somewhere else.
+
+    Every other remedy names a command the operator can run and this file runs
+    it. The fallback instead promises the file-level diagnosis "is also in the
+    log, where redaction applies" — a claim about a second surface, which no
+    assertion reached. It was false: `query` logged nowhere, and `cmd_mcp` writes
+    `status.problem` only at startup, so for the state this branch exists for —
+    a store that goes bad while a long-lived server runs — nothing had ever
+    written what the sentence sends the operator to look for.
+
+    The wire half is asserted beside it, because the two are a pair: the detail
+    must be in the log AND must not be in the message. A fix that satisfied one
+    by breaking the other is the trade this guards against.
+    """
+    if _unbuildable_as_root(DatastoreProblem.UNREADABLE):
+        pytest.skip("root opens a mode-000 file anyway")
+
+    cfg = make_config(tmp_path / "unreadable", keychain_service + "unreadable")
+    cfg.datastore_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _initialized_then(_unopenable_lock)(cfg)
+        with caplog.at_level(logging.WARNING, logger="bankmachine"):
+            message = _remedy_for(cfg)
+
+        logged = " ".join(r.getMessage() for r in caplog.records)
+        # Positive control first: a caplog that collected nothing would satisfy
+        # every "is not in" assertion below while proving none of them.
+        assert logged, "nothing was logged at all, so this test asserts nothing"
+        assert str(cfg.datastore_path) in logged, (
+            "the remedy sends the operator to the log for the file-level diagnosis, "
+            f"and it is not there: {logged}"
+        )
+        assert str(cfg.datastore_path) not in message, "the path reached the wire"
+    finally:
+        _cleanup(cfg)

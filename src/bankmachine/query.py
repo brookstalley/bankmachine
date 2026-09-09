@@ -46,6 +46,7 @@ from bankmachine.envelope import (
     iso_or_none,
     resolve_window,
 )
+from bankmachine.logging_setup import get_logger
 from bankmachine.store.connection import DatastoreProblem, DatastoreStatus, inspect
 from bankmachine.store.engine import reader_connection
 from bankmachine.store.schema import (
@@ -59,6 +60,8 @@ from bankmachine.store.schema import (
     transactions,
 )
 from bankmachine.store.types import CalendarDate, UtcInstant, calendar_date, now_utc
+
+logger = get_logger("query")
 
 
 def _is_short(granted: Any, requested: Any) -> bool:
@@ -1176,6 +1179,11 @@ def _unservable_remedy(status: DatastoreStatus) -> str:
     # looked too generic to check, which is exactly where it got back in once.
     # `_tool_error` performs no redaction; the log does, and that is where the
     # detail belongs.
+    # The claim below has to be made true HERE. `query` logs nowhere else, and
+    # `cmd_mcp` writes `status.problem` only at startup -- so for the state this
+    # branch exists for, a store that goes bad while a long-lived server runs,
+    # nothing had ever written the detail the sentence promises.
+    logger.warning("%s datastore could not be opened: %s", status.environment, status.problem)
     return (
         f"the {status.environment} datastore exists but could not be opened. Nothing was read and "
         f"nothing was changed. Run `bankmachine store status` for the file-level diagnosis — it "
