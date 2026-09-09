@@ -22,7 +22,7 @@ artifact; §0 and §5 of `docs/system-requirements.md` carry that content.
 
 **Build status** *(2026-09-08)*. The **CLI exists** through build step 4 — `store`, `connector`,
 `sync shell`, `enroll`, `connections`, `sync run`, `mcp`. The **MCP surface exists in first slice**:
-five of the ten tools below are implemented and five are specification only, recorded as a dated
+five of the eight tools below are implemented and three are specification only, recorded as a dated
 descope under the tool table. This contract is therefore *description* for most of the CLI, *both*
 for the four shipped tools, and *specification* for the remaining six — and each operation below
 says which.
@@ -124,7 +124,7 @@ codes are a machine contract**, not just operator ergonomics.
 
 ## Operations
 
-### MCP tool surface — the ten tools (§5) · *five built, five specified*
+### MCP tool surface — the eight tools (§5) · *five built, three specified*
 
 🔴 **Read-only. No mutation tools. No exceptions.** (Vetting a comparable server surfaced 19 mutation
 tools including `delete_transaction` with no undo. Not reproducing that.)
@@ -138,20 +138,18 @@ Raw-row access exists but is paginated and hard-capped.
 | `get_pipeline_health` | Per-connection sync status, last success, error codes, per-account coverage window, row counts, staleness flags, rule anomalies | yes |
 | `list_accounts` | Accounts with type, institution, mask, current balance, lifecycle state | yes |
 | `query_transactions` | Filtered rows (date range, account, category, amount range, merchant search). **Paginated, capped** | yes |
-| `spending_summary` | Aggregated by category / merchant / account over a period, with period-over-period comparison | yes |
-| `cashflow_summary` | Income vs. outflow by month | yes |
-| `balance_history` | Balance time series per account or aggregate | yes |
-| `net_worth` | Assets minus liabilities over time, investments included | yes |
+| `money_summary` | Money in and out over a period, grouped by category / merchant / account / month, per currency | yes |
+| `balance_history` | Value over time, per account or aggregated as net worth, investments included | yes |
 | `list_holdings` | Current investment positions with cost basis where available | yes |
 | `find_recurring` | Detected recurring charges with cadence, amount drift, last-seen | yes |
-| `get_coverage_report` | Per account: first and last transaction date, gaps against the account's own cadence, source breakdown | yes |
+| `get_coverage_report` | Per account: first and last transaction, posting cadence, and trailing silence measured against it | yes |
 
 Every tool is safe and idempotent, trivially — nothing writes.
 
-> **Amendment (2026-09-08, build step 7's first slice).** 🔴 **Five of these ten ship; five do not
-> yet.** Built: `get_pipeline_health`, `list_accounts`, `query_transactions`, `spending_summary`,
-> `get_coverage_report`.
-> Not built: `cashflow_summary`, `balance_history`, `net_worth`, `list_holdings`, `find_recurring`.
+> **Amendment (2026-09-08, build step 7's first slice; revised 2026-09-09).** 🔴 **Five of these
+> eight ship; three do not yet.** Built: `get_pipeline_health`, `list_accounts`,
+> `query_transactions`, `money_summary`, `get_coverage_report`.
+> Not built: `balance_history`, `list_holdings`, `find_recurring`.
 >
 > Recorded as a descope rather than left to be noticed, because the same commit updated the README
 > and `architecture.md` to say the MCP surface was "built and serving" — which is true of a surface
@@ -173,7 +171,7 @@ Every tool is safe and idempotent, trivially — nothing writes.
 > The `experimental` tier permits these changes without a version bump. It does not permit them
 > going unrecorded, which is what this amendment exists to prevent.
 
-🔴 **Two of these ten are the verification surface, not the analysis surface.** `get_pipeline_health`
+🔴 **Two of these eight are the verification surface, not the analysis surface.** `get_pipeline_health`
 and `get_coverage_report` exist so the analyst agent can **establish completeness *before* answering**.
 The product's headline goal is not "answer the question" but "answer it, or say why you should not."
 
@@ -592,19 +590,17 @@ The public contract, declared rather than inferred. Members not listed are inter
 promise. `experimental` means *this may break* — removing one is the policy working, not a violation.
 
 **MCP tools** — all `experimental` until the §7 verification gate passes. As of 2026-09-09 five of
-the ten are implemented (`get_pipeline_health`, `list_accounts`, `query_transactions`,
-`spending_summary`, `get_coverage_report`) and five are still specification only; see the amendment
+the eight are implemented (`get_pipeline_health`, `list_accounts`, `query_transactions`,
+`money_summary`, `get_coverage_report`) and three are still specification only; see the amendment
 under the tool table above for what is descoped and why. `experimental` therefore means two
 different things in this list, and the distinction is worth keeping in view: for the shipped five it
-means *this may break*, and for the other five it means *this does not exist yet*:
+means *this may break*, and for the other three it means *this does not exist yet*:
 
 - `get_pipeline_health` — experimental
 - `list_accounts` — experimental
 - `query_transactions` — experimental
-- `spending_summary` — experimental
-- `cashflow_summary` — experimental
+- `money_summary` — experimental
 - `balance_history` — experimental
-- `net_worth` — experimental
 - `list_holdings` — experimental
 - `find_recurring` — experimental
 - `get_coverage_report` — experimental

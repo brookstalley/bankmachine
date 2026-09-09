@@ -115,7 +115,7 @@ _WINDOW_NOTE = (
     "result there is not a zero."
 )
 
-#: 🔴 On `query_transactions` alone. `spending_summary` is an aggregate, fixed
+#: 🔴 On `query_transactions` alone. `money_summary` is an aggregate, fixed
 #: unpaginated by `api-contract.md` and bounded by its grouping, so saying this
 #: there would describe a cap it does not have.
 #: Shortened for the reason `_WINDOW_NOTE` is, and kept longer than it because
@@ -463,29 +463,61 @@ def _tool_definitions() -> list[dict[str, Any]]:
             ),
         },
         {
-            "name": "spending_summary",
-            "title": "Spending by category",
+            "name": "money_summary",
+            "title": "Money in and out, grouped",
             "description": (
-                "Total outflow per category in a date window. Sums only money leaving, "
-                "reported as positive magnitudes in INTEGER MINOR UNITS -- refunds and "
-                "income are excluded, because 'spending' is a question about outflow. "
-                + _WINDOW_NOTE
+                "How much money moved in a date window, grouped by category, merchant, "
+                "account or month. 🔴 BOTH DIRECTIONS on every row: `inflow_minor_units` and "
+                "`outflow_minor_units` are positive magnitudes, and `net_minor_units` is "
+                "signed from the account holder's point of view. Ask this for spending (read "
+                "`outflow`), for income (read `inflow`), and for cashflow (`group_by=month` "
+                "and read all three). 🔴 A category whose outflow is large and whose net is "
+                "near zero is money that came back -- refunds or transfers -- so quote `net` "
+                "when the question is 'how much did this cost me'. Rows are per currency and "
+                "are never summed across currencies. " + _WINDOW_NOTE
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "since": {"type": "string", "description": "inclusive start, YYYY-MM-DD"},
                     "until": {"type": "string", "description": "inclusive end, YYYY-MM-DD"},
+                    "group_by": {
+                        "type": "string",
+                        "enum": list(query.GROUPINGS),
+                        "description": "how to group the rows; defaults to category",
+                    },
                 },
                 "additionalProperties": False,
             },
             "outputSchema": _output_schema(
                 {
-                    "category": {"type": "string"},
+                    "group_key": {
+                        "type": "string",
+                        "description": (
+                            "the group this row is for -- an account id when grouping by "
+                            "account, a YYYY-MM month when grouping by month"
+                        ),
+                    },
+                    "group_label": {
+                        "type": "string",
+                        "description": "the same group, named for reading",
+                    },
+                    "currency": {"type": "string"},
                     "transactions": {"type": "integer"},
-                    "spent_minor_units": {
+                    "inflow_minor_units": {
                         "type": "integer",
-                        "description": "outflow in MINOR UNITS, as a positive magnitude",
+                        "description": "money IN over this window, a positive magnitude",
+                    },
+                    "outflow_minor_units": {
+                        "type": "integer",
+                        "description": "money OUT over this window, a positive magnitude",
+                    },
+                    "net_minor_units": {
+                        "type": "integer",
+                        "description": (
+                            "inflow minus outflow, signed from the account holder's point of "
+                            "view: negative is money lost over the window"
+                        ),
                     },
                 },
                 windowed=True,
@@ -646,6 +678,23 @@ def _calendar_date(arguments: dict[str, object], field: str) -> date | None:
         ) from None
 
 
+def _text(arguments: dict[str, object], field: str, default: str) -> str:
+    """Narrow a string argument, refusing anything that is not one.
+
+    The same reason `_whole_number` exists: under `object`, an unnarrowed value
+    cannot reach the query layer at all, so a caller sending `{"group_by": 3}`
+    gets a sentence naming the field instead of a type error raised from inside
+    a dispatch lambda. The VALUE is checked further down, where the closed set
+    that constrains it lives -- this only guarantees a string arrives.
+    """
+    raw = arguments.get(field)
+    if raw is None:
+        return default
+    if not isinstance(raw, str):
+        raise BadArgumentError(f"{field} must be a string, got {type(raw).__name__}")
+    return raw
+
+
 def _whole_number(
     arguments: dict[str, object],
     field: str,
@@ -747,6 +796,7 @@ def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> q
     # against the request it accompanies and this is the call that compares the
     # two. A cursor narrowed first would have nothing to be checked against.
     cursor = _cursor(arguments, since=since, until=until, account_id=account_id)
+    grouping = _text(arguments, "group_by", "category")
     handlers: dict[str, Callable[..., query.Answer]] = {
         "list_accounts": lambda: query.list_accounts(config),
         "query_transactions": lambda: query.list_transactions(
@@ -757,7 +807,9 @@ def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> q
             limit=limit if limit is not None else 100,
             after=cursor,
         ),
-        "spending_summary": lambda: query.spending_by_category(config, since=since, until=until),
+        "money_summary": lambda: query.money_summary(
+            config, since=since, until=until, group_by=grouping
+        ),
         "get_pipeline_health": lambda: query.pipeline_health(config),
         "get_coverage_report": lambda: query.coverage_report(config),
     }
@@ -864,7 +916,7 @@ def _instructions(config: Config) -> str:
         f"| `window_extends_past_coverage` | your window reaches past the last data | the tail "
         f"is unanswered, not quiet |\n"
         f"| `rows_truncated` | rows were left behind | do NOT sum or count these rows; page "
-        f"with `next_cursor` until `truncated` is false, or ask `spending_summary` instead |\n"
+        f"with `next_cursor` until `truncated` is false, or ask `money_summary` instead |\n"
         f"| `counted_during_change` | a write landed while the answer was assembled | rows and "
         f"counts are from adjacent moments; re-ask if the two must reconcile exactly |\n"
         f"| `accounts_without_coverage` | an account in scope has NEVER had a transaction "
@@ -1070,8 +1122,8 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
         if name not in _tool_names():
             # Resolved BEFORE the call, so that a `KeyError` raised anywhere
             # BENEATH the query layer is not answered "no tool named
-            # 'spending_summary'" -- which is a false statement about a tool
-            # that exists, delivered as a protocol error nobody can act on.
+            # 'money_summary'" -- which is a false statement about a tool that
+            # exists, delivered as a protocol error nobody can act on.
             return _error(message_id, _METHOD_NOT_FOUND, f"no tool named {name!r}")
         try:
             answer = _dispatch_tool(config, name, arguments)
@@ -1080,6 +1132,7 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
             query.UnknownAccountError,
             query.InvertedWindowError,
             query.MalformedCursorError,
+            query.BadGroupingError,
         ) as exc:
             # Ahead of the broad catch. The message is the caller's to act on,
             # so it is rendered without the exception class name -- and it is

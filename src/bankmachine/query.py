@@ -31,8 +31,9 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import Text, and_, case, cast, func, or_, select
 from sqlalchemy.engine import Connection as SAConnection
+from sqlalchemy.sql import ColumnElement
 
 from bankmachine.build_id import build_identity
 from bankmachine.config import Config
@@ -1374,6 +1375,16 @@ def list_accounts(config: Config) -> Answer:
         )
 
 
+class BadGroupingError(ValueError):
+    """A `group_by` naming no grouping this tool implements.
+
+    Refused rather than defaulted: silently falling back to `category` would
+    answer a different question from the one asked, and the caller would have no
+    way to tell -- the same failure mode as a misspelled `since` returning the
+    all-time aggregate.
+    """
+
+
 class UnknownAccountError(ValueError):
     """An `account_id` naming no account, refused rather than answered empty.
 
@@ -1702,55 +1713,130 @@ def coverage_report(config: Config) -> Answer:
         )
 
 
-def spending_by_category(
-    config: Config, *, since: date | None = None, until: date | None = None
-) -> Answer:
-    """🔴 An aggregate, which is the shape AC-4.2 asks the tool surface to prefer.
+#: How a money aggregate may be grouped. A closed set because it reaches SQL:
+#: the grouping is an expression this module builds, never a column name a
+#: caller supplies, so an unknown value is refused at the boundary rather than
+#: interpolated.
+GROUPINGS: tuple[str, ...] = ("category", "merchant", "account", "month")
 
-    Money *out* only: this sums negative amounts and reports them as positive
-    magnitudes, because "spending" is a question about outflow and mixing
-    refunds in would answer a different one. The sign convention is what makes
-    that a filter rather than a per-account special case.
+
+def money_summary(
+    config: Config,
+    *,
+    since: date | None = None,
+    until: date | None = None,
+    group_by: str = "category",
+) -> Answer:
+    """Money moved in a window, grouped, with BOTH directions on every row.
+
+    🔴 **Both directions, because a one-directional aggregate cannot be corrected
+    by its reader.** A tool that filtered to outflow would leave an inflow with
+    no row to appear in, so a category of offsetting charges and credits reports
+    its gross as though that were the cost: measured here, a travel category
+    showed $12,000 spent against a true net of $0, and nothing in the payload
+    could reveal the 24 credits behind it. Gross and net side by side is what
+    makes that answerable.
+
+    🔴 One tool rather than two, by `api-contract.md` § Direction's fourth norm:
+    cashflow-by-month is this same aggregate grouped by month with inflows kept,
+    so the two answer one row shape and a boundary between them would be drawn
+    where the QUESTION changes rather than where the answer's shape does.
+
+    🔴 **Direction is carried by the field NAME; sign is carried by `net_minor`.**
+    `inflow_minor` and `outflow_minor` are positive magnitudes — "how much came
+    in", "how much went out" — while `net_minor` stays signed from the account
+    holder's point of view, as `data-model.md` requires of a stored amount. This
+    row is the first place the two conventions meet, and a row that mixed them
+    silently would be the very class of defect this work removes.
+
+    🔴 **Currency groups; it never sums.** The owner's 2026-09-08 ruling, made
+    once for every aggregate tool: a window spanning two currencies returns
+    per-currency rows rather than one meaningless integer. Conversion is
+    explicitly not chosen — it needs a rate source, a rate date policy, and
+    somewhere to record that decision, which is a different scope from carrying
+    a field.
     """
+    if group_by not in GROUPINGS:
+        raise BadGroupingError(f"group_by must be one of {', '.join(GROUPINGS)}, not {group_by!r}")
     problem = _readable(config)
     if problem is not None:
         # An aggregate is unpaginated by contract, bounded by the grouping
         # rather than by a row cap, so there is no truncation to report.
         return _unusable(config, problem, requested_window=(since, until), truncation=None)
     with reader_connection(config) as conn:
+        # Annotated as the general expression type both branches produce: the
+        # first assignment would otherwise fix the name to `coalesce` and the
+        # account branch's plain column would not fit it.
+        key: ColumnElement[Any]
+        label: ColumnElement[Any]
+        if group_by == "category":
+            key = func.coalesce(
+                transactions.c.category_override,
+                transactions.c.source_category_primary,
+                "UNCATEGORIZED",
+            )
+            label = key
+        elif group_by == "merchant":
+            key = func.coalesce(transactions.c.merchant_name, transactions.c.description, "UNKNOWN")
+            label = key
+        elif group_by == "account":
+            # The id is the key a caller can act on; the name is for reading.
+            key = cast(transactions.c.account_id, Text)
+            label = accounts.c.name
+        else:
+            # `posted_date` is stored as `YYYY-MM-DD` text that sorts as a date,
+            # so the month is its first seven characters -- no date arithmetic,
+            # and no dialect function to disagree about.
+            key = func.substr(transactions.c.posted_date, 1, 7)
+            label = key
+
         statement = (
             select(
+                key.label("group_key"),
+                label.label("group_label"),
+                transactions.c.currency,
+                func.count().label("transactions"),
+                # 🔴 Positive magnitudes, both of them. `amount_minor` is
+                # operator-signed, so outflow is the negative half negated --
+                # and doing that here rather than in Python keeps the sum and
+                # the count over one pass of one predicate set.
                 func.coalesce(
-                    transactions.c.category_override,
-                    transactions.c.source_category_primary,
-                    "UNCATEGORIZED",
-                ).label("category"),
-                func.count().label("count"),
-                func.sum(transactions.c.amount_minor).label("total"),
+                    func.sum(
+                        case(
+                            (transactions.c.amount_minor > 0, transactions.c.amount_minor), else_=0
+                        )
+                    ),
+                    0,
+                ).label("inflow"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (transactions.c.amount_minor < 0, -transactions.c.amount_minor), else_=0
+                        )
+                    ),
+                    0,
+                ).label("outflow"),
+                func.coalesce(func.sum(transactions.c.amount_minor), 0).label("net"),
             )
-            # 🔴 The shared predicates, plus this tool's own. Rebuilding the
-            # soft-delete and window clauses by hand here is how "there is only
-            # one place to add a filter" quietly becomes three: a maintainer
-            # adding a predicate at the named single place would get it in the
-            # rows and the count and silently NOT here, and two tools would then
-            # disagree about which rows exist — a precise wrong number, not an
-            # error. The outflow clause rides on top because it is what makes
-            # this tool a SPENDING question rather than a transaction one.
-            # `after` is None because an aggregate is unpaginated by contract,
-            # bounded by its grouping rather than by a row cap, so there is no
-            # page for a cursor to resume.
-            .where(
-                *_transaction_filters(since=since, until=until, account_id=None, after=None),
-                transactions.c.amount_minor < 0,
-            )
-            .group_by("category")
+            .select_from(transactions.join(accounts))
+            # 🔴 The shared predicates and NOTHING else -- in particular no
+            # direction filter. A `WHERE amount_minor < 0` here would leave an
+            # inflow with no row to appear in at all, which is unreachable
+            # rather than merely unaggregated. Direction is a COLUMN on the row,
+            # so both halves are always answerable.
+            .where(*_transaction_filters(since=since, until=until, account_id=None, after=None))
+            .group_by("group_key", "group_label", transactions.c.currency)
             .order_by(func.sum(transactions.c.amount_minor))
         )
         rows = [
             {
-                "category": r[0],
-                "transactions": int(r[1]),
-                "spent_minor_units": abs(int(r[2])),
+                "group_key": str(r[0]),
+                "group_label": str(r[1]),
+                "currency": r[2],
+                "transactions": int(r[3]),
+                "inflow_minor_units": int(r[4]),
+                "outflow_minor_units": int(r[5]),
+                "net_minor_units": int(r[6]),
             }
             for r in conn.execute(statement).all()
         ]

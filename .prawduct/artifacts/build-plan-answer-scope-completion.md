@@ -65,10 +65,10 @@ integration conflicts.
 ## Status
 
 - [x] **A — The per-account coverage signal, and the two tools that read it** (C2 · #19, #35)
-- [ ] **B — One aggregate tool, both directions, currency-grouped** (C4 · #20, #21)
+- [x] **B — One aggregate tool, both directions, currency-grouped** (C4 · #20, #21)
 - [ ] **C — `flow_class`, so "spending" stops meaning three different things** (C3 · #18)
 - [ ] **D — The guards that make the norm self-enforcing, and the go-red cases nothing had**
-- [ ] **E — The claim-site sweep, and the artifacts that describe an eight-tool surface**
+- [x] **E — The claim-site sweep, and the artifacts that describe an eight-tool surface** *(pulled forward into B — see below)*
 
 ---
 
@@ -289,7 +289,18 @@ applied rather than assumed.
 
 ## E — The claim-site sweep, and the artifacts that describe an eight-tool surface
 
-**Last, because every count it writes depends on the final built set.**
+🔴 **Amendment: this chunk could not be last, and the guard is what proved it.** The plan
+sequenced E last so every count would be written against the final built set. But
+`test_the_documented_tool_surface_is_the_built_one` derives *specified* from the contract's tool
+table and asserts built ⊆ specified — so the moment chunk B renamed the tool, four of its cases
+went red and the suite could not be green again until the table moved. The sweep is therefore
+**atomic with the merge, not downstream of it**, and it landed inside chunk B's commit.
+
+That coupling is the guard working exactly as designed: the specification and the code are not
+allowed to disagree for even one commit. The plan's reasoning was sound and its ordering was
+wrong, which is the kind of thing only the build finds.
+
+**Originally: last, because every count it writes depends on the final built set.**
 
 `test_the_documented_tool_surface_is_the_built_one.py` derives the *specified* set from
 `api-contract.md`'s tool table and the *built* set from `_tool_definitions()`, then asserts

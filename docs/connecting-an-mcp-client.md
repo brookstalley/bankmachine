@@ -68,13 +68,12 @@ creates one, because an empty encrypted store would answer every question with a
 |---|---|
 | `list_accounts` | every account with its latest recorded balance |
 | `query_transactions` | transactions in a date window, newest first |
-| `spending_summary` | outflow per category in a window |
+| `money_summary` | money in and out over a window, grouped by category, merchant, account or month |
 | `get_pipeline_health` | every connection, when it last synced, what is wrong |
 | `get_coverage_report` | per account: what data exists, and how long it has been silent |
 
-🔴 **Five of the ten specified tools.** `cashflow_summary`, `balance_history`, `net_worth`,
-`list_holdings` and `find_recurring` are not built yet — the descope is recorded in
-`.prawduct/artifacts/api-contract.md`.
+🔴 **Five of the eight specified tools.** `balance_history`, `list_holdings` and `find_recurring`
+are not built yet — the descope is recorded in `.prawduct/artifacts/api-contract.md`.
 
 🔴 **The verification surface is now whole.** `get_pipeline_health` tells you whether the pipeline
 is healthy; `get_coverage_report` tells you what data actually exists, per account. Nine of the
