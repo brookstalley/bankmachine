@@ -112,7 +112,7 @@ survive the reversal rather than being deleted with it.
 - [x] **00 · The amendment, the column's type, the new warning kind, and one deletion** *(coordinator)*
 - [ ] **01 · The roster observation, recorded — #51** *(delegate, worktree)*
 - [ ] **02 · The contract describes everything it publishes — #52** *(delegate, worktree)*
-- [ ] **03 · Hold state: two shapes, priced — #53** *(delegate, worktree, discovery only)*
+- [x] **03 · Hold state: two shapes, priced — #53** *(delegate, worktree, discovery only)*
 - [ ] **04 · Integration** *(coordinator)*
 
 **Context.** Chunk 00 closed 2026-09-09 at `66189da`, after two review rounds. Both found the same
@@ -305,6 +305,19 @@ against that evidence, a recommendation is made with its reasoning, and the arti
 
 Merges the three worktrees, then pays the cross-partition requirements that no delegate owns:
 
+- 🔴 **(c) `coverage_report` reads the clock TWICE in one call, and its own comment forbids it.**
+  `query.py` calls `_stranded_holds(conn, today=calendar_date(now_utc().date()))`, then 32 lines
+  later computes `today = calendar_date(now_utc().date())` again under a 🔴 comment reading *"One
+  `today` for every row. Reading the clock per account would let a report straddle midnight and hand
+  back rows measured against two different days, which is a difference nobody could explain from the
+  payload."* A call straddling midnight measures the stranded holds against one day and the rest of
+  the report against another — precisely what the comment says must not happen. **Found by C3 while
+  pricing the shapes, confirmed by the coordinator against the file.** It lands HERE and not in
+  chunk 01 for one reason: C1 is editing that same function under a narrow widening right now, so
+  fixing it before C1 merges buys a conflict for nothing. Riding chunk 04's commit costs no extra
+  review round; leaving it in a delegate's report would be a drop, not a deferral. **Hoist one
+  `today` above the `_stranded_holds` call and pass it; do not add a second parameter.**
+
 - 🔴 **(a) The seam between 01 and 02.** Any field chunk 01 added to the wire must be described in
   `api-contract.md` and must **not** be in `UNDOCUMENTED_AT_FREEZE` — chunk 02 is emptying that set
   and chunk 01 does not know it exists. Each chunk would do half of this correctly and the result
@@ -314,8 +327,8 @@ Merges the three worktrees, then pays the cross-partition requirements that no d
 - The full suite, `verify_norms_go_red.py` in full (~10 min; **never piped to `tail`** — that returns
   tail's exit code, not its), and `/prawduct:critic cumulative`.
 
-**Done when:** the suite is green and recorded; every go-red case is RED; requirement (a) is
-verified by re-derivation rather than by a delegate's report; chunk 03's discovery is marked proposed
+**Done when:** the suite is green and recorded; every go-red case is RED; requirements (a) and (c)
+are each verified by re-derivation rather than by a delegate's report; chunk 03's discovery is marked proposed
 and its ratification is filed rather than assumed; and the cumulative review has no unresolved
 blocking findings.
 
