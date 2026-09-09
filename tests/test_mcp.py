@@ -617,6 +617,7 @@ def test_no_tool_mutates_anything(initialized_config: Config) -> None:
         "query_transactions",
         "spending_summary",
         "get_pipeline_health",
+        "get_coverage_report",
     }, "the shipped subset of the api-contract tool surface"
     forbidden = ("create", "update", "delete", "remove", "write", "set_", "transfer", "pay")
     for tool in tools:
@@ -2363,6 +2364,7 @@ _LIVE_CALLS: tuple[tuple[str, dict[str, Any]], ...] = (
     ("query_transactions", {"since": "2020-01-01", "until": "2030-12-31"}),
     ("spending_summary", {"since": "2020-01-01", "until": "2030-12-31"}),
     ("get_pipeline_health", {}),
+    ("get_coverage_report", {}),
 )
 
 

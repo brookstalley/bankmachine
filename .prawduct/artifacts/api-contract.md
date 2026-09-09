@@ -22,7 +22,7 @@ artifact; §0 and §5 of `docs/system-requirements.md` carry that content.
 
 **Build status** *(2026-09-08)*. The **CLI exists** through build step 4 — `store`, `connector`,
 `sync shell`, `enroll`, `connections`, `sync run`, `mcp`. The **MCP surface exists in first slice**:
-four of the ten tools below are implemented and six are specification only, recorded as a dated
+five of the ten tools below are implemented and five are specification only, recorded as a dated
 descope under the tool table. This contract is therefore *description* for most of the CLI, *both*
 for the four shipped tools, and *specification* for the remaining six — and each operation below
 says which.
@@ -124,7 +124,7 @@ codes are a machine contract**, not just operator ergonomics.
 
 ## Operations
 
-### MCP tool surface — the ten tools (§5) · *four built, six specified*
+### MCP tool surface — the ten tools (§5) · *five built, five specified*
 
 🔴 **Read-only. No mutation tools. No exceptions.** (Vetting a comparable server surfaced 19 mutation
 tools including `delete_transaction` with no undo. Not reproducing that.)
@@ -148,10 +148,10 @@ Raw-row access exists but is paginated and hard-capped.
 
 Every tool is safe and idempotent, trivially — nothing writes.
 
-> **Amendment (2026-09-08, build step 7's first slice).** 🔴 **Four of these ten ship; six do not
-> yet.** Built: `get_pipeline_health`, `list_accounts`, `query_transactions`, `spending_summary`.
-> Not built: `cashflow_summary`, `balance_history`, `net_worth`, `list_holdings`, `find_recurring`,
+> **Amendment (2026-09-08, build step 7's first slice).** 🔴 **Five of these ten ship; five do not
+> yet.** Built: `get_pipeline_health`, `list_accounts`, `query_transactions`, `spending_summary`,
 > `get_coverage_report`.
+> Not built: `cashflow_summary`, `balance_history`, `net_worth`, `list_holdings`, `find_recurring`.
 >
 > Recorded as a descope rather than left to be noticed, because the same commit updated the README
 > and `architecture.md` to say the MCP surface was "built and serving" — which is true of a surface
@@ -591,12 +591,12 @@ Retention: additive-first; removal of a `stable` member defers to a major versio
 The public contract, declared rather than inferred. Members not listed are internal and carry no
 promise. `experimental` means *this may break* — removing one is the policy working, not a violation.
 
-**MCP tools** — all `experimental` until the §7 verification gate passes. As of 2026-09-08 four of
+**MCP tools** — all `experimental` until the §7 verification gate passes. As of 2026-09-09 five of
 the ten are implemented (`get_pipeline_health`, `list_accounts`, `query_transactions`,
-`spending_summary`) and six are still specification only; see the amendment under the tool table
-above for what is descoped and why. `experimental` therefore means two different things in this
-list, and the distinction is worth keeping in view: for the shipped four it means *this may break*,
-and for the other six it means *this does not exist yet*:
+`spending_summary`, `get_coverage_report`) and five are still specification only; see the amendment
+under the tool table above for what is descoped and why. `experimental` therefore means two
+different things in this list, and the distinction is worth keeping in view: for the shipped five it
+means *this may break*, and for the other five it means *this does not exist yet*:
 
 - `get_pipeline_health` — experimental
 - `list_accounts` — experimental

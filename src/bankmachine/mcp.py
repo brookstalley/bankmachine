@@ -37,6 +37,7 @@ from bankmachine.cli.exit_codes import EXIT_OK
 from bankmachine.config import Config
 from bankmachine.logging_setup import get_logger
 from bankmachine.store.connection import inspect
+from bankmachine.store.schema import PROVENANCE_SOURCES
 
 logger = get_logger("mcp")
 
@@ -327,6 +328,27 @@ def _output_schema(
     }
 
 
+#: The per-account coverage facts, spelled ONCE for the two tools that carry
+#: them. `list_accounts` carries them so an agent that never thought to ask the
+#: verification surface still learns an account is empty; `get_coverage_report`
+#: carries them beside the cadence analysis built on them. One producer feeds
+#: both (`query._account_coverage`), and one schema fragment describes both --
+#: two copies would drift and a client would reject one tool's honest answer.
+def _coverage_row_fields() -> dict[str, dict[str, Any]]:
+    """A fresh dict per call, like every other schema fragment here."""
+    return {
+        "first_transaction_date": {
+            "type": ["string", "null"],
+            "description": "null means NO TRANSACTION HAS EVER BEEN RECORDED, never 'no activity'",
+        },
+        "last_transaction_date": {"type": ["string", "null"]},
+        "transaction_count": {
+            "type": "integer",
+            "description": "0 is a real answer: the account has no transaction data at all",
+        },
+    }
+
+
 def _tool_definitions() -> list[dict[str, Any]]:
     """The tool surface. 🔴 Every one of them reads; none of them writes."""
     definitions: list[dict[str, Any]] = [
@@ -359,6 +381,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                     "currency": {"type": ["string", "null"]},
                     "balance_as_of": {"type": ["string", "null"]},
+                    # 🔴 On every row, never behind a parameter: the failure this
+                    # closes is an agent that never thought to ask.
+                    **_coverage_row_fields(),
                 },
                 windowed=False,
                 capped=False,
@@ -491,6 +516,65 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                     "history_starts": {"type": ["string", "null"]},
                     "retired": {"type": "boolean"},
+                },
+                windowed=False,
+                capped=False,
+            ),
+        },
+        {
+            "name": "get_coverage_report",
+            "title": "Coverage report",
+            "description": (
+                "🔴 The other half of the verification surface. Per account: the first and "
+                "last transaction recorded, how many there are, the account's own posting "
+                "cadence, and how long it has been silent measured against that cadence. "
+                "Call this before concluding an account has no activity -- a "
+                "`transaction_count` of 0 means NO DATA WAS EVER RECORDED for it, which is a "
+                "different answer from 'nothing happened' and the two are indistinguishable "
+                "anywhere else. `silence_ratio` above 1 means a full posting cycle has been "
+                "missed; a ratio near 1 is worth a second look even when the flag is false."
+            ),
+            "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+            "outputSchema": _output_schema(
+                {
+                    "account_id": {"type": "integer"},
+                    "account": {"type": ["string", "null"]},
+                    **_coverage_row_fields(),
+                    "median_interval_days": {
+                        "type": ["number", "null"],
+                        "description": (
+                            "this account's own posting cadence; null under two transactions, "
+                            "because no interval exists rather than because it posts daily"
+                        ),
+                    },
+                    "days_silent": {
+                        "type": ["integer", "null"],
+                        "description": "days since the last recorded transaction",
+                    },
+                    "silence_ratio": {
+                        "type": ["number", "null"],
+                        "description": (
+                            "`days_silent` against this account's own cadence. A NUMBER rather "
+                            "than a flag on purpose: 28 days silent on a 30-day cycle is "
+                            "borderline, and a boolean is what would hide that"
+                        ),
+                    },
+                    "silence_exceeds_cadence": {
+                        "type": "boolean",
+                        "description": "a full posting cycle has been missed (ratio above 1)",
+                    },
+                    "source_breakdown": {
+                        "type": "object",
+                        "description": (
+                            "rows by provenance; a source with none is present and 0, never "
+                            "omitted, so 0 cannot be confused with unknown"
+                        ),
+                        "properties": {
+                            source: {"type": "integer"} for source in PROVENANCE_SOURCES
+                        },
+                        "required": list(PROVENANCE_SOURCES),
+                        "additionalProperties": False,
+                    },
                 },
                 windowed=False,
                 capped=False,
@@ -675,6 +759,7 @@ def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> q
         ),
         "spending_summary": lambda: query.spending_by_category(config, since=since, until=until),
         "get_pipeline_health": lambda: query.pipeline_health(config),
+        "get_coverage_report": lambda: query.coverage_report(config),
     }
     handler = handlers.get(name)
     if handler is None:
@@ -781,7 +866,11 @@ def _instructions(config: Config) -> str:
         f"| `rows_truncated` | rows were left behind | do NOT sum or count these rows; page "
         f"with `next_cursor` until `truncated` is false, or ask `spending_summary` instead |\n"
         f"| `counted_during_change` | a write landed while the answer was assembled | rows and "
-        f"counts are from adjacent moments; re-ask if the two must reconcile exactly |\n\n"
+        f"counts are from adjacent moments; re-ask if the two must reconcile exactly |\n"
+        f"| `accounts_without_coverage` | an account in scope has NEVER had a transaction "
+        f"recorded | its empty result means DATA NOT PRESENT, never no activity. Do not answer "
+        f"'no payments found' about it -- say the account has no transaction data at all, and "
+        f"call `get_coverage_report` for the per-account picture |\n\n"
         f"WHAT EVERY ANSWER CARRIES\n"
         f"| field | read it for |\n"
         f"|---|---|\n"

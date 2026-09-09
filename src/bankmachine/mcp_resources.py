@@ -215,6 +215,24 @@ _GUIDANCE: dict[str, _Guidance] = {
             "window or raising `limit` moves the cap; paging removes it."
         ),
     ),
+    "accounts_without_coverage": _Guidance(
+        means=(
+            "an account inside the scope of this request has NEVER had a transaction "
+            "recorded -- not none in this window, none at all, ever"
+        ),
+        for_this_answer=(
+            "any row count, total or empty result touching that account describes ABSENT "
+            "DATA rather than absent activity. An answer of 'no payments found' about it is "
+            "false, and it is the most plausible-looking false answer this surface can give: "
+            "nothing about an empty list looks wrong"
+        ),
+        act=(
+            "never report zero activity for a named account carrying this warning. Say the "
+            "account has no transaction data at all, and call `get_coverage_report` for the "
+            "per-account picture -- `transaction_count`, the first and last transaction, and "
+            "how long it has been silent against its own cadence."
+        ),
+    ),
     "counted_during_change": _Guidance(
         means=(
             "a write landed between the row read and the count read, so the two describe "

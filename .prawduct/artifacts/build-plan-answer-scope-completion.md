@@ -64,7 +64,7 @@ integration conflicts.
 
 ## Status
 
-- [ ] **A — The per-account coverage signal, and the two tools that read it** (C2 · #19, #35)
+- [x] **A — The per-account coverage signal, and the two tools that read it** (C2 · #19, #35)
 - [ ] **B — One aggregate tool, both directions, currency-grouped** (C4 · #20, #21)
 - [ ] **C — `flow_class`, so "spending" stops meaning three different things** (C3 · #18)
 - [ ] **D — The guards that make the norm self-enforcing, and the go-red cases nothing had**
@@ -124,11 +124,70 @@ the only warning is about depth rather than breadth.
    this window* already answers empty. A warning names the accounts with no coverage, so a caller
    reading only `warnings` still learns it.
 
+### Amendment, written before it was coded: the warning is REQUEST-scoped
+
+#19 asks for "a `warnings` entry naming the accounts with no transaction coverage", and the
+kind is new — a domain term, so it is recorded here rather than settled in the editor.
+
+**Kind: `accounts_without_coverage`, and it joins `REQUEST_SCOPED_KINDS`, not the connection
+scope.** The obvious reading is that "this account has never had a transaction" is standing state
+of the store and therefore connection-scoped. 🔴 **That reading reproduces the defect the
+connection scope's own comment records**: an acceptance round measured the `gapped` notice arriving
+character-for-character identical on a window inside coverage, one outside it, a future window,
+and a query for an account that does not exist — "true, and useless for telling a caller whether
+THIS answer is the degraded one." A fifth kind riding every response equally would be the same
+warning nobody can act on.
+
+Request-scoped instead, firing only when **this** request's scope actually contains an uncovered
+account: on `list_accounts` when the listing holds one, and on `query_transactions(account_id=9)`
+when the account asked about has no coverage at all — which is #19's own repro and the exact call
+whose `[]` reads as "no payments found" and is false. Its presence is information and **so is its
+absence**, which is what the request scope exists for.
+
+Additive by `api-contract.md`'s evolution rule: new warning kinds need no version bump and
+consumers must tolerate an unrecognized one, so AC-9.3's list needs no amendment. The published
+enum, the derived warning resource and the decision table all pick it up from `WARNING_KINDS`
+without being edited — that derivation is chunk 05's property from the previous wave, and this is
+its first test.
+
+### Amendment, also written before it was coded: the gap rule measures TRAILING SILENCE
+
+Reading the owner's 2026-09-08 ruling closely enough to implement it caught a design already
+half-written in the wrong instrument. The ruling and `mcp-fact-find-ac91.md` say the informative
+quantity is **trailing silence measured against the account's own cadence** — days since the last
+transaction, against the median interval — **not** an enumeration of gaps *between* transactions.
+
+🔴 **The distinction is the whole point of the ruling.** Inter-transaction gaps are what "gaps > 7
+days" measured, and measurement falsified it: every sandbox account is monthly, so CD and Money
+Market exceed 7 days on **100%** of their 23 intervals and Saving on 50% — ~146 findings and zero
+signal. Re-deriving that same enumeration with a per-account threshold instead of a fixed one
+would have reproduced the noise in a more defensible-looking form. The one thing in this dataset
+worth a second look is CD and Money Market sitting **28 days silent on a 30-day cycle**.
+
+**Ruled here: report the quantity, and flag only a full missed cycle.** Every row carries
+`median_interval_days` (the cadence; null under two transactions, because no interval exists and a
+zero would read as "posts daily"), `days_silent`, and `silence_ratio` — the ratio *is* "trailing
+silence measured against the account's own cadence", stated as a number rather than collapsed into
+a boolean. `silence_exceeds_cadence` is true when `days_silent > median_interval_days`.
+
+🔴 **The multiple is 1.0 because one missed cycle is the only non-arbitrary unit**, and picking
+0.9 to make CD/MM flag would be inventing the constant the ruling just removed. Those two accounts
+surface as `silence_ratio` 0.93 — visibly the highest in the store — which is exactly the
+"genuinely borderline" the fact-find describes, and a boolean is what would have destroyed it.
+
 **Done when:** the three-way distinction has a test per case; `get_coverage_report`'s real payload
 validates against its own published `outputSchema` through the live loop, like every other tool;
-🔴 **the `list_accounts` walk is MEASURED at the 10k-row volume and the figure recorded here** —
+🔴 **the `list_accounts` walk is MEASURED at the 10k-row volume and the figure recorded** —
 `mcp-count-latency-2026-09-08.md` measured a different statement and `learnings.md` forbids
 inheriting it; and `api-contract.md`'s per-account-coverage section describes what the code does.
+
+**Done, 2026-09-09.** Measured in `mcp-coverage-latency-2026-09-09.md`: the walk costs **3.0ms**
+at the expected 10k-row volume against an 18.2ms end-to-end `list_accounts` and a ~1s target.
+🔴 **That killed the opt-in parameter the design was holding in reserve** — cost was the only
+argument for making completeness something an agent had to ask for, and #19 is the record of what
+happens when it must. `get_coverage_report` is the more expensive tool at 38ms and scales worse
+(4.7× for 5× rows, because the cadence derivation is linear and in-memory); it is the verification
+surface, called deliberately, and that is the right place for the cost.
 
 ---
 

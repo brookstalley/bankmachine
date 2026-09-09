@@ -70,11 +70,18 @@ creates one, because an empty encrypted store would answer every question with a
 | `query_transactions` | transactions in a date window, newest first |
 | `spending_summary` | outflow per category in a window |
 | `get_pipeline_health` | every connection, when it last synced, what is wrong |
+| `get_coverage_report` | per account: what data exists, and how long it has been silent |
 
-🔴 **Four of the ten specified tools.** `cashflow_summary`, `balance_history`, `net_worth`,
-`list_holdings`, `find_recurring` and `get_coverage_report` are not built yet — the descope is
-recorded in `.prawduct/artifacts/api-contract.md`. `get_coverage_report` is the one to be aware of:
-it is half the verification surface, so for now `get_pipeline_health` is the whole of it.
+🔴 **Five of the ten specified tools.** `cashflow_summary`, `balance_history`, `net_worth`,
+`list_holdings` and `find_recurring` are not built yet — the descope is recorded in
+`.prawduct/artifacts/api-contract.md`.
+
+🔴 **The verification surface is now whole.** `get_pipeline_health` tells you whether the pipeline
+is healthy; `get_coverage_report` tells you what data actually exists, per account. Nine of the
+fourteen sandbox accounts have never had a transaction recorded, and before this pair an empty
+answer about one of them was indistinguishable from a quiet month — so "am I paying down my
+mortgage?" answered "no payments found", which looked honest and was false. Any answer touching
+such an account now carries an `accounts_without_coverage` warning naming it.
 
 The server also starts against a **missing or empty datastore** and reports that through
 `get_pipeline_health` rather than refusing (AC-ARCH.3) — so a tool that returns nothing tells you

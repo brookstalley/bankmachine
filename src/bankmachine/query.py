@@ -39,6 +39,7 @@ from bankmachine.config import Config
 from bankmachine.store.connection import inspect
 from bankmachine.store.engine import reader_connection
 from bankmachine.store.schema import (
+    PROVENANCE_SOURCES,
     TRANSACTIONS_DOMAIN,
     accounts,
     balances_daily,
@@ -47,7 +48,7 @@ from bankmachine.store.schema import (
     sync_state,
     transactions,
 )
-from bankmachine.store.types import UtcInstant, calendar_date, now_utc
+from bankmachine.store.types import CalendarDate, UtcInstant, calendar_date, now_utc
 
 #: How long since a connection's last successful sync before its data is called
 #: stale. A day and a half: the scheduled job runs nightly, so one missed run is
@@ -101,6 +102,14 @@ REQUEST_SCOPED_KINDS: tuple[str, ...] = (
     # defect. It is reported instead of smoothed away: a consumer comparing two
     # calls seconds apart deserves to know a write landed between them.
     "counted_during_change",
+    # 🔴 Request-scoped, and deliberately not connection-scoped even though "this
+    # account has never had a transaction" is standing state of the store. A kind
+    # riding every response equally is the defect the comment above records: the
+    # `gapped` notice arrived character-for-character identical on four
+    # unrelated questions, true and useless. This one fires only when THIS
+    # request's scope actually holds an uncovered account, so an empty answer
+    # about such an account carries it and an ordinary quiet window does not.
+    "accounts_without_coverage",
 )
 
 #: The warning vocabulary the API contract fixes. Named here as a tuple rather
@@ -964,12 +973,144 @@ def _coverage(conn: SAConnection) -> dict[str, Any]:
     }
 
 
+@dataclass(frozen=True, slots=True)
+class AccountCoverage:
+    """What the store holds for ONE account, so an empty answer about it is legible.
+
+    🔴 The absence this describes is the finding. Nine of fourteen sandbox
+    accounts have never had a transaction -- 82% of the balance sheet by
+    magnitude -- and `query_transactions(account_id=9)` answered `[]` with
+    nothing saying so, which reads as "no payments found" and is false. Three
+    fields actively implied the opposite: `coverage.accounts` counted all
+    fourteen, health reported the connection active, and the only warning was
+    about depth rather than breadth (#19, AC-9.5).
+
+    `transaction_count` is `0` rather than null for an account with nothing,
+    because a null would be a second way to spell the same fact and a consumer
+    would have to handle both. The dates are null because there is genuinely no
+    date -- present and null, never dropped, like every other nullable on the
+    wire.
+    """
+
+    account_id: int
+    first_transaction_date: CalendarDate | None
+    last_transaction_date: CalendarDate | None
+    transaction_count: int
+
+    @property
+    def uncovered(self) -> bool:
+        """No transaction has ever been recorded for this account.
+
+        A property rather than a comparison written at each site: "counts as
+        uncovered" is a rule, and a rule spelled three times is a rule that
+        stops agreeing with itself.
+        """
+        return self.transaction_count == 0
+
+    def to_wire(self) -> dict[str, Any]:
+        """The three fields every account row carries, in every tool that carries them."""
+        return {
+            "first_transaction_date": _iso_or_none(self.first_transaction_date),
+            "last_transaction_date": _iso_or_none(self.last_transaction_date),
+            "transaction_count": self.transaction_count,
+        }
+
+
+def _account_coverage(conn: SAConnection) -> dict[int, AccountCoverage]:
+    """The per-account coverage facts, for EVERY account, computed once.
+
+    🔴 One producer with two readers, and that is the requirement rather than a
+    tidiness preference. `list_accounts` needs these facts so an agent that never
+    thought to call the verification surface still learns an account is empty
+    (#19); `get_coverage_report` needs the same facts plus the gap analysis
+    built on them (#35). Computed twice they can disagree, and a verification
+    surface that contradicts the analysis surface is worse than one that is
+    missing.
+
+    🔴 **Every account appears, including the ones with no transactions**, which
+    is why the join is an outer join and why `removed_at IS NULL` sits in the
+    join condition rather than in a `WHERE`. In a `WHERE` it would filter away
+    the null-transaction side of the outer join and the accounts this function
+    exists to report would silently vanish from its own result -- the failure
+    would look exactly like an account having coverage.
+
+    Soft-deleted rows are excluded for the same reason every other reader
+    excludes them: a coverage report counting rows the analysis surface cannot
+    see would promise data no query can return.
+
+    One grouped read against `transactions_by_account_date`, which is the index
+    `data-model.md` names for exactly this walk.
+    """
+    result = conn.execute(
+        select(
+            accounts.c.account_id,
+            func.min(transactions.c.posted_date),
+            func.max(transactions.c.posted_date),
+            func.count(transactions.c.transaction_id),
+        )
+        .select_from(
+            accounts.outerjoin(
+                transactions,
+                (transactions.c.account_id == accounts.c.account_id)
+                & transactions.c.removed_at.is_(None),
+            )
+        )
+        .group_by(accounts.c.account_id)
+    ).all()
+    return {
+        int(row[0]): AccountCoverage(
+            account_id=int(row[0]),
+            # 🔴 Narrowed, never `_parse_coverage_date`. That helper reads a
+            # bound back off the rendered wire dict and takes a `str`; an
+            # aggregate over a `CalendarDateColumn` comes back as a plain
+            # `date`, verified rather than assumed. Passing one to the other
+            # returns None for every account and every coverage date on the
+            # surface goes null -- a failure indistinguishable from a store with
+            # no transactions, which is the exact answer this function exists to
+            # tell apart.
+            first_transaction_date=None if row[1] is None else calendar_date(row[1]),
+            last_transaction_date=None if row[2] is None else calendar_date(row[2]),
+            transaction_count=int(row[3]),
+        )
+        for row in result
+    }
+
+
+def _uncovered_caveat(uncovered: list[AccountCoverage]) -> list[Caveat]:
+    """The warning that names the accounts an answer could not have data for.
+
+    🔴 Request-scoped: it fires only when THIS request's scope holds an
+    uncovered account. A kind riding every response equally is the defect
+    `CONNECTION_SCOPED_KINDS` records above -- the `gapped` notice arrived
+    character-for-character identical on four unrelated questions, true and
+    useless for telling a caller whether this answer was the degraded one.
+
+    Names the ids, because "some accounts have no data" is a warning nobody can
+    act on and the caller's next move is to ask about a different account.
+    """
+    if not uncovered:
+        return []
+    ids = ", ".join(
+        str(coverage.account_id) for coverage in sorted(uncovered, key=lambda c: c.account_id)
+    )
+    return [
+        Caveat(
+            kind="accounts_without_coverage",
+            detail=(
+                f"no transaction has ever been recorded for account(s) {ids}; an empty or "
+                f"absent result for them means DATA NOT PRESENT, never no activity"
+            ),
+        )
+    ]
+
+
 def _covered_rows(conn: SAConnection, *, since: date, until: date) -> int:
     """How many transactions lie inside the window this answer actually covered.
 
-    🔴 Store-wide, never narrowed by `account_id`. Per-account coverage is its
-    own issue (#19) with its own shape; reporting a half of it here would leave
-    that work amending a field this chunk just shipped.
+    🔴 Store-wide, never narrowed by `account_id`. Per-account coverage is a
+    different fact with a different shape and it rides the account ROW -- see
+    `AccountCoverage` -- so narrowing this figure would leave a caller with two
+    fields that disagree about what "coverage" counts.
 
     Counted over the EFFECTIVE bounds, which is what makes it a coverage fact
     rather than a restatement of `matching`: it answers "how much data does this
@@ -1011,6 +1152,7 @@ def _answer(
     *,
     requested_window: tuple[date | None, date | None] | None,
     truncation: Truncation | None,
+    extra_caveats: list[Caveat] | None = None,
 ) -> Answer:
     """One answer, and the one place a window is reconciled against coverage.
 
@@ -1019,6 +1161,12 @@ def _answer(
     than in each query function because this is where `_coverage` is already
     computed -- one read, one reconciliation, and no second mechanism for a
     later windowed tool to drift from.
+
+    `extra_caveats` carries request-scoped warnings a caller derived from rows
+    this function never sees -- the uncovered-account notice is the first. It
+    defaults to `None` rather than being required, unlike `requested_window`,
+    because "this tool takes no window" is a fact worth forcing a writer to
+    state, while "this request raised nothing extra" is the ordinary case.
     """
     now = now_utc()
     coverage = _coverage(conn)
@@ -1057,6 +1205,7 @@ def _answer(
             _pipeline_warnings(conn, now)
             + ([] if window is None else window.caveats)
             + ([] if truncation is None else truncation.caveats)
+            + (extra_caveats or [])
         ),
         environment=config.environment,
         as_of=now,
@@ -1187,6 +1336,7 @@ def list_accounts(config: Config) -> Answer:
             )
             .order_by(institutions.c.name, accounts.c.name)
         ).all()
+        coverage = _account_coverage(conn)
         rows = [
             {
                 "account_id": int(r[0]),
@@ -1202,10 +1352,26 @@ def list_accounts(config: Config) -> Answer:
                 "current_minor_units": None if r[7] is None else int(r[7]),
                 "currency": r[8],
                 "balance_as_of": None if r[9] is None else str(r[9]),
+                # 🔴 On EVERY row, never behind a parameter. The failure #19
+                # describes is an agent that never thought to ask the
+                # verification surface, so a caller who has to opt in is a
+                # caller who still gets the misleading answer. This is
+                # `api-contract.md` § Direction's second norm applied per
+                # account: incompleteness rides the answer, not a channel
+                # nobody reads.
+                **coverage[int(r[0])].to_wire(),
             }
             for r in result
         ]
-        return _answer(config, conn, rows, requested_window=None, truncation=None)
+        uncovered = [c for c in coverage.values() if c.uncovered]
+        return _answer(
+            config,
+            conn,
+            rows,
+            requested_window=None,
+            truncation=None,
+            extra_caveats=_uncovered_caveat(uncovered),
+        )
 
 
 class UnknownAccountError(ValueError):
@@ -1373,6 +1539,19 @@ def list_transactions(
                 account_id=account_id,
             )
         )
+        # 🔴 Scoped to the account ASKED ABOUT, not to every empty account in the
+        # store. `query_transactions(account_id=9)` returning `[]` is #19's own
+        # repro -- "am I paying down my mortgage?" answering "no payments found",
+        # honest-looking and false -- and this is the call where the notice has
+        # to arrive. An unscoped query says nothing here: its empty window is an
+        # ordinary result, and naming nine irrelevant accounts on every page of
+        # every walk is the character-for-character noise the connection scope
+        # already taught this codebase not to emit.
+        uncovered = (
+            [c for c in (_account_coverage(conn).get(account_id),) if c is not None and c.uncovered]
+            if account_id is not None
+            else []
+        )
         return _answer(
             config,
             conn,
@@ -1383,6 +1562,143 @@ def list_transactions(
             truncation=Truncation.over(
                 returned=len(rows), counted=matching, resume_from=resume_from
             ),
+            extra_caveats=_uncovered_caveat(uncovered),
+        )
+
+
+def _median_interval(days: list[int]) -> float | None:
+    """The middle gap between consecutive transactions, or None when there is none.
+
+    🔴 Median rather than mean, and per account rather than global, because the
+    cadence it describes is a claim about THIS account. A salary account posting
+    fortnightly and a card posting daily have nothing to say about each other,
+    and a mean is dragged by the single long silence the report exists to find --
+    the outlier would raise the very threshold meant to catch it.
+
+    Fewer than two transactions means no interval exists at all. That is None
+    rather than zero, because zero would read as "posts every day" and make
+    every subsequent quiet hour a finding.
+    """
+    if not days:
+        return None
+    ordered = sorted(days)
+    middle = len(ordered) // 2
+    if len(ordered) % 2 == 1:
+        return float(ordered[middle])
+    return (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def coverage_report(config: Config) -> Answer:
+    """🔴 The verification surface's second half, per account. AC-9.5, #35.
+
+    `api-contract.md` names `get_pipeline_health` and this tool together as "the
+    verification surface, not the analysis surface", existing so an analyst agent
+    can establish completeness BEFORE answering -- the product's headline goal
+    being "answer it, or say why you should not." Only health shipped, so the
+    product made a two-part promise and delivered one part.
+
+    Per account, never per institution (AC-9.5): one institution may hold many
+    accounts with different coverage windows, and an institution-level summary
+    hides exactly that.
+
+    🔴 **Trailing silence, not an enumeration of gaps between transactions.**
+    AC-9.1 specified "gaps > 7 days" and measurement falsified it: every account
+    in this store is monthly, so a 7-day rule fires on 100% of CD's and Money
+    Market's intervals and yields ~146 findings with no signal. A per-account
+    threshold applied to the same enumeration would reproduce that noise in a
+    more defensible-looking form. What carries information is how long an account
+    has been quiet measured against its own cadence, which is what
+    `silence_ratio` reports.
+
+    🔴 Shares `_account_coverage` with `list_accounts` rather than recomputing:
+    two producers can disagree, and a verification surface that contradicts the
+    analysis surface is worse than one that is absent.
+    """
+    problem = _readable(config)
+    if problem is not None:
+        return _unusable(config, problem, requested_window=None, truncation=None)
+    with reader_connection(config) as conn:
+        coverage = _account_coverage(conn)
+        named = {
+            int(account_id): name
+            for account_id, name in conn.execute(
+                select(accounts.c.account_id, accounts.c.name)
+            ).all()
+        }
+        posted: dict[int, list[CalendarDate]] = {}
+        for account_id, posted_date in conn.execute(
+            select(transactions.c.account_id, transactions.c.posted_date)
+            .where(transactions.c.removed_at.is_(None))
+            .order_by(transactions.c.account_id, transactions.c.posted_date)
+        ).all():
+            if posted_date is not None:
+                # Narrowed for the same reason `_account_coverage` narrows: this
+                # column comes back a date, and the wire-dict parser beside it
+                # takes a string. Silently emptying this map would make every
+                # median null and every account look cadence-less.
+                posted.setdefault(int(account_id), []).append(calendar_date(posted_date))
+        sources: dict[int, dict[str, int]] = {}
+        for account_id, source, count in conn.execute(
+            select(transactions.c.account_id, transactions.c.source, func.count())
+            .where(transactions.c.removed_at.is_(None))
+            .group_by(transactions.c.account_id, transactions.c.source)
+        ).all():
+            sources.setdefault(int(account_id), {})[str(source)] = int(count)
+
+        # 🔴 One "today" for every row. Reading the clock per account would let a
+        # report straddle midnight and hand back rows measured against two
+        # different days, which is a difference nobody could explain from the
+        # payload.
+        today = calendar_date(now_utc().date())
+        rows: list[dict[str, Any]] = []
+        for account_id in sorted(coverage):
+            facts = coverage[account_id]
+            dates = posted.get(account_id, [])
+            median = _median_interval(
+                [(later - earlier).days for earlier, later in zip(dates, dates[1:], strict=False)]
+            )
+            days_silent = (
+                None
+                if facts.last_transaction_date is None
+                else (today - facts.last_transaction_date).days
+            )
+            # The quantity the ruling names, stated as a number rather than
+            # collapsed into a boolean: 28 days silent on a 30-day cycle is
+            # "genuinely borderline", and a flag is exactly what destroys that.
+            ratio = (
+                None
+                if median is None or days_silent is None or median == 0
+                else round(days_silent / median, 3)
+            )
+            rows.append(
+                {
+                    "account_id": account_id,
+                    "account": named.get(account_id),
+                    **facts.to_wire(),
+                    "median_interval_days": median,
+                    "days_silent": days_silent,
+                    "silence_ratio": ratio,
+                    # 🔴 One full missed cycle, because it is the only
+                    # non-arbitrary unit. Choosing 0.9 so the borderline pair
+                    # flags would reinvent the constant the ruling removed;
+                    # `silence_ratio` is what surfaces them instead.
+                    "silence_exceeds_cadence": (False if ratio is None else ratio > 1.0),
+                    # Present and zeroed rather than omitted: a source with no
+                    # rows for this account is a fact, and a missing key would
+                    # make a consumer guess whether it meant zero or unknown.
+                    "source_breakdown": {
+                        source: sources.get(account_id, {}).get(source, 0)
+                        for source in PROVENANCE_SOURCES
+                    },
+                }
+            )
+        return _answer(
+            config,
+            conn,
+            rows,
+            requested_window=None,
+            truncation=None,
+            extra_caveats=_uncovered_caveat([c for c in coverage.values() if c.uncovered]),
         )
 
 

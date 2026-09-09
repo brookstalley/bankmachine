@@ -20,6 +20,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date
 from hashlib import sha256
+from pathlib import Path
 
 import pytest
 from sqlalchemy import Connection as SAConnection
@@ -34,6 +35,7 @@ from bankmachine.store.migrations import migrate
 from bankmachine.store.migrations.core_schema import CORE_SCHEMA_DDL, CORE_SCHEMA_DDL_SHA256
 from bankmachine.store.schema import (
     CORE_TABLES,
+    PROVENANCE_SOURCES,
     account_rules,
     accounts,
     balances_daily,
@@ -991,3 +993,32 @@ def test_an_aggregator_row_must_name_the_response_it_came_from(writer: SAConnect
                 derivation_version_id=s.derivation_version_id,
             )
         )
+
+
+def test_the_provenance_constant_still_agrees_with_the_ddl() -> None:
+    """🔴 `PROVENANCE_SOURCES` is an enumeration, so it is checked, not trusted.
+
+    The read surface reports a breakdown by `source` and must emit a zero for a
+    source with no rows — which needs the full set spelled in Python, while the
+    authority lives in the frozen DDL's `CHECK (source IN (...))`. Two homes for
+    one fact is exactly the drift `learnings.md` records: a rule that matched on
+    a name where it meant a relationship, and a list that was already wrong on
+    the day it was written.
+
+    A third provenance arriving in the DDL without this tuple noticing would
+    make every coverage report silently omit a whole class of row, and the
+    payload would look complete. This test is the only thing that would catch
+    it.
+    """
+    ddl = (
+        Path(__file__).parents[2]
+        / "src"
+        / "bankmachine"
+        / "store"
+        / "migrations"
+        / "core_schema.py"
+    ).read_text(encoding="utf-8")
+    declared = set(re.findall(r"CHECK \(source IN \(([^)]*)\)\)", ddl))
+    assert declared, "the CHECK this test reads is no longer in the DDL, so it checks nothing"
+    for clause in declared:
+        assert set(re.findall(r"'([a-z]+)'", clause)) == set(PROVENANCE_SOURCES), clause

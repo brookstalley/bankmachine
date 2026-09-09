@@ -365,6 +365,18 @@ Index(
 #: `connector/` to get it.
 TRANSACTIONS_DOMAIN: Final = "transactions"
 
+#: The two values `source` may take on every silver table, spelled once for the
+#: readers that must report a zero for a source with no rows -- a breakdown that
+#: omitted the empty source would make a consumer guess whether it meant zero or
+#: unknown.
+#:
+#: 🔴 An enumeration, and therefore checked rather than trusted: the authority is
+#: the DDL's `CHECK (source IN (...))`, and `tests/store/test_schema.py` asserts
+#: this tuple still agrees with it. `data-model.md` names provenance exclusive
+#: and total, so a third value arriving without this tuple noticing is exactly
+#: the drift that assertion exists to catch.
+PROVENANCE_SOURCES: Final[tuple[str, ...]] = ("aggregator", "manual")
+
 sync_state = Table(
     "sync_state",
     metadata,
