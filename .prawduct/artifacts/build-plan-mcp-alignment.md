@@ -466,9 +466,10 @@ suite, no review, no commit. And it mutates by literal `str.replace`, so **prefe
 naming a whole expression or keyword argument over one spanning a formatter-chosen line
 break**; the latter is a hostage to the next reformat.
 
-Chunk 02's delegate left the existing 2026-07-28 anchor byte-identical and it still matches
-exactly once — verified at integration. Chunks 03 and 04 will move other anchors, so run
-this after them, not before.
+Chunk 02's delegate left the existing protocol-version anchor — the whole
+`if isinstance(requested, str) and requested in SUPPORTED_PROTOCOL_VERSIONS` statement —
+byte-identical, and it still matches exactly once. Chunks 03 and 04 will move other
+anchors, so run this after them, not before.
 
 ---
 
@@ -563,11 +564,19 @@ alternative is a 1000-row ceiling that cannot be paged past at all. That ceiling
 This server does, which is 3tears' Rule D5 (*"a structured handler result rides BOTH
 faces"*). Ahead, not behind. No change.
 
-**Consolidating tools behind an `action` parameter.** Cordyceps (7 tools / 100+ actions)
-and hallucinote (13 unified tools, consolidated from 52) both do this under token
-pressure. Four tools — ten specified — is inside the band where selection accuracy holds,
-so the consolidation would buy nothing and cost the flat, typed schemas that make this
-surface's arguments checkable. Revisit only if the specified ten grows.
+**Consolidating tools behind an `action` parameter — NOT settled here; see #30.**
+Cordyceps (7 tools / 100+ actions) and hallucinote (13 unified tools, consolidated from
+52) both do this under token pressure. Four tools — ten specified — is inside the band
+where selection accuracy holds, so the *blanket* action-parameter form would buy nothing
+and cost the flat, typed schemas that make this surface's arguments checkable.
+
+🔴 **That is this plan's reading of the sibling evidence, and it is not a ruling.** The
+owner has directed "minimize tools, use actions to cover related capabilities", and #30 —
+filed by this same wave — carries that directive together with the hard conflict it
+implies: MCP allows one `outputSchema` per tool, and chunk 06 above makes schemas per-tool
+precisely so ABSENCE is meaningful. #30 owns the decision and must land it BEFORE the
+remaining tools are designed, which is the order §7's follow-up work assumes. Read this
+paragraph as evidence #30 must account for, never as the answer.
 
 **MCP prompts.** Hallucinote removed theirs (`mcp-tool-design.md` §6.2): Claude Code
 surfaces prompts only as user-facing slash commands, so an agent can never reach them.

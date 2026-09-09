@@ -76,11 +76,21 @@ published enum turns an invented kind into a *rejected answer*, so the warning w
 the response it rode on. And the path guard learned that a URI segment is not a filesystem
 path. Each has a go-red case.
 
-**Not done, and filed rather than dropped:** consolidating the tool surface behind action
-parameters (#30, which must decide the `outputSchema` conflict it carries), teaching errors to
-hand back structured recovery data (#31), adopting `mcp-types` for the wire facts without the
-SDK's transport stack (#32), and an eval harness that exercises the surface the way a model
-actually uses it (#33).
+**Not done, and filed rather than dropped — eight items, #30 through #37.** Consolidating the
+tool surface behind action parameters (#30, which must decide the `outputSchema` conflict it
+carries, and which binds the remaining tools before they are designed); teaching errors to hand
+back structured recovery data (#31); adopting `mcp-types` for the wire facts without the SDK's
+transport stack (#32); an eval harness that exercises the surface the way a model actually uses
+it (#33); the instructions still enumerating fields three carriers now state (#36, a deliberate
+keep-for-now whose revisit is tied to #30); a self-describing help surface on the tool layer
+(#37); and `get_coverage_report`, half the verification surface, still unbuilt (#35).
+
+🔴 **One of the eight is exposure this wave created rather than found: #34.** The decision table
+added here tells an agent what to DO about a `rule-applied` warning, and `rule-applied` is
+declared in the vocabulary, explained in the handshake table, and now carried in the resources
+surface — while none of the eleven `Caveat` construction sites can emit it. Three carriers now
+promise a warning nothing sends. The honest cheap fix is to mark it not-yet in all three places;
+building the emitter is the aggregate-rule path and is not this wave's.
 
 ## 2026-09-08: A truncated answer carries the route to the rest
 
