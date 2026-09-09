@@ -32,32 +32,46 @@ from bankmachine import query
 SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "bankmachine"
 
 
-def _constructed_kinds() -> list[tuple[Path, int, str | None]]:
-    """Every `Caveat(...)` in the product, with the kind it names.
+def _kinds_in(source: str) -> list[tuple[int, str | None]]:
+    """Every `Caveat(...)` in one module's source, with the kind it names.
+
+    🔴 Takes source rather than reading the tree, so the positive control below
+    can drive THIS function over a known-bad module instead of asserting
+    something adjacent to it. A control that does not run the scanner proves the
+    fixture, not the scan -- which is the same defect this file exists to catch,
+    one level up.
 
     A `None` kind is a site whose kind is not a literal -- computed, passed in,
     or read from somewhere. Those are reported separately, because the scan can
     prove nothing about them and silently skipping one would make this test
     weaker exactly where the risk is highest.
     """
+    found: list[tuple[int, str | None]] = []
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        target = node.func
+        name = target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", None)
+        if name != "Caveat":
+            continue
+        kind: ast.expr | None = node.args[0] if node.args else None
+        for keyword in node.keywords:
+            if keyword.arg == "kind":
+                kind = keyword.value
+        if isinstance(kind, ast.Constant) and isinstance(kind.value, str):
+            found.append((node.lineno, kind.value))
+        else:
+            found.append((node.lineno, None))
+    return found
+
+
+def _constructed_kinds() -> list[tuple[Path, int, str | None]]:
+    """`_kinds_in` over every module the product ships."""
     found: list[tuple[Path, int, str | None]] = []
     for path in sorted(SOURCE_ROOT.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            target = node.func
-            name = target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", None)
-            if name != "Caveat":
-                continue
-            kind: ast.expr | None = node.args[0] if node.args else None
-            for keyword in node.keywords:
-                if keyword.arg == "kind":
-                    kind = keyword.value
-            if isinstance(kind, ast.Constant) and isinstance(kind.value, str):
-                found.append((path, node.lineno, kind.value))
-            else:
-                found.append((path, node.lineno, None))
+        for line, kind in _kinds_in(path.read_text(encoding="utf-8")):
+            found.append((path, line, kind))
     return found
 
 
@@ -108,12 +122,29 @@ def test_the_scan_reaches_the_sites_it_claims_to_check() -> None:
 
 
 def test_the_scan_catches_a_kind_the_vocabulary_does_not_declare() -> None:
-    """The positive control: a checker that matches nothing passes forever."""
-    tree = ast.parse('Caveat("rate_limited", "the aggregator asked us to slow down")\n')
-    call = next(n for n in ast.walk(tree) if isinstance(n, ast.Call))
-    invented = call.args[0]
-    assert isinstance(invented, ast.Constant)
-    assert invented.value not in set(query.WARNING_KINDS), (
+    """The positive control: a checker that matches nothing passes forever.
+
+    🔴 Drives `_kinds_in` over a module that is known bad, rather than asserting
+    a property of the fixture and calling that a control. The earlier version
+    checked only that its invented kind was absent from `WARNING_KINDS` -- true
+    whether or not the scanner worked at all, which is the failure this whole
+    file exists to prevent, reproduced inside its own control.
+    """
+    known_bad = (
+        'warnings.append(Caveat("rate_limited", "slow down"))\n'
+        'warnings.append(Caveat(kind="stale", detail="fine"))\n'
+        'warnings.append(Caveat(kind=_computed(), detail="opaque"))\n'
+    )
+    vocabulary = set(query.WARNING_KINDS)
+    found = _kinds_in(known_bad)
+
+    assert len(found) == 3, f"the scan did not reach all three sites: {found}"
+    strays = [kind for _, kind in found if kind is not None and kind not in vocabulary]
+    assert strays == ["rate_limited"], f"the scan did not catch the invented kind: {found}"
+    assert [line for line, kind in found if kind is None] == [3], (
+        "the scan did not report the computed kind as unreadable"
+    )
+    assert "rate_limited" not in vocabulary, (
         "this control has to name a kind the vocabulary does NOT declare; if the "
         "vocabulary grew to include it, pick another"
     )

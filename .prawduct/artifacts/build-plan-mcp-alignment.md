@@ -1,3 +1,13 @@
+---
+artifact: build-plan
+version: 1
+scope: mcp-alignment
+branch: feature/mcp-alignment
+depends_on:
+  - artifact: api-contract
+    file_path: .prawduct/artifacts/api-contract.md
+---
+
 # Build plan — MCP surface alignment
 
 Origin: a review of three sibling repos' MCP practice (`../hallucinote`, `../cordyceps`,
@@ -256,7 +266,15 @@ conflict, the norm wins and the budget is missed with that recorded — hallucin
 ### Done when
 
 - Every warning kind in the vocabulary has a stated agent action.
-- Instructions measurably smaller, with the number recorded.
+- ~~Instructions measurably smaller, with the number recorded.~~ 🔴 **This criterion
+  INVERTED and the chunk was ticked anyway — recorded here rather than left to be noticed.**
+  `_instructions` grew 3,691 → 5,936 characters (+61%). Two contract tests require the text
+  to name every envelope field and every warning kind, so no name could leave and only the
+  prose around them could; the what-to-do guidance is net-new writing on top of that floor.
+  The budget this criterion was written against was then retracted outright — see "The token
+  budget, re-derived", which found the citation behind it measures tool COUNT rather than
+  size. So the criterion was not merely missed, it was aimed at the wrong quantity. The
+  number is recorded, which is the half of it that still stands.
 - The existing drift tests (`test_the_instructions_name_every_warning_kind_the_vocabulary_defines`,
   `test_the_instructions_name_every_field_the_envelope_actually_carries`) still pass —
   they are contracts, and this chunk is exactly the edit they exist to catch.
@@ -429,7 +447,7 @@ and this guard's rationale is the first thing that breaks.
 ## 7b. Chunk 07 — The go-red harness learns the two new guards
 
 `verify_norms_go_red.py` proves each norm test actually goes red by writing the broken
-version to disk, running the named test, and putting it back — fifty-five times. Chunk 02
+version to disk, running the named test, and putting it back — once per entry in its `CASES` table. Chunk 02
 added two guards and, correctly, did not touch that harness: it is an existing file and was
 outside the delegate's boundary. So the three newest norm tests are the only ones with no
 standing proof they can fail — each was verified by hand at integration, which is

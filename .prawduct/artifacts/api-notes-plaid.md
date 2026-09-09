@@ -546,7 +546,7 @@ them were facts this list either got wrong or never carried:
 So the mitigation was not sufficient: reading the types once, by hand, produced a list that was
 right about what it covered and silently short of what it did not. The decision's revisit clause
 is *"user can revisit if the handshake proves brittle in practice."* **It has.** The re-examination
-is filed on the backlog, and it turns on a unit this note did not price separately: `mcp-types`
+is filed as issue #32, and it turns on a unit this note did not price separately: `mcp-types`
 is separately installable and resolves to six packages with no transport of any kind, against the
 29-package figure that (correctly) ruled out `mcp` itself.
 
