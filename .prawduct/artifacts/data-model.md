@@ -285,13 +285,18 @@ exact failure AC-11.8 exists to prevent.
 
 - `(source = 'aggregator') <= (source_account_id IS NOT NULL)`.
 - Partial unique index `accounts_source_identity ON (connection_id, source_account_id) WHERE source_account_id IS NOT NULL`.
-- 🔴 **`last_seen_date` is nullable and was not backfilled.** Migration 003's `apply` issues DDL
-  only, per the runner's contract, and a backfill is DML. The read path carries the transitional
-  rule instead: `query._account_lifecycle` reads a null as `first_seen_date`, which is true by
-  construction — the account was listed at least once, on that date. **The rule retires itself**
-  once one post-migration sync has repopulated every account its rosters still name; a null
-  surviving that belongs to an account no roster has listed since, which is exactly what the read
-  path is looking for. Nothing has to remember to remove it.
+- 🔴 **`last_seen_date` is nullable and was not backfilled, and the null is load-bearing.** It means
+  *no roster observation is recorded for this account*, and `query._account_lifecycle` reads it as
+  exactly that — never as a date. The deeper reason there is no backfill is that there is nothing
+  honest to backfill with: the correct value is the connection's last successful roster observation,
+  and the absence of that record is the whole reason AC-12.4 exists.
+  ⚠️ **Reading a null as `first_seen_date` was tried and is wrong**, recorded so it is not
+  re-proposed as an obvious simplification. It looks true for one account and breaks across a
+  connection: the verdict compares an account against the maximum over its siblings, first-seen dates
+  legitimately differ between them (a second card, a later savings account), and every older account
+  then fell behind that maximum and was reported closed for the whole window until the connection's
+  next successful sync. A connection with no observation marks nothing absent; once any of its
+  accounts carries one, an account still null was genuinely not in that roster.
 
 🔴 **Why `balance_class` exists as data rather than being derived from `account_type`.** `net_worth`
 is an enumerated consumer of this schema and `account_type` cannot answer it: the types are the
@@ -387,11 +392,14 @@ Identity and access indexes:
   posts. That is the correct lookup and it is unchanged. One account of the two directions, held
   here, on the `Index` in `store/schema.py`, and in `_existing_transaction`'s docstring.
 
-  🔴 **The DDL comment in `store/migrations/core_schema.py` still carries the withdrawn claim** — it
-  repeats "a posting transaction finds its pending row by the source's own pending identifier". The
-  DDL is frozen, so correcting a comment inside it is not a change this chunk could make; it is
-  recorded here so the next migration-touching cycle fixes it rather than re-deriving the confusion
-  from it.
+  **Corrected in the DDL too, 2026-09-09.** The comment beside this index in
+  `store/migrations/core_schema.py` repeated the withdrawn claim, and it was left standing for one
+  commit on the belief that the frozen-DDL norm covered it. It does not: `CORE_SCHEMA_DDL` is a tuple
+  of statement *strings* and the hash is taken over those, so a Python comment between them is
+  outside the freeze. That distinction is worth keeping — "the DDL is frozen" is a rule about what
+  the database was told, not about the prose around it — and the comment beside an index is what the
+  next reader believes, so leaving it wrong while correcting only this document would have kept the
+  misleading half exactly where it does its damage.
 
 #### `balances_daily` (AC-3.1)
 

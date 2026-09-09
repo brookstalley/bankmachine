@@ -39,6 +39,8 @@ governed_by:
       - "a transaction is never hard-deleted; removal is a soft delete → C2 builds on `removed_at` and adds no delete path"
       - "a migration's DDL is frozen → C1 adds migration 003 rather than editing migration 002"
       - "every silver row carries exclusive provenance and its derivation version → `accounts` carries no `derivation_version_id` and is not rebuildable; C1's AC-12.6 rests on exactly that and must not change it"
+      - "the daily balance and holdings series are append-only → inapplicable; nothing here writes `balances_daily` or `holdings`. FR-9 adds a column to `accounts`, which is a dimension table and not one of the two series this norm governs"
+      - "🔴 a source value is never overwritten in place → CONFORMS, and it is the one disposition here that needed an argument rather than a check. AC-13.2 requires a settlement to update `amount_minor` IN PLACE, which reads at first like a departure. It is not: the norm protects a source value from being clobbered by LOCAL interpretation, which is why the remedy it names is a separate override column. A settlement replaces one figure the source reported with a later figure the source reported for the same transaction — the source correcting itself, not us reinterpreting it — and both raw responses stay in `raw_responses`, so the hold amount is never lost and the row remains rebuildable. C2 also verified the hold figure is not retained as a second field, which is AC-13.2's own requirement and would otherwise be the tempting way to dodge this question"
 ---
 
 # Build Plan — The Three Production Blockers
@@ -159,7 +161,7 @@ AC-14.7, AC-14.8, AC-14.9) that no chunk here may claim, and #40 additionally ca
 `closed` lifecycle value until an operator declaration path exists. See § *What this plan does NOT
 close* and the as-built notes under chunk 04.
 
-### Chunk 00 · The ruling, the norm it births, and the shared vocabulary
+### Chunk 00: The ruling, the norm it births, and the shared vocabulary
 
 Delivers: AC-12.8 restated to the ruled treatment; the ruling recorded where the argument for the
 road not taken survives it; the fifth `api-contract.md` § Direction norm born, with its retroactivity
@@ -170,7 +172,7 @@ in the server instructions.
 **Done when:** `tests/preferences` and `tests/test_mcp*.py` are green, and no delegate needs to touch
 the vocabulary.
 
-### Chunk 01 · Account lifecycle, made visible (#40)
+### Chunk 01: Account lifecycle, made visible (#40)
 
 Delivers AC-12.1 through AC-12.9. The population path, the read path and one migration — **not a read
 path alone**, which is the false premise #40's body led with. Design proposed in
@@ -246,7 +248,7 @@ study measured* is against reusing #19's 3.0ms figure for a different walk:
 every tool calls. At 0.08 ms the duplication was left rather than threaded through `_answer`, whose
 signature is shared with C2's and C3's tools and was not C1's to move mid-fan-out.
 
-### Chunk 02 · Pending-transaction semantics (#22)
+### Chunk 02: Pending-transaction semantics (#22)
 
 Delivers AC-13.1 through AC-13.7. Tier 1 (the read path — no aggregate distinguishes pending from
 posted today) and tier 2 (settlement branch cases the fixtures do not reach) per
@@ -257,7 +259,7 @@ operator's and are out of this chunk.**
 `data-model.md` § Constraints with the same account in both; the pending disclosure is present-and-
 zero rather than absent; and a fixture carrying `pending: true` rows exercises the read path.
 
-### Chunk 03 · The per-connection sign-convention check (#23)
+### Chunk 03: The per-connection sign-convention check (#23)
 
 Delivers AC-14.1 through AC-14.6 — a per-connection check over a declared category set, with the
 measured sandbox baseline as its negative control and a synthetic inverted feed as its positive one,
@@ -320,7 +322,7 @@ override; it is a scope statement, not a mechanism]`
 **Not done here, and named rather than left to inference:** AC-14.5's wiring itself (chunk 04's, per
 the plan's own decision above) and AC-14.7–14.9 (the operator's, VRF-006).
 
-### Chunk 04 · Integration
+### Chunk 04: Integration
 
 Delivers: the three branches merged; **AC-14.5's wiring** — `signs`' finding reaching `money_summary`
 as `sign_convention_unverified`, with the test that proves an aggregate over a flagged connection
@@ -331,7 +333,7 @@ the full harness run; the combined suite; `/prawduct:critic cumulative`.
 **Done when:** the suite is green on the merged tree, every go-red case in `CASES` is red, AC-14.5
 holds end to end, and the Critic has no unresolved blocking findings.
 
-### Chunk 04 — as built
+### As built: integration notes for chunk 04
 
 **The two boundary-crossing wirings, which were the partition's real risk and were both real.**
 AC-14.5 (`signs.caveats` → `money_summary`) and AC-13.5 (`_stranded_holds` → `coverage_report`) each
@@ -344,6 +346,16 @@ that never invokes it are indistinguishable from the producer's own tests.
 AC-13.5's suppression carries AC-12.7's reasoning onto its sibling: a non-active account's stranded
 hold can never settle and can never be cleared, so the *call to action* is withheld while the *count*
 stays as measured. Hiding the count too would be the opposite error and was just as available.
+
+**A third crossing, wired after the review and recorded here because chunk 01 left it open.**
+`account_no_longer_active` now also fires on `query_transactions(account_id=N)`, scoped to the
+account asked about. Chunk 01 deliberately did not build it — `list_transactions` was C2's function
+and no criterion names it — and recorded it as *left for integration*. Integration answered it by
+building it: AC-12.1's rationale is the agent that never thought to call the verification surface,
+and asking "what did I spend on this card" about an account whose institution stopped listing it is
+exactly that agent. `accounts_without_coverage` already fires on the same call for the coverage axis,
+which is the precedent. Covered for both the derived value and the operator-declared one, since they
+share a branch.
 
 **Three defects delegates found outside their own maps, all fixed here.** Chunk 00's guidance for
 `sign_convention_unverified` described a broader trigger than the check fires on; the client guide had

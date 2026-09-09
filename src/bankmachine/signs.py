@@ -48,6 +48,7 @@ visible only at population scale and only per connection.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -321,7 +322,11 @@ def _connections_in_window(
 
 
 def caveats(
-    conn: SAConnection, *, since: date | None = None, until: date | None = None
+    conn: SAConnection,
+    *,
+    since: date | None = None,
+    until: date | None = None,
+    measured: Sequence[ConnectionSignConvention] | None = None,
 ) -> list[Caveat]:
     """The findings an answer over this window must carry (AC-14.2, AC-14.5).
 
@@ -357,7 +362,15 @@ def caveats(
     """
     contributing = _connections_in_window(conn, since=since, until=until)
     found = []
-    for measurement in measure(conn):
+    # 🔴 `measured` lets a caller that ALREADY measured pass its own result in,
+    # rather than paying for a second scan whose answer can differ from the
+    # first. The reader is autocommit and holds no cross-call snapshot, so two
+    # measurements taken moments apart are two different observations -- and
+    # `pipeline_health` publishes one of them per row while warning from the
+    # other, which is how a single answer came to state a connection is
+    # `consistent` in its row and unverified in its warnings. One measurement
+    # per answer is the property; the parameter is what makes it expressible.
+    for measurement in measure(conn) if measured is None else measured:
         if measurement.connection_id not in contributing:
             continue
         caveat = measurement.caveat()

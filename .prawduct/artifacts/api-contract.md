@@ -493,6 +493,33 @@ line, and it is why the headline rides the envelope rather than waiting for a ca
 from rows they may never read. The ratio is a property of this fixture and not a constant; what the
 contract fixes is that the decomposition is always present, never the size of the gap.
 
+🔴 **The block also carries the hold decomposition (AC-13.1, AC-13.4), and those six keys are
+always present.** Beside the three outflow classes, each currency entry states
+`pending_transactions` and `pending_net_minor_units` — how much of this figure is authorisation
+holds that have not settled — plus `expired_holds` / `expired_holds_net_minor_units` and
+`settled_from_hold` / `settled_from_hold_net_minor_units`. Present and zero, never absent: a total
+that mixes holds into settled money without saying so is the defect this surface exists to refuse,
+and a key that appears only when it is non-zero cannot be branched on. The two exit paths are
+distinguished on purpose — an *expired* hold is one that never posted (`pending` with a removal),
+while a row that settled and was later withdrawn left as a settled row, and counting the second as
+the first would tell a consumer a hold dropped off when a real transaction was retracted.
+
+🔴 **`get_coverage_report` rows carry `stranded_holds` and `oldest_stranded_hold` (AC-13.5), and
+`get_pipeline_health` rows carry `sign_convention` with the counts it was judged on (AC-14.2).**
+Both sit on the verification surface rather than on an analysis answer, which is this document's own
+per-account ruling below rather than a placement chosen here — and putting the stranded finding on
+the analysis answers as well was tried and withdrawn, because it produced a count scoped to the
+request beside a hold count scoped to the page, and escaped the non-active suppression its sibling
+applies. `oldest_stranded_hold` is null both when there is nothing to report and when the account is
+not active: a closed account's hold can never settle and can never be cleared, so the *call to
+action* is withheld while the *count* stays as measured.
+
+🔴 **Every `list_accounts` and `get_coverage_report` row carries the lifecycle block (FR-9)** —
+`lifecycle`, `closed_date`, `last_seen_in_roster`, `roster_last_observed` — and `coverage` carries
+`accounts_not_active` and `not_active_balance_minor_units` beside its `accounts` count, per AC-12.8's
+ruled include-and-flag treatment. The balance figure is per currency for the same reason every other
+figure here is.
+
 The three sum to the window's total outflow in that currency, and that identity is the contract:
 it is what proves the classification *partitions* the rows rather than quietly dropping some.
 🔴 **Per currency, never one integer across currencies**, by the ruling that governs every

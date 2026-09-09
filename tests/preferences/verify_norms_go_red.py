@@ -1189,6 +1189,33 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "INVERTED_ABOVE_SHARE: float = 1.5",
         f"{SIGN_TESTS}::test_the_positive_control_is_reported",
     ),
+    (
+        # 🔴 One measurement per answer. The reader is autocommit and pins no
+        # snapshot, so a second scan is a second observation -- and this answer
+        # publishes a verdict per row while warning from the same data. Ignoring
+        # the handed-in measurement leaves every other test green, which is why
+        # this case anchors on the parameter being USED rather than on the caller
+        # passing it.
+        "sign convention: caveats honour the measurement they were handed",
+        SIGNS,
+        "    for measurement in measure(conn) if measured is None else measured:",
+        "    for measurement in measure(conn):",
+        f"{SIGN_TESTS}::test_caveats_uses_the_measurement_it_was_handed_rather_than_re_reading",
+    ),
+    (
+        # 🔴 The CALLER half, and it needs its own case: mutating the call site
+        # cannot redden a test that calls `caveats` directly, so the producer
+        # case above is blind to a surface that stops passing the measurement
+        # through. This is the rule the build plan set for the other two
+        # boundary crossings -- anchor on the call, because a producer that
+        # works and a surface that never invokes it look identical from the
+        # producer's own tests.
+        "sign convention: pipeline_health passes its measurement rather than re-reading",
+        QUERY,
+        "            extra_caveats=signs.caveats(conn, measured=measured),",
+        "            extra_caveats=signs.caveats(conn),",
+        f"{SIGN_TESTS}::test_pipeline_health_measures_once_even_when_a_second_scan_would_differ",
+    ),
     # -- FR-9 (#40): account lifecycle -------------------------------------
     #
     # 🔴 Four cases rather than one, because #40 is a population path, a read
@@ -1212,7 +1239,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-12.9: an account absent from the latest roster is no_longer_reported",
         QUERY,
-        "        elif last_seen is not None and roster is not None and last_seen < roster:",
+        "        elif last_seen is None or last_seen < roster:",
         "        elif False:",
         f"{LIFECYCLE_TESTS}::"
         "test_an_account_the_roster_stopped_listing_is_reported_no_longer_reported",
@@ -1323,9 +1350,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-14.5: an aggregate over an inverted connection says so",
         QUERY,
-        "                _pending_caveat(pending, stranded) "
-        "+ signs.caveats(conn, since=since, until=until)",
-        "                _pending_caveat(pending, stranded)",
+        "                _pending_caveat(pending) + signs.caveats(conn, since=since, until=until)",
+        "                _pending_caveat(pending)",
         f"{SIGN_TESTS}::test_an_aggregate_over_a_flagged_connection_says_so",
     ),
     (

@@ -21,15 +21,29 @@ what makes an archive replay order-independent, which is the specific care
 deferred rather than half-built. Without a recorded observation there is no
 non-`active` state for the read path to read at all.
 
-**Nullable, and no backfill.** The runner's contract is that a migration's
-`apply` issues DDL only, and a backfill of existing rows is DML. Rather than
-widen that convention for one column, the read path carries a transitional rule:
-a null `last_seen_date` is read as `first_seen_date`, which is true by
-construction -- the account was listed at least once, on that date. The rule
-retires itself once every live account has been observed by one post-migration
-sync; a null surviving after that belongs to an account no roster has listed
-since the migration, which is exactly what the read path is looking for.
-`query._account_lifecycle` is where the rule lives.
+**Nullable, and no backfill -- and the null means exactly one thing.** The
+runner's contract is that a migration's `apply` issues DDL only, and a backfill
+of existing rows is DML. But the deeper reason there is no backfill is that
+there is nothing honest to backfill WITH: the correct value is the connection's
+last successful roster observation, and the absence of that record is the whole
+reason AC-12.4 exists.
+
+🔴 **So a null here means "no roster observation is recorded for this account",
+and `query._account_lifecycle` reads it as exactly that -- never as a date.**
+That is worth stating in the migration, because the obvious alternative was
+tried and was wrong: reading a null as `first_seen_date` looks true for one
+account (it WAS listed once, on that date) and breaks across a connection,
+because the lifecycle verdict compares an account against the maximum over its
+siblings and first-seen dates legitimately differ between them. A second card or
+a later savings account put every older account behind that maximum and reported
+it CLOSED, for the whole window between this migration and that connection's next
+successful sync -- indefinitely, for a connection that is failing.
+
+The null is therefore load-bearing rather than a gap waiting to be filled, and
+AC-12.5 is what makes it safe: absence is measured against a successful
+observation and never against silence. A connection with no observation at all
+marks nothing absent; once ANY of its accounts carries one, an account still null
+was genuinely not in that roster, which is the detection this column exists for.
 """
 
 from __future__ import annotations

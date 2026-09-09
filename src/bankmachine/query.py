@@ -402,8 +402,13 @@ class AccountLifecycle:
     account is counted twice.
 
     🔴 **The dates ride beside the verdict** (AC-12.3), so `no_longer_reported`
-    is re-derivable from the row without a second call -- `last_seen_in_roster <
-    roster_last_observed` is the whole derivation. That is the `silence_ratio`
+    is re-derivable from the row without a second call. The derivation reads both
+    nulls as well as the comparison: a null `roster_last_observed` means this
+    connection has never been observed, so nothing on it is absent; otherwise the
+    account is absent when its own `last_seen_in_roster` is null or is behind
+    that maximum. Stated in full because the comparison alone was once written
+    here as "the whole derivation", and it is the null cases that carry the
+    upgrade window and the newly-vanished account. That is the `silence_ratio`
     ruling applied again: a number lets a reader see a borderline case, and a
     bare flag is what destroys that.
     """
@@ -451,22 +456,33 @@ def _account_lifecycle(conn: SAConnection) -> dict[int, AccountLifecycle]:
     observations the store currently holds, which is the only thing that is
     actually known.
 
-    **AC-12.5's three clauses hold by construction, not by three guards.**
-    `roster_last_observed` for a connection is the maximum of its own accounts'
-    `last_seen_in_roster`, so:
+    **AC-12.5's three clauses follow from how the maximum is computed**, rather
+    than from three guards written by hand. `roster_last_observed` for a
+    connection is the maximum of its own accounts' `last_seen_in_roster`, so:
 
     * a connection whose roster could not be fetched moves no date at all, and
       nothing becomes older than a maximum that did not move;
     * a connection whose *entire* roster vanishes at once moves the maximum with
-      it, so nothing is ever older than it -- fourteen simultaneous closures is
-      not a thing that happens, and the connection-level failure it really is
-      already has a home in `get_pipeline_health`; and
+      it, so nothing is ever older than it; and
     * an account with no connection (the FR-7 import path) has no roster to be
       absent from, so both dates are null and the comparison is never reached.
 
-    A `connections.roster_observed_at` column would have needed each of those
-    three written into it by hand. This is `learnings.md` § *Guarantees by
-    construction*: the property is a consequence of how the number is computed.
+    🔴 **The second clause is a REQUIREMENT being obeyed, not a property being
+    proved, and calling it "by construction" overstated it.** The arithmetic is
+    a consequence of the maximum; whether the resulting silence is *right* is
+    not. AC-12.5 sanctions it with an argument about scale -- fourteen
+    simultaneous closures is not a thing that happens, so a whole roster
+    vanishing is a pipeline failure and belongs to `get_pipeline_health`. At a
+    connection holding ONE account that argument does not hold: one account
+    closing is entirely ordinary, and it is indistinguishable here from the feed
+    breaking, so such an account reports `active` indefinitely with nothing
+    saying otherwise. That gap is real, it is the requirement's and not this
+    function's, and it is filed rather than papered over here -- changing the
+    behaviour would be departing from a ratified criterion silently, which is the
+    worse of the two errors.
+
+    `learnings.md` § *Guarantees by construction* is about the first and third
+    clauses. The second borrows the phrase and should not.
     """
     result = conn.execute(
         select(
@@ -483,14 +499,28 @@ def _account_lifecycle(conn: SAConnection) -> dict[int, AccountLifecycle]:
     seen: dict[int, CalendarDate | None] = {}
     for row in result:
         connection_id = None if row[1] is None else int(row[1])
-        # 🔴 The transitional rule migration 003 traded a backfill for. A null
-        # `last_seen_date` predates the migration, and reading it as
-        # `first_seen_date` is true by construction: the account was listed at
-        # least once, on that date. It retires itself -- one post-migration sync
-        # repopulates every account its rosters still name, and a null surviving
-        # that belongs to an account no roster has listed since, which is exactly
-        # what this function is looking for.
-        last_seen = None if connection_id is None else calendar_date(row[5] or row[4])
+        # 🔴 A null `last_seen_date` means NO ROSTER OBSERVATION IS RECORDED for
+        # this account, and it is left null rather than read as anything else.
+        #
+        # Reading it as `first_seen_date` was tried and is wrong. It looks true
+        # -- the account was listed at least once, on that date -- but the
+        # comparison below is between accounts on one connection, and first-seen
+        # dates legitimately differ across them: a second card, a savings account
+        # opened later. So every account on a connection whose siblings arrived
+        # later fell behind a maximum assembled out of first-seen dates and was
+        # reported CLOSED, for the whole window between migration 003 and that
+        # connection's next successful sync -- indefinitely, for a connection
+        # that is failing. A fabricated closure on the balance sheet is the exact
+        # failure this feature exists to refuse.
+        #
+        # A backfill cannot rescue it either: the honest backfill value is the
+        # connection's last successful roster date, which is the observation
+        # AC-12.4 exists because nothing ever recorded.
+        #
+        # Null is therefore load-bearing, and AC-12.5 is what makes it safe:
+        # absence is measured against a successful observation and never against
+        # silence. A pre-migration null IS silence.
+        last_seen = None if connection_id is None or row[5] is None else calendar_date(row[5])
         seen[int(row[0])] = last_seen
         if connection_id is not None and last_seen is not None:
             current = observed.get(connection_id)
@@ -511,7 +541,19 @@ def _account_lifecycle(conn: SAConnection) -> dict[int, AccountLifecycle]:
         # observation still rides the row beside it as evidence.
         if str(row[2]) != "active":
             value = "closed"
-        elif last_seen is not None and roster is not None and last_seen < roster:
+        elif roster is None:
+            # No account on this connection carries a roster observation, so the
+            # connection has never been observed since migration 003 and nothing
+            # here can be called absent. AC-12.5's first clause, which says a
+            # connection whose roster could not be fetched marks nothing absent,
+            # reaching the case where it has not been fetched YET.
+            value = "active"
+        elif last_seen is None or last_seen < roster:
+            # `roster` is not None, so this connection HAS been observed. An
+            # account still carrying no observation was not in that roster --
+            # which is the steady-state detection this whole item is for, and it
+            # keeps working precisely because null was not filled in with a
+            # guess.
             value = "no_longer_reported"
         else:
             value = "active"
@@ -1049,16 +1091,23 @@ class StrandedHold:
     currency: str
 
 
-def _stranded_holds(
-    conn: SAConnection, *, filters: list[Any], today: CalendarDate
-) -> list[StrandedHold]:
-    """Every hold in this request's scope that is past any ordinary lifetime. AC-13.5.
+def _stranded_holds(conn: SAConnection, *, today: CalendarDate) -> list[StrandedHold]:
+    """Every hold in the STORE that is past any ordinary authorisation lifetime. AC-13.5.
 
     Row-level rather than a count, because "three accounts have stranded holds"
     is a finding nobody can act on: the operator's next move is to look at the
     transaction, so the id has to travel with the number.
 
     Ordered oldest first, so the caller naming one names the worst.
+
+    🔴 **Takes no caller-supplied filters, and that removal is the fix for a real
+    defect rather than a tidy-up.** It used to accept a `filters` list, and its
+    one surviving caller is a surface that scopes to the whole store -- but the
+    parameter is what let a caller assemble a predicate set that omitted the
+    soft-delete exclusion, which published every long-expired hold as still
+    outstanding. Both invariants now live here: a stranded hold is `pending`, is
+    not removed, and is older than the cutoff. None of the three is a caller's to
+    choose, so none of them is a caller's to forget.
     """
     cutoff = _stranded_cutoff(today)
     rows = conn.execute(
@@ -1070,7 +1119,21 @@ def _stranded_holds(
             transactions.c.currency,
         )
         .select_from(transactions.join(accounts))
-        .where(*filters, transactions.c.pending == 1, transactions.c.posted_date < cutoff)
+        .where(
+            transactions.c.pending == 1,
+            # 🔴 Declared HERE rather than left to `filters`, because it is a
+            # property of the question and not of the caller. `_transaction_filters`
+            # takes `include_removed`, so a caller is entitled to ask for removed
+            # rows -- but a withdrawn hold is not a stranded one, it is a finished
+            # one. An expired hold is retained with `removed_at` set and `pending`
+            # left at 1, which is exactly what the `expired` tally reads, so a
+            # caller who merely FORGOT this predicate would publish every
+            # long-expired hold as stranded and send the operator after money the
+            # institution already took back. One caller did. The guarantee belongs
+            # where it cannot be forgotten.
+            transactions.c.removed_at.is_(None),
+            transactions.c.posted_date < cutoff,
+        )
         .order_by(transactions.c.posted_date, transactions.c.transaction_id)
     ).all()
     return [
@@ -1182,8 +1245,8 @@ def _hold_transitions(
     )
 
 
-def _pending_caveat(pending: dict[str, HoldTally], stranded: list[StrandedHold]) -> list[Caveat]:
-    """The notice that an answer's figures include unsettled holds. AC-13.1, AC-13.5.
+def _pending_caveat(pending: dict[str, HoldTally]) -> list[Caveat]:
+    """The notice that an answer's figures include unsettled holds. AC-13.1.
 
     🔴 Request-scoped, so its ABSENCE is information too: an answer over rows
     that are all settled carries no such warning, and a consumer can therefore
@@ -1196,6 +1259,18 @@ def _pending_caveat(pending: dict[str, HoldTally], stranded: list[StrandedHold])
     Names the magnitude, not just the count: "some rows are pending" leaves a
     reader unable to tell a $4 coffee hold from a $2,000 hotel authorisation, and
     the whole point is whether the figure beside it can move enough to matter.
+
+    🔴 **Says nothing about STRANDED holds, and that is AC-13.5 being obeyed
+    rather than skipped.** The criterion puts a hold past its ordinary lifetime
+    on the verification surface, and `api-contract.md` rules that a per-account
+    finding belongs on `get_coverage_report`. Naming it here as well cost two
+    real defects before it was removed: this caveat counts the rows THIS ANSWER
+    drew on while a stranded query is scoped to the whole request, so a truncated
+    walk claimed more stranded holds than the page contained -- a precise false
+    statement about the payload beside it -- and the analysis path escaped the
+    non-active suppression its sibling on the coverage report applies, offering a
+    closed account's unclearable hold as a call to action forever. Both followed
+    from putting the finding where no criterion asked for it.
     """
     total = sum(tally.transactions for tally in pending.values())
     if total == 0:
@@ -1209,14 +1284,6 @@ def _pending_caveat(pending: dict[str, HoldTally], stranded: list[StrandedHold])
         f"or expire without settling at all, so a figure computed from this answer can change "
         f"with no new activity whatsoever"
     )
-    if stranded:
-        oldest = stranded[0]
-        detail += (
-            f". {len(stranded)} of them have been pending for more than "
-            f"{STRANDED_HOLD_AFTER_DAYS} days, which is past any ordinary authorisation "
-            f"lifetime -- the oldest is transaction {oldest.transaction_id} on account "
-            f"{oldest.account_id}, pending {oldest.days_pending} days, and it may never settle"
-        )
     return [Caveat(kind="includes_pending_rows", detail=detail)]
 
 
@@ -1330,14 +1397,30 @@ def list_transactions(
             if account_id is not None
             else []
         )
+        # 🔴 Same scoping, same reason, on the lifecycle axis (AC-12.1's
+        # rationale, reaching the surface chunk 01 left open). An agent asking
+        # "what did I spend on this card" about an account the institution
+        # stopped reporting is the consumer AC-12.1 names: it never thought to
+        # call the verification surface, and the rows it gets back end on the day
+        # the account went quiet with nothing saying why. Scoped to the account
+        # ASKED ABOUT for the reason directly above -- naming every closed
+        # account in the store on every page of every walk is the noise the
+        # request scope exists to refuse.
+        not_active = (
+            [
+                e
+                for e in (_account_lifecycle(conn).get(account_id),)
+                if e is not None and not e.active
+            ]
+            if account_id is not None
+            else []
+        )
         # 🔴 Tallied from the rows THIS PAGE returned, not from `matching`.
         # AC-13.1's disclosure is about the rows an answer drew on, and a walk's
         # later page may hold no holds at all -- a caveat counting the whole
         # result set would then say this page mixes in holds it does not
         # contain, which is a precise false statement about the payload beside
-        # it. The stranded check below is scoped to the request instead, and its
-        # wording says so, because a hold too old to settle is a fact about the
-        # data rather than about which page of it you are reading.
+        # it.
         pending: dict[str, HoldTally] = {}
         for row in rows:
             if not row["pending"]:
@@ -1348,11 +1431,6 @@ def list_transactions(
                 transactions=seen.transactions + 1,
                 net_minor=seen.net_minor + int(row["amount_minor_units"]),
             )
-        stranded = (
-            _stranded_holds(conn, filters=filters, today=calendar_date(now_utc().date()))
-            if pending
-            else []
-        )
         return _answer(
             config,
             conn,
@@ -1363,7 +1441,11 @@ def list_transactions(
             truncation=Truncation.over(
                 returned=len(rows), counted=matching, resume_from=resume_from
             ),
-            extra_caveats=_uncovered_caveat(uncovered) + _pending_caveat(pending, stranded),
+            extra_caveats=(
+                _uncovered_caveat(uncovered)
+                + _not_active_caveat(not_active)
+                + _pending_caveat(pending)
+            ),
         )
 
 
@@ -1455,12 +1537,16 @@ def coverage_report(config: Config) -> Answer:
         # surface that contradicts the analysis surface is worse than one that
         # is absent (AC-12.7).
         lifecycle = _account_lifecycle(conn)
-        # 🔴 Unfiltered, unlike every other caller: this surface answers about
+        # 🔴 Unwindowed, unlike every other caller: this surface answers about
         # the store rather than about a window, and a hold stranded outside
         # whatever window a caller happened to ask about is precisely the one
         # nobody has noticed.
+        #
+        # The soft-delete exclusion a windowed caller would get from
+        # `_transaction_filters` is declared inside `_stranded_holds` instead, so
+        # passing no filters here narrows nothing it should not.
         stranded_by_account: dict[int, list[StrandedHold]] = {}
-        for hold in _stranded_holds(conn, filters=[], today=calendar_date(now_utc().date())):
+        for hold in _stranded_holds(conn, today=calendar_date(now_utc().date())):
             stranded_by_account.setdefault(hold.account_id, []).append(hold)
         named = {
             int(account_id): name
@@ -1958,15 +2044,6 @@ def money_summary(
             )
             for currency in {str(row["currency"]) for row in rows}
         }
-        stranded = (
-            _stranded_holds(
-                conn,
-                filters=_transaction_filters(since=since, until=until, account_id=None, after=None),
-                today=calendar_date(now_utc().date()),
-            )
-            if any(tally.transactions for tally in pending.values())
-            else []
-        )
         return _answer(
             config,
             conn,
@@ -1980,7 +2057,7 @@ def money_summary(
             # at once, and a reader given only one of them would treat the other
             # as settled.
             extra_caveats=(
-                _pending_caveat(pending, stranded) + signs.caveats(conn, since=since, until=until)
+                _pending_caveat(pending) + signs.caveats(conn, since=since, until=until)
             ),
         )
 
@@ -2027,7 +2104,8 @@ def pipeline_health(config: Config) -> Answer:
         # verification tool has room for. `signs.measure` returns one entry per
         # connection including the ones with nothing to judge, so every row here
         # carries the three fields and none of them is conditional.
-        conventions = {m.connection_id: m for m in signs.measure(conn)}
+        measured = signs.measure(conn)
+        conventions = {m.connection_id: m for m in measured}
         rows = [
             {
                 "connection_id": int(r[0]),
@@ -2056,5 +2134,11 @@ def pipeline_health(config: Config) -> Answer:
             # aggregates, because a health tool that showed the measurement in a
             # row and stayed silent in `warnings` would leave the one surface
             # built for this question quieter about it than every other.
-            extra_caveats=signs.caveats(conn),
+            #
+            # 🔴 Handed the measurement the rows above were built from, never
+            # re-measured. The reader is autocommit and pins no snapshot, so a
+            # second scan is a second observation -- and this answer would then
+            # be able to publish `consistent` in a row while warning that the
+            # same connection is unverified.
+            extra_caveats=signs.caveats(conn, measured=measured),
         )

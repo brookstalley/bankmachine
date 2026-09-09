@@ -110,11 +110,15 @@ REQUEST_SCOPED_KINDS: tuple[str, ...] = (
     # without any new activity. Request-scoped because it is a property of the
     # rows THIS answer drew on, not of the pipeline.
     "includes_pending_rows",
-    # The operator-signed convention rests on a measurement of ONE connection.
-    # A connection whose direction has never been observed against a known
-    # inflow contributes an assumed sign, and an assumed sign is reported
-    # rather than corrected: auto-inverting can be wrong in the direction that
-    # understates spending.
+    # 🔴 Fires on a MEASURED inversion, not on the absence of a verification.
+    # The name is the weaker of the two readings and predates the check; the
+    # contract records why it was kept and why the trigger is the narrow one.
+    # Getting this backwards is not a wording slip: the broad reading is true of
+    # every connection until the operator checks one against a known deposit, so
+    # a warning on it would ride nearly every answer identically -- the "true and
+    # useless" failure the two tuples above exist to prevent. The not-yet-checked
+    # state is disclosed as a per-connection verdict on the verification surface,
+    # which is where "we cannot tell yet" belongs.
     "sign_convention_unverified",
 )
 

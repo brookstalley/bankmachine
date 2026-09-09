@@ -410,6 +410,14 @@ def test_a_hold_older_than_the_declared_threshold_is_reported(
     Named with its id and its age, because "an account has a stranded hold" is a
     finding whose next move is to look at the transaction; a number nobody can
     act on is the AC-11.1 outcome this threshold's derivation is written against.
+
+    🔴 **Asserted on `get_coverage_report`, and it was moved there.** It first
+    asserted the same fact in `money_summary`'s pending detail, which is the
+    analysis surface -- and AC-13.5 puts a stranded hold on the VERIFICATION
+    surface, where `api-contract.md` rules per-account findings belong. The
+    assertion is unchanged in force; only the surface it reads moved, and it
+    moved because the analysis placement produced two defects: a cross-scope
+    count on a truncated walk, and an escape from the non-active suppression.
     """
     _seed(initialized_config)
     _hold(
@@ -419,11 +427,14 @@ def test_a_hold_older_than_the_declared_threshold_is_reported(
         days_ago=query.STRANDED_HOLD_AFTER_DAYS + 15,
     )
 
-    wire = _call(initialized_config, "money_summary", {})["structuredContent"]
-    detail = _warning(wire, "includes_pending_rows")["detail"]
+    wire = _call(initialized_config, "get_coverage_report", {})["structuredContent"]
+    holding = [row for row in wire["rows"] if row["stranded_holds"]]
 
-    assert str(query.STRANDED_HOLD_AFTER_DAYS) in detail, detail
-    assert "may never settle" in detail, detail
+    assert len(holding) == 1, f"expected one account holding a stranded hold: {wire['rows']}"
+    worst = holding[0]["oldest_stranded_hold"]
+    assert worst is not None, "the count was reported with nothing to go look at"
+    assert worst["days_pending"] > query.STRANDED_HOLD_AFTER_DAYS, worst
+    assert worst["transaction_id"], "the finding has to name the transaction to look at"
 
 
 def test_a_hold_inside_the_threshold_is_disclosed_without_being_called_stranded(
@@ -439,11 +450,15 @@ def test_a_hold_inside_the_threshold_is_disclosed_without_being_called_stranded(
     _seed(initialized_config)
     _hold(initialized_config, "hold-fresh", "25.00", days_ago=1)
 
-    wire = _call(initialized_config, "money_summary", {})["structuredContent"]
-    detail = _warning(wire, "includes_pending_rows")["detail"]
+    coverage = _call(initialized_config, "get_coverage_report", {})["structuredContent"]
+    summary = _call(initialized_config, "money_summary", {})["structuredContent"]
 
-    assert "may never settle" not in detail, detail
-    assert _totals(wire)["pending_transactions"] == 1, "the hold was disclosed as pending"
+    for row in coverage["rows"]:
+        assert row["stranded_holds"] == 0, f"an ordinary overnight hold was called stranded: {row}"
+        assert row["oldest_stranded_hold"] is None, row
+    assert _totals(summary)["pending_transactions"] == 1, (
+        "the hold still has to be disclosed as pending; not-stranded is not not-pending"
+    )
 
 
 def test_the_stranded_threshold_is_measured_from_one_boundary(
@@ -462,11 +477,7 @@ def test_the_stranded_threshold_is_measured_from_one_boundary(
 
     today = calendar_date(now_utc().date())
     with reader_connection(initialized_config) as conn:
-        stranded = query._stranded_holds(
-            conn,
-            filters=query._transaction_filters(since=None, until=None, account_id=None, after=None),
-            today=today,
-        )
+        stranded = query._stranded_holds(conn, today=today)
 
     assert [hold.days_pending for hold in stranded] == [query.STRANDED_HOLD_AFTER_DAYS + 1]
     assert stranded[0].posted_date < query._stranded_cutoff(today)
@@ -676,3 +687,43 @@ def test_a_stranded_hold_on_a_non_active_account_is_counted_but_not_asked_about(
     assert row["oldest_stranded_hold"] is None, (
         "a closed account was handed a hold to go look at, which no operator can clear"
     )
+
+
+def test_a_hold_that_expired_long_ago_is_not_reported_as_stranded(
+    initialized_config: Config,
+) -> None:
+    """🔴 A withdrawn hold is finished, not stranded, and the two are opposites.
+
+    An expired hold is retained with `removed_at` set and `pending` left at 1 --
+    that retention is exactly what the `expired_holds` tally reads. So a
+    stranded-hold query that omits the soft-delete exclusion reports every
+    long-expired hold as one still outstanding, and the two surfaces then say
+    contradictory things about the same transaction: `money_summary` publishes
+    it as expired while `get_coverage_report` tells the operator to go look at
+    money the institution already took back.
+
+    The age here is past the stranded threshold on purpose. A hold that expires
+    quickly could never reach the cutoff, so the only fixture that can catch
+    this is one where the hold is BOTH old enough to be called stranded and
+    already withdrawn.
+    """
+    _seed(initialized_config)
+    _hold(
+        initialized_config,
+        "hold-expired-old",
+        "31.00",
+        days_ago=query.STRANDED_HOLD_AFTER_DAYS + 40,
+    )
+    _page(initialized_config, removed=[_removal("hold-expired-old")], cursor="cursor-expire")
+
+    coverage = _call(initialized_config, "get_coverage_report", {})["structuredContent"]
+    summary = _totals(_call(initialized_config, "money_summary", {})["structuredContent"])
+
+    assert summary["expired_holds"] == 1, "the fixture did not produce the expired hold it needs"
+    for row in coverage["rows"]:
+        assert row["stranded_holds"] == 0, (
+            f"a hold the institution withdrew is being reported as still outstanding: {row}"
+        )
+        assert row["oldest_stranded_hold"] is None, (
+            f"the operator is being sent after money that was already taken back: {row}"
+        )

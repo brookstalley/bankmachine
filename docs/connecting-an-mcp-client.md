@@ -108,6 +108,21 @@ purchases already counted under the categories they were spent in. The three sum
 total outflow, which is how you check them against the rows. Over the sandbox store the raw total
 is five times the money that actually went out the door.
 
+🔴 **Each `totals` entry also states how much of itself has not settled.** `pending_transactions`
+and `pending_net_minor_units` are authorisation holds — money claimed but not yet taken, which can
+settle at a different figure or expire without settling at all, so a figure carrying them can change
+with no new activity. `expired_holds` counts the ones that dropped off without ever posting, and
+`settled_from_hold` the ones that became real transactions in this window; those two are what let
+you tell a total that shrank because a hold expired from one that shrank because data is missing.
+All six are always present and zero rather than absent.
+
+**`get_coverage_report` rows carry `stranded_holds`** — holds still outstanding past any ordinary
+authorisation lifetime, with `oldest_stranded_hold` naming the one to go look at (null when there
+are none, and null for a closed account, whose holds nobody can clear). **`get_pipeline_health` rows
+carry `sign_convention`** per connection, with the counts it was judged on. **Every account row
+carries `lifecycle`** with the dates behind it, and `coverage` states `accounts_not_active` and what
+those accounts contributed — totals **include** them, so quote that figure beside any net worth.
+
 The server's own `instructions` are the authority on that list — a test holds them against the union
 of every tool's live envelope and against the warning vocabulary, so they cannot fall behind the
 wire; this page is a copy and can. **Read the warnings before drawing a conclusion**: an answer

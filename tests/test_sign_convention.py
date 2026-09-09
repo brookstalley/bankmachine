@@ -762,3 +762,203 @@ def test_a_window_that_missed_the_flagged_connection_is_silent(
     assert [c for c in answer.warnings if c.kind == "sign_convention_unverified"] == [], (
         "a window holding none of the flagged connection's rows still warned about it"
     )
+
+
+# ---------------------------------------------------------------------------
+# AC-14.3 — the declared category set is an enumeration, so it is checked.
+#
+# 🔴 A check whose input set is wrong covers less than it claims and says
+# nothing about it: a misspelled category simply matches no row, the connection
+# falls under the sample floor, and the verdict comes back `undetermined` --
+# which reads as "not enough data" rather than as "this check is aimed at
+# nothing". `query.KNOWN_SOURCE_CATEGORIES` carries two guards one module away
+# for the same reason; this set had none.
+# ---------------------------------------------------------------------------
+
+
+def test_every_judged_category_is_one_the_product_already_knows(
+    initialized_config: Config,
+) -> None:
+    """The declared set is a subset of the taxonomy the rest of the code knows.
+
+    Catches the failure that has no symptom -- a typo, a renamed category, a
+    value carried over from a different vocabulary. Each of those silently
+    shrinks what the check measures while every test still passes.
+    """
+    unknown = sorted(set(signs.NEVER_INFLOW_CATEGORIES) - set(query.KNOWN_SOURCE_CATEGORIES))
+
+    assert not unknown, (
+        f"{unknown} are judged for sign but are not in `query.KNOWN_SOURCE_CATEGORIES`. "
+        f"A category the taxonomy does not contain matches no row, so it narrows the check "
+        f"silently: the verdict degrades to `undetermined`, which reads as thin data rather "
+        f"than as a check aimed at nothing"
+    )
+
+
+def test_no_judged_category_is_one_that_legitimately_carries_both_signs(
+    initialized_config: Config,
+) -> None:
+    """🔴 The other direction, and the one that would produce a FALSE report.
+
+    A category that legitimately holds refunds as well as charges puts genuine
+    positives into the baseline, which pushes a conforming feed toward the
+    inverted verdict. `TRAVEL` is the measured case -- 24 charges against 24
+    refunds in the sandbox -- and it is excluded for exactly that reason. So are
+    the transfer and income categories, which are inflows by definition.
+
+    Named here rather than left to the module comment, because this is the
+    assertion that would fail if someone "completed" the set by adding the
+    categories it deliberately omits.
+    """
+    forbidden = {"TRANSFER_IN", "TRANSFER_OUT", "INCOME", "LOAN_PAYMENTS", "TRAVEL"}
+
+    overlap = sorted(forbidden & set(signs.NEVER_INFLOW_CATEGORIES))
+
+    assert not overlap, (
+        f"{overlap} legitimately carry inbound amounts, so judging them puts real positives "
+        f"into the distribution and biases a CONFORMING feed toward being reported inverted"
+    )
+
+
+@pytest.mark.parametrize("category", signs.NEVER_INFLOW_CATEGORIES)
+def test_each_judged_category_on_its_own_reaches_a_stored_row(
+    initialized_config: Config, category: str
+) -> None:
+    """🔴 Every member of the set, one at a time, proven to match something.
+
+    A category can be well-formed, absent from the excluded set, and still never
+    match a stored row -- a spelling the deriver writes differently, a column
+    that holds something else. Nothing about the check would look wrong: the
+    category simply contributes nothing, the connection drifts under the sample
+    floor, and the verdict reads `undetermined`, which a reader takes for thin
+    data rather than for a check aimed at nothing. Three of the five were
+    exercised by no fixture at all.
+
+    Parametrised deliberately, so the failure NAMES the category that stopped
+    matching. One aggregate assertion over all five would say only that the
+    total came up short.
+    """
+    item = f"item-{category.lower()}"
+    connection_id = _enroll(initialized_config, institution="First Platypus Bank", item_id=item)
+    _feed(
+        initialized_config,
+        connection_id,
+        item_id=item,
+        entries=_spend(item, signs.MINIMUM_JUDGEABLE_ROWS, _CONFORMING_PURCHASE, category=category),
+    )
+
+    with reader_connection(initialized_config) as conn:
+        judged = {m.connection_id: m for m in signs.measure(conn)}[connection_id]
+
+    assert judged.rows_judged == signs.MINIMUM_JUDGEABLE_ROWS, (
+        f"{category} was declared as judged but matched {judged.rows_judged} of "
+        f"{signs.MINIMUM_JUDGEABLE_ROWS} stored rows carrying it; the check is narrower than "
+        f"its declared set says, and nothing else would report that"
+    )
+    assert judged.verdict == "consistent", (
+        f"{category} rows stored the conforming way did not read as consistent: {judged}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# AC-14.5 / one measurement per answer.
+#
+# 🔴 These exist because the fix for "pipeline_health measures twice" shipped
+# with nothing holding it: `caveats` grew a `measured=` parameter and
+# `pipeline_health` began passing it, and every existing test passed identically
+# whether the parameter was passed or not. Reverting the call site would have
+# left the suite green and silently restored the defect.
+# ---------------------------------------------------------------------------
+
+
+def test_caveats_uses_the_measurement_it_was_handed_rather_than_re_reading(
+    initialized_config: Config,
+) -> None:
+    """🔴 The parameter is honoured, proven with a measurement the store contradicts.
+
+    A fabricated `measured` that says a CONFORMING store is inverted is the only
+    input that can tell "used what it was given" apart from "re-measured and
+    happened to agree" -- which is what a fixture built from the real store can
+    never distinguish. If `caveats` re-reads, it finds a consistent connection
+    and stays silent; if it honours the argument, it warns.
+    """
+    connection_id = _conforming(initialized_config)
+
+    fabricated = [
+        signs.ConnectionSignConvention(
+            connection_id=connection_id,
+            institution="First Platypus Bank",
+            rows_negative=0,
+            rows_positive=signs.MINIMUM_JUDGEABLE_ROWS,
+            rows_zero=0,
+        )
+    ]
+    with reader_connection(initialized_config) as conn:
+        found = signs.caveats(conn, measured=fabricated)
+
+    assert [caveat.kind for caveat in found] == ["sign_convention_unverified"], (
+        "caveats re-read the store instead of using the measurement it was handed; the "
+        "one-measurement-per-answer property rests entirely on this parameter being honoured"
+    )
+    assert found[0].connection_id == connection_id
+
+
+def test_pipeline_health_measures_once_even_when_a_second_scan_would_differ(
+    initialized_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 The CALL is what this pins, and a static store cannot pin it.
+
+    An earlier version of this test asserted that rows and warnings agree
+    against an ordinary fixture. That proves nothing about the call site: the
+    reader returns the same verdicts however many times it is scanned, so
+    `caveats(conn)` and `caveats(conn, measured=measured)` are indistinguishable
+    there, and reverting the call site left the whole suite green.
+
+    The two measurements are made to DIFFER instead. `measure` is replaced with
+    one that answers `consistent` first and `inverted` second, which is the
+    autocommit reader's real hazard in miniature -- it pins no snapshot, so a
+    second scan is a second observation. Passing the first measurement through
+    makes the answer coherent; re-measuring inside `caveats` takes the second and
+    the answer then calls one connection `consistent` in its row while warning
+    that it is unverified.
+
+    This is the rule the build plan already set for the other two boundary
+    crossings, applied here: anchor on the call, because a producer that works
+    and a surface that never invokes it are indistinguishable from the
+    producer's own tests.
+    """
+    connection_id = _conforming(initialized_config)
+
+    consistent = signs.ConnectionSignConvention(
+        connection_id=connection_id,
+        institution="First Platypus Bank",
+        rows_negative=signs.MINIMUM_JUDGEABLE_ROWS,
+        rows_positive=0,
+        rows_zero=0,
+    )
+    inverted = signs.ConnectionSignConvention(
+        connection_id=connection_id,
+        institution="First Platypus Bank",
+        rows_negative=0,
+        rows_positive=signs.MINIMUM_JUDGEABLE_ROWS,
+        rows_zero=0,
+    )
+    answers = iter([[consistent], [inverted]])
+
+    def _drifting(_conn: object) -> list[signs.ConnectionSignConvention]:
+        return next(answers, [inverted])
+
+    monkeypatch.setattr(signs, "measure", _drifting)
+
+    answer = query.pipeline_health(initialized_config)
+    warned = {c.connection_id for c in answer.warnings if c.kind == "sign_convention_unverified"}
+    verdicts = {int(row["connection_id"]): row["sign_convention"] for row in answer.rows}
+
+    assert verdicts == {connection_id: "consistent"}, (
+        f"the row should carry the FIRST measurement; got {verdicts}"
+    )
+    assert connection_id not in warned, (
+        "this answer reports the connection `consistent` in its row and warns that it is "
+        "unverified -- two measurements reached one answer, which is the defect the "
+        "`measured=` parameter exists to prevent"
+    )

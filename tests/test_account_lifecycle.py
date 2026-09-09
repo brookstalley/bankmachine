@@ -892,3 +892,205 @@ def test_a_store_that_cannot_be_read_still_carries_the_lifecycle_key_set(
 
     assert coverage["accounts_not_active"] == 0
     assert coverage["not_active_balance_minor_units"] == []
+
+
+# ---------------------------------------------------------------------------
+# The upgrade window — migration 003 lands before any post-migration sync.
+#
+# 🔴 These exist because the first implementation of the transitional rule read
+# a null `last_seen_date` as `first_seen_date` and fabricated closures with it.
+# The fallback looks true for one account and is wrong across a connection: the
+# verdict compares an account against the MAXIMUM over its siblings, and
+# first-seen dates legitimately differ between them.
+# ---------------------------------------------------------------------------
+
+
+def _migrated_but_unsynced(config: Config) -> None:
+    """Roll every account back to the state migration 003 leaves them in.
+
+    Written by clearing the column rather than by skipping the observation,
+    because the accounts have to EXIST -- which before migration 003 they did,
+    each with a `first_seen_date` and no `last_seen_date` at all.
+    """
+    with writer_connection(config) as conn:
+        cleared = conn.execute(update(accounts).values(last_seen_date=None)).rowcount
+    assert cleared, "no account rows were reset, so this fixture is not the state it claims"
+
+
+def test_no_account_is_called_closed_before_its_connection_is_observed_once(
+    initialized_config: Config,
+) -> None:
+    """🔴 The upgrade window must not invent a closure, and it once did.
+
+    Two accounts on one connection, first seen a year apart -- an ordinary
+    shape: a second card, a savings account opened later. Immediately after
+    migration 003 neither carries a roster observation. Reading the null as
+    `first_seen_date` put the older account behind a maximum built out of
+    first-seen dates and reported it CLOSED, for the whole window until that
+    connection's next successful sync, which for a failing connection never
+    arrives.
+
+    Nothing here is absent. Nothing has been OBSERVED, which AC-12.5 says is not
+    the same thing: absence is measured against a successful observation and
+    never against silence.
+    """
+    connection_id = _enroll(initialized_config)
+    _observe(initialized_config, connection_id, ["acct-old"], at=now_utc() - timedelta(days=400))
+    _observe(
+        initialized_config,
+        connection_id,
+        ["acct-old", "acct-new"],
+        at=now_utc() - timedelta(days=5),
+    )
+    _migrated_but_unsynced(initialized_config)
+
+    rows = _rows(initialized_config)
+
+    assert len(rows) == 2, f"the fixture did not produce two accounts: {list(rows)}"
+    for name, row in rows.items():
+        assert row["lifecycle"] == "active", (
+            f"{name} was called {row['lifecycle']!r} before its connection was ever observed; "
+            f"a null last_seen_date is silence, and absence is never measured against silence"
+        )
+        assert row["last_seen_in_roster"] is None, (
+            f"{name} reported a roster date that was never recorded: {row}"
+        )
+        assert row["roster_last_observed"] is None, row
+
+
+def test_no_warning_is_raised_before_the_connection_is_observed_once(
+    initialized_config: Config,
+) -> None:
+    """The fabricated verdict took a warning and a magnitude with it.
+
+    Under the include-and-flag ruling a false `no_longer_reported` also fires
+    `account_no_longer_active` and reports a non-zero not-active balance -- a
+    fictional figure on the balance sheet, which is worse than the wrong verdict
+    that produced it.
+    """
+    connection_id = _enroll(initialized_config)
+    _observe(initialized_config, connection_id, ["acct-old"], at=now_utc() - timedelta(days=400))
+    _observe(
+        initialized_config,
+        connection_id,
+        ["acct-old", "acct-new"],
+        at=now_utc() - timedelta(days=5),
+    )
+    _migrated_but_unsynced(initialized_config)
+
+    wire = _wire(initialized_config)
+
+    assert "account_no_longer_active" not in _kinds(wire)
+    assert wire["coverage"]["accounts_not_active"] == 0, wire["coverage"]
+    assert wire["coverage"]["not_active_balance_minor_units"] == [], wire["coverage"]
+
+
+def test_once_the_connection_is_observed_an_unlisted_account_is_still_caught(
+    initialized_config: Config,
+) -> None:
+    """🔴 The other half, and the reason null is not filled in with a guess.
+
+    After the fix a null means "no observation recorded". The moment ANY account
+    on the connection carries one, the connection has been observed -- and an
+    account still carrying none was not in that roster. That is the steady-state
+    detection this whole item exists for, and it keeps working only because the
+    null was left alone.
+    """
+    connection_id = _enroll(initialized_config)
+    _observe(initialized_config, connection_id, ["acct-old"], at=now_utc() - timedelta(days=400))
+    _observe(
+        initialized_config,
+        connection_id,
+        ["acct-old", "acct-new"],
+        at=now_utc() - timedelta(days=5),
+    )
+    _migrated_but_unsynced(initialized_config)
+
+    # One post-migration sync, whose roster no longer lists the older account.
+    _observe(initialized_config, connection_id, ["acct-new"], at=now_utc())
+
+    rows = _rows(initialized_config)
+    verdicts = {name: row["lifecycle"] for name, row in rows.items()}
+
+    assert sorted(verdicts.values()) == ["active", "no_longer_reported"], verdicts
+
+
+def test_asking_for_a_retired_accounts_transactions_says_it_is_retired(
+    initialized_config: Config,
+) -> None:
+    """🔴 AC-12.1's rationale reaching `query_transactions`, which chunk 01 left open.
+
+    The consumer AC-12.1 names is the agent that never thought to call the
+    verification surface. Asking "what did I spend on this card" about an
+    account the institution stopped reporting is exactly that agent: the rows
+    stop on the day the account went quiet, and without this the answer offers
+    no reason why. `accounts_without_coverage` already fires on this call for
+    the coverage axis, and this is the same argument one axis over.
+    """
+    connection_id = _enroll(initialized_config)
+    _observe(initialized_config, connection_id, ["gone", "kept"], at=now_utc() - timedelta(days=40))
+    _observe(initialized_config, connection_id, ["kept"], at=now_utc())
+
+    retired = _rows(initialized_config)["Account gone"]["account_id"]
+    wire = _call(initialized_config, "query_transactions", {"account_id": retired})[
+        "structuredContent"
+    ]
+
+    assert "account_no_longer_active" in _kinds(wire), (
+        "a transaction query about an account its institution stopped listing said nothing "
+        f"about that; warnings were {_kinds(wire)}"
+    )
+
+
+def test_asking_for_a_live_accounts_transactions_stays_quiet_about_lifecycle(
+    initialized_config: Config,
+) -> None:
+    """🔴 The absence is information, so it is asserted.
+
+    Scoped to the account ASKED ABOUT. Naming every retired account in the store
+    on every page of every walk is the character-for-character noise the
+    request-scoped tuple exists to refuse, and it is the failure this warning
+    would drift into if the scoping were dropped.
+    """
+    connection_id = _enroll(initialized_config)
+    _observe(initialized_config, connection_id, ["gone", "kept"], at=now_utc() - timedelta(days=40))
+    _observe(initialized_config, connection_id, ["kept"], at=now_utc())
+
+    live = _rows(initialized_config)["Account kept"]["account_id"]
+    wire = _call(initialized_config, "query_transactions", {"account_id": live})[
+        "structuredContent"
+    ]
+
+    assert "account_no_longer_active" not in _kinds(wire), (
+        "a query about a live account was told about a different account's retirement"
+    )
+
+
+def test_asking_for_a_declared_closed_accounts_transactions_says_so_too(
+    initialized_config: Config,
+) -> None:
+    """🔴 The `closed` value takes the same branch, and was covered by nothing.
+
+    `_not_active_caveat` fires on `not entry.active`, which both `closed` and
+    `no_longer_reported` satisfy — so the sibling test above passes whether the
+    predicate reads the lifecycle value or only the derived half. An operator
+    declaration is the case a consumer should trust MOST, since it is the one
+    value in the vocabulary that is a statement of fact rather than an
+    observation, and nothing asserted it reached this surface.
+    """
+    connection_id = _enroll(initialized_config)
+    _observe(initialized_config, connection_id, ["retired", "kept"], at=now_utc())
+    _declare_closed(initialized_config, "retired")
+
+    rows = _rows(initialized_config)
+    closed_id = rows["Account retired"]["account_id"]
+    assert rows["Account retired"]["lifecycle"] == "closed", rows["Account retired"]
+
+    wire = _call(initialized_config, "query_transactions", {"account_id": closed_id})[
+        "structuredContent"
+    ]
+
+    assert "account_no_longer_active" in _kinds(wire), (
+        "a transaction query about an account the OPERATOR declared closed said nothing about "
+        f"it; warnings were {_kinds(wire)}"
+    )
