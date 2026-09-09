@@ -164,6 +164,25 @@ closed.
 
 ## What has to be true before yes
 
+> **Tracking, added 2026-09-09.** The remaining items carry the
+> **`blocks:production`** label on `brookstalley/bankmachine`, so the open gate is one query rather
+> than a re-read of this list: `gh issue list --label blocks:production`. 🔴 **This document stays
+> the authority on WHY each one blocks** — the label is an index into it, not a replacement for it,
+> and an item wearing the label without a numbered entry here would be "important" rather than
+> "blocking", which is the distinction that makes the gate mean anything.
+>
+> **State on 2026-09-09:** items 1–4 are done — #16 and #17 shipped in `mcp-effective-window`, and
+> #19 and #21 in `mcp-answer-scope-completion`. Items 5, 6 and 7 remain and are #22, **#40** and
+> #23. Item 6 had never been filed until now, which is what this list warned about in its own
+> preamble ("most of which are already filed and one of which is not").
+>
+> 🔴 **Two of the three remaining cannot be closed before production data, by their own
+> definition** — #22 needs a real pending row watched across settlement and #23 needs a real
+> deposit. They do not block *connecting* production data; they block *trusting particular answers*
+> once it is connected, and § "Day one in production" below is how they get discharged. **#40 is
+> the one that is buildable now**, and cheaper than this list knew: `accounts` already carries
+> `lifecycle_status` and `closed_date`, and `list_accounts` simply does not read them.
+
 Ordered by what I would do first. Items 1–3 are the filed blockers; 4–7 are not
 currently filed and items 4 and 5 are the ones I would be most annoyed to
 discover in production.

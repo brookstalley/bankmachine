@@ -216,7 +216,11 @@ surface, called deliberately, and that is the right place for the cost.
 
 ### Chunk 02: One aggregate tool, both directions, currency-grouped (chunk B)
 
-**Closes #20 and #21.** `discovery-mcp-answer-scope.md` C4, re-pointed by the tool-boundary norm.
+**Closes #21; advances but does NOT close #20.** `discovery-mcp-answer-scope.md` C4, re-pointed by
+the tool-boundary norm. 🔴 The plan claimed #20 and had not earned it: #20's Expected also names
+merchant/text, category and amount-range filters on `query_transactions`, and this chunk builds none
+of them — so "did I get a refund from Walmart" is still unanswerable. Corrected here as well as in
+the change-log, because a plan that outlives its branch is where the next reader checks what shipped.
 🔴 **This chunk IS the norm's migration** — the one departure this plan records against
 "never remove a field".
 
