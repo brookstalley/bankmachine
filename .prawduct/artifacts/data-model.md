@@ -572,20 +572,21 @@ wrong number. Absence is equally consistent with closure, with the account being
 sharing, and with the institution changing what it shares — and the schema field's own description
 says so, in the payload.
 
-🔴 **AC-12.5's clauses follow from how the maximum is computed**, rather than from three guards
-written by hand. `roster_last_observed` is a maximum over the connection's *own* accounts, so a
-connection that could not be fetched moves no date and marks nothing absent; a connection whose
-*entire* roster vanishes moves the maximum with it, so nothing is ever older than it; and an
-import-only account has no connection, so both dates are null and the comparison is never reached. A
-`connections.roster_observed_at` column would have needed each of those written in by hand.
+🔴 **AC-12.5's clauses rest on the RECORDED observation, and each is a separate fact rather than a
+consequence of one arithmetic.** A connection whose roster could not be fetched records no
+observation, so there is nothing for an account to be behind and nothing is marked absent. A
+connection whose roster came back empty *did* record one, so every account on it is behind it and
+every account is marked absent — and `roster_observed_empty` rides the answer beside them, because
+the account-level truth and the connection-level anomaly are two facts and publishing only one of
+them is what the previous design got wrong. An import-only account has no connection, so it has no
+roster to be absent from and the comparison is never reached.
 
-⚠️ **"By construction" was withdrawn for the middle clause on 2026-09-09, and this section said it
-until then.** The arithmetic is a consequence of the maximum; whether the resulting silence is
-*right* is not. AC-12.5 justifies it by scale — fourteen simultaneous closures is a pipeline failure
-rather than fourteen closures — and at a connection holding **one** account that argument does not
-hold: one account closing is ordinary, and it is the whole roster, so such an account reports
-`active` indefinitely. The behaviour still obeys the ratified criterion, deliberately; the gap is the
-criterion's and is filed as **#51**. `query._account_lifecycle` carries the same correction.
+🔴 **Two dates, and the difference between them is the whole mechanism.**
+`connections.roster_observed_date` says *we looked*; `accounts.last_seen_date` says *and this is what
+we found*. Deriving the first from the second — the design this replaced — collapses them, and a
+collapsed pair cannot express "we looked and this account was not there" at any roster size, because
+a maximum over the accounts that were listed moves with them. That is why the amendment is a stored
+column rather than a better formula.
 
 🔴 **The operator's declaration outranks the derived signal, and a rebuild never undoes it
 (AC-12.6).** `_OPERATOR_OWNED` keeps the accounts deriver out of `lifecycle_status`, and `accounts`

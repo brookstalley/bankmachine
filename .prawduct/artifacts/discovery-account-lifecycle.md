@@ -422,8 +422,16 @@ order-independent, which is the specific care `derivers.py:86–94` says retirem
 column and no second writer. It also gives AC-12.5's whole-roster clause **by construction rather
 than by a guard**: if every account of a connection vanishes at once, the maximum moves with them and
 nothing is ever older than it, so nothing is marked absent. That is the property worth having, and it
-is the reason to prefer this over a `connections.roster_observed_at` column, which would have to have
+is the reason to prefer this over a stored per-connection column, which would have to have
 the same case written into it by hand.
+
+> 🔴 **Superseded 2026-09-09 by the owner's ruling on #51, and the paragraph above is kept as the
+> argument that lost.** The stored column was built as `connections.roster_observed_date` (a calendar
+> date -- `roster_observed_at` was considered and rejected, since its only use is a comparison
+> against `last_seen_date`). What defeated the reasoning above is that the "by construction" property
+> it prizes is the DEFECT at one account: a maximum over the accounts that were listed moves with
+> them, so when a single-account connection's only account vanishes there is nothing behind it and
+> the absence is inexpressible -- the ordinary case, not an exotic one. See AC-12.4/12.5/12.5a.
 
 **The alternative that avoids the migration was considered and is rejected.** `balances_daily` gets a
 row per account per day from every roster derivation, so `max(as_of_date)` per account is a working

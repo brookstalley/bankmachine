@@ -18,6 +18,17 @@ partition: |
   do half and neither would own the seam; (b) the `_stranded_holds` narrating comment, whose backlog
   carrier is #53, has no code chunk here because #53 is discovery-only. Chunk 00 deletes it.
 critic_mode: cumulative-final
+delegate_verification: |
+  a delegate runs ONLY the named test files listed under its own chunk, and nothing wider. Three
+  things are the coordinator's alone and no delegate may run them: the full suite (`uv run pytest`
+  with no path), `tests/preferences/verify_norms_go_red.py` (160 cases, ~10 minutes, and it returns
+  1 on a survivor -- piping it anywhere reports the pipe's exit code), and anything under
+  `-m sandbox`, which makes live calls with real credentials and can fail for reasons that are not
+  the delegate's change. Stated by the owner for this dispatch on 2026-09-09.
+  🔴 It is a COST BOUND, not a rigor discount, and what it prevents fails silently: a contended box
+  does not re-queue a dead test worker and does not fail the run, so several agents running the
+  whole suite at once produce greens nobody can attribute. The delegate proves its own change; the
+  coordinator owns the combined run, and owning it is what makes the ceiling safe.
 depends_on:
   - artifact: build-plan-production-blockers
     file_path: .prawduct/artifacts/build-plan-production-blockers.md
@@ -38,8 +49,8 @@ governed_by:
   - artifact: data-model
     dispositions:
       - "a migration's DDL is frozen once written → conforms; C1 adds migration 004 and does not edit 003, which shipped eight commits ago"
-      - "🔴 calendar dates and UTC instants are distinct types and never mix → THIS IS THE DECISION CHUNK 00 OWES, not a check to tick. `accounts.last_seen_date` is a calendar date and `roster_observed_at` is named as an instant; a column whose name and type disagree is how this norm gets broken quietly. Chunk 00 fixes the type AND the name together, and a delegate must never settle it"
-      - "a source value is never overwritten in place → conforms. `roster_observed_at` is rewritten on every sync, which reads like a departure and is not: the norm protects a value the SOURCE reported from being clobbered by local interpretation. This is our own record of when we looked, which is not a source value at all -- and no aggregator field is overwritten to store it"
+      - "🔴 calendar dates and UTC instants are distinct types and never mix → THIS IS THE DECISION CHUNK 00 OWES, not a check to tick. `accounts.last_seen_date` is a calendar date, and `roster_observed_at` -- the obvious spelling -- names an instant. A column whose name and type disagree is how this norm gets broken quietly. RULED in chunk 00: the column is `connections.roster_observed_date`, a CALENDAR DATE, because its only use is a comparison against `last_seen_date` and a comparison across the two types is a defect rather than a conversion. A delegate must not revisit it"
+      - "a source value is never overwritten in place → conforms. `connections.roster_observed_date` is rewritten on every sync, which reads like a departure and is not: the norm protects a value the SOURCE reported from being clobbered by local interpretation. This is our own record of when we looked, which is not a source value at all -- and no aggregator field is overwritten to store it"
       - "every silver row carries exclusive provenance and its derivation version → recorded rather than assumed: `connections` is not one of the silver row types this norm enumerates, and `accounts` deliberately carries no `derivation_version_id` -- AC-12.6 rests on exactly that. C1 must not add one"
       - "all monetary values are integer minor units → inapplicable; no chunk here touches an amount"
       - "a transaction is never hard-deleted; removal is a soft delete → inapplicable to C1 and C2. C3 is a discovery ABOUT this norm's columns and must not propose weakening it"
@@ -151,18 +162,38 @@ guidance and an instruction row; the narrating comment is gone; `tests/preferenc
 
 *(delegate · isolated worktree)*
 
-Delivers the ruled option: migration 004 adding the per-connection roster-observation column, the
-sync path recording it (including on an empty roster, per chunk 00's stated meaning), and
-`_account_lifecycle` reading the recorded observation instead of deriving a maximum over the
-connection's own accounts.
+Delivers the ruled option: **migration 004 adding `connections.roster_observed_date`** -- a CALENDAR
+DATE, nullable, ruled in chunk 00 and not open for revisiting -- the sync path recording it
+(including on an empty roster, per AC-12.5a), and `_account_lifecycle` reading the recorded
+observation instead of deriving a maximum over the connection's own accounts.
 
-**The two comments at `query.py:421` and `:483` are rewritten by this chunk, not merely deleted.**
-They describe behaviour this chunk changes. Only the *narration of a retraction* goes; the statement
+🔴 **`roster_observed_at` is the spelling that was REJECTED.** It appears in this plan's
+`governed_by` and in `discovery-account-lifecycle.md` only as the rejected option being named. The
+column is `roster_observed_date`.
+
+**The two narrating comments in `query.py` are rewritten by this chunk, not merely deleted** — the
+one inside the `AccountLifecycle` docstring and the one inside `_account_lifecycle`'s. They are cited
+by symbol rather than by line, because chunk 00 edits the same file and a line number does not
+survive that. They describe behaviour this chunk changes. Only the *narration of a retraction* goes; the statement
 of what the code now does stays, in the present tense, without the history.
+
+🔴 **Also delivers the `roster_observed_empty` emitter, on BOTH surfaces AC-12.5a names.** Chunk 00
+born the kind and wrote its guidance; nothing emits it yet. The Critic caught that the guidance sends
+an agent to `get_pipeline_health`, which today reads `connections`, `sync_state` and `signs.measure`
+only and would report such a connection healthy —
+
+`[DECISION: AC-12.5a gains a get_pipeline_health clause, and chunk 01 gains the emitter there |
+The alternative was deleting the referral from the guidance. That makes the text consistent by
+making the product worse: an empty roster IS a connection-level anomaly, the old AC-12.5 explicitly
+homed connection-level failures on that surface, and a broken feed that returns success is exactly
+what a health check is for. The owner's ruling rejected get_pipeline_health as the SOLE home,
+because a consumer reading list_accounts would never learn otherwise -- it did not reject the
+surface. Making the guidance true costs one emitter; deleting it leaves a real gap and a health
+check that calls a broken feed healthy | user can veto/override]`
 
 **Owns:** `src/bankmachine/store/migrations/`, `src/bankmachine/store/schema.py`,
 `src/bankmachine/connector/plaid/derivers.py` (`derive_accounts` only),
-`src/bankmachine/query.py` (`AccountLifecycle` and `_account_lifecycle` only),
+`src/bankmachine/query.py` (`AccountLifecycle`, `_account_lifecycle`, and `pipeline_health` only),
 `tests/test_account_lifecycle.py`, `tests/connector/test_derivers.py`, `tests/store/test_schema.py`.
 
 **Must not touch:** any `## Direction` section, `docs/system-requirements.md`, `envelope.py`,
@@ -170,8 +201,12 @@ of what the code now does stays, in the present tense, without the history.
 
 **Done when:** a single-account connection whose only account stops being listed reports it absent,
 and **that assertion has been seen red** against the pre-change derivation; the empty-roster case
-behaves as chunk 00's criterion states; every added row field is required-and-nullable; and a go-red
-case proves the newly-absent account reaches AC-12.8's flagged magnitude.
+behaves as AC-12.5a states; `roster_observed_empty` is emitted on the answer AND visible on
+`get_pipeline_health`, each with its own go-red case anchored on the CALL rather than on the
+producer -- **on the health surface it is a row/finding about the connection, not a caveat on the
+health envelope**, because the kind is declared request-scoped and fires when THIS request's scope
+holds an account on such a connection, which is not what a health check's own envelope describes; every added row field is required-and-nullable; and a go-red case proves the newly-absent
+account reaches AC-12.8's flagged magnitude.
 
 ---
 

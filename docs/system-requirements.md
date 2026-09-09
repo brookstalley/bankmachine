@@ -440,12 +440,20 @@ can tell which story it is. Suppressing (1) is what produced the N=1 failure; pu
 
 **AC-12.5a · An empty roster is a successful observation of zero accounts, and is recorded as one.**
 A roster response listing no accounts advances the connection's recorded observation and raises
-`roster_observed_empty`. It is never treated as a failed fetch. *Why:* the two are genuinely
+`roster_observed_empty`. It is never treated as a failed fetch, **and it is surfaced by
+`get_pipeline_health` as well as on the answer that draws on it.** *Why:* the two are genuinely
 different events and only the caller can tell them apart — an operator who de-selected every account
 produces a truthful empty roster, and a broken feed produces a lie — so the pipeline records what it
 saw and says the shape is anomalous, rather than guessing which it was. The state that must not
 exist is the third one this replaces: a roster response that type-checks, runs a loop zero times,
 and records a successful observation of nothing with no signal at all.
+
+🔴 **The `get_pipeline_health` clause is not the option that was rejected.** The ruling of 2026-09-09
+rejected `get_pipeline_health` as the *only* home for this signal, because a consumer reading
+`list_accounts` would then see `active` beside a frozen balance and never learn otherwise — an agent
+cannot see a caveat that is not in the payload. It did not reject the surface. An empty roster IS a
+connection-level anomaly and the verification surface is where those live; what the criterion refuses
+is making the operator call it to find out something the answer itself should have said.
 
 **AC-12.6 · The operator's declaration outranks the derived signal, and a rebuild never undoes it.**
 Where a stored `lifecycle_status` and the derived observation disagree, the stored value is
