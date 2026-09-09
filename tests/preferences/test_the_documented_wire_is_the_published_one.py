@@ -88,17 +88,10 @@ def _published_field_names() -> set[str]:
 UNDOCUMENTED_AT_FREEZE: frozenset[str] = frozenset(
     {
         "aggregator",
-        "debt_service_outflow_minor_units",
-        "group_key",
-        "group_label",
         "history_starts",
-        "inflow_minor_units",
-        "internal_transfer_outflow_minor_units",
         "last_error_code",
         "last_success_at",
         "manual",
-        "net_minor_units",
-        "outflow_minor_units",
         "requested_history_days",
         "retired",
     }
