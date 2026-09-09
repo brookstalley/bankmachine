@@ -14,7 +14,9 @@ siblings independently found worth closing.
 Requirements confidence: **High** for chunks 01, 02, 04 and 06 — each is a defect verified
 against the SDK's own type definitions or a guard over a property that already holds.
 **Medium** for chunk 03, which rewrites agent-facing prose; the destination is measured
-but the editorial judgment inside it is not derivable from evidence.
+but the editorial judgment inside it is not derivable from evidence. 🔴 Chunk 03's *budget*
+half was investigated after the fact and the citation behind it does not support what this
+plan asked of it -- see "The token budget, re-derived".
 
 Critic mode: `cumulative-final` — chunks 01 and 02 are dispatched in parallel and land
 close together, so a per-chunk review would split one small diff across two reviewers.
@@ -449,6 +451,80 @@ break**; the latter is a hostage to the next reformat.
 Chunk 02's delegate left the existing 2026-07-28 anchor byte-identical and it still matches
 exactly once — verified at integration. Chunks 03 and 04 will move other anchors, so run
 this after them, not before.
+
+---
+
+## 7c. The token budget, re-derived — and a citation this plan misused
+
+Chunk 03 measured the agent-facing surface at ~4,677 tokens against a budget this plan
+took from hallucinote as ≤500 for instructions and ≤200 per tool. Confirmed 2026-09-08
+that `outputSchema` does reach the model's context. Investigated before acting, and the
+investigation changed the answer.
+
+### The citation was misapplied, and that is this plan's error
+
+Hallucinote's ≤200-tokens-per-tool figure is derived from **tool-count** research — the
+Speakeasy Pet-Store result (10 tools perfect, 20 near-perfect, 107 "both large and small
+models failed completely"), Copilot's 40→13 consolidation, Anthropic's tool-search
+threshold. Every one of those measures *discriminating among many similar tools*. None
+measures schema size.
+
+This plan quoted the derived byte figure as though it were the finding. It is not. **The
+mechanism that degrades selection is a crowded, near-twin tool surface**, and this server
+has four well-differentiated tools going to ten specified ones — inside the band where
+every cited result says accuracy holds. Applying a crowding budget to a surface that is
+not crowded measured the wrong thing.
+
+### What the bytes actually are
+
+| | tokens | share |
+|---|---|---|
+| `outputSchema` structure | ~2,391 | 78% of schema |
+| `outputSchema` prose | ~642 | 21% of schema |
+| tool descriptions | ~627 | |
+| `instructions` | ~1,015 | |
+| **total today** | **~4,677** | 2.3% of a 200k context |
+| **projected at ten tools** | **~10,170** | 5.1% |
+
+🔴 **Every mitigation this plan floated aimed at the 21%.** Stripping descriptions saves
+~642 tokens and requires a rich internal schema beside a lean published one — a second
+description of the envelope, which is the failure this codebase has the most scar tissue
+about, bought for 0.3% of context. `$defs`/`$ref` targets the 78% but can only collapse
+repetition *within* one schema; each `Tool.outputSchema` is standalone, so the real
+repetition — the envelope across four tools, then ten — is unreachable by it, and uneven
+client `$ref` support risks validation for a small gain.
+
+There is no cheap win. The structure is 78% of the cost and the structure is the product:
+closed objects plus a full `required` list are exactly what makes a key added to
+`Answer.to_wire()` without reaching the schema a test failure.
+
+### Ruling: keep it, unchanged
+
+The cost is real, small, and cached. What it buys is the thing this product exists for:
+the SDK client validates `structuredContent` against the published schema and raises when
+a tool declaring one returns none, so **envelope drift becomes a loud client-side failure
+instead of an agent quietly consuming a changed payload.** On a surface whose defining
+risk is a plausible wrong number with no signal, converting a silent failure into a noisy
+one is worth 2.3% of context on its own.
+
+**Revisit trigger, tied to the mechanism that actually degrades rather than to bytes:** the
+tool surface passing roughly twenty tools, or any two tools becoming near-twins a model
+must discriminate between. Neither is in view — ten are specified and each answers a
+different question. A byte count is not the trigger and this plan should not have implied
+one.
+
+### One thing named, not changed
+
+`test_the_instructions_name_every_field_the_envelope_actually_carries` was written when
+`instructions` was the **only** carrier of that information. There are now three — the
+instructions, the published schema, and the served envelope reference — and that test is
+what holds `instructions` at ~1,015 tokens by requiring it to enumerate fields the schema
+states more precisely.
+
+It stays. Hallucinote's own §3.8 is that hard constraints go in every carrier and
+*"repetition beats subtle,"* and this text is what an agent reads when it has fetched no
+resource and called no tool. But the redundancy is now deliberate rather than incidental,
+and that is worth knowing before someone reads the token count as waste.
 
 ---
 
