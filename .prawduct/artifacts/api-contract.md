@@ -591,6 +591,132 @@ interval exists".
 
 Manually imported rows are distinguishable from aggregator-sourced rows in **every** query result.
 
+### The published field shapes
+
+The sections above argue the design; this one is the reference. **Every field the shipped tools put
+on the wire is described — here, or in a section above that already describes it.** That is not an
+aspiration: `tests/preferences/test_the_documented_wire_is_the_published_one.py` walks every
+`outputSchema` at every depth and fails on a published name this document does not carry. The guard
+checks that a name is *accounted for*, never that its description is *accurate*; accuracy is the
+Critic's, under the norms in § Direction.
+
+#### The extraction contract
+
+🔴 **These tables are the authoritative statement of row shape, and this subsection is what makes
+them machine-readable.** It exists because this document backticks tool names, warning kinds, column
+names, CLI subcommands and ordinary prose terms as well as fields — so *"a backticked token is a
+field"* is false here, and a substring sweep over the whole document cannot recover the documented
+field set. Anything reconciling documentation against the wire in the other direction reads these
+tables and nothing else:
+
+- **Authoritative tables:** every table in this section, and only these. A table elsewhere in this
+  document — the warning vocabulary, the CLI exit codes, the caps, the conventions — describes
+  something that is not a response field, and reading one as a field list is the mistake this
+  paragraph exists to prevent.
+- **How a table is recognised:** each is introduced by a bolded caption beginning with the literal
+  word **Fields**, followed by an em dash and the path of the block it describes; and each carries
+  the header row `| Field | Type | Means |`.
+- **Which column holds the name:** the first, and only the first. It holds the field's own name in
+  backticks and **nothing else** — never a path, never a parent-qualified spelling, never two names
+  in one cell. Stripping the backticks from a first cell therefore yields a field name exactly, with
+  no parsing.
+- **How a nested block is spelled:** a block gets **its own table**, whose caption carries the
+  dotted path from the response root (`coverage.not_active_balance_minor_units[]`,
+  `rows[].source_breakdown`) while its rows still hold bare names. The block also appears as a row in
+  its parent's table, typed `object` or `array of object`. So every name is written once per block it
+  occurs in, and a reader never has to take a path apart to get a field name back out.
+- **`[]` in a caption means the table describes one ELEMENT** of that array, not the array itself.
+- **One caption may name several paths** when the blocks are the same shape (`effective_window`'s two
+  halves are the clearest case). The paths are comma-separated; the rows below are the shape all of
+  them have.
+- **The same name in two different blocks is two rows in two tables**, deliberately.
+  `current_minor_units` is a balance on an account row and a per-currency subtotal inside `coverage`;
+  `transactions` is a store-wide count in `coverage` and a per-group count on a `money_summary` row.
+  Collapsing either pair into one entry would document one of the two and silently imply the other.
+- **A tool named in a caption is the only tool that carries that block.** Where no tool is named, the
+  block rides every response.
+
+**What these tables deliberately do NOT state: whether a field is required.** That is the schema's to
+say, and § Direction's fourth norm already fixes it for rows — every row field is required, nullable
+where it has nothing to say, never absent. Absence carries meaning only at the envelope, where each
+case is argued in a section above (`truncation` absent means *this tool is not capped*;
+`effective_window` absent means *this tool takes no window*) rather than compressed into a column
+here.
+
+**Fields — the response root.**
+
+| Field | Type | Means |
+|---|---|---|
+| `environment` | string | which datastore answered, so a fixture cannot pass for real money |
+| `as_of` | string | when this answer was assembled, ISO-8601 UTC. Captured *after* the rows, which is what keeps the effective window from narrowing under them |
+| `build` | object | which code answered — build provenance, not an API version |
+| `warnings` | array of object | 🔴 every reason this answer is less complete than it looks. **Read before drawing a conclusion:** an answer can be perfectly well-formed and still be computed over incomplete data, which is the failure this whole surface exists to make impossible to miss. Empty is a real and common answer |
+| `coverage` | object | what the store HOLDS, which is how an empty answer is told from an empty world |
+| `rows` | array of object | the answer itself. One shape per tool, tabled below |
+| `effective_window` | object | windowed tools only (`query_transactions`, `money_summary`) |
+| `truncation` | object | capped tools only (`query_transactions`) |
+| `totals` | array of object | `money_summary` only |
+
+**Fields — `build`.**
+
+| Field | Type | Means |
+|---|---|---|
+| `version` | string | the package version this process was built from |
+| `commit` | string, nullable | the git commit it was built from. Null means the build could not be identified — and then `dirty` is null too, never `false` |
+| `dirty` | boolean, nullable | whether uncommitted changes were present in that build |
+
+**Fields — `warnings[]`.**
+
+| Field | Type | Means |
+|---|---|---|
+| `kind` | string | one value of the closed vocabulary in § *The warning vocabulary*. Tolerate one you do not recognise and surface it; the list is a minimum |
+| `detail` | string | the measured specifics of this one caveat, in a sentence |
+| `connection_id` | integer | the connection this caveat is about. Present only when it is about one — absence here is information |
+| `institution` | string | that connection's institution name, present on the same condition. It rides beside the id because an operator with ten institutions cannot act on a bare "some data is stale" |
+
+**Fields — `coverage`.**
+
+| Field | Type | Means |
+|---|---|---|
+| `connections` | integer | live connections in the store — retired ones are not counted |
+| `accounts` | integer | every account, INCLUDING the ones no longer active. Read `accounts_not_active` beside it rather than assuming this figure was filtered |
+| `accounts_not_active` | integer | how many of `accounts` are closed or no longer reported. 0 means every account is still being reported |
+| `not_active_balance_minor_units` | array of object | what those accounts contribute to any total over balances. Empty means they contribute nothing |
+| `transactions` | integer | non-removed transactions **store-wide**, never narrowed by the question asked. On a windowed answer read `transactions_in_effective_window` beside it |
+| `earliest_transaction` | string, nullable | the oldest posted date held anywhere in the store, `YYYY-MM-DD`; null when the store holds no transaction |
+| `latest_transaction` | string, nullable | the newest posted date held anywhere in the store, `YYYY-MM-DD`; null when the store holds no transaction. 🔴 Store-wide like `transactions`, so it is **not** the last date in this answer's window and a caller must not read it as one |
+| `transactions_in_effective_window` | integer | windowed tools only: how many rows the window this answer actually covered holds. Never narrowed by `account_id` — per-account coverage is its own field on the rows |
+
+**Fields — `coverage.not_active_balance_minor_units[]`.**
+
+| Field | Type | Means |
+|---|---|---|
+| `currency` | string | the currency this subtotal is in. Per currency, never one integer across currencies |
+| `current_minor_units` | integer | what the closed and no-longer-reported accounts holding this currency contribute to any total over balances, in MINOR UNITS and operator-signed. Quote it beside any balance total you report — it is the figure that lets a reader do the subtraction this surface refuses to do for them. Not the balance of any one account |
+
+**Fields — `effective_window`** *(`query_transactions`, `money_summary`)*.
+
+| Field | Type | Means |
+|---|---|---|
+| `requested` | object | the window the caller asked for, verbatim — both bounds null on an unbounded request. It is kept beside `effective` so that a clamp is *visible* rather than something the caller has to infer from a figure that came back smaller than expected |
+| `effective` | object | the window the answer was actually computed over. Both bounds null means the window asked for and the data this store holds do not overlap |
+
+**Fields — `effective_window.requested`, `effective_window.effective`.**
+
+| Field | Type | Means |
+|---|---|---|
+| `since` | string, nullable | the window's inclusive start, `YYYY-MM-DD` |
+| `until` | string, nullable | the window's inclusive end, `YYYY-MM-DD` |
+
+**Fields — `truncation`** *(`query_transactions`)*.
+
+| Field | Type | Means |
+|---|---|---|
+| `returned` | integer | rows actually in this payload, counted from the rows themselves rather than from the caller's `limit` |
+| `matching` | integer | rows the request selects, over the same predicates and tables as the row query. Floors at `returned` |
+| `truncated` | boolean | `returned < matching`, derived rather than stored |
+| `next_cursor` | string | opaque state to pass back as `cursor` for the next page. Present when and only when `truncated` is true, so its presence is the loop condition |
+
 ### Pagination and caps
 
 | | Value |
