@@ -41,7 +41,7 @@ from bankmachine.envelope import (
     Cursor,
     Truncation,
     Window,
-    _iso_or_none,
+    iso_or_none,
     resolve_window,
 )
 from bankmachine.store.connection import inspect
@@ -229,8 +229,8 @@ class AccountCoverage:
     def to_wire(self) -> dict[str, Any]:
         """The three fields every account row carries, in every tool that carries them."""
         return {
-            "first_transaction_date": _iso_or_none(self.first_transaction_date),
-            "last_transaction_date": _iso_or_none(self.last_transaction_date),
+            "first_transaction_date": iso_or_none(self.first_transaction_date),
+            "last_transaction_date": iso_or_none(self.last_transaction_date),
             "transaction_count": self.transaction_count,
         }
 

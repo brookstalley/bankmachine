@@ -190,17 +190,25 @@ class Window:
     def to_wire(self) -> dict[str, Any]:
         return {
             "requested": {
-                "since": _iso_or_none(self.requested_since),
-                "until": _iso_or_none(self.requested_until),
+                "since": iso_or_none(self.requested_since),
+                "until": iso_or_none(self.requested_until),
             },
             "effective": {
-                "since": _iso_or_none(self.effective_since),
-                "until": _iso_or_none(self.effective_until),
+                "since": iso_or_none(self.effective_since),
+                "until": iso_or_none(self.effective_until),
             },
         }
 
 
-def _iso_or_none(value: date | None) -> str | None:
+def iso_or_none(value: date | None) -> str | None:
+    """A calendar date as the wire spells it, or `None` passed through.
+
+    Public deliberately: `query.AccountCoverage.to_wire` formats its two dates
+    with this, so it crosses the module boundary. A private name reached across
+    that boundary would say the split had drawn the line in the wrong place --
+    the honest reading is that formatting a date FOR THE WIRE belongs to the
+    envelope, and is therefore part of what the envelope offers.
+    """
     return None if value is None else value.isoformat()
 
 
@@ -453,7 +461,7 @@ def _request_fingerprint(*, since: date | None, until: date | None, account_id: 
     between pages is doing something ordinary.
     """
     material = json.dumps(
-        [_iso_or_none(since), _iso_or_none(until), account_id], separators=(",", ":")
+        [iso_or_none(since), iso_or_none(until), account_id], separators=(",", ":")
     )
     # Eight bytes, because this discriminates a caller's mistake and is not a
     # signature. A forged cursor reaches only rows the request's own filters
@@ -790,9 +798,9 @@ class Answer:
     #: defaulted field. Every construction site must say whether its answer was
     #: computed over a window: an unwindowed tool writes `None` on purpose, and
     #: a windowed tool that skipped the clamp would have to write `None` in
-    #: plain sight rather than merely forget a call. Three more windowed tools
-    #: are specified against this (`get_coverage_report`, `cashflow_summary`),
-    #: and a clamp each of them has to remember is a clamp that decays.
+    #: plain sight rather than merely forget a call. The unbuilt tools in
+    #: `api-contract.md` § Surface Inventory include windowed ones, and a clamp
+    #: each of them has to remember is a clamp that decays.
     effective_window: Window | None
     #: 🔴 No default, for the same reason and by the same mechanism as
     #: `effective_window` above. `None` means this tool returns every row it

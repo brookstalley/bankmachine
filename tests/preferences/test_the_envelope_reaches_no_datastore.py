@@ -27,16 +27,29 @@ REPO_ROOT = Path(__file__).parents[2]
 SOURCE_ROOT = REPO_ROOT / "src" / "bankmachine"
 ENVELOPE = SOURCE_ROOT / "envelope.py"
 
-#: Modules that hand out a datastore handle or build a statement to run through
-#: one. Matched as imported module paths rather than as text anywhere in the
-#: file, so that a docstring discussing a query does not read as a violation --
-#: the rule is about what the module *depends on*.
-DATASTORE_MODULES = {
-    "sqlalchemy",
-    "bankmachine.store.connection",
-    "bankmachine.store.engine",
-    "bankmachine.store.schema",
+#: 🔴 **An allowlist, not a ban list, and the difference is the whole guard.**
+#: The tempting form enumerates the modules that hand out a handle --
+#: `store.connection`, `store.engine`, `store.schema`. That form is already
+#: wrong: `store.derivation`, `store.raw` and `store.rebuild` reach the database
+#: too and would pass it, and the next module added to `store/` passes it by
+#: default. A guarantee defined by an enumeration decays; one defined by what is
+#: PERMITTED has no case to fall outside of.
+#:
+#: `store.types` is on the list and is the one entry worth explaining. It imports
+#: SQLAlchemy to declare column types, so the envelope depends on SQLAlchemy
+#: transitively -- but it opens nothing and executes nothing. The property being
+#: guarded is that the envelope cannot READ, not that the name `sqlalchemy` is
+#: absent from its import graph, and stating it as an allowlist is what keeps
+#: those two from being confused.
+ALLOWED_FIRST_PARTY = {
+    "bankmachine.build_id",
+    "bankmachine.store.types",
 }
+
+#: Direct execution machinery. Separate from the allowlist because it catches
+#: the other direction -- importing SQLAlchemy straight into the envelope rather
+#: than reaching the database through one of this project's own modules.
+FORBIDDEN_THIRD_PARTY = {"sqlalchemy"}
 
 #: The types whose presence makes a green run mean "contained" rather than
 #: "absent". Every one is part of the wire contract a client reads.
@@ -59,30 +72,41 @@ def _imported_modules(source: str, filename: str) -> set[str]:
     return modules
 
 
-def _reaches_datastore(modules: set[str]) -> set[str]:
-    """Datastore dependencies, matching a package by its prefix.
+def _matches(module: str, prefixes: set[str]) -> bool:
+    """Whether a module is one of `prefixes`, or lives beneath one.
 
-    `sqlalchemy.engine` counts as `sqlalchemy`: the rule is about reaching the
-    database layer at all, and an import one level in is the same dependency
-    wearing a longer name.
+    `sqlalchemy.engine` counts as `sqlalchemy`: an import one level in is the
+    same dependency wearing a longer name.
     """
-    hits: set[str] = set()
-    for module in modules:
-        for banned in DATASTORE_MODULES:
-            if module == banned or module.startswith(banned + "."):
-                hits.add(module)
-    return hits
+    return any(module == p or module.startswith(p + ".") for p in prefixes)
 
 
-def test_the_envelope_cannot_reach_the_datastore() -> None:
-    reachable = _reaches_datastore(
-        _imported_modules(ENVELOPE.read_text(encoding="utf-8"), str(ENVELOPE))
+def test_the_envelope_reaches_only_what_it_is_allowed_to() -> None:
+    modules = _imported_modules(ENVELOPE.read_text(encoding="utf-8"), str(ENVELOPE))
+    first_party = {m for m in modules if m == "bankmachine" or m.startswith("bankmachine.")}
+    unlisted = {m for m in first_party if not _matches(m, ALLOWED_FIRST_PARTY)}
+    assert not unlisted, (
+        f"{ENVELOPE.relative_to(REPO_ROOT)} imports {sorted(unlisted)}, which is not on this "
+        "module's allowlist. The envelope describes what an answer IS; anything that reads a "
+        "datastore to fill one belongs in query.py beside the reading it depends on. Move the "
+        "code back, or widen ALLOWED_FIRST_PARTY deliberately and say why the addition cannot "
+        "read."
     )
-    assert not reachable, (
-        f"{ENVELOPE.relative_to(REPO_ROOT)} imports {sorted(reachable)}, so the wire envelope "
-        "can now read the datastore. The split that separates the answer's SHAPE from how this "
-        "store fills it is no longer structural -- move the reading code back to query.py, or "
-        "record the decision to collapse the boundary."
+
+
+def test_the_envelope_does_not_import_the_execution_layer() -> None:
+    """The other direction: reaching the database without going through us.
+
+    The allowlist above governs first-party imports. This catches SQLAlchemy
+    imported straight into the envelope, which would let it build and run a
+    statement without touching any `bankmachine.store` module at all.
+    """
+    modules = _imported_modules(ENVELOPE.read_text(encoding="utf-8"), str(ENVELOPE))
+    direct = {m for m in modules if _matches(m, FORBIDDEN_THIRD_PARTY)}
+    assert not direct, (
+        f"{ENVELOPE.relative_to(REPO_ROOT)} imports {sorted(direct)} directly, so it can build "
+        "and execute a statement. The envelope is a description of an answer's shape and has no "
+        "reason to hold one."
     )
 
 

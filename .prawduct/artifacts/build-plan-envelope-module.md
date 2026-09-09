@@ -47,7 +47,7 @@ fork was closed by the owner this cycle before any code was written.
 ### Open assumptions
 
 `[ASSUMPTION: the new module is named src/bankmachine/envelope.py | LOW impact | user can
-correct — it is a rename away at any point before C1 commits]`
+correct — it is a rename away at any point before chunk 01 commits]`
 
 ## Decisions
 
@@ -88,20 +88,20 @@ Not "envelope vs SQL" — that cut does not survive contact with the file. Three
    two tool-domain error classes, per the decision above.
 
 **The invariant that makes the seam checkable, and self-enforcing:** the new module touches no
-database. No `SAConnection`, no `reader_connection`, no statement execution. C1 lands a guard
+database. No `SAConnection`, no `reader_connection`, no statement execution. Chunk 01 lands a guard
 test asserting it, so the seam cannot erode the way a convention would — which is the same
 reason `_refuse_optional_row_fields` runs inside `_tool_definitions()` rather than sitting in a
 style guide.
 
 ## Status
 
-- [x] C1 — Extract the envelope module
-- [x] C2 — Re-point the go-red anchors
-- [ ] C3 — Artifacts, ruling, and backlog close
+- [x] **01 — Extract the envelope module**
+- [x] **02 — Re-point the go-red anchors**
+- [ ] **03 — Artifacts, ruling, and backlog close**
 
 ## Chunks
 
-### C1 — Extract the envelope module
+### Chunk 01: Extract the envelope module
 
 **Type:** code
 
@@ -146,12 +146,27 @@ reads but not patch targets is the general form of this trap.
 full envelope against the same call on `develop`. A refactor that keeps the suite green and
 changes a payload key is exactly the failure this chunk can produce.
 
-### C2 — Re-point the go-red anchors
+**Result, recorded 2026-09-09 — a declared verification whose outcome is written nowhere is
+indistinguishable from one nobody ran.** A `develop` worktree was checked out at `be10ac0` and
+both surfaces were dumped from each tree and compared as bytes:
+
+- **Tool schemas:** all five `_tool_definitions()` entries, serialised with sorted keys —
+  44,113 bytes on both sides, `diff` clean.
+- **Reference documents:** `mcp_resources.documents()` over those definitions, covering
+  `bankmachine://reference/warnings` and `bankmachine://reference/envelope` — 14,592 bytes on
+  both sides, `diff` clean.
+
+Re-run after the test re-points and again after the review fixes; identical each time. The
+comparison is of the published surface rather than of a live stdio session — the server
+assembles its payload from exactly these definitions, so this pins the contract a client reads,
+and a per-tool live call would add row data that the fixture, not this change, determines.
+
+### Chunk 02: Re-point the go-red anchors
 
 **Type:** code
 
 22 cases in `tests/preferences/verify_norms_go_red.py` anchor `(file, exact source text)` pairs
-into `src/bankmachine/query.py`. Every anchor whose text moved in C1 now finds nothing and
+into `src/bankmachine/query.py`. Every anchor whose text moved in chunk 01 now finds nothing and
 reports as a **survivor** — correct behavior, and the reason the harness reports a missing
 anchor as a survivor rather than a pass.
 
@@ -168,7 +183,7 @@ anchor text now resolves in `envelope.py` rather than `query.py`.
 tree, and a Critic review reads it. Commit → run the harness → review. Never the harness and a
 review against the same tree.
 
-### C3 — Artifacts, ruling, and backlog close
+### Chunk 03: Artifacts, ruling, and backlog close
 
 **Type:** doc-only
 
@@ -176,19 +191,25 @@ review against the same tree.
    and update `architecture.md`'s module description to name the new boundary and its no-database
    invariant.
 2. Answer #39's four acceptance criteria explicitly, including the one added this cycle.
-3. Close #39 via `/prawduct:backlog update status=shipped`.
+3. Add the `.prawduct/change-log.md` entry for this scope — `scope=envelope-module-split`,
+   and **no** `release=`, since any value at all drops the scope out of the
+   release-pending set and silently unships the work.
+4. Close #39 via `/prawduct:backlog update status=shipped`.
 
 **Done when:** the ruling is findable by someone adding a fourth conditional key who has never
 read this plan; `architecture.md` describes the module boundary that now exists; #39 is closed
 with each acceptance line answered rather than assumed.
 
-**Critic mode:** `cumulative-final` — the three chunks ship as one PR.
+The three chunks ship as one PR, so this chunk's own review is the single cumulative
+pass over `merge-base...HEAD` — no separate `final`. Mode is left to inference rather
+than declared: the earlier `Critic mode: cumulative-final` named a token no reader
+recognises, and an unrecognised override is discarded in silence rather than refused.
 
 ## Governance checkpoints
 
-- **After C1** — the architecture validation point. If the published schemas are not
+- **After chunk 01** — the architecture validation point. If the published schemas are not
   byte-identical, the extraction is wrong and no later chunk can repair it.
-- **Before C3** — confirm the decisions above still hold against what the code revealed, per the
+- **Before chunk 03** — confirm the decisions above still hold against what the code revealed, per the
   standing rule that unrevisited assumptions are decisions taken on the user's behalf.
 
 ## What I would do differently
@@ -203,11 +224,11 @@ sequencing: #20 adds three filters and their SQL to this file, and every line it
 re-read by whoever eventually splits it. The value here is entirely in the ordering, and if #20
 slips indefinitely this plan should be shelved rather than executed on principle.
 
-**The scope I would cut if asked to make this smaller:** C2. Re-pointing 22 anchors is the
+**The scope I would cut if asked to make this smaller:** chunk 02. Re-pointing 22 anchors is the
 largest mechanical cost in the plan and it buys no behavior. But it cannot actually be cut —
 leaving the anchors stale converts a working guard into 22 silent survivors, which is worse than
 not having split the file. Naming it as the expensive part is the honest version.
 
 **The risk the requirements do not price:** a pure move is the easiest change to review and the
 easiest to get subtly wrong, because reviewers pattern-match "it's just a move" and stop reading.
-The byte-identical schema diff in C1 exists specifically because eyes are not sufficient here.
+The byte-identical schema diff in chunk 01 exists specifically because eyes are not sufficient here.

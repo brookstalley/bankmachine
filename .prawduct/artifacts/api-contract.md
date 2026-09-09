@@ -579,7 +579,7 @@ defect the paragraph above records. It fires only when *this* request's scope ac
 uncovered account: on `list_accounts` when the listing holds one, and on
 `query_transactions(account_id=N)` when the account asked about has none.
 
-🔴 **This table is prose and `query.WARNING_KINDS` is the code; nothing holds them together.**
+🔴 **This table is prose and `envelope.WARNING_KINDS` is the code; nothing holds them together.**
 `test_the_warning_vocabulary_is_closed.py` scans source only, so a kind added to the vocabulary
 without being added here goes unnoticed — which is how `accounts_without_coverage` was missing from
 this table for a full work cycle after it shipped. Adding a kind means editing both until something
@@ -739,7 +739,7 @@ tool call. Both `experimental`, for the same reason the tools are:
 - `bankmachine://reference/warnings` — every warning kind, what it implies, and what to do about it
 - `bankmachine://reference/envelope` — every envelope field and which tools carry it
 
-🔴 **Both are DERIVED, not authored.** The warning reference walks `query.WARNING_KINDS`; the
+🔴 **Both are DERIVED, not authored.** The warning reference walks `envelope.WARNING_KINDS`; the
 envelope reference renders from the tools' published `outputSchema`. A kind added to the vocabulary
 reaches the document by itself — unexplained rather than missing — which is the property that keeps
 this from becoming a third hand-maintained copy of the vocabulary.
