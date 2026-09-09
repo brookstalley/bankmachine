@@ -204,7 +204,28 @@ check that calls a broken feed healthy | user can veto/override]`
 `tests/test_account_lifecycle.py`, `tests/connector/test_derivers.py`, `tests/store/test_schema.py`.
 
 **Must not touch:** any `## Direction` section, `docs/system-requirements.md`, `envelope.py`,
-`api-contract.md`, `_stranded_holds`, or any other function in `query.py`.
+`mcp.py`, `api-contract.md`, `_stranded_holds`, or any other function in `query.py` — **except the
+narrow widening below.**
+
+🔴 **Boundary widened for C1 on 2026-09-09, at the delegate's request, because the brief as written
+was self-contradictory.** It said "emit it on the answer" and "do not touch any other function in
+`query.py`" in the same breath, and every function that produces an answer is in the second clause.
+A producer with no call site is exactly what this plan's `partition:` notes exist to prevent, and C1
+stopped and asked rather than resolving it silently — which is the behaviour the naming is for.
+
+**Granted:** the emitter term beside the existing `_not_active_caveat(...)` call in `extra_caveats=`
+within `list_accounts`, `query_transactions` and `coverage_report`. **That term and nothing else in
+those three functions.** Also `tests/preferences/verify_norms_go_red.py`, append-only to `CASES` —
+the anchor is the delegate's deliverable, running the harness is the coordinator's, and a conflict
+on that tail is expected and resolved by keeping every append.
+
+`[DECISION: on get_pipeline_health the signal is a per-connection Caveat, not a new row field |
+`mcp.py`'s `_output_schema` closes every level with `additionalProperties: False`, so a new row key
+fails the registration guard and would require an `mcp.py` edit C1 is forbidden. `envelope.Caveat`
+already declares `connection_id` and `institution`, and `signs.py` already builds that exact shape
+on that surface -- so this is the established precedent AND it publishes no new wire field, which
+independently discharges seam (a) from C1's side. Verified by the coordinator, not taken on the
+delegate's report | user can veto/override]`
 
 **Done when:** a single-account connection whose only account stops being listed reports it absent,
 and **that assertion has been seen red** against the pre-change derivation; the empty-roster case
