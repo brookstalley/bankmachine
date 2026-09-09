@@ -550,3 +550,10 @@ caller's must anchor on the call.
   each finding the previous round's guard covered nothing or half.
 - *2026-09-09, `_coverage(conn, lifecycle=…)`.* The same defect, same bundle, one surface over —
   found by the cumulative rather than by me, after I had already fixed and written up its twin.
+
+## Reversing a ratified decision is a sweep, not an edit: grep the repo for the rejected spelling and the superseded claim before committing, because fixing the file a reviewer named and stopping there is what buys the second round
+
+## A documented remedy is a claim and is asserted like one: when a runbook tells an operator to run a command to recover from a state your change creates, write the test that puts a store in that state and runs it
+
+## Recording a policy is not ratifying one: an instruction given for one piece of work belongs in that work's plan, and a `project-preferences.md` norm row has prerequisites that file states for itself
+
