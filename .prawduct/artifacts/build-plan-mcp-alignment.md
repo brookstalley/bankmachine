@@ -6,11 +6,12 @@ Origin: a review of three sibling repos' MCP practice (`../hallucinote`, `../cor
 decision.
 
 **What this plan is not.** It is not a conformance pass. Two of the three siblings'
-strongest positions are ones this repo should keep departing from, and §5 records why.
+strongest positions are ones this repo should keep departing from, and the Departures section
+records why.
 The work here is the subset that is either a verified protocol defect or a gap all three
 siblings independently found worth closing.
 
-Requirements confidence: **High** for chunks 01, 02 and 04 — each is a defect verified
+Requirements confidence: **High** for chunks 01, 02, 04 and 06 — each is a defect verified
 against the SDK's own type definitions or a guard over a property that already holds.
 **Medium** for chunk 03, which rewrites agent-facing prose; the destination is measured
 but the editorial judgment inside it is not derivable from evidence.
@@ -18,24 +19,31 @@ but the editorial judgment inside it is not derivable from evidence.
 Critic mode: `cumulative-final` — chunks 01 and 02 are dispatched in parallel and land
 close together, so a per-chunk review would split one small diff across two reviewers.
 
-partition: **Two delegates, not five.** Chunks 01 and 03 both edit `src/bankmachine/mcp.py`
-and `tests/test_mcp.py`, so they cannot run concurrently — 01 is delegated, 03 is the
-coordinator's and runs after it merges. Chunk 02 creates only new files under
-`tests/preferences/` and is genuinely independent, so it runs beside 01. Chunk 04 is the
-coordinator's. `mcp.py` has exactly one owner at any moment; that is the whole partition.
+partition: **One parallel pair, then a serial chain.** `src/bankmachine/mcp.py` has exactly
+one owner at any moment; that is the whole partition. Chunks 01 and 02 run concurrently
+because 02 creates only new files under `tests/preferences/` and touches nothing 01 owns.
+Everything after that edits `mcp.py`, so it runs in order: **06 → 05 → 03**.
 
-Delegate verification ceiling: `uv run pytest tests/test_mcp.py` for chunk 01,
-`uv run pytest tests/preferences` for chunk 02. Neither delegate runs the full suite —
-the coordinator owns the combined run at integration.
+That order is a dependency, not a preference. 03 compresses agent-facing prose out of
+`instructions`, and 05 builds the surface that prose moves *to* — so 03 last is the only
+sequence where it can cut against a real destination instead of deleting. 06 is
+independent of both and goes first because it is the narrowest.
+
+Delegate verification ceiling: `uv run pytest tests/test_mcp.py` for chunks 01 and 06,
+`uv run pytest tests/preferences` for chunk 02, `uv run pytest tests/test_mcp.py
+tests/test_mcp_resources.py` for 05. No delegate runs the full suite — the coordinator
+owns the combined run at integration.
 
 ---
 
 ## Status
 
-- [ ] **01 — The handshake tells the truth about itself** (delegated)
-- [ ] **02 — Two structural guards** (delegated)
-- [ ] **03 — The envelope tells the agent what to do about it** (coordinator)
-- [ ] **04 — The artifacts say what the code now does** (coordinator)
+- [ ] **01 — The handshake tells the truth about itself** (delegated, parallel)
+- [ ] **02 — Two structural guards** (delegated, parallel)
+- [ ] **06 — The envelope is machine-checkable** (delegated, after 01)
+- [ ] **05 — A resources surface** (delegated, after 06)
+- [ ] **03 — The envelope tells the agent what to do about it** (coordinator, after 05)
+- [ ] **04 — The artifacts say what the code now does** (coordinator, last)
 
 ---
 
@@ -267,7 +275,102 @@ conflict, the norm wins and the budget is missed with that recorded — hallucin
 
 ---
 
-## 5. Departures — reviewed and deliberately not adopted
+## 5. Chunk 06 — The envelope is machine-checkable
+
+Ratified 2026-09-08 by the owner, having been raised as a deferred decision. Publish
+`outputSchema` on every tool.
+
+🔴 **No sibling does this**, so it does not ride on their precedent and the argument has
+to stand alone. It is this: the envelope is currently described to the agent *only* in
+prose, in `instructions` and in each tool's description, and prose is what chunk 03 is
+about to compress. A schema is the carrier that does not thin out when the prose does,
+and `Tool.output_schema` exists at 2.2.0 for exactly this.
+
+**The design content, which is why this is not a transcription.** `Answer.to_wire` emits
+`effective_window` and `truncation` *conditionally*, and their absence is load-bearing —
+`api-contract.md`: an absent `effective_window` says this tool takes no window, an absent
+`truncation` says it returns every row it found. A single schema with both keys optional
+would say the opposite of the truth: that any tool might carry either. So the schema is
+**per-tool**, and a windowed tool's schema requires `effective_window` while an
+unwindowed tool's forbids it.
+
+That is the same distinction `Answer` already enforces in the type system by giving both
+fields no default, and the schema should be derived from the same source rather than
+hand-maintained beside it — a second description of the envelope is one that stops
+agreeing with the first.
+
+**Watch:** `structuredContent` must continue to validate against what is published. A
+schema that drifts from the payload is worse than none, because a validating client now
+rejects good answers. The test that proves this should validate a *real* answer from each
+tool against that tool's published schema, not a fixture shaped like one.
+
+### Done when
+
+- Every tool publishes an `outputSchema` derived from the envelope's own definition.
+- A windowed tool's schema requires `effective_window`; an unwindowed tool's does not
+  permit it. Same for `truncation` on the capped tool.
+- A live answer from each of the four tools validates against that tool's schema.
+- `uv run pytest tests/test_mcp.py` green.
+
+---
+
+## 6. Chunk 05 — A resources surface
+
+Ratified 2026-09-08 by the owner. Declare the `resources` capability and serve
+agent-facing reference material through it.
+
+**The argument** (hallucinote `resources/__init__.py`): *"Tools are imperative; the agent
+decides to call them. Resources are addressable content; the MCP client (or the agent)
+reads them by URI without consuming a per-tool turn."* This is the destination for the
+deep envelope reference that chunk 03 compresses out of `instructions` — the detail stops
+costing every session's context and becomes something fetched when needed.
+
+**What to serve.** At minimum the warning vocabulary in full (each kind: what it means,
+what it implies about the answer, what the agent should do), and the envelope reference.
+Both currently live as prose inside `_instructions()`.
+
+🔴 **Derive them; do not retype them.** The warning vocabulary has a definition already —
+`api-contract.md` § "The warning vocabulary — stable, machine-readable" — and
+`tests/test_mcp.py` already pins that `instructions` names every kind the vocabulary
+defines. A resource that restates the list by hand is a third copy, and the existing
+drift test will not be watching it. Whatever mechanism keeps `instructions` honest must
+cover the resource too.
+
+**The capability declaration is currently deliberate and minimal**, and its comment says
+why: *"Declaring a capability this server does not serve would have the client offer the
+operator something that fails."* Adding `resources` is fine precisely because it will now
+be served — keep the comment true by keeping `listChanged` honest about what is
+implemented.
+
+### Done when
+
+- `resources/list` and `resources/read` are implemented, and the capability is declared
+  only because they are.
+- The warning vocabulary and envelope reference are served, derived from their existing
+  definitions rather than restated.
+- An unknown URI is refused the way an unknown tool is — a sentence the caller can act on,
+  not a stack-shaped string.
+- The whole resource surface answers against a missing datastore, as every tool already
+  must (AC-ARCH.3).
+- `uv run pytest tests/test_mcp.py tests/test_mcp_resources.py` green.
+
+---
+
+## 7. After this wave
+
+Ruled 2026-09-08 by the owner: **finish the MCP surface next.** Six of the ten specified
+tools are unbuilt, and `get_coverage_report` is the one to take first — `api-contract.md`
+calls it half the verification surface, so `get_pipeline_health` is currently the whole of
+it, and the product's headline goal is *"answer it, or say why you should not."*
+
+Recorded here so the next session does not have to re-derive it: this does **not**
+discharge `mcp-production-readiness.md`'s open blockers (#19, #20, #21, #22, #23, #24, and
+items 4–7 of its "what has to be true before yes" list). Those remain the gate on real
+accounts. The ruling sets the order of work, not the go/no-go.
+
+---
+
+## 8. Departures — reviewed and deliberately not adopted
 
 Recorded so a later reader does not re-litigate them, and so the plan is honest that
 "align to the siblings" was not the finding.
@@ -294,16 +397,7 @@ surface's arguments checkable. Revisit only if the specified ten grows.
 surfaces prompts only as user-facing slash commands, so an agent can never reach them.
 Not adopted, on their evidence.
 
-**A `resources` capability.** Genuinely attractive — hallucinote's case is that resources
-do not compete with tools for selection and cost no turn, which is the natural home for
-the deep envelope reference chunk 03 is compressing. Deferred rather than dismissed: it is
-a new capability on a surface whose current capability declaration is deliberately minimal
-(*"declaring a capability this server does not serve would have the client offer the
-operator something that fails"*), and it wants its own decision.
-
-**`outputSchema`.** `Tool.output_schema` exists at 2.2.0 and no sibling publishes one.
-Mechanically derivable from `Answer.to_wire`, and it would make the envelope
-machine-checkable instead of prose-described — but the envelope has conditional keys
-(`effective_window` and `truncation` are present per-tool by design, and their *absence*
-is load-bearing information), so the schema has real design content and is not a
-transcription. Deferred to its own decision alongside resources.
+**A `resources` capability** and **`outputSchema`** were both raised here as deferred
+decisions and were **ratified into this wave** on 2026-09-08 — they are chunks 05 and 06
+above, not departures. Both are noted here only because a reader scanning this section for
+"what did they decide about resources" should not conclude it was declined.
