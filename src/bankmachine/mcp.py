@@ -386,8 +386,121 @@ def _coverage_row_fields() -> dict[str, dict[str, Any]]:
     }
 
 
+class ToolRegistrationError(RuntimeError):
+    """A surface that cannot be described strictly, refused before it is advertised.
+
+    🔴 A startup failure rather than a runtime surprise, which is the whole
+    point of both checks below. The alternative is a tool that registers
+    cleanly and then answers a caller with a payload its own published schema
+    rejects -- discovered by whoever asked the unlucky question, in production,
+    with nothing pointing at the definition that caused it.
+    """
+
+
+def _refuse_colliding_parameters(definitions: list[dict[str, Any]]) -> None:
+    """#30's A3: one parameter name may not mean two types across this surface.
+
+    🔴 The failure this prevents is a SELECTION failure, not a validation one.
+    An agent that has learned `since` is a `YYYY-MM-DD` string on one tool
+    carries that to the next; a surface where the same name is an integer
+    somewhere else teaches something false, and the payload it sends back is
+    refused for a reason that reads as its own mistake. Names are the vocabulary
+    a caller reasons in, so a collision is a defect in the surface even though
+    each tool is internally consistent.
+
+    Types only, not descriptions: two tools may well phrase `since` differently
+    for their own domain, and forcing one wording would be a style rule wearing
+    a guard's clothes.
+    """
+    declared: dict[str, dict[str, str]] = {}
+    for definition in definitions:
+        name = str(definition["name"])
+        properties: dict[str, Any] = definition["inputSchema"].get("properties", {})
+        for parameter, spec in properties.items():
+            declared.setdefault(parameter, {})[name] = str(spec.get("type"))
+    for parameter, by_tool in sorted(declared.items()):
+        if len(set(by_tool.values())) > 1:
+            rendered = ", ".join(
+                f"{tool} declares {kind}" for tool, kind in sorted(by_tool.items())
+            )
+            raise ToolRegistrationError(
+                f"the parameter {parameter!r} means two different types on this surface "
+                f"({rendered}); one name must mean one thing, or a caller that learned it "
+                f"on one tool sends the wrong shape to the next"
+            )
+
+
+def _refuse_optional_row_fields(definitions: list[dict[str, Any]]) -> None:
+    """Guardrail 1 of `api-contract.md` § Direction's fourth norm, made structural.
+
+    🔴 **This is what makes the norm self-enforcing rather than a sentence the
+    next builder has to remember**, and it is why the norm survives the
+    thirtieth capability. The norm merges tools only where ONE strict row schema
+    covers every parameter value; a row field that is present under one
+    `group_by` and absent under another is the merge being made anyway, and it
+    is invisible in review because each individual answer looks fine.
+
+    🔴 **Nullable is fine; ABSENT is not.** A field typed `["string", "null"]`
+    is present and null, and a consumer reading it learns something. A field
+    that is simply missing is indistinguishable from a field the server forgot,
+    and this contract fixes a key's absence as information -- which only holds
+    while absence is a property of the TOOL rather than of the answer.
+
+    Rows only. The envelope has keys that are deliberately conditional across
+    tools, and a warning carries `connection_id` only when it is about one
+    connection -- both are absence used as information at a level this norm does
+    not speak about. The norm is about the row shape a merge has to unify, so
+    that is what is checked.
+    """
+    for definition in definitions:
+        name = str(definition["name"])
+        rows: dict[str, Any] = definition["outputSchema"]["properties"]["rows"]
+        _refuse_loose_object(rows.get("items", {}), tool=name, path="rows[]")
+
+
+def _refuse_loose_object(schema: dict[str, Any], *, tool: str, path: str) -> None:
+    """One object level of a row, and every object nested inside it.
+
+    Recursive because a row that carries a block is exactly where the check
+    would otherwise stop looking: `additionalProperties` on the outer object
+    says nothing about the shape of a value inside it.
+    """
+    if schema.get("type") != "object":
+        return
+    properties: dict[str, Any] = schema.get("properties", {})
+    required = set(schema.get("required", []))
+    optional = sorted(set(properties) - required)
+    if optional:
+        raise ToolRegistrationError(
+            f"{tool}'s {path} declares {optional} without requiring them, so the field is "
+            f"present on some answers and absent on others; make it nullable if it can have "
+            f"no value, but a row schema with an optional field cannot cover every parameter "
+            f"value and the tool must not be merged"
+        )
+    if schema.get("additionalProperties") is not False:
+        raise ToolRegistrationError(
+            f"{tool}'s {path} does not close `additionalProperties`, so a key can reach the "
+            f"wire without reaching the published schema and this row's absences stop meaning "
+            f"anything"
+        )
+    for field_name, spec in properties.items():
+        child = f"{path}.{field_name}"
+        if spec.get("type") == "object":
+            _refuse_loose_object(spec, tool=tool, path=child)
+        elif spec.get("type") == "array":
+            _refuse_loose_object(spec.get("items", {}), tool=tool, path=f"{child}[]")
+
+
 def _tool_definitions() -> list[dict[str, Any]]:
-    """The tool surface. 🔴 Every one of them reads; none of them writes."""
+    """The tool surface. 🔴 Every one of them reads; none of them writes.
+
+    🔴 The two refusals below run HERE, in the one function that produces a
+    definition, rather than at startup beside `serve`. Registration is not an
+    event this server has -- `tools/list`, the derived reference documents and
+    every test build the surface by calling this -- so a check anywhere else
+    would be a check some caller could route around. Refusing here means no code
+    path can obtain a definition that was never validated.
+    """
     definitions: list[dict[str, Any]] = [
         {
             "name": "list_accounts",
@@ -679,6 +792,8 @@ def _tool_definitions() -> list[dict[str, Any]]:
         # is how three of them stay right. A fresh dict per tool because these
         # go out as part of a mutable structure a caller may edit.
         definition["annotations"] = dict(_READ_ONLY_ANNOTATIONS)
+    _refuse_colliding_parameters(definitions)
+    _refuse_optional_row_fields(definitions)
     return definitions
 
 
