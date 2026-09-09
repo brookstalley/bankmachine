@@ -347,8 +347,10 @@ def test_the_give_up_ceiling_counts_consecutive_failures_not_lifetime_ones(
     the operator would see the tool disappear for no reason they could connect
     to anything. The ceiling exists to stop a spin, not to ration a session.
 
-    Written after a mutation survived: removing the reset left every other test
-    in this group green, because none of them recovered more than once.
+    🔴 The reset is what nothing else in this group pins: every other case here
+    recovers at most once, so all of them pass whether the counter resets or
+    counts a lifetime. This one recovers repeatedly, which is the only shape
+    that can tell the two apart.
     """
     stdout = io.StringIO()
     script: list[str | UnicodeDecodeError] = []

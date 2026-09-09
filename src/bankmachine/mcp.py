@@ -579,8 +579,7 @@ def _read_messages(stdin: IO[str], stdout: IO[str]) -> Iterator[dict[str, Any]]:
             # own parsing, so the `try` further down cannot reach it — and an
             # uncaught one escapes this generator and ends `serve()`, which is
             # the operator's tool disappearing mid-session. Same outcome as an
-            # undecodable JSON body, through the adjacent door: found by review
-            # naming the class after only the `json.loads` half of it was fixed.
+            # undecodable JSON body, through the adjacent door. Found by review.
             undecodable += 1
             _write(
                 stdout,
