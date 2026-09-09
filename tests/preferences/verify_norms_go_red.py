@@ -88,6 +88,7 @@ WINDOW_TESTS = "tests/test_query_window.py"
 AGGREGATE_TESTS = "tests/test_money_summary.py"
 COVERAGE_TESTS = "tests/test_account_coverage.py"
 LIFECYCLE_TESTS = "tests/test_account_lifecycle.py"
+PENDING_TESTS = "tests/test_pending_semantics.py"
 BACKUP = pathlib.Path("src/bankmachine/store/backup.py")
 BACKUP_TESTS = "tests/store/test_backup.py"
 CREDENTIALS_TESTS = "tests/preferences/test_no_credentials_tracked.py"
@@ -1232,6 +1233,82 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         '        "accounts_not_active": 0,',
         f"{LIFECYCLE_TESTS}::"
         "test_the_envelope_counts_every_account_and_says_how_many_are_not_active",
+    ),
+    # ----------------------------------------------------------------------
+    # Pending-transaction semantics on the read path (#22, AC-13.1-13.7). No
+    # pending row had ever reached `query.py`, so every guarantee below is one
+    # nothing could previously have gone red on.
+    # ----------------------------------------------------------------------
+    (
+        # The break reads the SETTLED half instead, so the disclosure is a real
+        # number computed the wrong way round rather than an obvious zero -- a
+        # constant would be caught by inspection, a mirrored predicate would not.
+        "AC-13.1: an aggregate states how much of itself is an unsettled hold",
+        QUERY,
+        "                        case((transactions.c.pending == 1, "
+        "transactions.c.amount_minor), else_=0)",
+        "                        case((transactions.c.pending == 0, "
+        "transactions.c.amount_minor), else_=0)",
+        f"{PENDING_TESTS}::test_a_hold_is_counted_and_its_magnitude_stated",
+    ),
+    (
+        "AC-13.1: an answer that drew on a hold says so on the success path",
+        QUERY,
+        "    if total == 0:\n        return []",
+        "    if True:\n        return []",
+        f"{PENDING_TESTS}::test_a_transaction_page_holding_a_hold_says_so",
+    ),
+    (
+        # Without the `pending` half, an ordinary withdrawal of a row that had
+        # already settled is reported as a hold that expired -- the total is
+        # explained by the wrong cause, which is worse than unexplained.
+        "AC-13.4: an expired hold is one that never posted, not any removed row",
+        QUERY,
+        "            [transactions.c.removed_at.is_not(None), transactions.c.pending == 1],",
+        "            [transactions.c.removed_at.is_not(None)],",
+        f"{PENDING_TESTS}"
+        "::test_a_settled_row_that_was_later_withdrawn_is_not_reported_as_an_expired_hold",
+    ),
+    (
+        # The reader still returns the right rows without the null test -- it is
+        # the PLAN that changes, which is the whole of AC-13.6: an index nothing
+        # plans against is the dead weight the criterion exists to remove.
+        "AC-13.6: the pending-link reader asks in the shape the index serves",
+        QUERY,
+        "                transactions.c.source_pending_transaction_id.is_not(None),\n"
+        "                transactions.c.pending == 0,",
+        "                transactions.c.pending == 0,",
+        f"{PENDING_TESTS}::test_the_pending_link_index_serves_the_reader_that_exists",
+    ),
+    (
+        "AC-13.5: a hold past the declared threshold is reported as maybe stranded",
+        QUERY,
+        "    return calendar_date(today - timedelta(days=STRANDED_HOLD_AFTER_DAYS))",
+        "    return calendar_date(today - timedelta(days=100 * STRANDED_HOLD_AFTER_DAYS))",
+        f"{PENDING_TESTS}::test_a_hold_older_than_the_declared_threshold_is_reported",
+    ),
+    (
+        # The identity survives and the amount does not, which is exactly the
+        # settlement the two older dedup cases cannot see: they send the same
+        # figure on the hold and on the posting, so both stay green here.
+        "AC-13.2: a settlement carries the settled amount, not the hold's",
+        CONNECTOR_DERIVERS,
+        "            removed_at=None,\n            **values,",
+        "            removed_at=None,\n"
+        '            **{k: v for k, v in values.items() if k != "amount_minor"},',
+        f"{TXN_TESTS}::test_a_settlement_that_changes_the_amount_updates_it_in_place",
+    ),
+    (
+        # Matching a removal on the hold id would soft-delete the row that just
+        # posted, so the purchase leaves every total: an UNDERCOUNT, which is the
+        # direction that gets believed.
+        "AC-13.3: a removal names a row's own id, never the hold it replaced",
+        CONNECTOR_DERIVERS,
+        "            transactions.c.source_transaction_id == source_transaction_id,\n"
+        "            transactions.c.removed_at.is_(None),",
+        "            transactions.c.source_pending_transaction_id == source_transaction_id,\n"
+        "            transactions.c.removed_at.is_(None),",
+        f"{TXN_TESTS}::test_a_hold_removed_in_the_same_page_as_its_posting_leaves_one_row",
     ),
 ]
 

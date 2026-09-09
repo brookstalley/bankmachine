@@ -578,11 +578,13 @@ transition, across a re-sync, and across overlapping file imports.
 > **Amendment (2026-09-09).** AC-11.3 covers *duplication* across the pending→posted
 > transition, and that half is implemented and tested. It does **not** cover three things
 > #22 is about, each a different failure from a duplicate: a settlement that **changes the
-> amount** (the ordinary case — a tip, a fuel hold — untested today, since both existing
-> cases use the same amount on both entries); a hold that **expires without posting**, which
-> is a disappearance rather than a duplication; and whether a total **discloses** how much of
-> itself is pending. Zero duplicates is compatible with all three going wrong.
-> They are covered by AC-13.2, AC-13.4 and AC-13.1 respectively.
+> amount** (the ordinary case — a tip, a fuel hold — which both existing dedup cases miss,
+> since they send the same amount on the hold and on the posting); a hold that **expires
+> without posting**, which is a disappearance rather than a duplication; and whether a total
+> **discloses** how much of itself is pending. Zero duplicates is compatible with all three
+> going wrong. They are covered by AC-13.2, AC-13.4 and AC-13.1 respectively, and all three
+> now have tests (`tests/connector/test_transaction_derivers.py`,
+> `tests/test_pending_semantics.py`); AC-11.3's own scope is unchanged by that.
 
 **AC-11.4 · Idempotency** — Two consecutive syncs produce zero net changes. Automated.
 

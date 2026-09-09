@@ -390,9 +390,72 @@ def _output_schema(
                         }
                         for flow in query.FLOW_CLASSES
                     },
+                    # 🔴 AC-13.1: how much of the figures above is not settled
+                    # money. ALWAYS PRESENT, zero when nothing is pending -- a
+                    # key that appeared only when it was non-zero would leave a
+                    # reader unable to tell "no holds" from "this tool does not
+                    # say", and the whole reason the field exists is that a total
+                    # mixing holds with settled amounts changes without any new
+                    # activity.
+                    "pending_transactions": {
+                        "type": "integer",
+                        "description": (
+                            "how many of the rows behind these totals are authorisation "
+                            "holds that have not settled. 0 is a real answer"
+                        ),
+                    },
+                    "pending_net_minor_units": {
+                        "type": "integer",
+                        "description": (
+                            "what those holds come to, SIGNED from the account holder's "
+                            "point of view -- the amount these totals could move by when "
+                            "the holds settle or expire, with no new activity at all"
+                        ),
+                    },
+                    # 🔴 AC-13.4: the two ways a figure over this window moves
+                    # with no new activity, so a consumer watching one drift can
+                    # attribute the change instead of doubting the data. Neither
+                    # is part of the three-class outflow identity above, and
+                    # neither may be added to it.
+                    "expired_holds": {
+                        "type": "integer",
+                        "description": (
+                            "holds in this window that were withdrawn without ever posting. "
+                            "They are EXCLUDED from every figure here, so a total that "
+                            "shrank against an earlier answer is explained by this rather "
+                            "than by missing data"
+                        ),
+                    },
+                    "expired_holds_net_minor_units": {
+                        "type": "integer",
+                        "description": (
+                            "what those withdrawn holds came to, signed -- the amount that "
+                            "left these totals by expiring"
+                        ),
+                    },
+                    "settled_from_hold": {
+                        "type": "integer",
+                        "description": (
+                            "rows in this window whose amount arrived by settling an "
+                            "earlier hold. A settlement may differ from the hold, so these "
+                            "are the rows whose contribution changed rather than appeared"
+                        ),
+                    },
+                    "settled_from_hold_net_minor_units": {
+                        "type": "integer",
+                        "description": "what those settled rows come to, signed",
+                    },
                 },
                 "required": ["currency"]
-                + [f"{flow}_outflow_minor_units" for flow in query.FLOW_CLASSES],
+                + [f"{flow}_outflow_minor_units" for flow in query.FLOW_CLASSES]
+                + [
+                    "pending_transactions",
+                    "pending_net_minor_units",
+                    "expired_holds",
+                    "expired_holds_net_minor_units",
+                    "settled_from_hold",
+                    "settled_from_hold_net_minor_units",
+                ],
                 "additionalProperties": False,
             },
         }
@@ -651,6 +714,11 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "often absent or wrong -- it reads 'FUN' for a purchase whose description is "
                 "'SparkFun'. Do not roll up or match on `merchant` without saying it may be "
                 "wrong, and prefer `description` when the two disagree. "
+                "🔴 A row with `pending: true` is an AUTHORISATION HOLD, not a completed "
+                "amount: it can settle at a different figure and it can expire without "
+                "settling at all. Do not fold one into a figure you present as money spent "
+                "without saying so. When a page holds any, the answer carries an "
+                "`includes_pending_rows` warning naming how many and what they come to. "
                 + _WINDOW_NOTE
                 + " "
                 + _TRUNCATION_NOTE
@@ -732,7 +800,14 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "purchases already counted under the categories they were spent in. Neither "
                 "is spending, and both can dwarf it. Read `totals` before quoting any "
                 "spending figure, and quote `external_spend_outflow_minor_units` from it. "
-                + _WINDOW_NOTE
+                "🔴 EVERY row and every `totals` entry says how much of itself is an "
+                "unsettled authorisation hold (`pending_transactions`, "
+                "`pending_net_minor_units`, always present and 0 when none). A hold is not "
+                "money spent — it can settle at a different figure or expire without "
+                "settling — so quote the settled part as the answer and the pending part as "
+                "a separate outstanding figure. `totals` also carries `expired_holds` and "
+                "`settled_from_hold`, which are why a figure over this window can differ "
+                "from one you were given earlier with no new activity in between. " + _WINDOW_NOTE
             ),
             "inputSchema": {
                 "type": "object",
@@ -787,6 +862,24 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "description": (
                             "inflow minus outflow, signed from the account holder's point of "
                             "view: negative is money lost over the window"
+                        ),
+                    },
+                    "pending_transactions": {
+                        "type": "integer",
+                        "description": (
+                            "how many of this group's rows are authorisation holds that "
+                            "have not settled. 0 is a real answer, and the key is always "
+                            "present"
+                        ),
+                    },
+                    "pending_net_minor_units": {
+                        "type": "integer",
+                        "description": (
+                            "🔴 the part of `net_minor_units` that is NOT settled money, "
+                            "signed the same way. A hold can settle at a different figure "
+                            "or expire without settling, so this is how far this row can "
+                            "move with no new activity. Never quote a group as money spent "
+                            "without saying what part of it is this"
                         ),
                     },
                 },
