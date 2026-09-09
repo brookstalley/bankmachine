@@ -29,9 +29,50 @@ ABSOLUTE_PATH = re.compile(r"^/[A-Za-z0-9_.]")
 #: first module someone forgot to add.
 ENDPOINT_CONSTRUCTOR = "Endpoint"
 
+#: The other thing a leading separator can be declared to be. A resource URI is
+#: assembled from a scheme and a path segment, and the segment is indistinguishable
+#: from a filesystem path on its own -- the same problem the endpoint relationship
+#: above solves, arriving through a different door. The discriminator is again what
+#: the literal is declared to be: a piece of an f-string whose earlier text already
+#: carries a `://` is continuing a URI, and there is no filesystem path it could be.
+#:
+#: Kept as a relationship rather than an exemption for the reason stated above --
+#: a module allowlist decays on the first module nobody remembered to add.
+URI_SCHEME_SEPARATOR = "://"
+
 
 def _source_files() -> list[Path]:
     return [p for p in SOURCE_ROOT.rglob("*.py") if "__pycache__" not in p.parts]
+
+
+def _uri_continuations(tree: ast.AST) -> set[int]:
+    """`id()` of every string constant continuing a URI inside one f-string.
+
+    🔴 Scoped to a single `JoinedStr`, and to parts that FOLLOW the scheme within
+    it. A constant elsewhere in the file is untouched however many URIs the module
+    builds, so this cannot become a blanket pardon for a module that happens to
+    mention one.
+    """
+    continuations: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.JoinedStr):
+            continue
+        scheme_seen = False
+        for part in node.values:
+            if scheme_seen and isinstance(part, ast.Constant) and isinstance(part.value, str):
+                continuations.add(id(part))
+            if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                scheme_seen = scheme_seen or URI_SCHEME_SEPARATOR in part.value
+            elif isinstance(part, ast.FormattedValue):
+                # The scheme can arrive through an interpolation -- which is the
+                # shape that keeps the scheme written once -- so a name standing
+                # where one belongs is read as one. Only a name whose own text
+                # says so: `_SCHEME`, `BASE_URI`. Anything else leaves the parts
+                # after it checked, because a bare `{value}` is not a claim.
+                inner = part.value
+                label = inner.attr if isinstance(inner, ast.Attribute) else getattr(inner, "id", "")
+                scheme_seen = scheme_seen or label.upper().endswith(("SCHEME", "URI", "URL"))
+    return continuations
 
 
 def _declared_endpoints(tree: ast.AST) -> set[int]:
@@ -55,12 +96,14 @@ def test_no_absolute_path_is_baked_into_the_source() -> None:
     for path in _source_files():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         endpoints = _declared_endpoints(tree)
+        uri_parts = _uri_continuations(tree)
         for node in ast.walk(tree):
             if (
                 isinstance(node, ast.Constant)
                 and isinstance(node.value, str)
                 and ABSOLUTE_PATH.match(node.value)
                 and id(node) not in endpoints
+                and id(node) not in uri_parts
             ):
                 offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}: {node.value!r}")
 
@@ -90,6 +133,39 @@ def test_the_probe_would_catch_an_absolute_path() -> None:
     assert ABSOLUTE_PATH.match("/etc/bankmachine.toml")
     assert not ABSOLUTE_PATH.match("file:{path}?mode=ro")
     assert not ABSOLUTE_PATH.match("/")
+
+
+def test_the_uri_relationship_reads_a_scheme_but_not_a_bare_interpolation() -> None:
+    """The positive control for the URI half, both directions.
+
+    A relationship that pardons everything is an exemption wearing a better name,
+    so this pins the pardon to parts that actually follow a scheme -- and pins
+    that a path built from an ordinary variable is still caught.
+    """
+    pardoned = ast.parse('X = f"{_SCHEME}/warnings"\nY = f"bankmachine://ref{n}/envelope"\n')
+    pardoned_values = {
+        node.value
+        for node in ast.walk(pardoned)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) in _uri_continuations(pardoned)
+    }
+    assert pardoned_values == {"/warnings", "/envelope"}
+
+    # A leading segment, before any scheme, is not continuing anything.
+    leading = ast.parse('X = f"/Users/someone/{name}.db"\n')
+    assert not [
+        node
+        for node in ast.walk(leading)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and ABSOLUTE_PATH.match(node.value)
+        and id(node) in _uri_continuations(leading)
+    ], "a path segment before any scheme was pardoned"
+
+    # A bare interpolation is not a claim to be a scheme.
+    bare = ast.parse('X = f"{root}/Users/someone/store.db"\n')
+    assert not _uri_continuations(bare), "a bare interpolation was read as a scheme"
 
 
 def test_the_endpoint_exemption_is_narrow() -> None:
