@@ -97,7 +97,7 @@ style guide.
 
 - [x] **01 — Extract the envelope module**
 - [x] **02 — Re-point the go-red anchors**
-- [ ] **03 — Artifacts, ruling, and backlog close**
+- [x] **03 — Artifacts, ruling, and backlog close**
 
 ## Chunks
 
