@@ -40,7 +40,7 @@ owns the combined run at integration.
 
 - [x] **01 — The handshake tells the truth about itself** (delegated, parallel)
 - [x] **02 — Two structural guards** (delegated, parallel)
-- [ ] **06 — The envelope is machine-checkable** (delegated, after 01)
+- [x] **06 — The envelope is machine-checkable** (delegated, after 01)
 - [ ] **05 — A resources surface** (delegated, after 06)
 - [ ] **03 — The envelope tells the agent what to do about it** (coordinator, after 05)
 - [ ] **04 — The artifacts say what the code now does** (coordinator, last)
@@ -394,19 +394,51 @@ accounts. The ruling sets the order of work, not the go/no-go.
 
 ---
 
+## 6b. Integration finding — the closed enum needed a guard, not just an argument
+
+Chunk 06 published `outputSchema` with the warning `kind` enum **closed** to
+`query.WARNING_KINDS`, and flagged the tension with `api-contract.md`'s *"Tolerate unknown
+enum values — the warning vocabulary is a minimum."* Its argument was that schema and
+payload leave one process in one session, so no client can hold a stale copy. That
+argument is sound and the enum stays.
+
+But it rested on an unverified premise: that the server cannot emit a kind outside the
+vocabulary. Checked at integration — `Caveat.kind` is a bare `str`, all eleven construction
+sites happen to spell a declared kind, and **nothing enforced it**. The existing test
+iterates `WARNING_KINDS`, not the construction sites, so a new site emitting `rate_limited`
+would pass every check here and be rejected by a validating client.
+
+🔴 **The consequence is the one this product exists to prevent.** An invented kind does not
+produce an unrecognized warning; it produces a rejected *answer*, so the warning destroys
+the response it was riding on. Incompleteness reaches the error channel through the
+validator — exactly what § Direction puts it on the success path to avoid.
+
+Closed at integration by `tests/preferences/test_the_warning_vocabulary_is_closed.py`,
+which scans every `Caveat(...)` site and additionally refuses a *computed* kind outright,
+because a site the scan cannot read is one it reports as fine while proving nothing. Both
+arms verified to go red by transient mutation against real anchors.
+
+**The premise is now written where it lives:** if the schema is ever published separately
+from the answers it describes — cached, vendored, written to a file — the enum must open,
+and this guard's rationale is the first thing that breaks.
+
+---
+
 ## 7b. Chunk 07 — The go-red harness learns the two new guards
 
 `verify_norms_go_red.py` proves each norm test actually goes red by writing the broken
 version to disk, running the named test, and putting it back — fifty-five times. Chunk 02
 added two guards and, correctly, did not touch that harness: it is an existing file and was
-outside the delegate's boundary. So the two newest norm tests are currently the only ones
-with no proof they can fail.
+outside the delegate's boundary. So the three newest norm tests are the only ones with no
+standing proof they can fail — each was verified by hand at integration, which is
+evidence that expires the moment the source moves.
 
 That is the exact gap `learnings.md` describes as this project's recurring shape — a check
 whose only bad-news channel is the absence of output.
 
-**Do:** add a case for each. A stdout write inside the server's import closure, and a tool
-renamed in the docs but not the code.
+**Do:** add a case for each of the three. A stdout write inside the server's import
+closure, a tool renamed in the docs but not the code, and a `Caveat` naming a kind outside
+the vocabulary.
 
 🔴 **Two operational rules from `learnings.md`, both load-bearing.** The harness sabotages
 the working tree while it runs, so nothing else may read the tree during the window — no
