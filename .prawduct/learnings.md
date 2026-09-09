@@ -275,10 +275,9 @@ sabotage and reports it as fact.**
 
 The harness is the mechanism behind [[two-descriptions-compared]] — it removes a mechanism and
 checks that a named test notices. Removing the mechanism means *writing the broken version to
-disk*, running one test, and putting it back — once per entry in its `CASES` table. The tree is
-correct before and
-after and wrong in between, which is the shape that makes it invisible: every check of the file
-afterwards agrees with what you meant.
+disk*, running one test, and putting it back — once per entry in its `CASES` table. The tree
+is correct before and after and wrong in between, which is the shape that makes it invisible:
+every check of the file afterwards agrees with what you meant.
 
 **Instances:**
 

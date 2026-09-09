@@ -1,6 +1,6 @@
 ---
 artifact: build-plan
-version: 1
+version: 2
 scope: mcp-alignment
 branch: feature/mcp-alignment
 depends_on:
