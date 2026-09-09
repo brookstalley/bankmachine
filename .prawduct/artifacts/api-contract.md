@@ -775,7 +775,7 @@ here.
 |---|---|---|
 | `currency` | string | the currency this entry's figures are in. One entry per currency, never one integer across currencies |
 | `external_spend_outflow_minor_units` | integer | 🔴 **the figure to quote when asked what was spent.** Money that actually left the household, as a positive magnitude in minor units |
-| `internal_transfer_outflow_minor_units` | integer | outflow that only moved between the holder's own accounts, a positive magnitude. It never left, so adding it to spending overstates spending — measured at $164,400 of a $267,693 raw outflow on the sandbox store |
+| `internal_transfer_outflow_minor_units` | integer | outflow that only moved between the holder's own accounts, a positive magnitude. It never left, so adding it to spending overstates spending — on the sandbox store it is the larger part of the gap measured in § *A classifying tool carries `totals`* |
 | `debt_service_outflow_minor_units` | integer | outflow that serviced a debt, a positive magnitude. It settles purchases already counted under the categories they were spent in, so adding it to spending double-counts them |
 | `pending_transactions` | integer | how many of the rows behind these totals are authorisation holds that have not settled. `0` is a real answer |
 | `pending_net_minor_units` | integer | what those holds come to, SIGNED — the amount these totals could move by when the holds settle or expire, with no new activity at all |
@@ -818,7 +818,7 @@ without a second call — and carries the analysis `list_accounts` does not.
 | Field | Type | Means |
 |---|---|---|
 | `account_id` | integer | this store's own id for the account, as on a `list_accounts` row |
-| `account` | string, nullable | the account's own name. 🔴 The SAME field name as on a `query_transactions` row and the same kind of value — display text, not a key — but nullable here, where that one is not: this tool reports on an account whose name the store may not hold, and the id beside it is what identifies it |
+| `account` | string, nullable | the account's own name — the SAME field name as on a `query_transactions` row and the same kind of value: display text, not a key. 🔴 It is typed nullable here where the `list_accounts` row's `name` is not, and the null is **not reachable today**: the stored column is `NOT NULL` and this tool reports on exactly the accounts it is read from. The nullability is the producer's defensiveness rather than a state a consumer can meet, and it is recorded that way rather than given a reason it does not have. Identify the account by `account_id` beside it |
 | `first_transaction_date` | string, nullable | as on a `list_accounts` row: null means NO TRANSACTION HAS EVER BEEN RECORDED, never "no activity" |
 | `last_transaction_date` | string, nullable | as on a `list_accounts` row |
 | `transaction_count` | integer | as on a `list_accounts` row; `0` is a real answer |
