@@ -149,12 +149,21 @@ anchors to avoid it would be structure built for the org chart. The coordinator 
 - [x] **01 · Account lifecycle, made visible — #40, AC-12.1–12.9** *(delegate)*
 - [x] **02 · Pending-transaction semantics — #22, AC-13.1–13.7** *(delegate)*
 - [x] **03 · The per-connection sign-convention check — #23, AC-14.1–14.6** *(delegate)*
-- [ ] **04 · Integration** *(coordinator)*
+- [x] **04 · Integration** *(coordinator)*
 
-**Context.** All three delegate branches are merged into `feat/production-blockers`; the suite is
-green and recorded. 01–03 are ticked as *built and merged*; this plan's `critic_mode` is
-`cumulative-final`, so their review is the single cumulative that lands with chunk 04 — which is why
-04 is the last tick and stays open until that review returns.
+**Context.** All chunks complete on `feat/production-blockers`, suite green and recorded at 966.
+Seven review rounds: one cumulative over the delegate work, four verify-resolutions rounds, and a
+second cumulative; every finding is fixed or accepted with a recorded reason. 🔴 **Nothing is
+pushed and no PR exists — nobody asked for one.**
+
+🔴 **One warning is recorded UNRESOLVED by design, and it is not a drop.** The cumulative's R-8
+part (2): `list_accounts` and `_not_active_balances` each build the latest-recorded-balance
+subquery independently, and the latter's docstring asserts it produces "the same figure
+`list_accounts` puts on the row". The identity IS pinned — `test_the_magnitude_is_signed_and_
+grouped_by_currency` asserts both figures against one number in one test, which is this repo's
+*two descriptions, compared* pattern — but the subquery itself is written twice. Extraction is
+cosmetic and was left rather than carried into a closing commit. It rides #53, which spans the
+same read path.
 
 🔴 **Ticked ≠ closed.** Every one of the three items keeps a production-data tail (AC-13.8, AC-13.9,
 AC-14.7, AC-14.8, AC-14.9) that no chunk here may claim, and #40 additionally cannot reach its

@@ -492,3 +492,61 @@ needing a case per site.
   away from that module would separate the constraint from the reason it exists. A duplication and
   a deliberate adjacency look identical from the import graph alone — the why is what distinguishes
   them, and only one of them is worth removing.
+
+---
+
+## A shared closed set is the collision parallel agents cannot see
+
+**Before fanning work out to agents that cannot see each other, land every CLOSED, test-enforced
+set they will each need to extend — in one commit, up front. Partitioning by file prevents
+collisions in files; it does nothing about a set.**
+
+Agents can be given disjoint files and still collide, because a closed vocabulary is a single
+line of code that several of them must each add one entry to. Worse, the failure is not a merge
+conflict you resolve at integration: whichever branch lands first is fine, and the others are
+*wrong in the tree* — an entry emitted but not declared is refused by the schema validator, which
+takes the whole answer down rather than degrading the one field.
+
+The tell is a tuple, enum or frozenset with a test asserting nothing outside it exists. If two
+delegates will each add to one, the coordinator adds all of them before dispatch, with the
+guidance and documentation each entry owes. It costs one commit and it is the cheapest thing in
+the whole partition.
+
+**Instances:**
+
+- *2026-09-09, the three production blockers.* Two prior discovery passes had each registered
+  only their own warning kind against `envelope.REQUEST_SCOPED_KINDS`, and the collision was
+  visible only at integration — the previous cycle recorded it as the one thing its otherwise
+  clean partition could not catch. This cycle spent chunk 00 landing all three kinds, their
+  `_GUIDANCE` entries and their rows in the server instructions before any agent started. Three
+  agents then edited `query.py`, `mcp.py`, `schema.py` and `data-model.md` concurrently with
+  **zero** conflicts in those files; the only conflict was three appends to one `CASES` tail,
+  predicted in the plan and resolved by keeping all three.
+
+---
+
+## Write a guard from the failure's point of view, not the fix's
+
+**After fixing something, do not ask "does this test assert the right thing". Ask *what change
+would make this test fail* — and if the answer is "reverting my fix", check that it actually
+does, against a fixture that can tell the two states apart.**
+
+A guard written from the fix's point of view describes what the code now does, which is exactly
+what a fixture built from the current, static world will confirm no matter what. The three ways
+it goes wrong are all invisible: the fixture cannot reach the branch, the assertion cannot
+distinguish the two outcomes, or the parameter under test is never varied.
+
+The sharpest instance of the last one: a producer given a new argument, and a caller updated to
+pass it, with every test calling the producer *directly*. Mutating the call site reddens nothing.
+When a producer and its call site are the two halves of a fix, they need **two** cases, and the
+caller's must anchor on the call.
+
+**Instances:**
+
+- *2026-09-09, `signs.caveats(..., measured=…)`.* Shipped with no test passing `measured`; the
+  suite was green with the call site reverted. The replacement test asserted rows and warnings
+  agree — still green reverted, because the reader returns the same verdicts however often it is
+  scanned. Only a fake whose answer CHANGES between calls separated them. Three review rounds,
+  each finding the previous round's guard covered nothing or half.
+- *2026-09-09, `_coverage(conn, lifecycle=…)`.* The same defect, same bundle, one surface over —
+  found by the cumulative rather than by me, after I had already fixed and written up its twin.

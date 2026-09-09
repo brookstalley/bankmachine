@@ -386,9 +386,9 @@ row without a second call.
 roster derivation records, per account, the date that account was last listed, as a **monotone
 maximum** — the mirror of `first_seen_date`'s minimum. *Why:* this is the requirement #40 says does
 not exist. Without a recorded observation there is no non-`active` state for the read path to read,
-and a min/max pair is what makes the record order-independent under archive replay, which
-the accounts deriver's `_OPERATOR_OWNED` note gave as the reason retirement was deferred rather
-than half-built.
+and a min/max pair is what makes the record order-independent under archive replay — which is why
+the accounts deriver could not retire an account without first recording an observation to retire it
+against, and why the gap was left open rather than half-built.
 
 **AC-12.5 · Absence is measured within one connection, against a successful observation, and never
 against silence.** A connection whose roster could not be fetched marks nothing absent. A connection
