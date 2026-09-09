@@ -809,6 +809,53 @@ fine** — "healthy" is an answer, and an empty result would be indistinguishabl
 | `sign_convention_rows_judged` | integer | rows the verdict was computed over: this connection's non-removed transactions in those categories with a non-zero amount. Under 8 the verdict is `undetermined` |
 | `sign_convention_rows_positive` | integer | how many of those are stored positive. `0` is the conforming reading; equal to `sign_convention_rows_judged` is a wholly inverted feed. The counts ride beside the verdict because a verdict with no evidence under it is a claim the reader must take on faith, and this check's subject is a claim that was taken on faith once already |
 
+**Fields — `rows[]`** *(`get_coverage_report`)*.
+
+One row per account. It is built on the **same producer** as `list_accounts`' rows — the first nine
+fields are that row's identity and lifecycle, restated here so a verification answer is readable
+without a second call — and carries the analysis `list_accounts` does not.
+
+| Field | Type | Means |
+|---|---|---|
+| `account_id` | integer | this store's own id for the account, as on a `list_accounts` row |
+| `account` | string, nullable | the account's own name. 🔴 The SAME field name as on a `query_transactions` row and the same kind of value — display text, not a key — but nullable here, where that one is not: this tool reports on an account whose name the store may not hold, and the id beside it is what identifies it |
+| `first_transaction_date` | string, nullable | as on a `list_accounts` row: null means NO TRANSACTION HAS EVER BEEN RECORDED, never "no activity" |
+| `last_transaction_date` | string, nullable | as on a `list_accounts` row |
+| `transaction_count` | integer | as on a `list_accounts` row; `0` is a real answer |
+| `lifecycle` | string | as on a `list_accounts` row: `active`, `closed`, or `no_longer_reported` |
+| `closed_date` | string, nullable | as on a `list_accounts` row |
+| `last_seen_in_roster` | string, nullable | as on a `list_accounts` row |
+| `roster_last_observed` | string, nullable | as on a `list_accounts` row |
+| `median_interval_days` | number, nullable | this account's own posting cadence in days; null under two transactions, because no interval exists rather than because it posts daily. `0` is a real answer and means the opposite of null: the account posts more than once a day |
+| `days_silent` | integer, nullable | days since the last recorded transaction; null when there is none |
+| `silence_ratio` | number, nullable | `days_silent` against this account's own cadence, the divisor floored at one day. A NUMBER rather than a flag on purpose: 28 days silent on a 30-day cycle is genuinely borderline, and a boolean is what would hide that |
+| `silence_exceeds_cadence` | boolean | a full posting cycle has been missed (ratio above 1) by an account still being reported. 🔴 Always false for a non-active account, whose silence is closure rather than a hole — `silence_ratio` beside it still carries the measurement, so nothing is hidden |
+| `stranded_holds` | integer | authorisation holds on this account still unsettled past any ordinary hold lifetime. Present and `0`, never omitted. A hold this old usually means the merchant never captured it, so the money is neither spent nor available |
+| `oldest_stranded_hold` | object, nullable | the worst of them, so the operator can go and look at it; null when there are none, and 🔴 also null for a non-active account, whose holds can never settle and can never be cleared. `stranded_holds` beside it still carries the count, so the measurement is not withheld — only the call to action nobody could answer |
+| `source_breakdown` | object | this account's rows by provenance |
+
+**Fields — `rows[].oldest_stranded_hold`** *(`get_coverage_report`)*.
+
+| Field | Type | Means |
+|---|---|---|
+| `transaction_id` | integer | the hold's id, as `query_transactions` reports it — the id and the age travel together because the operator's next move is to go and look at the transaction |
+| `posted_date` | string, nullable | the date the hold was placed, `YYYY-MM-DD`; null when the store holds none for it |
+| `days_pending` | integer | how long it has been pending, in days |
+| `amount_minor_units` | integer | the hold's amount, in minor units and operator-signed |
+| `currency` | string | the currency that amount is in |
+
+**Fields — `rows[].source_breakdown`** *(`get_coverage_report`)*.
+
+🔴 **Provenance is exclusive and total** — every stored row has exactly one of these two sources, so
+the two counts sum to a figure over the account's rows and neither is a subset of the other. AC-7.4
+requires that manually imported rows stay distinguishable from aggregator-sourced ones in every
+result; this block is where that survives onto the verification surface.
+
+| Field | Type | Means |
+|---|---|---|
+| `aggregator` | integer | rows for this account that arrived through a connection's sync. Present and `0` rather than omitted, so `0` cannot be confused with unknown |
+| `manual` | integer | rows for this account that were imported by the operator rather than fetched. Present and `0` on the same terms. 🔴 A non-zero count here on an account whose connection is silent is the case where `days_silent` is measuring the operator's habits rather than the institution's |
+
 ### Pagination and caps
 
 | | Value |
