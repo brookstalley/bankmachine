@@ -96,7 +96,7 @@ style guide.
 ## Status
 
 - [x] C1 — Extract the envelope module
-- [ ] C2 — Re-point the go-red anchors
+- [x] C2 — Re-point the go-red anchors
 - [ ] C3 — Artifacts, ruling, and backlog close
 
 ## Chunks

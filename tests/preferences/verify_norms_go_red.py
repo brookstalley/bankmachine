@@ -73,6 +73,7 @@ TXN_TESTS = "tests/connector/test_transaction_derivers.py"
 SYNC_RUN = pathlib.Path("src/bankmachine/cli/sync_run.py")
 SYNC_RUN_TESTS = "tests/cli/test_sync_run.py"
 QUERY = pathlib.Path("src/bankmachine/query.py")
+ENVELOPE = pathlib.Path("src/bankmachine/envelope.py")
 MCP = pathlib.Path("src/bankmachine/mcp.py")
 CLIENT_GUIDE = pathlib.Path("docs/connecting-an-mcp-client.md")
 MCP_TESTS = "tests/test_mcp.py"
@@ -841,7 +842,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     ),
     (
         "the MCP envelope: every answer names the environment it came from",
-        QUERY,
+        ENVELOPE,
         '            "environment": self.environment,',
         '            "environment": "unknown",',
         f"{MCP_TESTS}::test_every_answer_names_the_environment_it_came_from",
@@ -882,7 +883,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # formatter-chosen line break, so a reformat cannot move it out from
         # under this case.
         "MCP: nothing on the server's import path writes to stdout",
-        QUERY,
+        ENVELOPE,
         "MAX_ROWS = 500",
         'MAX_ROWS = 500\nprint("answering")',
         f"{NO_STDOUT}::test_nothing_the_server_reaches_addresses_the_process_stdout",
@@ -975,8 +976,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-10.4: a network import outside connector/ is caught",
         QUERY,
-        "from dataclasses import dataclass, field",
-        "import ssl\n\nfrom dataclasses import dataclass, field",
+        "from dataclasses import dataclass",
+        "import ssl\n\nfrom dataclasses import dataclass",
         f"{NETWORK_TESTS}::test_nothing_outside_the_connector_can_reach_the_network",
     ),
     # 🔴 The C1 block below was written from an AUDIT of where the cases were,
@@ -987,42 +988,42 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     # claim; these are the claims that were oldest.
     (
         "C1 clamp: a start before coverage is pulled forward, not answered as asked",
-        QUERY,
+        ENVELOPE,
         "    effective_since = earliest if since is None else max(since, earliest)",
         "    effective_since = earliest if since is None else since",
         f"{WINDOW_TESTS}::test_a_start_before_coverage_is_named_and_clamped",
     ),
     (
         "C1 clamp: an end past coverage is pulled back, not answered as asked",
-        QUERY,
+        ENVELOPE,
         "    effective_until = covered_end if until is None else min(until, covered_end)",
         "    effective_until = covered_end if until is None else until",
         f"{WINDOW_TESTS}::test_an_end_after_today_is_named_and_clamped",
     ),
     (
         "C1 clamp: the covered end follows a row dated ahead of today",
-        QUERY,
+        ENVELOPE,
         "    covered_end = today if latest is None or latest < today else latest",
         "    covered_end = today",
         f"{WINDOW_TESTS}::test_the_covered_end_follows_the_data_when_a_row_is_dated_after_today",
     ),
     (
         "C1 truncation: `truncated` is true exactly when rows are missing",
-        QUERY,
+        ENVELOPE,
         "        return self.returned < self.matching",
         "        return self.returned <= self.matching",
         f"{TRUNCATION_TESTS}::test_an_untruncated_answer_reports_false_and_equal_counts",
     ),
     (
         "C1 truncation: `matching` is floored at the rows already in hand",
-        QUERY,
+        ENVELOPE,
         "            matching=max(counted, returned),",
         "            matching=counted,",
         f"{TRUNCATION_TESTS}::test_a_count_that_lags_the_rows_is_reconciled_rather_than_refused",
     ),
     (
         "C1 cursor: a cursor rides an answer only when there is a next page",
-        QUERY,
+        ENVELOPE,
         "        if not self.truncated or self.resume_from is None:",
         "        if self.resume_from is None:",
         f"{TRUNCATION_TESTS}::test_a_complete_answer_offers_no_cursor_to_follow",
@@ -1039,7 +1040,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     ),
     (
         "C1 absence: an uncapped tool carries no truncation block at all",
-        QUERY,
+        ENVELOPE,
         "            **({} if self.truncation is None else "
         '{"truncation": self.truncation.to_wire()}),',
         '            **({"truncation": {}} if self.truncation is None else '
