@@ -101,6 +101,21 @@ REQUEST_SCOPED_KINDS: tuple[str, ...] = (
     # request's scope actually holds an uncovered account, so an empty answer
     # about such an account carries it and an ordinary quiet window does not.
     "accounts_without_coverage",
+    # An account in THIS request's scope is closed, or its institution has
+    # stopped listing it. The balance beside it froze on the day it was last
+    # reported and is not a fact about today, which is a wrong number with no
+    # signal unless the answer carries one.
+    "account_no_longer_active",
+    # A hold is not a settled amount, and a total that mixes the two changes
+    # without any new activity. Request-scoped because it is a property of the
+    # rows THIS answer drew on, not of the pipeline.
+    "includes_pending_rows",
+    # The operator-signed convention rests on a measurement of ONE connection.
+    # A connection whose direction has never been observed against a known
+    # inflow contributes an assumed sign, and an assumed sign is reported
+    # rather than corrected: auto-inverting can be wrong in the direction that
+    # understates spending.
+    "sign_convention_unverified",
 )
 
 #: The warning vocabulary the API contract fixes. Named here as a tuple rather

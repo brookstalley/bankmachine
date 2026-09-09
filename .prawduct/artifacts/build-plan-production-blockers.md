@@ -1,0 +1,211 @@
+---
+artifact: build-plan
+version: 1
+scope: production-blockers
+branch: feat/production-blockers
+partition: |
+  delegated, three ways, partitioned by REQUIREMENT BLOCK with a per-function ownership map over the
+  three files all three must touch (`query.py`, `mcp.py`, `store/schema.py`) and a per-section map
+  over `data-model.md`. The map is the whole reason three agents are safe here: the blocks are
+  independent in their subject matter and overlapping in their file set, so a partition by file
+  would have forced serial and a partition by item alone would have collided. Chunk 00 exists to
+  make the map true — it lands, in advance and in one commit, every shared surface all three would
+  otherwise have edited at once (the closed warning vocabulary above all).
+  One requirement crosses the map and is not delegated: AC-14.5's wiring of C3's producer into C2's
+  aggregate. It is chunk 04's, named here so it cannot be read as dropped.
+critic_mode: cumulative-final
+depends_on:
+  - artifact: discovery-account-lifecycle
+    file_path: .prawduct/artifacts/discovery-account-lifecycle.md
+  - artifact: discovery-production-data-semantics
+    file_path: .prawduct/artifacts/discovery-production-data-semantics.md
+  - artifact: api-contract
+    file_path: .prawduct/artifacts/api-contract.md
+  - artifact: data-model
+    file_path: .prawduct/artifacts/data-model.md
+governed_by:
+  - artifact: api-contract
+    dispositions:
+      - "the MCP surface is read-only, no mutation tools → conforms; all three items add fields, warnings and one read-side check, and no tool, parameter or write path"
+      - "every response carries a freshness stamp, and incompleteness rides the success path as a warning field → conforms, and it is what all three chunks are FOR. Three new request-scoped kinds land in chunk 00 and are emitted by C1, C2 and C3 respectively"
+      - "the CLI's three-way exit code → inapplicable; no chunk changes a CLI exit path"
+      - "a tool's boundary is drawn where the answer shape changes → conforms; no tool is added, split or merged. C1 widens two existing row shapes and the guardrail holds — every added field is required and nullable, never optional"
+      - "🔴 a stored balance is reported with its lifecycle, and no total over balances states no treatment of non-active accounts → this is C1's governing norm, born in chunk 00 on the owner's ruling. C1 discharges its one named retroactivity debt (`query._coverage`'s unfiltered `accounts` count)"
+  - artifact: data-model
+    dispositions:
+      - "every stored amount is signed from the operator's point of view → C3 is a check ON this norm and must not weaken it; AC-14.4 forbids auto-correction, so no chunk changes a stored sign"
+      - "all monetary values are integer minor units → conforms; C1's flagged magnitude and C2's pending magnitude are both integer minor units"
+      - "calendar dates and UTC instants are distinct → C1 adds `last_seen_date` as a calendar date, matching `first_seen_date`; it is not an instant"
+      - "a transaction is never hard-deleted; removal is a soft delete → C2 builds on `removed_at` and adds no delete path"
+      - "a migration's DDL is frozen → C1 adds migration 003 rather than editing migration 002"
+      - "every silver row carries exclusive provenance and its derivation version → `accounts` carries no `derivation_version_id` and is not rebuildable; C1's AC-12.6 rests on exactly that and must not change it"
+---
+
+# Build Plan — The Three Production Blockers
+
+**Backlog items:** `brookstalley/bankmachine#40`, `#22`, `#23` — the three open `blocks:production`
+items, all at `stage: ready`
+**Type:** feature (three requirement blocks already written and in force)
+**Size:** large — three requirement blocks, a migration, a new module, and a contract surface each
+
+## Requirements Confidence
+
+**High, and unusually so: the requirements were written in a previous cycle, reviewed by the Critic,
+and are in force in `docs/system-requirements.md` rather than proposed.** No chunk below designs a
+requirement. FR-9 (AC-12.1–12.9) is § 4; AC-13.1–13.9 and AC-14.1–14.9 are § 7.
+
+- *Problem:* three answers this product can give today are plausible, well-formed and capable of
+  being wrong with no signal — a balance frozen since an account stopped being reported, a spending
+  total that silently mixes in authorisation holds, and a signed amount from a connection whose
+  direction has never been observed against a known inflow.
+- *Success:* each of the three is disclosed in the payload, on the success path, on every answer it
+  applies to; the state that makes disclosure possible is reachable rather than merely declared; and
+  each guard has been seen red.
+- *Out of scope:* AC-13.8, AC-13.9, AC-14.7, AC-14.8 and AC-14.9 gate on production data and are
+  enqueued as VRF-005 / VRF-006 in `.prawduct/operator-verification.md`. **They are not descoped and
+  not attempted** — they are the operator's, they block `blocks:production` closure, and no chunk
+  here may claim them.
+
+### The ruling this plan was unblocked by
+
+🔴 **AC-12.8's treatment ruling was taken by the owner on 2026-09-09: a total over account balances
+INCLUDES non-active accounts and states what they contributed.** The recommendation on file was the
+opposite (exclude, and state the excluded magnitude) and was not taken; both arguments are preserved
+in `discovery-account-lifecycle.md` § *The ruling the owner owes*. The ruling births the fifth
+`api-contract.md` § Direction norm, which chunk 00 landed.
+
+### Open assumptions
+
+`[ASSUMPTION: the three warning kinds keep the names api-contract.md § The warning vocabulary
+already published for them — account_no_longer_active, includes_pending_rows,
+sign_convention_unverified | LOW impact | they were named by the previous cycle's two discovery
+passes and are additive under the contract's evolution rule; a rename before any consumer exists is
+free]`
+
+`[ASSUMPTION: AC-13.6's "either serves a query that exists or is removed" resolves toward MAKING the
+index serve the resolving query, rather than dropping it | MEDIUM impact | C2 owns this decision and
+must record it either way. The criterion is deliberately written to permit both, and the discovery
+document declines to pick]`
+
+## Decisions
+
+`[DECISION: the shared warning vocabulary lands in ONE coordinator commit before any delegate starts,
+rather than each delegate adding its own kind | Three parallel agents cannot see each other, and
+`envelope.REQUEST_SCOPED_KINDS` is a closed, test-enforced tuple whose three additions would land on
+adjacent lines in the same tuple, the same `_GUIDANCE` map and the same instructions table. This is
+the one collision the previous cycle's partition could not catch and only integration saw; landing it
+up front is the cheapest possible answer | coordinator, 2026-09-09]`
+
+`[DECISION: AC-14.5's wiring — C3's per-connection sign finding reaching C2's aggregate answers — is
+the COORDINATOR's, in chunk 04, not either delegate's | It is the one requirement that crosses the
+ownership map: the producer is C3's and the only call site is inside a function C2 owns outright. The
+alternatives were both worse — a stub returning `[]` in chunk 00 is a check that covers nothing,
+which this repo has now shipped twice (#46, #47) and should not ship a third time; and having C2 call
+a module C3 has not written yet leaves C2 unable to run its own tests. Named here, with its own
+acceptance line in chunk 04, because a requirement that crosses a partition boundary is exactly the
+one that gets silently dropped | coordinator, 2026-09-09]`
+
+`[DECISION: no delegate runs the full suite, and no delegate runs verify_norms_go_red.py | Three
+whole-suite runs on one box is the unattributable-green anti-pattern with the machine load to
+produce it, and the go-red harness runs every case in the list rather than a named one. Each delegate
+proves its own go-red by hand — mutate, run the one named test, confirm red, revert — which is the
+same evidence at one case's cost. The combined suite and the full harness are chunk 04's | user
+directed no heavy tests in delegates, 2026-09-09]`
+
+## Partition — the ownership map
+
+🔴 **A delegate edits only what this table gives it.** Where a file is shared, ownership is by
+function or by section, and the boundary is the function or section itself — not "the area around
+it". Anything not listed is the coordinator's.
+
+| Surface | C1 (#40) | C2 (#22) | C3 (#23) |
+|---|---|---|---|
+| `store/schema.py` | the `accounts` table | the `transactions_pending_link` index | — |
+| `store/migrations/` | migration 003 + its registration | — | — |
+| `connector/plaid/derivers.py` | the accounts deriver | — | — |
+| `query.py` | `_coverage`, `AccountCoverage`, `_account_coverage`, `_uncovered_caveat`, `list_accounts`, `coverage_report`, and a new `_account_lifecycle` beside `_account_coverage` | `_transaction_filters`, `list_transactions`, `_flow_class`, `_flow_class_totals`, `_median_interval`, `money_summary` | `pipeline_health` |
+| `mcp.py` | a `_lifecycle_row_fields()` beside `_coverage_row_fields()`, and the `list_accounts` + `get_coverage_report` definitions | the `query_transactions` + `money_summary` definitions | the `get_pipeline_health` definition |
+| new module | — | — | `src/bankmachine/signs.py` |
+| `data-model.md` | the `accounts` field table, § Account lifecycle | § Constraints, the index claim | § Direction, scoping the sign norm |
+| `docs/system-requirements.md` | — | the AC-11.3 amendment note only | — |
+| `operational-spec.md` | the migration-ordering line | — | — |
+
+**Coordinator's alone, and no delegate may touch them:** `envelope.py`, `mcp_resources.py`,
+`api-contract.md`, every `.prawduct/` governance file, `docs/system-requirements.md`'s FR-9 and § 7
+criterion text (read it, never edit it), and the `git` history.
+
+**The one expected conflict, accepted rather than engineered away:** all three delegates append to
+`CASES` in `tests/preferences/verify_norms_go_red.py`, at the end of one list. Three appends to one
+tail is an append/append conflict whose resolution is "keep all three", and inventing per-item
+anchors to avoid it would be structure built for the org chart. The coordinator resolves it.
+
+## Chunks
+
+### Status
+
+- [x] **00 · The ruling, the norm it births, and the shared vocabulary** *(coordinator)*
+- [ ] **01 · Account lifecycle, made visible — #40, AC-12.1–12.9** *(delegate)*
+- [ ] **02 · Pending-transaction semantics — #22, AC-13.1–13.7** *(delegate)*
+- [ ] **03 · The per-connection sign-convention check — #23, AC-14.1–14.6** *(delegate)*
+- [ ] **04 · Integration** *(coordinator)*
+
+### Chunk 00 · The ruling, the norm it births, and the shared vocabulary
+
+Delivers: AC-12.8 restated to the ruled treatment; the ruling recorded where the argument for the
+road not taken survives it; the fifth `api-contract.md` § Direction norm born, with its retroactivity
+debt named rather than grandfathered and its norm-index row written `in-transition`; and all three
+warning kinds landed in `envelope.REQUEST_SCOPED_KINDS` with their `_GUIDANCE` entries and their rows
+in the server instructions.
+
+**Done when:** `tests/preferences` and `tests/test_mcp*.py` are green, and no delegate needs to touch
+the vocabulary.
+
+### Chunk 01 · Account lifecycle, made visible (#40)
+
+Delivers AC-12.1 through AC-12.9. The population path, the read path and one migration — **not a read
+path alone**, which is the false premise #40's body led with. Design proposed in
+`discovery-account-lifecycle.md` § *Design*: four always-present row fields, a three-value vocabulary
+naming the observation rather than the conclusion, `no_longer_reported` derived at read time and
+never stored, and one producer feeding both `list_accounts` and `get_coverage_report`.
+
+**Done when:** all nine criteria hold; AC-12.9's shrinking-roster replay exists and its assertion has
+been seen red; `query._coverage`'s `accounts` count carries the ruled treatment's figure.
+
+### Chunk 02 · Pending-transaction semantics (#22)
+
+Delivers AC-13.1 through AC-13.7. Tier 1 (the read path — no aggregate distinguishes pending from
+posted today) and tier 2 (settlement branch cases the fixtures do not reach) per
+`discovery-production-data-semantics.md` § *The three tiers*. **AC-13.8 and AC-13.9 are the
+operator's and are out of this chunk.**
+
+**Done when:** the seven criteria hold; AC-13.6's index question is resolved in code AND in
+`data-model.md` § Constraints with the same account in both; the pending disclosure is present-and-
+zero rather than absent; and a fixture carrying `pending: true` rows exercises the read path.
+
+### Chunk 03 · The per-connection sign-convention check (#23)
+
+Delivers AC-14.1 through AC-14.6 — a per-connection check over a declared category set, with the
+measured sandbox baseline as its negative control and a synthetic inverted feed as its positive one,
+reporting rather than correcting. **AC-14.7–14.9 are the operator's and are out of this chunk.**
+
+**Done when:** the six criteria hold; the check declares its category set, threshold and both
+controls; an inverted feed is reported and never corrected; and `get_pipeline_health` surfaces it.
+
+### Chunk 04 · Integration
+
+Delivers: the three branches merged; **AC-14.5's wiring** — `signs`' finding reaching `money_summary`
+as `sign_convention_unverified`, with the test that proves an aggregate over a flagged connection
+carries it; the `*(specified, not built)*` annotations cleared from `api-contract.md` § The warning
+vocabulary now that each kind has an emitter; the `verify_norms_go_red.py` tail conflict resolved and
+the full harness run; the combined suite; `/prawduct:critic cumulative`.
+
+**Done when:** the suite is green on the merged tree, every go-red case in `CASES` is red, AC-14.5
+holds end to end, and the Critic has no unresolved blocking findings.
+
+## What this plan does NOT close
+
+🔴 **None of the three issues closes here.** Each carries a production-data tail —
+AC-13.8/13.9, AC-14.7/14.8/14.9 — and #40's own tail is the operator declaring an account inactive
+against real data. `blocks:production` comes off when VRF-005 and VRF-006 are performed, not when
+this branch merges. Stating it here because "all chunks ticked" reads as "the blockers are closed",
+and it is not what this plan delivers.

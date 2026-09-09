@@ -352,9 +352,14 @@ existing rule type to any account is configuration.
 
 *Derived in `.prawduct/artifacts/discovery-account-lifecycle.md` (#40). Every criterion below was derived in the cited discovery document, which records the evidence, the alternatives weighed, and its assumptions as **vetoable**. They are in force as requirements; an assumption the owner rejects retires the criteria that rest on it.*
 
-🔴 **One ruling is open and is the owner's**: whether a total over account balances *excludes*
-non-active accounts or *includes and flags* them. AC-12.8 is written to hold either way — it
-requires the treatment to be **stated**, which is what both candidate rulings have in common.
+🔴 **The treatment ruling was taken by the owner on 2026-09-09: a total over account balances
+INCLUDES non-active accounts and flags them**, stating the magnitude they contributed. The
+alternative — excluding them and stating the excluded magnitude — was the recommendation on file
+and was not taken; the argument on both sides is preserved in the discovery document. The ruling
+follows #18's *classify, do not filter*: an overcount gets questioned and an undercount gets
+believed, and a net worth that drops with no visible cause is the quieter of the two errors. What
+makes the inclusion safe is the second half, which is not optional — the magnitude rides the
+payload, so the reader can perform the subtraction the system refuses to perform for them.
 
 **AC-12.1 · Lifecycle rides every account row.** 🔴 Every `list_accounts` row carries the lifecycle
 fields — always present, never behind a parameter, on every row. *Why:* the same argument #19 settled
@@ -407,11 +412,14 @@ post-closure period is not a gap"* says the same thing from the verification gat
 producer serves both tools, as `_account_coverage` already does — built twice they can disagree, and
 a verification surface that contradicts the analysis surface is worse than one that is absent.
 
-**AC-12.8 · No total over account balances is emitted without stating its treatment of non-active
-accounts.** 🔴 *This is the criterion the owner's ruling settles* (§ *The ruling the owner owes*).
-Whichever treatment is ruled, a response carrying a count or a sum over accounts states which
-treatment it applied and the magnitude that treatment moved, and the envelope's own `coverage.accounts`
-count — today an unfiltered `COUNT(*)` over `accounts` (`query.py:184`) — is covered by this clause.
+**AC-12.8 · A total over account balances includes non-active accounts, and never without stating
+what they contributed.** 🔴 *Ruled by the owner 2026-09-09: include and flag.* A response carrying a
+count or a sum over accounts includes non-active accounts in the figure, states that it did, and
+states the magnitude they contributed — a count and a signed sum, both always present and zero
+rather than absent when none qualify. The answer also carries `account_no_longer_active`. The
+envelope's own `coverage.accounts` count — today an unfiltered `COUNT(*)` over `accounts`
+(`query.py:184`) — is covered by this clause: it keeps counting every account and gains the
+non-active figure beside it.
 *Why:* both failure modes are quiet. Silently including a frozen balance is #40's filed bug; silently
 excluding one is a net worth that drops with no visible cause, which is #18's ruling arriving from
 the other side. Stating the treatment is what both rulings have in common, and it is why this

@@ -34,16 +34,17 @@ is a breaking change.
 ## Direction
 
 Norms. These bind future work; departure is a recorded decision, never silent
-(`/prawduct:methodology norms`). The first three ratified 2026-09-07 by the owner; the
-fourth born 2026-09-09, and it is the only one carrying a migration.
+(`/prawduct:methodology norms`). Each entry carries its own birth date and status; read those rather
+than any count here.
 
 🔴 **The norms ratified 2026-09-07 were born before the surface they govern existed** — the MCP tool
 layer was build step 7. That is deliberate and has direct precedent here: `architecture.md`'s norms
 were also born before any code, and the point of ratifying early is that the build gets **built to**
 them rather than discovering them afterwards. No retroactivity decision applied to those, because
-there was nothing yet to migrate or grandfather. **The fourth is the exception and says so in its
-own entry:** it was born against a surface that already shipped, and it carried one migration, now
-paid.
+there was nothing yet to migrate or grandfather. **The norms born later are the exception and each
+says so in its own entry**, because a norm born against a surface that already shipped has to state
+what it does with what is already there: the tool-boundary norm carried one migration, now paid, and
+the balance-lifecycle norm names one unmigrated emitter it does not grandfather.
 
 - **The MCP surface is read-only. There are no mutation tools, and adding one is not a decision this
   norm leaves open.**
@@ -107,6 +108,32 @@ paid.
   Born 2026-09-09, from #30. Derivation and the alternatives priced against it:
   `discovery-mcp-tool-surface.md`.
   Status: steady-state.
+
+- **A stored balance is reported with its lifecycle, and no total over balances is emitted without
+  stating its treatment of non-active accounts.** The treatment is **include and flag**: non-active
+  accounts stay in the figure, and the answer states how many they were and what they contributed.
+  Why: the second norm's thesis applied to the balance sheet. A closed card's last balance is a
+  plausible wrong number whose wrongness has no signal, and the direction of the error depends on
+  `balance_class` — including a closed liability overstates debt, and including a closed asset
+  double-counts money that already moved into another enrolled account. Neither treatment repairs
+  that arithmetic; what the norm forbids is applying either one silently. **Include-and-flag was
+  ruled over exclude-and-state on the asymmetry in detectability**: an included frozen balance is
+  correctable by any reader handed the flag and the figure, while an exclusion is invisible by
+  construction — the total is simply smaller, and no field can point at what is not there. That is
+  #18's *classify, do not filter* arriving on this surface, and the flagged magnitude is what keeps
+  it from being #18's failure mode instead. 🔴 **The magnitude is the load-bearing half, not the
+  flag** — a count and a signed sum, present and zero rather than absent, on the same
+  `total_external_spend` precedent that makes an exclusion legible elsewhere. A warning without the
+  figure tells a consumer something is wrong and leaves it unable to do anything about it.
+  Born 2026-09-09, from #40, on the owner's ruling of the same date. Derivation, and the argument
+  for the treatment that was not ruled: `discovery-account-lifecycle.md` § *The ruling the owner
+  owes*. Requirement: AC-12.8.
+  🔴 **Retroactivity: one debt, and it is named.** `query._coverage`'s `accounts` count is an
+  unfiltered `COUNT(*)` sitting between two counts that both filter, and it is the one shipped
+  emitter this norm already governs. It is not grandfathered; AC-12.8 covers it by name.
+  Status: in-transition — the norm binds now, and the mechanism arrives with FR-9. It flips to
+  steady-state when every emitter named in AC-12.8 carries the figure and the guard for it has been
+  seen red.
 
 ---
 

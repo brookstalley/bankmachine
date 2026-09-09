@@ -22,6 +22,11 @@ before yes"
 > proposed alongside it stays **unborn** until that ruling is taken — a norm's birth is a ruling, not
 > an integration step.
 >
+> 🔴 **BOTH DISCHARGED 2026-09-09.** The owner ruled **include and flag**; AC-12.8 states that
+> treatment, and the fifth norm was born on it in `api-contract.md` § Direction. The paragraph above
+> is left standing as the state this document was written in, since the reasoning below is only
+> readable against it.
+>
 > The measured findings and the proposals are deliberately separable, and only the findings are
 > facts. Read § *Requirements confidence* before treating any claim as load-bearing.
 
@@ -187,7 +192,36 @@ today by summing `list_accounts`, or the `net_worth` half of the specified-but-u
 **Option A — exclude from the total, and state the exclusion in the payload.**
 **Option B — include in the total, and flag the account in the row.**
 
-**Recommendation: Option A, with the exclusion stated as a figure rather than merely as a flag.**
+> 🔴 **RULED 2026-09-09 by the owner: Option B — include, and flag non-active accounts carrying a
+> balance.** The recommendation below is Option A and was **not** taken. Everything from here to the
+> end of this section is preserved as the argument that was put, not as the position that stands, and
+> it is preserved rather than deleted because the case against the ruling is the thing a future reader
+> needs in order to reopen it honestly.
+>
+> **What the ruling settles, and what it does not relax.** AC-12.8 now reads *include and state the
+> included magnitude*. The half of the recommendation that survives the ruling intact is its second
+> half, and it is not optional: the magnitude rides the payload as a count and a signed sum, and the
+> answer carries `account_no_longer_active`. Option B without that figure is Option B's failure mode
+> exactly as Option A without one was Option A's — the ruling adopts the treatment, not the silence.
+>
+> **Why the owner's reading is defensible on the document's own evidence.** The argument against the
+> recommendation, given in full below, is #18's *classify, do not filter*, and this document already
+> concedes it is real. Its force here is that the two errors are not symmetric in *detectability*: an
+> included frozen balance is visible to any reader handed the flag and the figure, while an excluded
+> one is invisible by construction — the number is simply smaller, and nothing in the payload can
+> point at what is missing. Option A answers this by stating the excluded magnitude, which works; but
+> it works by reconstructing, in prose, a number the reader could have just been given. Option B hands
+> over the raw figure and the correction, and lets the reader do the arithmetic the system declines to
+> do on their behalf.
+>
+> **The cost the ruling accepts, stated plainly.** A consumer that reads the total and ignores the
+> warning gets an overstated debt or a double-counted asset — the arithmetic wrongness § below
+> establishes, which the ruling does not dispute and does not repair. This product's own thesis is
+> that an analyst agent cannot be relied on to apply a correction it was not handed; the ruling's
+> answer is that it *is* handed one, in the payload, on every answer, which is the strongest form
+> that hand-off takes on this surface.
+
+**Recommendation (not adopted — see the ruling above): Option A, with the exclusion stated as a figure rather than merely as a flag.**
 The argument is not preference; it is that a retired account's last balance is **arithmetically wrong
 in both directions**, and the direction depends on the account's class:
 
