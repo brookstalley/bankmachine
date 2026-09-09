@@ -600,8 +600,8 @@ three-week-old hole in the data and answer confidently.
 | `rows_truncated` | The request matched more rows than the cap returned, and the answer holds only the newest of them |
 | `counted_during_change` | A write landed between the row read and the count read, so the two describe moments a fraction apart |
 | `accounts_without_coverage` | An account in the scope of THIS request has never had a transaction recorded, so its empty result means data not present, never no activity |
-| `account_no_longer_active` *(declared; no emitter yet)* | An account in the scope of THIS request is closed or is no longer listed by its institution, so its balance is frozen as of the date beside it and is not a fact about today |
-| `includes_pending_rows` *(declared; no emitter yet)* | This answer's rows include authorisation holds that have not settled, so a figure computed from it may change without any new activity |
+| `account_no_longer_active` | An account in the scope of THIS request is closed or is no longer listed by its institution, so its balance is frozen as of the date beside it and is not a fact about today |
+| `includes_pending_rows` | This answer's rows include authorisation holds that have not settled, so a figure computed from it may change without any new activity |
 | `sign_convention_unverified` | This answer draws on a connection whose stored sign distribution was measured and found INVERTED relative to the operator-signed convention, so its amounts run the wrong way. 🔴 It does not fire for a merely unconfirmed connection — see the note below the table |
 
 🔴 **The window/row/account kinds below the line are REQUEST-scoped; the connection kinds above them
@@ -656,13 +656,13 @@ three rows went stale within one commit of being written. The guard matches on t
 a row's annotation is free to change as its kind acquires an emitter without the guard having an
 opinion about it.
 
-🔴 **The three kinds annotated *declared; no emitter yet* were proposed by two separate discovery
-passes that could not see each other, and each registered only its own.** They are recorded here
-together for that reason, and they entered `envelope.REQUEST_SCOPED_KINDS` **as a set, in one
-commit, before any of the three items was built** — because a kind emitted but not declared does not
-degrade to an unrecognized warning, it takes the whole answer down through the schema validator.
-Doing that up front is also what let the three items be built in parallel at all: one closed tuple
-cannot absorb three simultaneous additions from agents that cannot see each other. Sources:
+🔴 **The last three kinds were proposed by two separate discovery passes that could not see each
+other, and each registered only its own.** They entered `envelope.REQUEST_SCOPED_KINDS` **as a set,
+in one commit, before any of the three items was built** — because a kind emitted but not declared
+does not degrade to an unrecognized warning, it takes the whole answer down through the schema
+validator. Doing that up front is also what let the three items be built in parallel at all: one
+closed tuple cannot absorb three simultaneous additions from agents that cannot see each other. All
+three now have emitters. Sources:
 `.prawduct/artifacts/discovery-account-lifecycle.md` (AC-12.x) and
 `.prawduct/artifacts/discovery-production-data-semantics.md` (AC-13.x, AC-14.x). The two names
 the second document left to the builder are fixed here so the three are chosen as a set.

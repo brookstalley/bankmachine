@@ -674,5 +674,5 @@ def test_a_stranded_hold_on_a_non_active_account_is_counted_but_not_asked_about(
         "evidence and hiding it is the opposite error"
     )
     assert row["oldest_stranded_hold"] is None, (
-        "a closed account was handed a hold to go chase, which no operator can clear"
+        "a closed account was handed a hold to go look at, which no operator can clear"
     )

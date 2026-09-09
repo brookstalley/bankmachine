@@ -261,3 +261,69 @@ def test_the_table_reader_reports_a_kind_the_vocabulary_does_not_declare() -> No
         "this control has to name a kind the vocabulary does NOT declare; if the "
         "vocabulary grew to include it, pick another"
     )
+
+
+#: The document a person setting this server up actually reads. It describes
+#: the same vocabulary a third time, in its own words, for a human rather than
+#: for an agent -- and drifted four kinds behind before anything read it.
+CLIENT_GUIDE = Path(__file__).resolve().parents[2] / "docs" / "connecting-an-mcp-client.md"
+
+#: A kind DEFINED in the guide's own list, as opposed to one mentioned in
+#: passing. The distinction is the whole point: `accounts_without_coverage` was
+#: named in the guide's prose while being absent from the list of kinds, so a
+#: reader looking for what to branch on never found it and a bare substring
+#: search would have called that documented.
+_DEFINITION = re.compile(r"^- `([a-z_-]+)` — ")
+
+
+def _kinds_defined_in(guide: str) -> list[str]:
+    """Every kind the guide gives a definition line to, in order."""
+    return [m.group(1) for line in guide.splitlines() if (m := _DEFINITION.match(line))]
+
+
+def test_the_client_guide_defines_every_kind_the_vocabulary_declares() -> None:
+    """🔴 The third description of one vocabulary, and the one nothing watched.
+
+    The server instructions are checked by `test_mcp.py`, the contract table by
+    the test above, and this guide by nothing -- so it fell four kinds behind:
+    `accounts_without_coverage` from the cycle that shipped it, and all three
+    kinds the production-blocker items added.
+
+    Only the DEFINITION list counts. The guide mentioned
+    `accounts_without_coverage` in a paragraph while omitting it from the list,
+    which is precisely the state a substring check would have blessed -- and the
+    reader this guide is written for is skimming the list, not the prose.
+    """
+    defined = set(_kinds_defined_in(CLIENT_GUIDE.read_text(encoding="utf-8")))
+
+    assert defined, (
+        f"no kind definitions were found in {CLIENT_GUIDE.name}; the list was reformatted "
+        f"and this check is now reconciling nothing"
+    )
+
+    missing = sorted(set(envelope.WARNING_KINDS) - defined)
+    assert not missing, (
+        f"{missing} are in the vocabulary but the client guide never defines them; the "
+        f"person wiring up a client reads that list to learn what to branch on"
+    )
+
+
+def test_the_guide_reader_ignores_a_kind_merely_mentioned_in_prose() -> None:
+    """The positive control, aimed at the exact way this check could go soft.
+
+    A reader that matched anywhere in the line would pass on a guide that only
+    talks ABOUT a kind, which is the failure this test was written from. So the
+    fixture puts one kind in a definition and another in a sentence, and the
+    sentence must not count.
+    """
+    known_bad = (
+        "- `stale` — a connection has not synced recently.\n"
+        "\n"
+        "An account like that now carries an `accounts_without_coverage` warning naming it.\n"
+        "  - `gapped` — indented, so not a top-level definition either.\n"
+    )
+
+    assert _kinds_defined_in(known_bad) == ["stale"], (
+        "the reader counted a kind that the guide only mentions, which is how the drift "
+        "this check exists for stayed invisible"
+    )

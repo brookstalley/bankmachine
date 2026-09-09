@@ -1338,7 +1338,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         # The suppression is a separate failure from the wiring: this one leaves
         # the feature working and hands a closed account a hold nobody can clear.
-        "AC-13.5/AC-12.7: a closed account is not asked to chase a hold",
+        "AC-13.5/AC-12.7: a closed account is not asked to pursue a hold",
         QUERY,
         "                        active=lifecycle[account_id].active,",
         "                        active=True,",

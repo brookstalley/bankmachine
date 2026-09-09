@@ -187,6 +187,19 @@ boundary it names — so the *absence* of one is information too:
   the newest of them. The detail says how many are missing and what to do about it.
 - `counted_during_change` — a write landed between the row read and the count read, so the two
   describe moments a fraction apart. The rows are accurate as of the `as_of` stamp.
+- `accounts_without_coverage` — an account in scope has **never** had a transaction recorded. Its
+  empty result means *data not present*, never *no activity*; call `get_coverage_report` for the
+  per-account picture.
+- `account_no_longer_active` — an account in scope is closed, or its institution stopped listing it.
+  Its balance froze on the date the row carries and is **not a fact about today**. Totals over
+  balances *include* it and say by how much, so quote that magnitude beside the total — the reader
+  can subtract it and you cannot.
+- `includes_pending_rows` — some contributing rows are authorisation holds that have not settled, so
+  the figure can change **with no new activity at all**. Quote settled and pending separately; never
+  present their sum as money spent.
+- `sign_convention_unverified` — a contributing connection was measured against the sign convention
+  and its amounts run the wrong way, so on that feed income reads as spending. Name the connection
+  and say its direction is in question; do **not** correct it yourself.
 
 **Amounts are integer minor units** (cents for USD) and the field names say so — `amount_minor_units`,
 `current_minor_units`. They are signed from the account holder's point of view: negative is money

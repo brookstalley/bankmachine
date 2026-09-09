@@ -299,8 +299,19 @@ _DDL_TEMPLATES: tuple[str, ...] = (
     """
     CREATE INDEX transactions_by_account_date ON transactions (account_id, posted_date)
     """,
-    # AC-2.3: a posting transaction finds its pending row by the source's own
-    # pending identifier rather than by guessing from amount and date.
+    # 🔴 NOT the AC-2.3 lookup, despite what this comment claimed until
+    # 2026-09-09. A posting transaction finds its pending row by matching the
+    # incoming `pending_transaction_id` against the HOLD's own
+    # `source_transaction_id` -- a hold answers to its own id until it posts --
+    # which `transactions_source_identity` serves. This index serves the reverse
+    # direction: given a settled row, which hold did it replace. That reader
+    # arrived with AC-13.4, which needs a total that shrank because a hold
+    # settled to be distinguishable from one that shrank because data is
+    # missing. Corrected here rather than only in `data-model.md`, because a
+    # comment beside the index is what the next reader believes.
+    #
+    # Editing this comment does not touch CORE_SCHEMA_DDL: the hashed tuple
+    # holds the statement strings, and these lines are not in one.
     """
     CREATE INDEX transactions_pending_link
         ON transactions (account_id, source_pending_transaction_id)
