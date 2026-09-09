@@ -24,6 +24,7 @@ write whatever SQL reaches it.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
@@ -1394,6 +1395,30 @@ def _median_interval(days: list[int]) -> float | None:
     return (ordered[middle - 1] + ordered[middle]) / 2
 
 
+def _oldest_stranded(holds: Sequence[StrandedHold], *, active: bool) -> dict[str, Any] | None:
+    """The worst stranded hold on one account, or null. AC-13.5.
+
+    `_stranded_holds` orders oldest first, so the caller naming one names the
+    worst; this reads that order rather than re-deriving it.
+
+    Null rather than absent when there is nothing to report, and null for a
+    non-active account whose holds can never settle. The count beside this field
+    still reports what was measured, so nothing is concealed -- what is withheld
+    is the CALL TO ACTION, which is the one thing a finding on a closed account
+    cannot be.
+    """
+    if not active or not holds:
+        return None
+    worst = holds[0]
+    return {
+        "transaction_id": worst.transaction_id,
+        "posted_date": iso_or_none(worst.posted_date),
+        "days_pending": worst.days_pending,
+        "amount_minor_units": worst.amount_minor,
+        "currency": worst.currency,
+    }
+
+
 def coverage_report(config: Config) -> Answer:
     """🔴 The verification surface's second half, per account. AC-9.5, #35.
 
@@ -1430,6 +1455,13 @@ def coverage_report(config: Config) -> Answer:
         # surface that contradicts the analysis surface is worse than one that
         # is absent (AC-12.7).
         lifecycle = _account_lifecycle(conn)
+        # 🔴 Unfiltered, unlike every other caller: this surface answers about
+        # the store rather than about a window, and a hold stranded outside
+        # whatever window a caller happened to ask about is precisely the one
+        # nobody has noticed.
+        stranded_by_account: dict[int, list[StrandedHold]] = {}
+        for hold in _stranded_holds(conn, filters=[], today=calendar_date(now_utc().date())):
+            stranded_by_account.setdefault(hold.account_id, []).append(hold)
         named = {
             int(account_id): name
             for account_id, name in conn.execute(
@@ -1500,6 +1532,30 @@ def coverage_report(config: Config) -> Answer:
                     "account": named.get(account_id),
                     **facts.to_wire(),
                     **lifecycle[account_id].to_wire(),
+                    # 🔴 AC-13.5, on the surface the contract puts it: a hold past
+                    # any ordinary lifetime is a per-account finding, and
+                    # `api-contract.md` rules a per-account finding belongs here
+                    # rather than on an analysis answer. Present and zero on every
+                    # row -- an account with no stranded hold is stating a fact,
+                    # and a missing key would make a consumer guess whether it
+                    # meant zero or unknown. The oldest is named because the
+                    # operator's next move is to look at the transaction, so the
+                    # id has to travel with the count.
+                    "stranded_holds": len(stranded_by_account.get(account_id, ())),
+                    "oldest_stranded_hold": _oldest_stranded(
+                        stranded_by_account.get(account_id, ()),
+                        # 🔴 Withheld for a non-active account, on AC-12.7's
+                        # reasoning applied to the sibling criterion: a closed
+                        # account's hold can never settle and can never be
+                        # cleared, so naming it is the finding no operator can
+                        # action -- the exact shape AC-12.7 removed from
+                        # `silence_exceeds_cadence` a few lines below. The COUNT
+                        # stays as measured, for the reason `silence_ratio` is
+                        # left as measured: the number is the evidence, and the
+                        # lifecycle fields on this row say why nothing is being
+                        # asked of it.
+                        active=lifecycle[account_id].active,
+                    ),
                     "median_interval_days": median,
                     "days_silent": days_silent,
                     "silence_ratio": ratio,
@@ -1918,7 +1974,14 @@ def money_summary(
             requested_window=(since, until),
             truncation=None,
             totals=_flow_class_totals(rows, _hold_transitions(conn, since=since, until=until)),
-            extra_caveats=_pending_caveat(pending, stranded),
+            # 🔴 AC-14.5. The two producers are independent and both belong here:
+            # the pending caveat says this figure may still move, the sign caveat
+            # says its DIRECTION may be wrong. A total can be wrong in both ways
+            # at once, and a reader given only one of them would treat the other
+            # as settled.
+            extra_caveats=(
+                _pending_caveat(pending, stranded) + signs.caveats(conn, since=since, until=until)
+            ),
         )
 
 

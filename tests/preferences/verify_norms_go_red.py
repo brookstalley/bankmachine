@@ -1310,6 +1310,41 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "            transactions.c.removed_at.is_(None),",
         f"{TXN_TESTS}::test_a_hold_removed_in_the_same_page_as_its_posting_leaves_one_row",
     ),
+    # ----------------------------------------------------------------------
+    # 🔴 The two criteria that crossed a delegation boundary.
+    #
+    # Both producers were built by one agent and both call sites live in
+    # functions another owned, so the call between them was written by neither
+    # and had no test on either side of it. A producer returning the right
+    # answer and a surface that never calls it are indistinguishable from the
+    # producer's own tests -- which is the state the tree was actually in --
+    # so these anchor on the CALL, not on the producer.
+    # ----------------------------------------------------------------------
+    (
+        "AC-14.5: an aggregate over an inverted connection says so",
+        QUERY,
+        "                + signs.caveats(conn, since=since, until=until)",
+        "                + []",
+        f"{SIGN_TESTS}::test_an_aggregate_over_a_flagged_connection_says_so",
+    ),
+    (
+        "AC-13.5: a stranded hold reaches the verification surface",
+        QUERY,
+        '                    "stranded_holds": len(stranded_by_account.get(account_id, ())),',
+        '                    "stranded_holds": 0,',
+        f"{PENDING_TESTS}::"
+        "test_the_coverage_report_names_a_stranded_hold_on_the_account_holding_it",
+    ),
+    (
+        # The suppression is a separate failure from the wiring: this one leaves
+        # the feature working and hands a closed account a hold nobody can clear.
+        "AC-13.5/AC-12.7: a closed account is not asked to chase a hold",
+        QUERY,
+        "                        active=lifecycle[account_id].active,",
+        "                        active=True,",
+        f"{PENDING_TESTS}::"
+        "test_a_stranded_hold_on_a_non_active_account_is_counted_but_not_asked_about",
+    ),
 ]
 
 

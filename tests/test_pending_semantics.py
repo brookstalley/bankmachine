@@ -32,6 +32,7 @@ from bankmachine.connector import TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
+from bankmachine.store.schema import accounts
 from bankmachine.store.types import calendar_date, now_utc
 from test_mcp import _call, _seed
 
@@ -567,3 +568,111 @@ def test_a_settlement_is_found_by_the_hold_it_replaced(initialized_config: Confi
     assert transitions.settled_for("USD").transactions == 1
     assert transitions.settled_for("USD").net_minor == -3140
     assert transitions.expired_for("USD").transactions == 0
+
+
+# --------------------------------------------------------------------------
+# AC-13.5, the half that crossed a delegation boundary — the finding reaching
+# the VERIFICATION surface.
+#
+# 🔴 `api-contract.md` rules that a per-account finding belongs on
+# `get_coverage_report` rather than on an analysis answer, and the producer and
+# that tool were built by two agents who could not see each other. The wiring
+# between them was made by neither, which makes this the criterion most likely
+# to be reported as delivered while a consumer can still never see it. So it is
+# pinned from the TOOL's side, over the wire.
+# --------------------------------------------------------------------------
+
+
+def test_the_coverage_report_names_a_stranded_hold_on_the_account_holding_it(
+    initialized_config: Config,
+) -> None:
+    """AC-13.5: a stranded hold is surfaced on the verification surface."""
+    _seed(initialized_config)
+    _hold(
+        initialized_config,
+        "hold-stranded-cov",
+        "42.00",
+        days_ago=query.STRANDED_HOLD_AFTER_DAYS + 20,
+    )
+
+    wire = _call(initialized_config, "get_coverage_report", {})["structuredContent"]
+    holding = [row for row in wire["rows"] if row["stranded_holds"]]
+
+    assert len(holding) == 1, (
+        f"expected exactly one account reported as holding a stranded hold, got "
+        f"{[(r['account_id'], r['stranded_holds']) for r in wire['rows']]}"
+    )
+    worst = holding[0]["oldest_stranded_hold"]
+    assert worst is not None, "the count was reported with nothing to look at"
+    assert worst["days_pending"] >= query.STRANDED_HOLD_AFTER_DAYS, worst
+    assert worst["amount_minor_units"] == -4200, worst
+
+
+def test_every_coverage_row_states_its_stranded_count_even_when_it_is_zero(
+    initialized_config: Config,
+) -> None:
+    """🔴 Present and zero, never absent — and the null is a null, not a gap.
+
+    An account with no stranded hold is stating a fact. A missing key would
+    leave a consumer deciding for itself whether it meant zero or unknown, and
+    on a verification surface that guess is the whole failure this product
+    exists to refuse.
+    """
+    _seed(initialized_config)
+
+    wire = _call(initialized_config, "get_coverage_report", {})["structuredContent"]
+
+    assert wire["rows"], "the fixture produced no rows, so this asserts nothing"
+    for row in wire["rows"]:
+        assert row["stranded_holds"] == 0, row
+        assert "oldest_stranded_hold" in row, f"the key was dropped rather than nulled: {row}"
+        assert row["oldest_stranded_hold"] is None, row
+
+
+def test_a_stranded_hold_on_a_non_active_account_is_counted_but_not_asked_about(
+    initialized_config: Config,
+) -> None:
+    """🔴 AC-12.7's reasoning applied to its sibling criterion.
+
+    A closed account's hold can never settle and can never be cleared, so
+    naming it as something to go look at is the finding no operator can ever
+    action -- the exact shape AC-12.7 removed from `silence_exceeds_cadence`.
+    What is withheld is only the call to action: the COUNT stays as measured,
+    on the same reasoning that leaves `silence_ratio` measured while the flag
+    beside it goes false. Both halves are asserted, because suppressing the
+    count as well would hide the measurement, which is the opposite error and
+    just as available.
+    """
+    _seed(initialized_config)
+    _hold(
+        initialized_config,
+        "hold-on-closed",
+        "17.00",
+        days_ago=query.STRANDED_HOLD_AFTER_DAYS + 30,
+    )
+
+    before = _call(initialized_config, "get_coverage_report", {})["structuredContent"]
+    holding = [row for row in before["rows"] if row["stranded_holds"]]
+    assert len(holding) == 1, "the fixture did not produce the stranded hold it needs"
+    account_id = holding[0]["account_id"]
+    assert holding[0]["oldest_stranded_hold"] is not None, (
+        "the account is still active here, so the call to action must be present"
+    )
+
+    with writer_connection(initialized_config) as conn:
+        conn.execute(
+            accounts.update()
+            .where(accounts.c.account_id == account_id)
+            .values(lifecycle_status="inactive")
+        )
+
+    after = _call(initialized_config, "get_coverage_report", {})["structuredContent"]
+    row = next(r for r in after["rows"] if r["account_id"] == account_id)
+
+    assert row["stranded_holds"] == 1, (
+        "the count was suppressed along with the call to action; the measurement is "
+        "evidence and hiding it is the opposite error"
+    )
+    assert row["oldest_stranded_hold"] is None, (
+        "a closed account was handed a hold to go chase, which no operator can clear"
+    )

@@ -1013,6 +1013,40 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             "this still carries the measurement so nothing is hidden"
                         ),
                     },
+                    "stranded_holds": {
+                        "type": "integer",
+                        "description": (
+                            "authorisation holds on this account still unsettled past any "
+                            "ordinary hold lifetime. Present and 0, never omitted. A hold this "
+                            "old usually means the merchant never captured it, so the money is "
+                            "neither spent nor available"
+                        ),
+                    },
+                    "oldest_stranded_hold": {
+                        "type": ["object", "null"],
+                        "description": (
+                            "the worst of them, so the operator can go look at it; null when "
+                            "there are none. 🔴 Also null for a non-active account, whose holds "
+                            "can never settle and can never be cleared -- `stranded_holds` "
+                            "beside this still carries the count, so the measurement is not "
+                            "hidden, only the call to action nobody could answer"
+                        ),
+                        "properties": {
+                            "transaction_id": {"type": "integer"},
+                            "posted_date": {"type": ["string", "null"]},
+                            "days_pending": {"type": "integer"},
+                            "amount_minor_units": {"type": "integer"},
+                            "currency": {"type": "string"},
+                        },
+                        "required": [
+                            "transaction_id",
+                            "posted_date",
+                            "days_pending",
+                            "amount_minor_units",
+                            "currency",
+                        ],
+                        "additionalProperties": False,
+                    },
                     "source_breakdown": {
                         "type": "object",
                         "description": (

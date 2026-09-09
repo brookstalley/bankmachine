@@ -666,3 +666,99 @@ def test_a_zero_amount_row_is_counted_but_never_judged(initialized_config: Confi
     assert measurement.rows_zero == 4
     assert measurement.rows_judged == 10
     assert measurement.verdict == "consistent"
+
+
+# ---------------------------------------------------------------------------
+# AC-14.5 — the finding reaching an aggregate answer.
+#
+# 🔴 These tests exist because this criterion crossed a delegation boundary.
+# The producer and the aggregate it rides on were built by two agents who could
+# not see each other, and the call between them was made by neither. A
+# requirement split that way is the one that gets silently dropped, so it is
+# pinned from the aggregate's side -- through `money_summary`, over the wire,
+# not by asserting that a function is called.
+# ---------------------------------------------------------------------------
+
+
+def test_an_aggregate_over_a_flagged_connection_says_so(initialized_config: Config) -> None:
+    """AC-14.5: no aggregate is computed over a flagged connection in silence.
+
+    Goes through `money_summary` rather than through `signs.caveats`, because
+    what this criterion protects is the ANSWER. A producer that returns the
+    right list and a summary that never calls it look identical from the
+    producer's own tests, and that is exactly the state the tree was in before
+    this wiring landed.
+    """
+    _conforming(initialized_config)
+    _inverted(initialized_config)
+
+    answer = query.money_summary(initialized_config, group_by="category")
+    kinds = [caveat.kind for caveat in answer.warnings]
+
+    assert "sign_convention_unverified" in kinds, (
+        "a spending total drawing on a connection measured as inverted said nothing about "
+        "it; the figure's DIRECTION is in question and the answer carried no sign of that"
+    )
+
+
+def test_the_flagged_connection_is_named_in_the_aggregate_answer(
+    initialized_config: Config,
+) -> None:
+    """The warning has to be actionable, and a connection nobody can name is not.
+
+    AC-14.4 forbids correcting the feed, so naming it is the entire remedy on
+    offer: the operator cannot act on "one of your connections is inverted".
+    """
+    _conforming(initialized_config)
+    inverted_id = _inverted(initialized_config)
+
+    answer = query.money_summary(initialized_config, group_by="category")
+    flagged = [c for c in answer.warnings if c.kind == "sign_convention_unverified"]
+
+    assert len(flagged) == 1, f"expected exactly one flagged connection, got {flagged}"
+    assert flagged[0].connection_id == inverted_id, (
+        "the caveat did not name the connection it is about"
+    )
+
+
+def test_an_aggregate_over_only_conforming_connections_is_silent(
+    initialized_config: Config,
+) -> None:
+    """🔴 The absence is the information, so the absence is asserted.
+
+    A request-scoped kind that fired regardless of what the answer drew on
+    would be the `gapped` failure this vocabulary is split in two to avoid --
+    and the wiring is exactly where that regression would enter, because the
+    call site sees the window and the producer does not.
+    """
+    _conforming(initialized_config)
+
+    answer = query.money_summary(initialized_config, group_by="category")
+
+    assert [c for c in answer.warnings if c.kind == "sign_convention_unverified"] == []
+
+
+def test_a_window_that_missed_the_flagged_connection_is_silent(
+    initialized_config: Config,
+) -> None:
+    """The window scoping survives the wiring, which is the half most easily lost.
+
+    `money_summary` passes its own `since`/`until` through. Dropping them would
+    still pass every test above -- the warning would simply start appearing on
+    answers that drew nothing from the flagged feed, which is the failure that
+    trains a reader to skip the field rather than one that looks broken.
+    """
+    _conforming(initialized_config)
+    _inverted(initialized_config)
+
+    long_before = date(2000, 1, 1)
+    answer = query.money_summary(
+        initialized_config,
+        group_by="category",
+        since=long_before,
+        until=long_before + timedelta(days=1),
+    )
+
+    assert [c for c in answer.warnings if c.kind == "sign_convention_unverified"] == [], (
+        "a window holding none of the flagged connection's rows still warned about it"
+    )
