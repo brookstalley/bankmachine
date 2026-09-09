@@ -76,6 +76,22 @@ connections = Table(
     Column("retired_at", UtcInstantColumn, nullable=True),
     Column("created_at", UtcInstantColumn, nullable=False),
     Column("updated_at", UtcInstantColumn, nullable=False),
+    # 🔴 Last, not beside `last_success_at` where it reads better. It arrived in
+    # migration 004 through `ALTER TABLE ... ADD COLUMN`, which appends, and the
+    # drift guard compares this list against `PRAGMA table_info` *in order*.
+    #
+    # AC-12.4: the date this connection's roster was last successfully observed
+    # -- *we looked*, as against `accounts.last_seen_date`'s *and this is what we
+    # found*. A calendar date because its only use is a comparison against that
+    # column, and `data-model.md` § Constraints 3 makes a comparison across a
+    # date and an instant a defect rather than a conversion.
+    #
+    # 🔴 Not `last_success_at` under another name: that records a sync attempt
+    # succeeding, and the two diverge whenever a sync succeeds without a roster
+    # call. 🔴 Nullable, and the null MEANS "this connection's roster has never
+    # been observed" -- `query._account_lifecycle` reads it as exactly that, so
+    # such a connection marks nothing absent.
+    Column("roster_observed_date", CalendarDateColumn, nullable=True),
 )
 
 Index(

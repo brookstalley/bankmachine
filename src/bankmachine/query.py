@@ -416,13 +416,21 @@ class AccountLifecycle:
     🔴 **The dates ride beside the verdict** (AC-12.3), so `no_longer_reported`
     is re-derivable from the row without a second call. The derivation reads both
     nulls as well as the comparison: a null `roster_last_observed` means this
-    connection has never been observed, so nothing on it is absent; otherwise the
-    account is absent when its own `last_seen_in_roster` is null or is behind
-    that maximum. Stated in full because the comparison alone was once written
-    here as "the whole derivation", and it is the null cases that carry the
-    upgrade window and the newly-vanished account. That is the `silence_ratio`
-    ruling applied again: a number lets a reader see a borderline case, and a
-    bare flag is what destroys that.
+    connection's roster has never been observed, so nothing on it is absent;
+    otherwise the account is absent when its own `last_seen_in_roster` is null or
+    is behind the recorded observation. The null cases are what carry the upgrade
+    window and the newly-vanished account, so they are stated rather than left to
+    the comparison. That is the `silence_ratio` ruling applied again: a number
+    lets a reader see a borderline case, and a bare flag is what destroys that.
+
+    🔴 **`roster_observed_empty` rides the record and NOT the wire.** It is the
+    connection-level fact beside the account-level one -- this account's
+    connection was read successfully and listed no account at all -- and it is
+    what tells fourteen closures apart from a feed that returns success with no
+    rows. It reaches a consumer as the warning of that name rather than as a row
+    field, because it is a property of the connection and the row is about the
+    account; `to_wire` therefore does not carry it, and neither does
+    `connection_id`, which is here so the warning can name what it is about.
     """
 
     account_id: int
@@ -430,6 +438,8 @@ class AccountLifecycle:
     closed_date: CalendarDate | None
     last_seen_in_roster: CalendarDate | None
     roster_last_observed: CalendarDate | None
+    connection_id: int | None
+    roster_observed_empty: bool
 
     @property
     def active(self) -> bool:
@@ -468,33 +478,37 @@ def _account_lifecycle(conn: SAConnection) -> dict[int, AccountLifecycle]:
     observations the store currently holds, which is the only thing that is
     actually known.
 
-    **AC-12.5's three clauses follow from how the maximum is computed**, rather
-    than from three guards written by hand. `roster_last_observed` for a
-    connection is the maximum of its own accounts' `last_seen_in_roster`, so:
+    🔴 **Absence is measured against the RECORDED observation** --
+    `connections.roster_observed_date`, written by the accounts deriver every
+    time a roster is read -- and never against a maximum derived over the
+    connection's own accounts. The two dates say different things:
+    `roster_observed_date` says *we looked*, `accounts.last_seen_date` says *and
+    this is what we found*. A derived maximum collapses them, and a collapsed
+    pair cannot express "the roster was observed and this account was not in it"
+    at any roster size, because a maximum over the accounts that were listed
+    moves with them.
 
-    * a connection whose roster could not be fetched moves no date at all, and
-      nothing becomes older than a maximum that did not move;
-    * a connection whose *entire* roster vanishes at once moves the maximum with
-      it, so nothing is ever older than it; and
+    **AC-12.5's clauses are each a separate fact rather than a consequence of
+    one arithmetic:**
+
+    * a connection whose roster could not be fetched records no observation, so
+      there is nothing for its accounts to be behind and nothing is absent;
+    * a connection whose roster came back EMPTY did record one, so every account
+      on it is behind it and every one is marked absent -- and the connection
+      raises `roster_observed_empty` beside them, because the account-level
+      truth and the connection-level anomaly are two facts and publishing only
+      one of them is what a single channel forced;
     * an account with no connection (the FR-7 import path) has no roster to be
       absent from, so both dates are null and the comparison is never reached.
 
-    🔴 **The second clause is a REQUIREMENT being obeyed, not a property being
-    proved, and calling it "by construction" overstated it.** The arithmetic is
-    a consequence of the maximum; whether the resulting silence is *right* is
-    not. AC-12.5 sanctions it with an argument about scale -- fourteen
-    simultaneous closures is not a thing that happens, so a whole roster
-    vanishing is a pipeline failure and belongs to `get_pipeline_health`. At a
-    connection holding ONE account that argument does not hold: one account
-    closing is entirely ordinary, and it is indistinguishable here from the feed
-    breaking, so such an account reports `active` indefinitely with nothing
-    saying otherwise. That gap is real, it is the requirement's and not this
-    function's, and it is filed rather than papered over here -- changing the
-    behaviour would be departing from a ratified criterion silently, which is the
-    worse of the two errors.
-
-    `learnings.md` § *Guarantees by construction* is about the first and third
-    clauses. The second borrows the phrase and should not.
+    🔴 **The empty-roster case is derived from the pair, not from a third
+    column.** A roster that listed something leaves at least one account whose
+    `last_seen_date` equals the observation; a roster that listed nothing leaves
+    none. So "no account on this connection matches the recorded observation" is
+    exactly "the most recent roster read listed no account we hold", which is
+    the fact AC-12.5a names. It reads the CURRENT state rather than a history:
+    a later non-empty roster moves the observation and an account with it, and
+    the connection stops being empty-rostered, which is correct.
     """
     result = conn.execute(
         select(
@@ -507,7 +521,7 @@ def _account_lifecycle(conn: SAConnection) -> dict[int, AccountLifecycle]:
         )
     ).all()
 
-    observed: dict[int, CalendarDate | None] = {}
+    observed = _roster_observations(conn)
     seen: dict[int, CalendarDate | None] = {}
     for row in result:
         connection_id = None if row[1] is None else int(row[1])
@@ -535,9 +549,15 @@ def _account_lifecycle(conn: SAConnection) -> dict[int, AccountLifecycle]:
         # silence. A pre-migration null IS silence.
         last_seen = None if connection_id is None or row[5] is None else calendar_date(row[5])
         seen[int(row[0])] = last_seen
-        if connection_id is not None and last_seen is not None:
-            current = observed.get(connection_id)
-            observed[connection_id] = last_seen if current is None else max(current, last_seen)
+
+    # 🔴 The connection-level anomaly, from the ONE producer that defines it
+    # rather than from a second predicate written here. `get_pipeline_health`
+    # asks the same question of the same store, and two spellings of "the last
+    # roster read listed nothing" can disagree -- which on this surface means a
+    # health check calling a connection healthy while the answer beside it says
+    # its roster came back empty. Handed the observations already read above, so
+    # one answer reads them once.
+    empty_rostered = _connections_with_an_empty_roster(conn, observed=observed)
 
     lifecycle: dict[int, AccountLifecycle] = {}
     for row in result:
@@ -555,18 +575,18 @@ def _account_lifecycle(conn: SAConnection) -> dict[int, AccountLifecycle]:
         if str(row[2]) != "active":
             value = "closed"
         elif roster is None:
-            # No account on this connection carries a roster observation, so the
-            # connection has never been observed since migration 003 and nothing
-            # here can be called absent. AC-12.5's first clause, which says a
-            # connection whose roster could not be fetched marks nothing absent,
-            # reaching the case where it has not been fetched YET.
+            # This connection's roster has never been observed -- migration 004
+            # recorded nothing and no sync has run since -- so nothing here can
+            # be called absent. AC-12.5's first clause, which says a connection
+            # whose roster could not be fetched marks nothing absent, reaching
+            # the case where it has not been fetched YET.
             value = "active"
         elif last_seen is None or last_seen < roster:
             # `roster` is not None, so this connection HAS been observed. An
-            # account still carrying no observation was not in that roster --
-            # which is the steady-state detection this whole item is for, and it
-            # keeps working precisely because null was not filled in with a
-            # guess.
+            # account behind that observation, or still carrying none at all,
+            # was not in that roster -- which is the steady-state detection this
+            # whole item is for, and it keeps working precisely because null was
+            # not filled in with a guess.
             value = "no_longer_reported"
         else:
             value = "active"
@@ -579,8 +599,155 @@ def _account_lifecycle(conn: SAConnection) -> dict[int, AccountLifecycle]:
             closed_date=None if row[3] is None else calendar_date(row[3]),
             last_seen_in_roster=last_seen,
             roster_last_observed=roster,
+            connection_id=connection_id,
+            roster_observed_empty=connection_id in empty_rostered,
         )
     return lifecycle
+
+
+def _roster_observations(conn: SAConnection) -> dict[int, CalendarDate]:
+    """When each connection's roster was last successfully READ. AC-12.4.
+
+    🔴 Read from `connections.roster_observed_date` -- the record the accounts
+    deriver writes on every roster read, empty ones included -- and never
+    derived from the accounts. A maximum taken over the accounts that were
+    listed moves with them, so a connection whose roster lists nothing has no
+    observation behind it at all and "we looked, and this account was not there"
+    cannot be said. At a one-account connection that is the ordinary case, which
+    is why the recorded column is the mechanism rather than a better formula
+    over the rows already here (AC-12.4).
+
+    A connection with no recorded observation is ABSENT from this mapping rather
+    than carrying a null, so a caller cannot accidentally compare against one:
+    absence is measured against a successful observation and never against
+    silence.
+    """
+    return {
+        int(connection_id): calendar_date(observed)
+        for connection_id, observed in conn.execute(
+            select(connections.c.connection_id, connections.c.roster_observed_date)
+        ).all()
+        if observed is not None
+    }
+
+
+def _roster_observed_empty_caveat(lifecycle: list[AccountLifecycle]) -> list[Caveat]:
+    """The warning that tells a broken feed from a household closing its accounts.
+
+    🔴 Request-scoped, on the same test as its neighbours: it fires only where
+    THIS request's scope actually holds an account on such a connection. The
+    scope handed in is the same non-active list `_not_active_caveat` gets, and
+    that is exact rather than convenient -- every account on an empty-rostered
+    connection is behind that connection's observation, so every one of them is
+    non-active and none of them can be missing from it.
+
+    🔴 **One caveat per connection, naming the connection and its accounts.**
+    The pair is the point: the account rows say each balance froze, and this
+    says the roster came back empty, and a reader holding both can tell fourteen
+    closures from a feed that returns success with no rows. Holding only the
+    first, they cannot -- which is the ambiguity the old whole-roster clause
+    avoided by suppressing the account-level truth, at the cost of a one-account
+    connection never being able to report its only account absent.
+    """
+    by_connection: dict[int, list[int]] = {}
+    for entry in sorted(lifecycle, key=lambda e: e.account_id):
+        if entry.roster_observed_empty and entry.connection_id is not None:
+            by_connection.setdefault(entry.connection_id, []).append(entry.account_id)
+    return [
+        Caveat(
+            kind="roster_observed_empty",
+            detail=(
+                f"connection {connection_id}'s roster was read SUCCESSFULLY and listed no "
+                f"accounts at all, so account(s) "
+                f"{', '.join(str(account_id) for account_id in account_ids)} are all marked "
+                f"no longer reported and their balances froze on the dates their rows name. "
+                f"Two very different things produce this and the payload cannot tell them "
+                f"apart: the operator de-selected every account from sharing, or the feed "
+                f"broke in a way that returns success. Do NOT report it as accounts having "
+                f"closed -- name the connection, say the balances beside it are frozen, and "
+                f"ask the operator which it was"
+            ),
+            connection_id=connection_id,
+        )
+        for connection_id, account_ids in sorted(by_connection.items())
+    ]
+
+
+def _roster_observed_empty_findings(rows: list[dict[str, Any]], empty: set[int]) -> list[Caveat]:
+    """The same anomaly on the verification surface, as a finding about a CONNECTION.
+
+    🔴 **A health check's own envelope is not a request scope**, so this is not
+    the request-scoped emitter reused: it fires for a named connection whichever
+    accounts a caller happens to be asking about, and it fires for a connection
+    holding no accounts at all -- the shape the request-scoped one can never
+    reach, because there is no account to bring it into scope. An empty roster
+    IS a connection-level anomaly, and this is the surface those live on.
+
+    Carries `institution` as well as `connection_id`, the way this surface's
+    sign-convention findings do: an operator with ten institutions cannot act on
+    a bare connection number.
+    """
+    return [
+        Caveat(
+            kind="roster_observed_empty",
+            detail=(
+                f"{row['institution']}'s roster was read SUCCESSFULLY and listed no accounts "
+                f"at all. That is not a failed fetch and it is not reported as one -- but it "
+                f"is equally consistent with the operator having de-selected every account "
+                f"from sharing and with a feed that broke and still returns success. Every "
+                f"account on this connection is separately marked no longer reported and its "
+                f"balance is frozen. Confirm with the institution which of the two it is"
+            ),
+            connection_id=int(row["connection_id"]),
+            institution=row["institution"],
+        )
+        for row in rows
+        if int(row["connection_id"]) in empty
+    ]
+
+
+def _connections_with_an_empty_roster(
+    conn: SAConnection, *, observed: dict[int, CalendarDate] | None = None
+) -> set[int]:
+    """Connections whose most recent recorded roster read listed no account at all.
+
+    🔴 **One producer, two readers**, exactly as `_account_lifecycle` is: the
+    answer surface asks this per account and `get_pipeline_health` asks it per
+    connection, and two spellings of "the last roster read listed nothing" can
+    disagree -- which here means a health check reporting a connection healthy
+    while the answer beside it reports its roster empty.
+
+    🔴 **Keyed on the connection, not on the accounts**, which is what lets it
+    see the shape the per-account reader never can: a connection whose roster
+    has come back empty since the very first read holds no account, so no
+    request scope can contain one. A health check blind to the emptiest
+    connection would be quietest exactly where it matters.
+
+    The predicate is one comparison. A roster read that listed something leaves
+    at least one account whose `last_seen_date` equals the observation; one that
+    listed nothing leaves none. Same-day granularity is inherited from both
+    sides being calendar dates, which is the point of the column's type: a full
+    roster and an empty one on the same day read as one observation.
+
+    `observed` is the parameter that makes "one production per answer"
+    expressible, as `_coverage`'s `lifecycle` is: a caller that has already read
+    the observations hands them over rather than making the reader -- which is
+    autocommit, and releases its snapshot per statement -- take a second one
+    that could differ.
+    """
+    observed = _roster_observations(conn) if observed is None else observed
+    if not observed:
+        return set()
+    matched = {
+        int(connection_id)
+        for connection_id, last_seen in conn.execute(
+            select(accounts.c.connection_id, accounts.c.last_seen_date).where(
+                accounts.c.connection_id.is_not(None)
+            )
+        ).all()
+        if last_seen is not None and observed.get(int(connection_id)) == calendar_date(last_seen)
+    }
+    return {connection_id for connection_id in observed if connection_id not in matched}
 
 
 def _not_active_caveat(lifecycle: list[AccountLifecycle]) -> list[Caveat]:
@@ -963,7 +1130,11 @@ def list_accounts(config: Config) -> Answer:
             rows,
             requested_window=None,
             truncation=None,
-            extra_caveats=_uncovered_caveat(uncovered) + _not_active_caveat(not_active),
+            extra_caveats=(
+                _uncovered_caveat(uncovered)
+                + _not_active_caveat(not_active)
+                + _roster_observed_empty_caveat(not_active)
+            ),
             lifecycle=lifecycle,
         )
 
@@ -1459,6 +1630,7 @@ def list_transactions(
             extra_caveats=(
                 _uncovered_caveat(uncovered)
                 + _not_active_caveat(not_active)
+                + _roster_observed_empty_caveat(not_active)
                 + _pending_caveat(pending)
             ),
             lifecycle=lifecycle,
@@ -1700,6 +1872,7 @@ def coverage_report(config: Config) -> Answer:
                 # transaction. They are both true and they say different things,
                 # and neither suppresses the other.
                 + _not_active_caveat([e for e in lifecycle.values() if not e.active])
+                + _roster_observed_empty_caveat([e for e in lifecycle.values() if not e.active])
             ),
             lifecycle=lifecycle,
         )
@@ -2157,5 +2330,16 @@ def pipeline_health(config: Config) -> Answer:
             # second scan is a second observation -- and this answer would then
             # be able to publish `consistent` in a row while warning that the
             # same connection is unverified.
-            extra_caveats=signs.caveats(conn, measured=measured),
+            #
+            # 🔴 AC-12.5a's second surface. A roster that comes back empty is a
+            # connection-level anomaly, and a broken feed that returns success
+            # is exactly what a health check is for -- this tool reads
+            # `connections`, `sync_state` and the sign measurement, none of
+            # which can tell such a connection from a healthy one. Reported as a
+            # finding about a NAMED connection rather than as a caveat on the
+            # answer as a whole, like every other per-connection finding here.
+            extra_caveats=(
+                signs.caveats(conn, measured=measured)
+                + _roster_observed_empty_findings(rows, _connections_with_an_empty_roster(conn))
+            ),
         )
