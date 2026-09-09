@@ -73,6 +73,8 @@ TXN_TESTS = "tests/connector/test_transaction_derivers.py"
 SYNC_RUN = pathlib.Path("src/bankmachine/cli/sync_run.py")
 SYNC_RUN_TESTS = "tests/cli/test_sync_run.py"
 QUERY = pathlib.Path("src/bankmachine/query.py")
+SIGNS = pathlib.Path("src/bankmachine/signs.py")
+SIGN_TESTS = "tests/test_sign_convention.py"
 ENVELOPE = pathlib.Path("src/bankmachine/envelope.py")
 MCP = pathlib.Path("src/bankmachine/mcp.py")
 CLIENT_GUIDE = pathlib.Path("docs/connecting-an-mcp-client.md")
@@ -1169,6 +1171,21 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "    if destination.exists():",
         "    if False:",
         f"{BACKUP_TESTS}::test_it_refuses_an_existing_destination",
+    ),
+    (
+        # 🔴 AC-14.3's positive control, carried here so it stops depending on
+        # anyone re-running it by hand. The break pushes the threshold past 1.0,
+        # which no share can exceed, so a wholly inverted feed comes back
+        # `consistent` -- the check still runs, still publishes a verdict, and
+        # is simply never able to say the one thing it exists to say. That is
+        # the shape of the two checks this repo has already shipped covering
+        # nothing (#46, #47), which is why the go-red is a requirement here
+        # rather than a formality.
+        "sign convention: an inverted connection is reported",
+        SIGNS,
+        "INVERTED_ABOVE_SHARE: float = 0.5",
+        "INVERTED_ABOVE_SHARE: float = 1.5",
+        f"{SIGN_TESTS}::test_the_positive_control_is_reported",
     ),
 ]
 

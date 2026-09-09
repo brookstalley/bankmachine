@@ -31,7 +31,7 @@ from collections.abc import Callable, Iterator
 from datetime import date
 from typing import IO, Any
 
-from bankmachine import envelope, mcp_resources, query
+from bankmachine import envelope, mcp_resources, query, signs
 from bankmachine.build_id import build_identity
 from bankmachine.cli.exit_codes import EXIT_ERROR, EXIT_OK
 from bankmachine.config import Config
@@ -703,7 +703,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "Every connection, when it last synced, and what is wrong with it — including "
                 "when there is no datastore at all. 🔴 Call "
                 "this before trusting a total that looks surprising: a granted history "
-                "window of null means NOT YET MEASURED, never 'no shortfall'."
+                "window of null means NOT YET MEASURED, never 'no shortfall', and a "
+                "`sign_convention` of `inverted` means that connection's amounts may have "
+                "their direction backwards — they are reported as stored and never corrected."
             ),
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
             "outputSchema": _output_schema(
@@ -720,6 +722,46 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                     "history_starts": {"type": ["string", "null"]},
                     "retired": {"type": "boolean"},
+                    # 🔴 The check DECLARES itself here (AC-14.3): the category
+                    # set it judged over, the threshold it judged by, and the
+                    # counts behind the verdict. A verdict published without
+                    # them would be a claim a reader has to take on faith, which
+                    # is what the convention itself was until this check
+                    # existed.
+                    "sign_convention": {
+                        "type": "string",
+                        "enum": list(signs.VERDICTS),
+                        "description": (
+                            "whether this connection's stored amounts point the way the rest "
+                            "of the store's do. Measured over "
+                            f"{', '.join(signs.NEVER_INFLOW_CATEGORIES)} — categories that "
+                            "are never plausibly money arriving — across the connection's "
+                            "whole history: `inverted` when more than "
+                            f"{signs.INVERTED_ABOVE_SHARE:.0%} of its judged rows are stored "
+                            "POSITIVE, `consistent` when fewer are, and `undetermined` under "
+                            f"{signs.MINIMUM_JUDGEABLE_ROWS} judged rows or at an exact tie. "
+                            "🔴 `undetermined` means NOT CHECKED, never 'fine'. An "
+                            "`inverted` connection is reported and never corrected: its "
+                            "income may read as spending and its spending as income, and "
+                            "only a known debit checked against the institution's own "
+                            "statement settles it"
+                        ),
+                    },
+                    "sign_convention_rows_judged": {
+                        "type": "integer",
+                        "description": (
+                            "rows the verdict was computed over: this connection's non-removed "
+                            "transactions in those categories with a non-zero amount"
+                        ),
+                    },
+                    "sign_convention_rows_positive": {
+                        "type": "integer",
+                        "description": (
+                            "how many of those are stored positive. 0 is the conforming "
+                            "reading; equal to `sign_convention_rows_judged` is a wholly "
+                            "inverted feed"
+                        ),
+                    },
                 },
                 windowed=False,
                 capped=False,

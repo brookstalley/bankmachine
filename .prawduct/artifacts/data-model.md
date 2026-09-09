@@ -81,6 +81,30 @@ nothing to migrate or grandfather.
   time, with the exact original kept in the archive. Ledger amounts are still converted exactly or
   refused. Recorded here rather than left implicit because "valuation" is a distinction this norm
   did not previously draw.
+  Scope (2026-09-09, AC-14.1): 🔴 **this norm is a PER-FEED claim, and a second institution is a new
+  observation rather than a covered case.** The normalization it requires is an *unconditional*
+  negation — `connector/plaid/derivers.py::_operator_signed_amount` negates every amount with no
+  branch and no condition — and the premise that makes the negation right was measured on **one
+  aggregator, one connection, one row**: `api-notes-plaid.md` §17, a merchant purchase arriving with
+  a positive `amount`. The norm therefore holds where it was measured and is *assumed* everywhere
+  else. An institution that signs its feed the other way is stored inverted, silently, and its
+  spending reads as income in every aggregate over it.
+  This is recorded as scope rather than as a caveat on the statement because the statement is not
+  weakened: the convention is still what every stored amount means, and no consumer applies its own
+  sign. What is bounded is the *evidence* for the conversion that produces it.
+  Mechanism (AC-14.2): `src/bankmachine/signs.py` measures the stored sign distribution per
+  connection over five never-plausibly-inflow categories and **reports** a connection whose
+  distribution is inverted — it never corrects one, per AC-14.4, because inverting on suspicion
+  fails in the direction that understates spending. The verdict rides `get_pipeline_health` per
+  connection, and an inverted connection raises `sign_convention_unverified` on the success path.
+  The check's negative control is the sandbox baseline measured on 2026-09-09 (219 rows in those
+  categories on the single enrolled connection, **219 negative and none positive**); its positive
+  control is a synthetic inverted feed in `tests/test_sign_convention.py`, carried in
+  `verify_norms_go_red.py` so the go-red is re-proved rather than remembered.
+  🔴 **The check is meaningless on one connection, which is why this scope is still open.** Until it
+  has run across two institutions the norm remains verified for one feed only — AC-14.7 and AC-14.8,
+  enqueued as VRF-006 in `.prawduct/operator-verification.md`, are what close it, and they are the
+  operator's.
 
 - **All monetary values are stored as integer minor units. No floats anywhere in the schema or in
   aggregation code.**

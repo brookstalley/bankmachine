@@ -191,6 +191,60 @@ reporting rather than correcting. **AC-14.7–14.9 are the operator's and are ou
 **Done when:** the six criteria hold; the check declares its category set, threshold and both
 controls; an inverted feed is reported and never corrected; and `get_pipeline_health` surfaces it.
 
+#### As built — the four decisions the criteria left to the builder
+
+🔴 **The call chunk 04 wires for AC-14.5**, stated once so the crossing requirement cannot be
+dropped: inside `money_summary`, where `conn` is already open, pass
+`extra_caveats=signs.caveats(conn, since=since, until=until)` to its `_answer(...)` call. It returns
+`list[Caveat]` — empty when nothing is flagged, which is the ordinary case — ordered by connection
+id, and it opens no handle of its own.
+
+`[DECISION: the threshold is a PROPORTION of judged rows (>50% positive) rather than a row count,
+and the one absolute constant is a sample floor of 8 derived from the negative control's own
+precision | AC-13.5's precedent is that a fixed constant against a variable cadence produces
+findings and no signal — the 7-day gap rule reporting a monthly account's ordinary silence. A share
+is dimensionless, so it does not move with a connection's size, its institution's posting rhythm or
+how long it has been enrolled, which is how this criterion escapes that trap entirely. 0.5 is the
+point of indifference between the two hypotheses and the only value not chosen by taste: measured
+separation is 0.00 on a conforming feed against 1.00 on an inverted one, so every threshold strictly
+between 0 and 1 returns the same verdict and a tuned 0.9 would buy nothing while needing its own
+derivation. The floor of 8 is where it is because positives were observed 0 times in 219 rows, the
+rule of three bounds a conforming feed's per-row positive rate at 3/219 = 1.37%, and 8 is the
+smallest n at which a conforming feed's chance of showing a positive MAJORITY stays below one in a
+million for n and every larger n — the quantity oscillates with parity, so 6 qualifies and 7 does
+not | user can override, and moving either number moves only which connections are judged, never
+what is done about one]`
+
+`[DECISION: the `sign_convention_unverified` caveat fires for an INVERTED connection only; an
+`undetermined` one is published on `get_pipeline_health` and raises nothing on the aggregates |
+AC-14.2 flags a connection whose distribution is *inverted* and AC-14.5 is about an aggregate over a
+*flagged* connection, so this is the narrow reading of both. The broad reading — every connection
+whose direction has never been checked against a known inflow, which today is all of them — would
+put an identical, unactionable string on almost every answer this product gives, which is exactly
+the "true and useless" failure `envelope.py` records against the `gapped` notice arriving
+character-for-character identical on four unrelated questions. `undetermined` is not silent: it
+reaches the wire per connection on the verification surface, which is the surface built to tell "we
+could not tell" apart from "we checked and it is fine" | 🔴 user can override, and this is the
+decision most worth a second opinion — `mcp_resources.py`'s landed guidance for the kind reads
+"never been observed against a known inflow", which is broader than what the emitter fires on]`
+
+`[DECISION: a connection is judged over its whole stored history, and only the WARNING is scoped to
+the caller's window | Judging within the window would let a two-day question answer "not enough rows
+to judge" about a connection the store holds four hundred rows of evidence about — quietest exactly
+where the narrowest question was asked. Scoping the warning is the other half: a request-scoped kind
+that fires regardless of what the request touched is the failure above, and an aggregate that drew
+nothing from an inverted connection is not an aggregate computed over it | user can override]`
+
+`[DECISION: the check's unit is the CONNECTION, so an account with no connection is not judged |
+`accounts.connection_id` is nullable for FR-7's manual-import path, and no such row can exist today
+because no adapter is built. Recorded rather than left implicit because it stops being free the day
+one lands: an adapter reading a CSV signed the other way is exactly this defect on the one path the
+check does not watch, and judging imported rows needs a unit that is not a connection | user can
+override; it is a scope statement, not a mechanism]`
+
+**Not done here, and named rather than left to inference:** AC-14.5's wiring itself (chunk 04's, per
+the plan's own decision above) and AC-14.7–14.9 (the operator's, VRF-006).
+
 ### Chunk 04 · Integration
 
 Delivers: the three branches merged; **AC-14.5's wiring** — `signs`' finding reaching `money_summary`
