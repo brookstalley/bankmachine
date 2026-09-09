@@ -82,9 +82,17 @@ the AC-4.2 go-red case was **retargeted** to
 not change, only the code and the test carrying it. That case had gone stale in both halves at once,
 its anchor moved by a reformat and its test deleted by the merge.
 
-**Closes:** #18, #19, #20, #21, #24, #30, #35. **#34 stays open** — it asks for `rule-applied` to be
-emitted, and the ruling here is classify-do-not-filter, so nothing may emit it: the kind means an
-account rule filtered rows *out* of an aggregate, and this excludes nothing.
+**Closes:** #18, #19, #21, #24, #30, #35.
+
+🔴 **#20 does NOT close, and an earlier draft of this entry wrongly claimed it did.** Its Expected is
+"builds `cashflow_summary`, and gives `query_transactions` merchant/text, category and amount-range
+filters plus cursor pagination". The aggregate and the pagination landed; the three filters did not,
+so of #20's own three repro questions only two are answerable — "did I get a refund from Walmart"
+still is not, because there is no merchant or text filter to find it with.
+
+**#34 stays open** — it asks for `rule-applied` to be emitted, and the ruling here is
+classify-do-not-filter, so nothing may emit it: the kind means an account rule filtered rows *out*
+of an aggregate, and this excludes nothing.
 
 ## 2026-09-09: Where a tool's boundary is drawn
 
@@ -125,11 +133,11 @@ did not is `list_accounts` + `get_coverage_report`: same row entity, but verific
 are different domains, and the coverage signal crosses the split instead, closing #19 by
 construction.
 
-**The contract's tool table still lists ten, deliberately.** It is a load-bearing input — the
-surface guard derives the *specified* set from those rows and asserts built ⊆ specified — so
-rewriting it ahead of the code would drop `spending_summary` from the specification while it is
-still on the wire. The table, every spelled count, and the claim-site sweep move in the same
-commit as the merge.
+**The contract's tool table was left unrewritten by this entry's own commit, deliberately.** It is a
+load-bearing input — the surface guard derives the *specified* set from those rows and asserts
+built ⊆ specified — so rewriting it ahead of the code would have dropped `spending_summary` from the
+specification while it was still on the wire. The table, every spelled count, and the claim-site
+sweep moved in the same commit as the merge, which is the `mcp-answer-scope-completion` entry above.
 
 ## 2026-09-08: The MCP surface says what it is, and what to do about what it says
 

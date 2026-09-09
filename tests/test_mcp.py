@@ -667,9 +667,9 @@ def test_an_unknown_method_is_a_method_not_found(initialized_config: Config) -> 
 def test_no_tool_mutates_anything(initialized_config: Config) -> None:
     """🔴 The ratified norm: no mutation tools, and adding one is not open.
 
-    Asserted over the tool list itself rather than over the four names, so a
-    fifth tool that wrote would have to be named in this test to pass — the
-    same construction that makes the endpoint-properties test hold.
+    Asserted over the tool list itself rather than over a roster of names, so a
+    new tool that wrote would have to be named in this test to pass — the same
+    construction that makes the endpoint-properties test hold.
     """
     tools = mcp._tool_definitions()
     assert {t["name"] for t in tools} == {

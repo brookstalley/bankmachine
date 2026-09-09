@@ -37,11 +37,13 @@ Norms. These bind future work; departure is a recorded decision, never silent
 (`/prawduct:methodology norms`). The first three ratified 2026-09-07 by the owner; the
 fourth born 2026-09-09, and it is the only one carrying a migration.
 
-🔴 **Two of the three are born before the surface they govern exists** — the MCP tool layer is build
-step 7. That is deliberate and has direct precedent here: `architecture.md`'s four norms were also
-born before any code, and the point of ratifying early is that step 7 gets **built to** them rather
-than discovering them afterwards. No retroactivity decision applies, because there is nothing yet to
-migrate or grandfather.
+🔴 **The norms ratified 2026-09-07 were born before the surface they govern existed** — the MCP tool
+layer was build step 7. That is deliberate and has direct precedent here: `architecture.md`'s norms
+were also born before any code, and the point of ratifying early is that the build gets **built to**
+them rather than discovering them afterwards. No retroactivity decision applied to those, because
+there was nothing yet to migrate or grandfather. **The fourth is the exception and says so in its
+own entry:** it was born against a surface that already shipped, and it carried one migration, now
+paid.
 
 - **The MCP surface is read-only. There are no mutation tools, and adding one is not a decision this
   norm leaves open.**

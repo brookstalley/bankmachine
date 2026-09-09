@@ -11,7 +11,7 @@ Two things are derived rather than restated here, so no count and no roster of
 names lives in this file:
 
 * the **specified** set is the API contract's own tool table, which is what
-  makes "the ten" ten; and
+  decides how many there are; and
 * the **built** set is `_tool_definitions()`, which is what the wire carries.
 
 Everything else is checked against those two. Names are compared, not only
@@ -57,8 +57,9 @@ REQUIREMENTS = REPO_ROOT / "docs" / "system-requirements.md"
 DOCUMENTING_SURFACES = (README, CLIENT_GUIDE, API_CONTRACT, REQUIREMENTS)
 
 #: The contract's tool table, which is the specification and therefore the
-#: source of "the ten". Read from the section that introduces it rather than
-#: from the first table in the file, since the operator surface has tables too.
+#: source of every count spelled anywhere else. Read from the section that
+#: introduces it rather than from the first table in the file, since the
+#: operator surface has tables too.
 SPECIFICATION_TABLE = re.compile(r"### MCP tool surface.*?\n\n(\|.*?)\n\n", re.DOTALL)
 
 #: A tool name as every one of these documents writes it: in backticks, and
@@ -89,7 +90,7 @@ class Claim:
     """One place a document states which tools exist.
 
     `says` names the derived set each capture group is claiming: `built` for the
-    tools on the wire, `specified` for the ten the contract defines, `unbuilt`
+    tools on the wire, `specified` for the ones the contract defines, `unbuilt`
     for the difference. A named claim carries one group holding backticked
     names; a counted claim carries one group per number word it spells.
     """
