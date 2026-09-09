@@ -591,6 +591,272 @@ interval exists".
 
 Manually imported rows are distinguishable from aggregator-sourced rows in **every** query result.
 
+### The published field shapes
+
+The sections above argue the design; this one is the reference. **Every field the shipped tools put
+on the wire is described — here, or in a section above that already describes it.** That is not an
+aspiration: `tests/preferences/test_the_documented_wire_is_the_published_one.py` walks every
+`outputSchema` at every depth and fails on a published name this document does not carry. The guard
+checks that a name is *accounted for*, never that its description is *accurate*; accuracy is the
+Critic's, under the norms in § Direction.
+
+#### The extraction contract
+
+🔴 **These tables are the authoritative statement of row shape, and this subsection is what makes
+them machine-readable.** It exists because this document backticks tool names, warning kinds, column
+names, CLI subcommands and ordinary prose terms as well as fields — so *"a backticked token is a
+field"* is false here, and a substring sweep over the whole document cannot recover the documented
+field set. Anything reconciling documentation against the wire in the other direction reads these
+tables and nothing else:
+
+- **Authoritative tables:** every table in this section, and only these. A table elsewhere in this
+  document — the warning vocabulary, the CLI exit codes, the caps, the conventions — describes
+  something that is not a response field, and reading one as a field list is the mistake this
+  paragraph exists to prevent.
+- **How a table is recognised:** each is introduced by a bolded caption beginning with the literal
+  word **Fields**, followed by an em dash and the path of the block it describes; and each carries
+  the header row `| Field | Type | Means |`.
+- **Which column holds the name:** the first, and only the first. It holds the field's own name in
+  backticks and **nothing else** — never a path, never a parent-qualified spelling, never two names
+  in one cell. Stripping the backticks from a first cell therefore yields a field name exactly, with
+  no parsing.
+- **How a nested block is spelled:** a block gets **its own table**, whose caption carries the
+  dotted path from the response root (`coverage.not_active_balance_minor_units[]`,
+  `rows[].source_breakdown`) while its rows still hold bare names. The block also appears as a row
+  in its parent's table, typed `object` or `array of object`. So every name is written once per
+  block it occurs in, and a reader never has to take a path apart to get a field name back out.
+- **`[]` in a caption means the table describes one ELEMENT** of that array, not the array itself.
+- **One caption may name several paths** when the blocks are the same shape (`effective_window`'s
+  two halves are the clearest case). The paths are comma-separated; the rows below are the shape
+  all of them have.
+- **The same name in two different blocks is two rows in two tables**, deliberately.
+  `current_minor_units` is a balance on an account row and a per-currency subtotal inside
+  `coverage`; `transactions` is a store-wide count in `coverage` and a per-group count on a
+  `money_summary` row.
+  Collapsing either pair into one entry would document one of the two and silently imply the other.
+- **A tool named in a caption is the only tool that carries that block.** Where no tool is named,
+  the block rides every response.
+
+**What these tables deliberately do NOT state: whether a field is required.** That is the schema's
+to say, and § Direction's fourth norm already fixes it for rows — every row field is required,
+nullable where it has nothing to say, never absent. Absence carries meaning only at the envelope,
+where each case is argued in a section above (`truncation` absent means *this tool is not capped*;
+`effective_window` absent means *this tool takes no window*) rather than compressed into a column
+here.
+
+**Fields — the response root.**
+
+| Field | Type | Means |
+|---|---|---|
+| `environment` | string | which datastore answered, so a fixture cannot pass for real money |
+| `as_of` | string | when this answer was assembled, ISO-8601 UTC. Captured *after* the rows, which is what keeps the effective window from narrowing under them |
+| `build` | object | which code answered — build provenance, not an API version |
+| `warnings` | array of object | 🔴 every reason this answer is less complete than it looks. **Read before drawing a conclusion:** an answer can be perfectly well-formed and still be computed over incomplete data, which is the failure this whole surface exists to make impossible to miss. Empty is a real and common answer |
+| `coverage` | object | what the store HOLDS, which is how an empty answer is told from an empty world |
+| `rows` | array of object | the answer itself. One shape per tool, tabled below |
+| `effective_window` | object | windowed tools only (`query_transactions`, `money_summary`) |
+| `truncation` | object | capped tools only (`query_transactions`) |
+| `totals` | array of object | `money_summary` only |
+
+**Fields — `build`.**
+
+| Field | Type | Means |
+|---|---|---|
+| `version` | string | the package version this process was built from |
+| `commit` | string, nullable | the git commit it was built from. Null means the build could not be identified — and then `dirty` is null too, never `false` |
+| `dirty` | boolean, nullable | whether uncommitted changes were present in that build |
+
+**Fields — `warnings[]`.**
+
+| Field | Type | Means |
+|---|---|---|
+| `kind` | string | one value of the closed vocabulary in § *The warning vocabulary*. Tolerate one you do not recognise and surface it; the list is a minimum |
+| `detail` | string | the measured specifics of this one caveat, in a sentence |
+| `connection_id` | integer | the connection this caveat is about. Present only when it is about one — absence here is information |
+| `institution` | string | that connection's institution name, present on the same condition. It rides beside the id because an operator with ten institutions cannot act on a bare "some data is stale" |
+
+**Fields — `coverage`.**
+
+| Field | Type | Means |
+|---|---|---|
+| `connections` | integer | live connections in the store — retired ones are not counted |
+| `accounts` | integer | every account, INCLUDING the ones no longer active. Read `accounts_not_active` beside it rather than assuming this figure was filtered |
+| `accounts_not_active` | integer | how many of `accounts` are closed or no longer reported. 0 means every account is still being reported |
+| `not_active_balance_minor_units` | array of object | what those accounts contribute to any total over balances. Empty means they contribute nothing |
+| `transactions` | integer | non-removed transactions **store-wide**, never narrowed by the question asked. On a windowed answer read `transactions_in_effective_window` beside it |
+| `earliest_transaction` | string, nullable | the oldest posted date held anywhere in the store, `YYYY-MM-DD`; null when the store holds no transaction |
+| `latest_transaction` | string, nullable | the newest posted date held anywhere in the store, `YYYY-MM-DD`; null when the store holds no transaction. 🔴 Store-wide like `transactions`, so it is **not** the last date in this answer's window and a caller must not read it as one |
+| `transactions_in_effective_window` | integer | windowed tools only: how many rows the window this answer actually covered holds. Never narrowed by `account_id` — per-account coverage is its own field on the rows |
+
+**Fields — `coverage.not_active_balance_minor_units[]`.**
+
+| Field | Type | Means |
+|---|---|---|
+| `currency` | string | the currency this subtotal is in. Per currency, never one integer across currencies |
+| `current_minor_units` | integer | what the closed and no-longer-reported accounts holding this currency contribute to any total over balances, in MINOR UNITS and operator-signed. Quote it beside any balance total you report — it is the figure that lets a reader do the subtraction this surface refuses to do for them. Not the balance of any one account |
+
+**Fields — `effective_window`** *(`query_transactions`, `money_summary`)*.
+
+| Field | Type | Means |
+|---|---|---|
+| `requested` | object | the window the caller asked for, verbatim — both bounds null on an unbounded request. It is kept beside `effective` so that a clamp is *visible* rather than something the caller has to infer from a figure that came back smaller than expected |
+| `effective` | object | the window the answer was actually computed over. Both bounds null means the window asked for and the data this store holds do not overlap |
+
+**Fields — `effective_window.requested`, `effective_window.effective`.**
+
+| Field | Type | Means |
+|---|---|---|
+| `since` | string, nullable | the window's inclusive start, `YYYY-MM-DD` |
+| `until` | string, nullable | the window's inclusive end, `YYYY-MM-DD` |
+
+**Fields — `truncation`** *(`query_transactions`)*.
+
+| Field | Type | Means |
+|---|---|---|
+| `returned` | integer | rows actually in this payload, counted from the rows themselves rather than from the caller's `limit` |
+| `matching` | integer | rows the request selects, over the same predicates and tables as the row query. Floors at `returned` |
+| `truncated` | boolean | `returned < matching`, derived rather than stored |
+| `next_cursor` | string | opaque state to pass back as `cursor` for the next page. Present when and only when `truncated` is true, so its presence is the loop condition |
+
+**Fields — `rows[]`** *(`list_accounts`)*.
+
+| Field | Type | Means |
+|---|---|---|
+| `account_id` | integer | this store's own id for the account, and the value `query_transactions(account_id=…)` takes. Opaque — it is not the institution's id |
+| `institution` | string | the institution's name as this store records it. A display name, never a key: two connections at one institution share it, so it identifies nothing on its own |
+| `name` | string | the account's own name, as the institution reports it. Operator-facing text — it can change under a caller and is not an identifier |
+| `mask` | string, nullable | the last four digits of the account number, and 🔴 **the only fragment of an account number stored anywhere in this product**. Null when the institution reports none |
+| `type` | string | the account's kind — 🔴 **in the SOURCE's vocabulary, retained verbatim and not normalised.** Two aggregators would spell the same kind differently, and translating would invent a value nobody reported. Do not branch arithmetic on it: `balance_class` is the field that carries whether the balance is owned or owed |
+| `subtype` | string, nullable | the source's finer classification, on the same terms; null when it reports none |
+| `balance_class` | string | `asset` or `liability` — this store's own classification of which way the balance points, operator-correctable and the field a report partitions on |
+| `current_minor_units` | integer, nullable | the latest recorded balance, in MINOR UNITS and operator-signed, so a card balance is negative. Null when no balance has ever been recorded for the account. 🔴 Read it with `lifecycle`: on a non-active account this figure is FROZEN and is not a fact about today |
+| `currency` | string, nullable | the currency that balance is in; null on the same condition as the balance |
+| `balance_as_of` | string, nullable | the date of the balance snapshot `current_minor_units` came from, `YYYY-MM-DD`; null when there is none. 🔴 It is a property of the BALANCE, not of the answer — `as_of` on the envelope says when the answer was assembled, and on a stale or non-active account the two are far apart. That distance is the whole signal |
+| `first_transaction_date` | string, nullable | the oldest transaction recorded for this account, `YYYY-MM-DD`. 🔴 Null means NO TRANSACTION HAS EVER BEEN RECORDED, never "no activity" |
+| `last_transaction_date` | string, nullable | the newest transaction recorded for this account, `YYYY-MM-DD`; null on the same condition |
+| `transaction_count` | integer | how many transactions this store holds for the account. `0` rather than null, because a null here would be a second spelling of the same fact |
+| `lifecycle` | string | `active`, `closed`, or `no_longer_reported` — see § *A classifying tool carries `totals`* and FR-9. `no_longer_reported` names an OBSERVATION and not a closure; `closed` is the operator's own declaration and is the only value that asserts one |
+| `closed_date` | string, nullable | when the operator recorded this account as closed; null when none has been recorded, **including** for an account that is merely no longer reported |
+| `last_seen_in_roster` | string, nullable | the date this account was last listed by its institution; null for an import-only account, which has no roster behind it. A DIFFERENT fact from `last_transaction_date` and often a much later one — neither may be derived from the other |
+| `roster_last_observed` | string, nullable | the date this account's institution's roster was last successfully observed; null for an import-only account. Read against `last_seen_in_roster`: the two being equal is what makes an account `active`, and the earlier one is the whole derivation of `no_longer_reported`, so the verdict can be re-derived from the row without a second call |
+
+**Fields — `rows[]`** *(`query_transactions`)*.
+
+| Field | Type | Means |
+|---|---|---|
+| `transaction_id` | integer | this store's own id for the transaction. Opaque, and the id `get_coverage_report`'s `oldest_stranded_hold` names when it points at one |
+| `account` | string | the NAME of the account the transaction is on, not its id. 🔴 It is display text and not a key — filter with the `account_id` argument, which is what selects rows; two accounts can carry the same name and this field would not tell them apart |
+| `date` | string | the transaction's posted date, `YYYY-MM-DD`. A CALENDAR FACT and never an instant (§ Conventions), and the field the effective window is applied to. Every returned row's `date` lies inside `effective_window.effective` |
+| `description` | string | the institution's own string for the transaction, and 🔴 **the authoritative one.** When it and `merchant` disagree, this is the one that came from the bank |
+| `merchant` | string, nullable | the aggregator's guess at a merchant name, 🔴 **unvalidated** — it is a normalisation the aggregator performed and this product did not check. Null when it offered none. Grouping `money_summary` by merchant falls back to `description` where this is null |
+| `amount_minor_units` | integer | the amount in MINOR UNITS, signed from the account holder's point of view: negative is money out |
+| `currency` | string | the currency the amount is in |
+| `pending` | boolean | this row is an authorisation hold that has not settled. A pending amount can settle at a different figure or expire without settling, so a total computed over these rows can move with no new activity — which is what `includes_pending_rows` warns about |
+| `category` | string, nullable | the category this transaction is filed under: 🔴 **the operator's override where one exists, and the source's category otherwise.** Read `category_is_override` beside it to know which you are looking at. Null when neither exists |
+| `category_is_override` | boolean | whether `category` came from the operator rather than from the source. It matters beyond provenance: `flow_class` on `money_summary` is fixed to read the SOURCE category only, so an overridden row can be grouped under one category and classed as though it were under another — and that is deliberate, because a re-categorisation must not be able to reclassify a transfer as spending |
+
+**Fields — `rows[]`** *(`money_summary`)*.
+
+| Field | Type | Means |
+|---|---|---|
+| `group_key` | string | the group this row is for, 🔴 **always a string whatever the grouping** — an account id rendered as text under `group_by=account`, a `YYYY-MM` month under `month`, the category or merchant name under those, and the flow class itself under `flow_class`. It is the key to act on: under `account` it is the value `query_transactions(account_id=…)` takes, once read as an integer |
+| `group_label` | string | the same group, named for reading. Equal to `group_key` under every grouping except `account`, where the key is the id and the label is the account's name. Never a second key — two accounts can share a label |
+| `currency` | string | the currency this row's figures are in. Rows are per currency, because a figure summed across currencies is not a wrong number, it is not a number |
+| `flow_class` | string | `external_spend`, `internal_transfer` or `debt_service` — a GROUPING DIMENSION under every value of `group_by`, so one month or one account can return up to three rows. Read from the source category only, never from an override |
+| `transactions` | integer | how many transactions this group holds. 🔴 A per-group count, and a different figure from `coverage.transactions`, which is store-wide and never narrowed by the question asked |
+| `inflow_minor_units` | integer | money IN over this window for this group, 🔴 **a POSITIVE MAGNITUDE** in minor units — not operator-signed. The sign convention is carried by `net_minor_units`; these two are the halves it is made of |
+| `outflow_minor_units` | integer | money OUT over this window for this group, likewise a positive magnitude. It is the figure the `totals` block decomposes by flow class |
+| `net_minor_units` | integer | `inflow_minor_units` minus `outflow_minor_units`, signed from the account holder's point of view: negative is money lost over the window |
+| `pending_transactions` | integer | how many of this group's rows are authorisation holds that have not settled. `0` is a real answer and the key is always present |
+| `pending_net_minor_units` | integer | the part of `net_minor_units` that is NOT settled money, signed the same way. A hold can settle at a different figure or expire without settling, so this is how far this row can move with no new activity at all. 🔴 Never quote a group as money spent without saying what part of it is this |
+
+**Fields — `totals[]`** *(`money_summary`)*.
+
+| Field | Type | Means |
+|---|---|---|
+| `currency` | string | the currency this entry's figures are in. One entry per currency, never one integer across currencies |
+| `external_spend_outflow_minor_units` | integer | 🔴 **the figure to quote when asked what was spent.** Money that actually left the household, as a positive magnitude in minor units |
+| `internal_transfer_outflow_minor_units` | integer | outflow that only moved between the holder's own accounts, a positive magnitude. It never left, so adding it to spending overstates spending — on the sandbox store it is the larger part of the gap measured in § *A classifying tool carries `totals`* |
+| `debt_service_outflow_minor_units` | integer | outflow that serviced a debt, a positive magnitude. It settles purchases already counted under the categories they were spent in, so adding it to spending double-counts them |
+| `pending_transactions` | integer | how many of the rows behind these totals are authorisation holds that have not settled. `0` is a real answer |
+| `pending_net_minor_units` | integer | what those holds come to, SIGNED — the amount these totals could move by when the holds settle or expire, with no new activity at all |
+| `expired_holds` | integer | holds in this window that were withdrawn without ever posting. 🔴 They are EXCLUDED from every figure here, so a total that shrank against an earlier answer is explained by this rather than by missing data |
+| `expired_holds_net_minor_units` | integer | what those withdrawn holds came to, signed — the amount that left these totals by expiring |
+| `settled_from_hold` | integer | rows in this window whose amount arrived by settling an earlier hold. A settlement may differ from the hold, so these are the rows whose contribution *changed* rather than appeared — which is why they are counted apart from `expired_holds` rather than with them |
+| `settled_from_hold_net_minor_units` | integer | what those settled rows come to, signed |
+
+🔴 **The three outflow figures add up to the window's total outflow in that currency, and that
+identity is the contract** — it is what proves the classification *partitions* the rows rather than
+quietly dropping some. Summing all three as "spending" is the error the decomposition exists to
+prevent.
+
+**Fields — `rows[]`** *(`get_pipeline_health`)*.
+
+One row per connection, retired ones included, and 🔴 **a row is returned even when everything is
+fine** — "healthy" is an answer, and an empty result would be indistinguishable from a broken query.
+
+| Field | Type | Means |
+|---|---|---|
+| `connection_id` | integer | this store's own id for the connection, and the id a warning names in its own `connection_id` |
+| `institution` | string | the institution this connection is to. A display name, not a key — a retired connection and its live replacement at the same institution share it |
+| `status` | string | `active`, `degraded`, or `retired`. 🔴 `degraded` means the LAST sync attempt failed and nothing has succeeded since — read `last_success_at` beside it for how long that has been true, because `degraded` alone does not distinguish an hour from a month |
+| `last_success_at` | string, nullable | when this connection last completed a sync run in full, ISO-8601 UTC; null when it never has. 🔴 It advances only on a COMPLETE run: a run that fetched pages successfully and stopped mid-history clears the error state without moving this, because this is the field the staleness warning reads and advancing it would report a connection current while it is behind |
+| `last_error_code` | string, nullable | the aggregator's own code for the most recent failure, null when the last attempt succeeded. It is the aggregator's vocabulary and not this product's, so treat an unrecognised value as a value rather than as a defect |
+| `requested_history_days` | integer, nullable | how many days of history was asked for when this connection was enrolled; null when nothing was requested. Read `granted_history_days` against it — the shortfall between them is a known gap, not an absence of data |
+| `granted_history_days` | integer, nullable | how many days the institution actually granted, measured from the oldest transaction it returned. 🔴 Null means NOT YET MEASURED, never "no shortfall" |
+| `history_starts` | string, nullable | the oldest date this connection's history reaches back to, `YYYY-MM-DD`; null before any history has been measured. It is the date `granted_history_days` was counted from, so it answers "how far back can I ask?" without arithmetic |
+| `retired` | boolean | this connection has been retired: it is no longer synced, its history is kept, and it was removed at the aggregator. 🔴 Its accounts and transactions are still in every figure this surface reports, so a retired connection's rows are history rather than absence — and its `last_success_at` will never advance again |
+| `sign_convention` | string | `consistent`, `inverted`, or `undetermined` — whether this connection's stored amounts point the way the rest of the store's do, measured over categories that are never plausibly money arriving. 🔴 `undetermined` means NOT CHECKED, never "fine". An `inverted` connection is reported and never corrected |
+| `sign_convention_rows_judged` | integer | rows the verdict was computed over: this connection's non-removed transactions in those categories with a non-zero amount. Under 8 the verdict is `undetermined` |
+| `sign_convention_rows_positive` | integer | how many of those are stored positive. `0` is the conforming reading; equal to `sign_convention_rows_judged` is a wholly inverted feed. The counts ride beside the verdict because a verdict with no evidence under it is a claim the reader must take on faith, and this check's subject is a claim that was taken on faith once already |
+
+**Fields — `rows[]`** *(`get_coverage_report`)*.
+
+One row per account. It is built on the **same producer** as `list_accounts`' rows — the first nine
+fields are that row's identity and lifecycle, restated here so a verification answer is readable
+without a second call — and carries the analysis `list_accounts` does not.
+
+| Field | Type | Means |
+|---|---|---|
+| `account_id` | integer | this store's own id for the account, as on a `list_accounts` row |
+| `account` | string, nullable | the account's own name — the SAME field name as on a `query_transactions` row and the same kind of value: display text, not a key. 🔴 It is typed nullable here where the `list_accounts` row's `name` is not, and the null is **not reachable today**: the stored column is `NOT NULL` and this tool reports on exactly the accounts it is read from. The nullability is the producer's defensiveness rather than a state a consumer can meet, and it is recorded that way rather than given a reason it does not have. Identify the account by `account_id` beside it |
+| `first_transaction_date` | string, nullable | as on a `list_accounts` row: null means NO TRANSACTION HAS EVER BEEN RECORDED, never "no activity" |
+| `last_transaction_date` | string, nullable | as on a `list_accounts` row |
+| `transaction_count` | integer | as on a `list_accounts` row; `0` is a real answer |
+| `lifecycle` | string | as on a `list_accounts` row: `active`, `closed`, or `no_longer_reported` |
+| `closed_date` | string, nullable | as on a `list_accounts` row |
+| `last_seen_in_roster` | string, nullable | as on a `list_accounts` row |
+| `roster_last_observed` | string, nullable | as on a `list_accounts` row |
+| `median_interval_days` | number, nullable | this account's own posting cadence in days; null under two transactions, because no interval exists rather than because it posts daily. `0` is a real answer and means the opposite of null: the account posts more than once a day |
+| `days_silent` | integer, nullable | days since the last recorded transaction; null when there is none |
+| `silence_ratio` | number, nullable | `days_silent` against this account's own cadence, the divisor floored at one day. A NUMBER rather than a flag on purpose: 28 days silent on a 30-day cycle is genuinely borderline, and a boolean is what would hide that |
+| `silence_exceeds_cadence` | boolean | a full posting cycle has been missed (ratio above 1) by an account still being reported. 🔴 Always false for a non-active account, whose silence is closure rather than a hole — `silence_ratio` beside it still carries the measurement, so nothing is hidden |
+| `stranded_holds` | integer | authorisation holds on this account still unsettled past any ordinary hold lifetime. Present and `0`, never omitted. A hold this old usually means the merchant never captured it, so the money is neither spent nor available |
+| `oldest_stranded_hold` | object, nullable | the worst of them, so the operator can go and look at it; null when there are none, and 🔴 also null for a non-active account, whose holds can never settle and can never be cleared. `stranded_holds` beside it still carries the count, so the measurement is not withheld — only the call to action nobody could answer |
+| `source_breakdown` | object | this account's rows by provenance |
+
+**Fields — `rows[].oldest_stranded_hold`** *(`get_coverage_report`)*.
+
+| Field | Type | Means |
+|---|---|---|
+| `transaction_id` | integer | the hold's id, as `query_transactions` reports it — the id and the age travel together because the operator's next move is to go and look at the transaction |
+| `posted_date` | string, nullable | the date the hold was placed, `YYYY-MM-DD`; null when the store holds none for it |
+| `days_pending` | integer | how long it has been pending, in days |
+| `amount_minor_units` | integer | the hold's amount, in minor units and operator-signed |
+| `currency` | string | the currency that amount is in |
+
+**Fields — `rows[].source_breakdown`** *(`get_coverage_report`)*.
+
+🔴 **Provenance is exclusive and total** — every stored row has exactly one of these two sources, so
+the two counts sum to a figure over the account's rows and neither is a subset of the other. AC-7.4
+requires that manually imported rows stay distinguishable from aggregator-sourced ones in every
+result; this block is where that survives onto the verification surface.
+
+| Field | Type | Means |
+|---|---|---|
+| `aggregator` | integer | rows for this account that arrived through a connection's sync. Present and `0` rather than omitted, so `0` cannot be confused with unknown |
+| `manual` | integer | rows for this account that were imported by the operator rather than fetched. Present and `0` on the same terms. 🔴 A non-zero count here on an account whose connection is silent is the case where `days_silent` is measuring the operator's habits rather than the institution's |
+
 ### Pagination and caps
 
 | | Value |

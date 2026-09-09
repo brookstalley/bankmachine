@@ -67,102 +67,39 @@ def _published_field_names() -> set[str]:
     return found
 
 
-#: 🔴 **A debt, recorded as data so it can only shrink.** These field names are
-#: published on a tool's `outputSchema` and are not written in backticks anywhere
-#: in `api-contract.md` today. That is a real gap and it long predates the guard;
-#: this set IS the measurement, taken on 2026-09-09 when the check was first run
-#: over the shipped surface. Its size is `len(UNDOCUMENTED_AT_FREEZE)` and is not
-#: written out here, because the whole point is that the number falls.
-#:
-#: 🔴 **It is frozen at that measurement on purpose, and the freezing is the
-#: point.** Documenting all of them is its own work item and does not belong in
-#: the change that discovered them -- but a guard that waited for that work would
-#: not exist, and the drift it exists to stop would keep happening in the
-#: meantime. So the guard ships now with the backlog held still: a NEW field
-#: cannot join this set, and the test below refuses an entry that has since been
-#: documented, so the list cannot quietly become a place to hide things.
-#:
-#: Removing a name from here is the documentation landing. Adding one is not a
-#: thing to do: if a new field genuinely cannot be documented, that is a finding,
-#: not an entry.
-UNDOCUMENTED_AT_FREEZE: frozenset[str] = frozenset(
-    {
-        "account",
-        "aggregator",
-        "balance_as_of",
-        "category",
-        "category_is_override",
-        "commit",
-        "current_minor_units",
-        "date",
-        "debt_service_outflow_minor_units",
-        "description",
-        "group_key",
-        "group_label",
-        "history_starts",
-        "inflow_minor_units",
-        "institution",
-        "internal_transfer_outflow_minor_units",
-        "last_error_code",
-        "last_success_at",
-        "latest_transaction",
-        "manual",
-        "mask",
-        "merchant",
-        "name",
-        "net_minor_units",
-        "outflow_minor_units",
-        "requested",
-        "requested_history_days",
-        "retired",
-        "subtype",
-        "transactions",
-        "transactions_in_effective_window",
-        "type",
-        "version",
-        "warnings",
-    }
-)
-
-
-def test_no_newly_published_field_escapes_the_api_contract() -> None:
+def test_every_published_field_is_described_in_the_api_contract() -> None:
     """🔴 The wire cannot grow past the document that is supposed to define it.
 
-    Scoped to what is NEW rather than to everything, because everything is a
-    backlog and this is a ratchet. The frozen set above holds the debt still;
-    anything outside it is a field this change added without describing.
+    Unconditional since 2026-09-09: it compares EVERY published name against the
+    contract, with no exemption set beside it. It did not start that way. It
+    shipped as a ratchet -- a frozen set of 34 names measured on the shipped
+    surface the day the walk was first run over it, which a new field could not
+    join and which a later documented name could not linger in. That set is now
+    empty and gone, and its two pawls with it.
+
+    The shape is worth keeping in view rather than only the outcome, because it
+    is what let the guard exist before the work it demanded was done: a check
+    that had waited for 34 descriptions would not have been holding the line
+    during the cycle in which they were written, and the drift it exists to stop
+    happened twice in one cycle before it existed.
+
+    🔴 There is no exemption set to add a name to any more, and reintroducing one
+    is not the way past a failure here. A field that genuinely cannot be
+    described is a finding about the field.
     """
     published = _published_field_names()
     contract = CONTRACT.read_text(encoding="utf-8")
 
     assert published, "no properties were read from any outputSchema; this guard covers nothing"
 
-    undocumented = {name for name in published if f"`{name}`" not in contract}
-    new = sorted(undocumented - UNDOCUMENTED_AT_FREEZE)
+    undocumented = sorted(name for name in published if f"`{name}`" not in contract)
 
-    assert not new, (
-        f"{new} are published on a tool's outputSchema and appear nowhere in "
+    assert not undocumented, (
+        f"{undocumented} are published on a tool's outputSchema and appear nowhere in "
         f"{CONTRACT.name}. A field a consumer is never told about is one it never learns to "
         f"read, which is this product's own thesis applied one layer out from the payload. "
-        f"Describe it in the contract -- do not add it to UNDOCUMENTED_AT_FREEZE"
-    )
-
-
-def test_the_frozen_debt_holds_no_name_that_is_now_documented() -> None:
-    """🔴 The ratchet's other pawl: the list may shrink and may not go stale.
-
-    Without this, a name could be documented and left listed, and the set would
-    slowly stop describing anything -- an exemption list nobody prunes is how a
-    guard's scope quietly shrinks to nothing. Failing here is good news: it means
-    somebody wrote the documentation and only has to delete a line.
-    """
-    contract = CONTRACT.read_text(encoding="utf-8")
-
-    now_documented = sorted(n for n in UNDOCUMENTED_AT_FREEZE if f"`{n}`" in contract)
-
-    assert not now_documented, (
-        f"{now_documented} are now described in {CONTRACT.name} and can be deleted from "
-        f"UNDOCUMENTED_AT_FREEZE; leaving them listed lets the exemption outlive its reason"
+        f"Describe it in the contract -- § The published field shapes is where the row tables "
+        f"live, and its extraction contract says how a name is spelled there"
     )
 
 
