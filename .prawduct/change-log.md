@@ -74,6 +74,10 @@ surviving inside FR-9.
   either newly-populated column, so `store rebuild` — the remedy the upgrade procedure prescribes —
   would have rolled back with `RebuildNotReproducibleError` on exactly the store it is written for.
 
+**Verification:** the go-red harness holds **171 cases, every one seen red** — 8 for the roster
+observation, one each for the retired-connection clause, AC-12.6's no-verdict clause, and the
+derivation-version bump. Suite 980.
+
 **Upgrading:** migration 004 is additive, nullable and forward-only, and it opens a window 003 did
 not. Accounts that a pre-004 store already reported absent read `active` again until their
 connection's next successful sync — and for a connection that never syncs again, **until an operator

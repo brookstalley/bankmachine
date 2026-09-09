@@ -192,7 +192,9 @@ frozen balance with no warning** — FR-9's own failure, restored for the length
 never syncs successfully again — login required, never re-linked — **it never closes on its own, and
 that is exactly the connection whose absent accounts matter most.**
 
-🔴 **So run `bankmachine store rebuild` after step 5 if any connection is not syncing.** It replays
+🔴 **So run `bankmachine store rebuild` after step 5 if any connection is not syncing** — and
+`bankmachine connections list` is how you tell, since at this point in the procedure the MCP client
+is disconnected and the agent unloaded, so `get_pipeline_health` cannot answer it. It replays
 every archived `/accounts/get` through the accounts deriver, which populates the column from the
 same responses the original observation came from. Expect it to report a content change:
 `content_digest` walks every table, `connections` included. This is the remedy; it existed before
