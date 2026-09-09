@@ -316,7 +316,7 @@ and committed, and AC-13.2 and AC-13.3 are re-asserted against them.
 
 **AC-14.1 · The convention is a per-feed claim and is stated as one.** The operator-signed
 convention rests on a measured premise about **one** aggregator on **one** connection
-(`api-notes-plaid.md` §16). `data-model.md` § Direction records it as a claim whose scope is
+(`api-notes-plaid.md` §17). `data-model.md` § Direction records it as a claim whose scope is
 per-connection, so a second institution is a new observation rather than a covered case.
 
 **AC-14.2 · Per-connection sign-convention check.** Over a declared set of never-plausibly-inflow
@@ -539,7 +539,7 @@ leads with. **My job is to say what it does not cover, not to restate it.** Prop
 
 > **Scope (2026-09-09, proposed).** The negation this norm rests on is **unconditional** — every
 > aggregator amount is negated on the way in — and the premise it rests on is measured on **one
-> aggregator, one connection** (`api-notes-plaid.md` §16). The norm is therefore a per-feed claim:
+> aggregator, one connection** (`api-notes-plaid.md` §17). The norm is therefore a per-feed claim:
 > a second institution is a new observation, not a covered case. AC-14.2's per-connection check is
 > the mechanism; until it has run across two institutions the norm holds for one feed only.
 
@@ -556,10 +556,19 @@ leads with. **My job is to say what it does not cover, not to restate it.** Prop
 > seen a pending row and does not disclose one. **Item 7:** normalization is an *unconditional*
 > negation with no branch, and the sandbox already exercises it in the inflow direction 49 times; the
 > genuinely blocked claim is narrower and is that the sandbox is **single-connection**, so a
-> per-connection sign check cannot run at all. 🔴 **And the ordering in this list is misleading as
-> written:** both items' closure requires production data to already be connected, so they gate
-> *trusting a current-period figure*, not *connecting*. Full derivation, proposed requirements and
-> proposed gates: `.prawduct/artifacts/discovery-production-data-semantics.md`.
+> per-connection sign check cannot run at all. On ordering, this block already draws the
+> connect-vs-trust distinction one sentence above, and that sentence is correct as written; what is
+> left implicit is that the **numbered list** above it still reads as preconditions to *connecting*.
+> Full derivation, proposed requirements and proposed gates:
+> `.prawduct/artifacts/discovery-production-data-semantics.md`.
+>
+> 🔴 **This paragraph has a second proposed correction, from
+> `discovery-account-lifecycle.md`, covering item 6.** The two are complementary and must be applied
+> as one edit: that one shows item 6 is a population path plus a migration rather than a read-path
+> change, and that it is closable *before* production data because a shrinking roster replays from
+> the archive. Item 6 being the buildable one and items 5 and 7 being partly buildable are not in
+> tension — 5 and 7 have build-side criteria that gate on nothing, and gating criteria that cannot
+> close until real data is connected.
 
 ### 6. `.prawduct/operator-verification.md` — two new entries
 

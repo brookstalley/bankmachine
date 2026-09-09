@@ -562,7 +562,7 @@ not a gap"* and is the gate `get_coverage_report` is audited against. Two option
 above, verbatim. `tests/preferences/test_requirement_ids_unique.py` greps `**AC-` headers; AC-12 is
 unused today, verified.
 
-**Anchor — under AC-6.5** (line 320-ish, immediately after the existing paragraph), append:
+**Anchor — under AC-6.5** (line 296, immediately after the existing paragraph), append:
 
 > **Amendment (proposed, 2026-09-09).** This lifecycle has never had a transition. `lifecycle_status`
 > is written once, to `active`, by the accounts deriver, and no code path and no operator command has
@@ -678,6 +678,14 @@ second does not.** Proposed appended correction:
 > not a read path. The "buildable now" half stands, and stands more firmly than the rest of this list
 > knew: unlike #22 and #23, this one is exercisable in-repo by replaying two archived roster
 > observations, so it can be closed before production data exists.
+>
+> 🔴 **This paragraph has a second proposed correction, from
+> `discovery-production-data-semantics.md`, covering items 5 and 7.** The two are complementary and
+> must be applied as one edit. Read together they say: item 6 is the only one closable before
+> production data, *and* items 5 and 7 are narrower than this list states — each has build-side
+> criteria that gate on nothing and only a gating tail that needs real data. "The buildable member
+> of the remaining three" is a claim about closure, not about whether any work can start on the
+> other two, and it should not be applied in a form that reads as the latter.
 
 ### 5. `.prawduct/artifacts/discovery-mcp-answer-scope.md` — C2's undischarged entanglement
 
