@@ -429,3 +429,22 @@ def test_an_unreadable_store_still_carries_an_empty_totals_block(config: Config)
     wire = _wire(config)
     assert wire["totals"] == []
     assert [w["kind"] for w in wire["warnings"]] == ["partial"]
+
+
+def test_a_window_that_holds_no_money_carries_an_empty_totals_block(
+    initialized_config: Config,
+) -> None:
+    """The empty-window path is a different one from the unreadable-store path.
+
+    🔴 An empty list rather than three zeroes, because with no rows there is no
+    CURRENCY to report them in — and inventing a USD zero would be this surface
+    asserting a fact about a store it just told you it read nothing from. The
+    key is still present: a caller branching on it learns the tool classifies
+    money, and the `window_starts_before_coverage` warning beside it is what
+    says why there is none.
+    """
+    _seed_every_flow_class(initialized_config)
+    wire = _wire(initialized_config, since="2001-01-01", until="2001-12-31")
+    assert wire["rows"] == []
+    assert wire["totals"] == []
+    assert wire["warnings"], "an empty answer must say why it is empty"

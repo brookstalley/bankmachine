@@ -68,7 +68,7 @@ creates one, because an empty encrypted store would answer every question with a
 |---|---|
 | `list_accounts` | every account with its latest recorded balance |
 | `query_transactions` | transactions in a date window, newest first |
-| `money_summary` | money in and out over a window, grouped by category, merchant, account or month |
+| `money_summary` | money in and out over a window, grouped by category, merchant, account, month or flow class — split by flow class under every grouping, and carrying the totals block described below |
 | `get_pipeline_health` | every connection, when it last synced, what is wrong |
 | `get_coverage_report` | per account: what data exists, and how long it has been silent |
 
@@ -96,8 +96,17 @@ uncommitted changes, so the commit alone does not describe it.
 
 
 Every response carries `environment`, `as_of`, `build`, `coverage`, `warnings` and `rows`. A
-**windowed** tool also carries `effective_window`; a **capped** tool also carries `truncation`.
-Absence of either key means that tool takes no window, or returns every row it finds.
+**windowed** tool also carries `effective_window`; a **capped** tool also carries `truncation`; a
+**classifying** tool also carries `totals`. Absence of a key means that tool takes no window,
+returns every row it finds, or does not classify the money it reports.
+
+🔴 **`totals` is the one to read before quoting a spending figure.** `money_summary` splits every
+row by `flow_class` — `external_spend`, `internal_transfer`, `debt_service` — and `totals` carries
+the window's outflow under each, one entry per currency. Only `external_spend_outflow_minor_units`
+is spending: a transfer between the holder's own accounts never left, and a card payment settles
+purchases already counted under the categories they were spent in. The three sum to the window's
+total outflow, which is how you check them against the rows. Over the sandbox store the raw total
+is five times the money that actually went out the door.
 
 The server's own `instructions` are the authority on that list — a test holds them against the union
 of every tool's live envelope and against the warning vocabulary, so they cannot fall behind the
