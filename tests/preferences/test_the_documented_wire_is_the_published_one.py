@@ -88,12 +88,7 @@ def _published_field_names() -> set[str]:
 UNDOCUMENTED_AT_FREEZE: frozenset[str] = frozenset(
     {
         "aggregator",
-        "history_starts",
-        "last_error_code",
-        "last_success_at",
         "manual",
-        "requested_history_days",
-        "retired",
     }
 )
 

@@ -789,6 +789,26 @@ identity is the contract** — it is what proves the classification *partitions*
 quietly dropping some. Summing all three as "spending" is the error the decomposition exists to
 prevent.
 
+**Fields — `rows[]`** *(`get_pipeline_health`)*.
+
+One row per connection, retired ones included, and 🔴 **a row is returned even when everything is
+fine** — "healthy" is an answer, and an empty result would be indistinguishable from a broken query.
+
+| Field | Type | Means |
+|---|---|---|
+| `connection_id` | integer | this store's own id for the connection, and the id a warning names in its own `connection_id` |
+| `institution` | string | the institution this connection is to. A display name, not a key — a retired connection and its live replacement at the same institution share it |
+| `status` | string | `active`, `degraded`, or `retired`. 🔴 `degraded` means the LAST sync attempt failed and nothing has succeeded since — read `last_success_at` beside it for how long that has been true, because `degraded` alone does not distinguish an hour from a month |
+| `last_success_at` | string, nullable | when this connection last completed a sync run in full, ISO-8601 UTC; null when it never has. 🔴 It advances only on a COMPLETE run: a run that fetched pages successfully and stopped mid-history clears the error state without moving this, because this is the field the staleness warning reads and advancing it would report a connection current while it is behind |
+| `last_error_code` | string, nullable | the aggregator's own code for the most recent failure, null when the last attempt succeeded. It is the aggregator's vocabulary and not this product's, so treat an unrecognised value as a value rather than as a defect |
+| `requested_history_days` | integer, nullable | how many days of history was asked for when this connection was enrolled; null when nothing was requested. Read `granted_history_days` against it — the shortfall between them is a known gap, not an absence of data |
+| `granted_history_days` | integer, nullable | how many days the institution actually granted, measured from the oldest transaction it returned. 🔴 Null means NOT YET MEASURED, never "no shortfall" |
+| `history_starts` | string, nullable | the oldest date this connection's history reaches back to, `YYYY-MM-DD`; null before any history has been measured. It is the date `granted_history_days` was counted from, so it answers "how far back can I ask?" without arithmetic |
+| `retired` | boolean | this connection has been retired: it is no longer synced, its history is kept, and it was removed at the aggregator. 🔴 Its accounts and transactions are still in every figure this surface reports, so a retired connection's rows are history rather than absence — and its `last_success_at` will never advance again |
+| `sign_convention` | string | `consistent`, `inverted`, or `undetermined` — whether this connection's stored amounts point the way the rest of the store's do, measured over categories that are never plausibly money arriving. 🔴 `undetermined` means NOT CHECKED, never "fine". An `inverted` connection is reported and never corrected |
+| `sign_convention_rows_judged` | integer | rows the verdict was computed over: this connection's non-removed transactions in those categories with a non-zero amount. Under 8 the verdict is `undetermined` |
+| `sign_convention_rows_positive` | integer | how many of those are stored positive. `0` is the conforming reading; equal to `sign_convention_rows_judged` is a wholly inverted feed. The counts ride beside the verdict because a verdict with no evidence under it is a claim the reader must take on faith, and this check's subject is a claim that was taken on faith once already |
+
 ### Pagination and caps
 
 | | Value |
