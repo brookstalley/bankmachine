@@ -602,7 +602,7 @@ three-week-old hole in the data and answer confidently.
 | `accounts_without_coverage` | An account in the scope of THIS request has never had a transaction recorded, so its empty result means data not present, never no activity |
 | `account_no_longer_active` *(declared; no emitter yet)* | An account in the scope of THIS request is closed or is no longer listed by its institution, so its balance is frozen as of the date beside it and is not a fact about today |
 | `includes_pending_rows` *(declared; no emitter yet)* | This answer's rows include authorisation holds that have not settled, so a figure computed from it may change without any new activity |
-| `sign_convention_unverified` *(declared; no emitter yet)* | This answer draws on a connection whose sign convention has not been observed against a known inflow, so its direction is assumed rather than confirmed |
+| `sign_convention_unverified` | This answer draws on a connection whose stored sign distribution was measured and found INVERTED relative to the operator-signed convention, so its amounts run the wrong way. 🔴 It does not fire for a merely unconfirmed connection — see the note below the table |
 
 🔴 **The window/row/account kinds below the line are REQUEST-scoped; the connection kinds above them
 are CONNECTION-scoped, and the distinction is the reason they exist.** A connection-scoped warning describes the standing state of the pipeline,
@@ -619,6 +619,33 @@ therefore connection-scoped — but a fifth kind riding every response equally w
 defect the paragraph above records. It fires only when *this* request's scope actually contains an
 uncovered account: on `list_accounts` when the listing holds one, and on
 `query_transactions(account_id=N)` when the account asked about has none.
+
+🔴 **`sign_convention_unverified` fires on a MEASURED inversion, not on the absence of a
+verification — and its name is the weaker of the two readings.** The name was fixed by a discovery
+pass before the check was designed, and the check that shipped is narrower than the name suggests:
+it reports a connection whose stored sign distribution was measured and found inverted, not every
+connection whose direction the operator has yet to confirm against a known deposit (AC-14.7). The
+narrow reading was chosen and the name kept, for three reasons worth recording so the tension is not
+rediscovered as a bug.
+
+First, the broad reading is the `gapped` failure again. Until AC-14.7 is performed no connection has
+been confirmed against a known inflow, so a warning on that condition would ride nearly every answer
+this product gives, character-for-character identical — true, and useless for telling a caller
+whether *this* answer is the affected one, which is the defect `envelope.py`'s two-tuple split exists
+to prevent.
+
+Second, the unconfirmed-but-not-inverted state **is** disclosed; it is disclosed on the right
+surface. Every connection's verdict — `consistent`, `inverted`, or `undetermined` where there is too
+little to judge — is published per connection on `get_pipeline_health`. That is the verification
+domain, and "we have not established this yet" is a verification answer. A warning riding an analysis
+aggregate is for something that changes how *this* figure should be read.
+
+Third, the name still tells a consumer the right thing to do, which is what a `kind` is for: do not
+trust this connection's direction. The measured specifics ride `detail`, and the guidance served at
+`warnings://reference` states the inversion explicitly. **Renaming remains open and is cheap** — no
+consumer exists, and new codes are additive under the evolution rule below — but it is a contract
+decision rather than a cleanup, and it should be taken with AC-14.7's result in hand rather than
+before it.
 
 🔴 **This table is prose and `envelope.WARNING_KINDS` is the code, and since 2026-09-09 something
 does hold them together:** `test_the_warning_vocabulary_is_closed.py::test_the_contract_table_lists_every_kind_the_vocabulary_defines`

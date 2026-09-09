@@ -290,21 +290,23 @@ _GUIDANCE: dict[str, _Guidance] = {
     ),
     "sign_convention_unverified": _Guidance(
         means=(
-            "this answer draws on a connection whose sign direction has never been observed "
-            "against a known inflow, so the direction of its amounts is assumed"
+            "a connection this answer draws on has been MEASURED against the sign convention "
+            "and its stored amounts run the wrong way -- most of its never-plausibly-inflow "
+            "spending is stored as money coming in; `detail` names the connection"
         ),
         for_this_answer=(
-            "if that connection's feed is inverted, income reads as spending and spending "
-            "reads as income. The failure is not noisy: an inverted feed produces a perfectly "
-            "well-formed total of the wrong sign, and a spending answer that is really a "
-            "deposit looks exactly like a large purchase"
+            "on that connection income reads as spending and spending reads as income, so a "
+            "signed figure drawing on it can be wrong in both directions at once. The failure "
+            "is not noisy: an inverted feed produces a perfectly well-formed total, and a "
+            "spending answer that is really a deposit looks exactly like a large purchase"
         ),
         act=(
-            "name the connection and say its direction is unconfirmed before quoting any "
-            "signed figure that draws on it. Do not correct the sign yourself, and do not "
-            "infer direction from a transaction's description -- a payroll credit can arrive "
-            "categorised as a transfer out. The operator confirms it against a known deposit; "
-            "until then the assumption is disclosed rather than resolved."
+            "name the connection and say its stored direction contradicts the convention, "
+            "before quoting any signed figure that draws on it. Do NOT correct the sign "
+            "yourself -- inverting a suspect feed is a heuristic whose failure direction "
+            "UNDERSTATES spending -- and do not infer direction from a transaction's "
+            "description, since a payroll credit can arrive categorised as a transfer out. "
+            "Resolving it is the operator's, against a known deposit."
         ),
     ),
 }
