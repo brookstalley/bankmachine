@@ -375,8 +375,15 @@ builder, ask which existing tests now short-circuit.
     that reads as a continuation, which is the precise defect shape this whole work cycle
     exists to remove. `limit` is deliberately outside the fingerprint, because changing
     page size between pages is ordinary and does not change which result set is being
-    walked. **The owner can veto this**: removing it is deleting one comparison and one
-    field, and the paged walk still works without it.
+    walked. **The owner can veto this, and the real price is bigger than an earlier draft of
+    this clause quoted.** The paged walk still works without it, but the requirement has
+    since hardened past `query.py`'s `_request_fingerprint`, `Cursor.request` and the one
+    comparison: it is a 🔴 clause in `api-contract.md`, a sentence on the operator page,
+    the "with the same window and account" line in the handshake instructions, and a
+    parametrized refusal suite whose forged-cursor fixtures are all built off the real
+    fingerprint. A veto is that whole reach, not two lines. Quoted here at its true size
+    because a price that understates what a decision costs is the same defect this work
+    cycle exists to remove, one artifact over.
 - **Tests:** unit — cursor round trip returns every row exactly once with no duplicate
   and no gap across pages; a malformed or foreign cursor is refused naming the argument,
   in the established refusal form, leaking no exception class; the final page reports
