@@ -24,11 +24,14 @@ write whatever SQL reaches it.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.engine import Connection as SAConnection
 
 from bankmachine.build_id import build_identity
@@ -44,7 +47,7 @@ from bankmachine.store.schema import (
     sync_state,
     transactions,
 )
-from bankmachine.store.types import UtcInstant, now_utc
+from bankmachine.store.types import UtcInstant, calendar_date, now_utc
 
 #: How long since a connection's last successful sync before its data is called
 #: stale. A day and a half: the scheduled job runs nightly, so one missed run is
@@ -59,10 +62,53 @@ STALE_AFTER = timedelta(hours=36)
 #: all three, not an edit here.
 MAX_ROWS = 500
 
+#: Warnings about the standing state of the pipeline. These ride EVERY response
+#: equally, because they describe the connection rather than the question: an
+#: acceptance round measured the `gapped` notice arriving character-for-character
+#: identical on a window wholly inside coverage, a window wholly outside it, a
+#: future window, and a query for an account that does not exist. True, and
+#: useless for telling a caller whether THIS answer is the degraded one.
+CONNECTION_SCOPED_KINDS: tuple[str, ...] = (
+    "stale",
+    "degraded",
+    "gapped",
+    "partial",
+    "rule-applied",
+)
+
+#: 🔴 Warnings about THIS request, which fire only when this request actually
+#: crosses the boundary they name -- so their presence is information and **so is
+#: their absence**. That is the whole reason they exist, and it is why the
+#: distinction is a structure here rather than a comment: a test asking "did this
+#: request warn about itself" has to be able to name the set, and deriving it
+#: from a shared spelling (every kind starting `window_`) would silently exempt
+#: the first request-scoped kind that is not about a window -- which is exactly
+#: what `rows_truncated` is.
+#:
+#: Additive by `api-contract.md`'s own evolution rule: new warning codes need no
+#: version bump, and consumers are required to tolerate a kind they do not
+#: recognize. AC-9.3's list is a minimum, so it needs no amendment.
+REQUEST_SCOPED_KINDS: tuple[str, ...] = (
+    "window_starts_before_coverage",
+    # Named for the COVERED END rather than for today, because that is the bound
+    # it actually reports: the covered end is today, or the last transaction when
+    # that is later. Mirrors `window_starts_before_coverage`, so both kinds name
+    # one boundary concept from their two ends.
+    "window_extends_past_coverage",
+    "rows_truncated",
+    # The row query and the count are separate snapshots on an autocommit
+    # reader, so a write landing between them is a data condition rather than a
+    # defect. It is reported instead of smoothed away: a consumer comparing two
+    # calls seconds apart deserves to know a write landed between them.
+    "counted_during_change",
+)
+
 #: The warning vocabulary the API contract fixes. Named here as a tuple rather
 #: than left to string literals at each site, because a warning nobody spells the
-#: same way twice is a warning a consumer cannot branch on.
-WARNING_KINDS: tuple[str, ...] = ("stale", "degraded", "gapped", "partial", "rule-applied")
+#: same way twice is a warning a consumer cannot branch on. Composed from the two
+#: scopes above rather than re-listed, so a kind cannot join the vocabulary
+#: without declaring which of the two it is.
+WARNING_KINDS: tuple[str, ...] = CONNECTION_SCOPED_KINDS + REQUEST_SCOPED_KINDS
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +139,640 @@ class Caveat:
 
 
 @dataclass(frozen=True, slots=True)
+class Window:
+    """The window a caller asked for, beside the one the data could answer over.
+
+    🔴 `caveats` has no default, for exactly the reason `Answer.warnings` has
+    none: a window that has not been reconciled against coverage cannot be
+    constructed, so the reconciliation is structural rather than remembered.
+
+    The clamp this records is **reportorial, not selective.** Nothing here
+    narrows a SQL predicate -- clamping `since` up to the first covered date can
+    only exclude rows that do not exist, and clamping `until` down to today can
+    only exclude rows that have not happened. So an effective window never
+    changes a returned figure; it says what the figure was always computed over.
+
+    `operational-spec.md` refuses an out-of-range ENROLLMENT window rather than
+    clamping it, "because a clamp would enroll at a window the operator never
+    chose and never told them about". That reason is about not being told, and a
+    query is the case where it points the other way: refusing "show me 2024"
+    against a store that starts in September 2024 refuses an ordinary question,
+    and enrollment's cost -- history that cannot be bought back -- has no
+    analogue in a read. Ruled 2026-09-08: clamp, and say so. This type is the
+    saying so.
+    """
+
+    requested_since: date | None
+    requested_until: date | None
+    effective_since: date | None
+    effective_until: date | None
+    caveats: list[Caveat]
+
+    @property
+    def covers_nothing(self) -> bool:
+        """True when the request and the covered span do not overlap at all."""
+        return self.covered_bounds() is None
+
+    def covered_bounds(self) -> tuple[date, date] | None:
+        """The effective bounds when there are any, else `None`.
+
+        🔴 The same question as `covers_nothing`, asked so the answer NARROWS.
+        A property cannot narrow `date | None` for a caller, so every site
+        needing the bounds was rewriting the null check by hand — two hand-written
+        copies of a predicate this type already models is how the two stop
+        agreeing. Returning the pair makes `covers_nothing` the derived one and
+        gives callers bounds a type checker will hold them to.
+        """
+        if self.effective_since is None or self.effective_until is None:
+            return None
+        return (self.effective_since, self.effective_until)
+
+    def to_wire(self) -> dict[str, Any]:
+        return {
+            "requested": {
+                "since": _iso_or_none(self.requested_since),
+                "until": _iso_or_none(self.requested_until),
+            },
+            "effective": {
+                "since": _iso_or_none(self.effective_since),
+                "until": _iso_or_none(self.effective_until),
+            },
+        }
+
+
+def _iso_or_none(value: date | None) -> str | None:
+    return None if value is None else value.isoformat()
+
+
+def _parse_coverage_date(value: Any) -> date | None:
+    """A coverage bound off the wire dict, back to a date.
+
+    `_coverage` renders its bounds with `str()` for the payload, so the resolver
+    reads them back rather than re-querying. An unparseable value is treated as
+    absent: a window that cannot be reconciled must not raise on the success
+    path, because incompleteness rides the answer here and never the error
+    channel (`api-contract.md` § Direction).
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+class InvertedWindowError(ValueError):
+    """A window whose end precedes its start.
+
+    🔴 Its own type, not a bare `ValueError`, so the MCP boundary can render it
+    as a refusal the caller can act on. Reached only by a windowed tool that did
+    not narrow its arguments first -- `mcp._window` refuses the transposed pair
+    ahead of the query layer today, and the caller's own words are still in hand
+    there, so that remains the better place to catch it. But a future windowed
+    tool that forgot would otherwise land in the boundary's broad catch and get
+    back "internal error", which is a false statement about a caller mistake.
+    Rides the same path `UnknownAccountError` does, for the same reason.
+    """
+
+
+def resolve_window(
+    *,
+    since: date | None,
+    until: date | None,
+    coverage: dict[str, Any],
+    as_of: UtcInstant,
+) -> Window:
+    """Reconcile a requested window against what the store actually holds.
+
+    The effective window is the requested one intersected with
+    `[earliest transaction, today]`. An unbounded request reports that span,
+    which is the case where a caller most needs the answer: "all of it" means
+    nothing until you know what "all" covers.
+    """
+    # 🔴 A transposed window is a CALLER error, not a data condition, and it is
+    # the one empty window this function cannot explain: there is no boundary
+    # crossed and no coverage fact to report -- "nothing" is simply what an
+    # inverted window selects. The MCP boundary already refuses it by name
+    # ("until X is before since Y ... Did the two get swapped?"), which is the
+    # right treatment and belongs there, where the caller's own words are still
+    # in hand. Refusing it here too is what makes this function's own invariant
+    # total: every window it RETURNS that covers nothing carries a caveat
+    # saying why. Found by the hypothesis property below, which had no idea the
+    # boundary refuses this shape -- exactly why it was worth writing.
+    if since is not None and until is not None and until < since:
+        raise InvertedWindowError(
+            f"until ({until.isoformat()}) is before since ({since.isoformat()}); "
+            f"an inverted window selects nothing and there is no coverage fact that "
+            f"explains it. Refuse it at the boundary that has the caller's own words."
+        )
+
+    # 🔴 The one place a UTC instant becomes a calendar date. `data-model.md`
+    # keeps the two apart because an instant carries a zone and a transaction
+    # date does not, so the conversion is a decision made at a named site rather
+    # than an implicit coercion. Today is UTC today, matching the `as_of` the
+    # same answer is stamped with -- a caller comparing the two reads one clock.
+    today = calendar_date(as_of.date())
+    earliest = _parse_coverage_date(coverage.get("earliest_transaction"))
+    latest = _parse_coverage_date(coverage.get("latest_transaction"))
+
+    # 🔴 The covered span ends at TODAY, or at the last transaction when that is
+    # later. `today` alone is wrong the moment a row is dated ahead of it, and
+    # nothing stops one: an authorization can post forward, and an institution a
+    # day ahead in local time posts a date this UTC clock has not reached. With
+    # `today` as the bound, such a row is RETURNED (the predicate uses the
+    # caller's `until`) while `effective_until` says the answer stopped at
+    # today -- a row outside the window the answer claims, which is this work
+    # cycle's own defect wearing the fix's clothes. Taking the later of the two
+    # makes "every returned row lies inside `effective_window`" hold against the
+    # coverage this resolver was handed: a returned row is at or before `until`
+    # AND at or before `latest`, so it is at or before the minimum of `until` and
+    # this bound.
+    #
+    # 🔴 **Against that coverage, not against the rows** -- and the difference is
+    # not pedantry. `coverage` is read by a statement of its own, after the rows,
+    # on a handle that holds no read snapshot (`store/connection.py`: "every
+    # statement is its own snapshot"). So a soft delete of the store's OLDEST row
+    # landing between the two reads moves `earliest` forward and can push
+    # `effective_since` past a row already in hand. Rare -- it needs the boundary
+    # row itself removed inside a sub-millisecond gap, which ordinary sync
+    # traffic does not do, since removals are recent pending rows rather than the
+    # oldest row of a two-year store -- and the cost is a reported bound off by a
+    # little, never a wrong figure or a wrong row. Stated at the strength the
+    # mechanism actually holds because the stronger claim was written here first
+    # and was wrong; a single read snapshot per answer is what would earn it
+    # (#27).
+    #
+    # The sandbox cannot express it -- its last transaction is deliberately
+    # earlier than `as_of` -- so this is reasoned from the predicate, not
+    # measured.
+    covered_end = today if latest is None or latest < today else latest
+
+    caveats: list[Caveat] = []
+    if earliest is None:
+        # Nothing is covered, so there is no span to intersect with. The empty
+        # store already announces itself through `coverage`, and inventing a
+        # window caveat here would say the same thing in a second voice.
+        return Window(
+            requested_since=since,
+            requested_until=until,
+            effective_since=None,
+            effective_until=None,
+            caveats=caveats,
+        )
+
+    effective_since = earliest if since is None else max(since, earliest)
+    effective_until = covered_end if until is None else min(until, covered_end)
+    overlaps = effective_since <= effective_until
+
+    # 🔴 Both sentences quote the effective bound, so both must fall back to the
+    # same phrase when there is no effective window to quote. Saying "this
+    # answer covers through <date>" beside an `effective` of null is exactly the
+    # defect this whole work cycle exists to remove -- a plausible sentence the
+    # structured field contradicts -- and it would be read, because a consumer
+    # reads the warning precisely when the numbers look wrong.
+    nothing_covered = "no part of the window you asked for"
+
+    # 🔴 EITHER bound can put the request before coverage, and keying on `since`
+    # alone missed the second case: `{until: "2020-01-01"}` with no `since` --
+    # "everything up to 2020" against a store beginning 2024 -- covered nothing
+    # and said nothing. Found by the property test below, after two hand-written
+    # instances of this class had already slipped through a matrix written from
+    # the same assumption as the code. The bound named in the sentence is
+    # whichever one is the evidence.
+    before_coverage = (
+        ("from", since)
+        if since is not None and since < earliest
+        else ("until", until)
+        if until is not None and until < earliest
+        else None
+    )
+    if before_coverage is not None:
+        preposition, bound = before_coverage
+        covered = f"{effective_since.isoformat()} onward" if overlaps else nothing_covered
+        caveats.append(
+            Caveat(
+                kind="window_starts_before_coverage",
+                detail=(
+                    f"you asked {preposition} {bound.isoformat()}, but coverage begins "
+                    f"{earliest.isoformat()}. Anything before that date is absent rather "
+                    f"than zero, so this answer covers {covered}"
+                ),
+            )
+        )
+    # 🔴 Either bound reaching past today counts, not just `until`. An
+    # open-ended `since` in the future -- `{since: "2027-01-01"}` with no
+    # `until`, an entirely ordinary shape -- clamps the end to today and leaves
+    # the window backwards, so it covers nothing. Keyed on `until` alone that
+    # case produced a null effective window with NO warning at all: a silent
+    # null, which is the defect this chunk exists to remove, reachable from
+    # ordinary input. Found by probing the reachable inputs rather than by a
+    # test, because the test matrix was written from the same assumption the
+    # code was.
+    beyond_coverage = (
+        ("until", until)
+        if until is not None and until > covered_end
+        else ("from", since)
+        if since is not None and since > covered_end
+        else None
+    )
+    if beyond_coverage is not None:
+        preposition, bound = beyond_coverage
+        covered = f"through {effective_until.isoformat()}" if overlaps else nothing_covered
+        caveats.append(
+            Caveat(
+                kind="window_extends_past_coverage",
+                detail=(
+                    f"you asked {preposition} {bound.isoformat()}, but this store holds "
+                    f"nothing after {covered_end.isoformat()}, so this answer covers "
+                    f"{covered}"
+                ),
+            )
+        )
+
+    if not overlaps:
+        # The request and the covered span do not overlap. Reporting a backwards
+        # window would be worse than reporting none: it reads as a real window.
+        return Window(
+            requested_since=since,
+            requested_until=until,
+            effective_since=None,
+            effective_until=None,
+            caveats=caveats,
+        )
+    return Window(
+        requested_since=since,
+        requested_until=until,
+        effective_since=effective_since,
+        effective_until=effective_until,
+        caveats=caveats,
+    )
+
+
+class MalformedCursorError(ValueError):
+    """A `cursor` this server did not issue for the question it arrived with.
+
+    🔴 Its own type so the MCP boundary can refuse it by name, the way a
+    malformed date is refused. The alternative — reading an unusable cursor as
+    "start from the newest row" — returns page one under the name of page two:
+    a plausible complete answer to a question nobody asked, which is the shape
+    this work cycle exists to remove rather than to reintroduce one field over.
+    Rides the same path `UnknownAccountError` does, for the same reason.
+    """
+
+
+#: What a caller is told when a cursor cannot be used. One sentence for every
+#: rejection path on purpose: WHICH way a cursor is wrong — truncated in
+#: transit, forged, stale, or issued for a different question — is this server's
+#: business, and the caller's correct response to all four is the same one.
+_CURSOR_REFUSAL = (
+    "cursor is not a cursor this server issued for this request. Pass back the "
+    "`next_cursor` from a previous answer to the same question, unchanged, or omit it "
+    "to start from the newest row"
+)
+
+#: The cursor payload's shape tag. A cursor is opaque, so its internals are free
+#: to change — but the MCP server is a subprocess a client relaunches, so a
+#: cursor issued by one build and handed back to another is ordinary traffic,
+#: and a payload read under the wrong shape would resume at a position that
+#: means something else. Tagged, a cursor from a shape this build does not know
+#: is refused rather than misread.
+_CURSOR_SCHEME = 1
+
+
+def _request_fingerprint(*, since: date | None, until: date | None, account_id: int | None) -> str:
+    """Which result set a cursor belongs to, short enough to travel inside one.
+
+    🔴 A keyset position is only meaningful inside the query that produced it.
+    Page two's cursor handed to a request with a different `account_id` selects
+    real rows, in the right order, and answers a question the caller did not
+    ask — no error, no warning, and a payload that reads as a continuation. So
+    the predicate travels with the position and the boundary compares them.
+
+    `limit` is deliberately not part of it: it chooses how much of a result set
+    comes back per page, not which result set that is, and a caller changing it
+    between pages is doing something ordinary.
+    """
+    material = json.dumps(
+        [_iso_or_none(since), _iso_or_none(until), account_id], separators=(",", ":")
+    )
+    # Eight bytes, because this discriminates a caller's mistake and is not a
+    # signature. A forged cursor reaches only rows the request's own filters
+    # already admit, at a position `since` could have reached anyway.
+    return hashlib.blake2s(material.encode(), digest_size=8).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class Cursor:
+    """Where a page stopped, in the one total order transactions come back in.
+
+    🔴 **A keyset, never an offset**, and the difference is this work cycle's
+    own subject. `ORDER BY posted_date DESC, transaction_id DESC` is already a
+    total order, so "everything after this row" is a predicate rather than a
+    count of rows to skip. An offset is not: a sync inserting a row between two
+    pages shifts every later page by one, so a caller walking them sees one row
+    twice and never sees another — a paged answer that reads as complete and is
+    not.
+
+    Opaque on the wire. The encoding is reversible rather than signed because
+    there is nothing here to protect — the position names a row the request's
+    own filters already admit — but it is tagged and fingerprinted, so a cursor
+    that does not belong to this question is refused instead of answered.
+    """
+
+    posted_date: date
+    transaction_id: int
+    #: The fingerprint of the request this cursor was issued for. Compared when a
+    #: cursor comes back; never used to select a row.
+    request: str
+
+    @classmethod
+    def issued_for(
+        cls,
+        *,
+        posted_date: date,
+        transaction_id: int,
+        since: date | None,
+        until: date | None,
+        account_id: int | None,
+    ) -> Cursor:
+        """The only route that should build one, so the fingerprint cannot be forgotten."""
+        return cls(
+            posted_date=posted_date,
+            transaction_id=transaction_id,
+            request=_request_fingerprint(since=since, until=until, account_id=account_id),
+        )
+
+    def encode(self) -> str:
+        """The wire form: URL-safe and unpadded.
+
+        `=` is the character a shell, a query string or a log line is most
+        likely to eat in transit, and a cursor that arrives one character short
+        is refused rather than misread — a refusal the caller cannot act on.
+        """
+        payload = json.dumps(
+            {
+                "v": _CURSOR_SCHEME,
+                "d": self.posted_date.isoformat(),
+                "t": self.transaction_id,
+                "q": self.request,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+    @classmethod
+    def decode(cls, text: str) -> Cursor:
+        """A cursor off the wire, or a refusal — never a silent fall back to page one."""
+        try:
+            payload = json.loads(base64.urlsafe_b64decode(text + "=" * (-len(text) % 4)))
+        except (ValueError, RecursionError):
+            # Base64, UTF-8 and JSON *syntax* failures all derive from
+            # `ValueError`. 🔴 One does not: `json.loads` on a deeply nested
+            # document exhausts the stack and raises `RecursionError`, which is
+            # a `RuntimeError`. Caught only as `ValueError`, that cursor escapes
+            # this refusal, escapes the boundary's narrowing, and lands in its
+            # broad catch — so a caller who mistyped an argument is answered
+            # "internal error" and told to check whether their datastore is
+            # readable. A false statement about a caller mistake is the exact
+            # outcome `InvertedWindowError` exists to prevent.
+            #
+            # `from None` because the cause is a decoder's internals, which
+            # `api-contract.md` § Error Model keeps off the wire.
+            raise MalformedCursorError(_CURSOR_REFUSAL) from None
+        if not isinstance(payload, dict) or payload.get("v") != _CURSOR_SCHEME:
+            raise MalformedCursorError(_CURSOR_REFUSAL)
+        posted, transaction_id, request = payload.get("d"), payload.get("t"), payload.get("q")
+        # 🔴 `bool` is an `int` in Python and JSON `true` decodes to one, so the
+        # bool check is not defensive noise: without it a payload carrying
+        # `"t": true` would resume at transaction 1 rather than being refused.
+        if (
+            not isinstance(posted, str)
+            or isinstance(transaction_id, bool)
+            or not isinstance(transaction_id, int)
+            or not isinstance(request, str)
+        ):
+            raise MalformedCursorError(_CURSOR_REFUSAL)
+        try:
+            posted_date = date.fromisoformat(posted)
+        except ValueError:
+            raise MalformedCursorError(_CURSOR_REFUSAL) from None
+        return cls(posted_date=posted_date, transaction_id=transaction_id, request=request)
+
+
+def parse_cursor(
+    text: str | None,
+    *,
+    since: date | None,
+    until: date | None,
+    account_id: int | None,
+) -> Cursor | None:
+    """A `cursor` argument, decoded and checked against the request carrying it.
+
+    Both halves live here rather than at the boundary because the encoder lives
+    here: a decoder written one module away from the encoder is the second
+    description that stops matching the first, and the fingerprint check is
+    meaningless unless it runs at the one site that can compare it against the
+    request being answered.
+    """
+    if text is None:
+        return None
+    cursor = Cursor.decode(text)
+    if cursor.request != _request_fingerprint(since=since, until=until, account_id=account_id):
+        raise MalformedCursorError(_CURSOR_REFUSAL)
+    return cursor
+
+
+@dataclass(frozen=True, slots=True)
+class Truncation:
+    """How many rows matched, how many came back, and therefore whether the cap bit.
+
+    🔴 **`truncated` is a property, not a field.** The invariant is *truncated
+    iff returned < matching*, and a stored third count is a third thing that can
+    disagree with the other two. Derived, it cannot: there is no assignment to
+    get wrong. `Window.caveats` is a stored field because reconciling a window
+    needs coverage facts from outside it; every caveat here follows from the
+    values already on the instance, so they are derived too.
+
+    Why this exists at all: an answer that hit the cap and one that returned
+    everything are the same payload. Measurement found the documented default of
+    100 silently dropping ~16 months of one account's history, and a caller
+    summing a two-year card total understating it by roughly 40% -- with nothing
+    in the response saying so. `rows` alone cannot say it, because "100 rows" is
+    a believable complete answer.
+    """
+
+    returned: int
+    matching: int
+    #: 🔴 The count came back BELOW the rows, which means the store changed
+    #: between the two reads. No default: `over()` is the only route that should
+    #: build one of these, and a silent `False` here would be a claim that the
+    #: two numbers describe one moment when nobody checked.
+    counted_during_change: bool
+    #: The last row of this page, from which the next one resumes. 🔴 No default,
+    #: for the reason `effective_window` has none one type down: a capped tool
+    #: that forgot it would issue no cursor, and the only symptom would be
+    #: truncation staying inescapable — silently, on the success path, which is
+    #: the failure mode this whole surface is being corrected for. `None` means
+    #: there is no page to resume from, and it has to be written.
+    resume_from: Cursor | None
+
+    @classmethod
+    def over(cls, *, returned: int, counted: int, resume_from: Cursor | None) -> Truncation:
+        """The only route that should build one, because `counted` can lag `returned`.
+
+        🔴 **The row query and the count are two snapshots, not one.**
+        `store/connection.py` opens the read handle in autocommit — "every
+        statement is its own snapshot" — and `store/engine.py` records that
+        SQLAlchemy's transaction control is inert over these handles. The
+        scheduled sync writer soft-deletes transactions, and the MCP reader may
+        be mid-query when it wakes. So a row counted in the first statement and
+        removed before the second is entirely reachable, and it makes `counted`
+        smaller than the rows already in hand.
+
+        Treated as the data condition it is rather than as an impossibility.
+        This module rides incompleteness on the success path *because a
+        plausible wrong number is worse than a failure* — but that argument
+        cuts against raising here, not for it: refusing to answer a perfectly
+        good question because a nightly sync landed mid-query would turn a
+        harmless skew into a failed tool call, which `api-contract.md` §
+        Direction forbids in as many words.
+
+        `matching` is floored at `returned`, because those rows were observed to
+        match: reporting fewer would contradict the payload they sit beside, and
+        `truncated` would then read false for the right reason by accident. The
+        skew itself is not smoothed away — it rides out as a caveat, since a
+        consumer comparing two calls seconds apart deserves to know a write
+        landed between them.
+        """
+        return cls(
+            returned=returned,
+            matching=max(counted, returned),
+            counted_during_change=counted < returned,
+            resume_from=resume_from,
+        )
+
+    @property
+    def truncated(self) -> bool:
+        return self.returned < self.matching
+
+    @property
+    def next_cursor(self) -> str | None:
+        """The wire cursor, present when and only when there is a next page to reach.
+
+        🔴 Derived from the same two counts `truncated` is, so "a cursor iff the
+        answer is truncated" is one expression rather than two assignments that
+        can disagree. A stored cursor could outlive the condition that justified
+        it, and a consumer following one on a complete answer would page past
+        the end of an answer that already held everything.
+
+        The one case where a truncated answer carries no cursor is a page with
+        no rows at all: `returned` is zero, the count taken a moment later is
+        not, and there is no last row to resume from. Rare — it needs a write to
+        land between the two statements — and the `rows_truncated` caveat says
+        so without offering a route the caller cannot take.
+
+        🔴 The mirror of that skew ends a walk EARLY, and it is worth naming
+        because it looks like a clean finish. When enough rows are removed
+        between the two statements the count comes back below the rows in hand,
+        `matching` floors at `returned`, `truncated` reads false and no cursor is
+        issued — correct for the numbers in this payload, and possibly short of
+        the window. `counted_during_change` is what says so, which is why it
+        rides out rather than being smoothed away.
+        """
+        if not self.truncated or self.resume_from is None:
+            return None
+        return self.resume_from.encode()
+
+    @property
+    def caveats(self) -> list[Caveat]:
+        """The warning a truncated answer carries, derived from the same two numbers.
+
+        🔴 The block alone is not enough. `api-contract.md` § Direction fixes
+        that *incompleteness rides the success path as a warning field*, and a
+        truncated answer is the largest incompleteness this surface produces --
+        larger than any window clamp, because the clamp removes rows that do not
+        exist while this one removes rows that do. A consumer reads `warnings`
+        precisely when the numbers look wrong, so the number being wrong has to
+        appear there.
+
+        The remedy names `limit` and derives its ceiling from `MAX_ROWS` rather
+        than quoting a figure: `learnings.md` records a ceiling written into a
+        fixture being falsified within a day by a commit that moved it.
+
+        🔴 **A remedy the caller cannot follow is worse than none**, so which
+        remedy is offered depends on whether `limit` has anything left to give.
+        At the cap, offering to raise `limit` sits beside a `returned` already
+        equal to that ceiling and tells the caller to raise a number to the
+        value it already holds -- a plausible sentence its own payload
+        contradicts, which is the defect this work cycle exists to remove rather
+        than to reintroduce one field over. The cap is a contract term, so at
+        that point narrowing the window is genuinely the only thing that helps,
+        and the sentence says so.
+        """
+        caveats: list[Caveat] = []
+        if self.counted_during_change:
+            caveats.append(
+                Caveat(
+                    kind="counted_during_change",
+                    detail=(
+                        f"the datastore changed while this answer was being assembled — the "
+                        f"row count came back below the {self.returned} rows already read, so "
+                        f"a transaction was removed between the two reads. The rows are "
+                        f"accurate as of the `as_of` stamp on this answer; ask again for a "
+                        f"count taken after the change"
+                    ),
+                )
+            )
+        if not self.truncated:
+            return caveats
+        # 🔴 The cursor leads, because it is the only remedy that reaches EVERY
+        # missing row: narrowing the window and raising `limit` each move the
+        # boundary, while paging removes it. The `limit` clause is still offered
+        # where it can still do something, and still withheld at the ceiling,
+        # where advising a caller to raise a number to the value it already
+        # holds is the self-contradicting sentence this surface exists to stop
+        # emitting.
+        remedy = (
+            f"The cap of {MAX_ROWS} is a contract term, so narrowing the window is the "
+            f"only other route to the rest"
+            if self.returned >= MAX_ROWS
+            else f"Narrow the window, or raise `limit` (at most {MAX_ROWS})"
+        )
+        if self.next_cursor is not None:
+            remedy = (
+                f"Pass this answer's `next_cursor` back as `cursor`, with the same window "
+                f"and account, to read the next page. {remedy}"
+            )
+        caveats.append(
+            Caveat(
+                kind="rows_truncated",
+                detail=(
+                    f"{self.matching} transactions match this request and the newest "
+                    f"{self.returned} are returned, so {self.matching - self.returned} are "
+                    f"missing from this answer. Summing or counting these rows describes "
+                    f"only what came back, not the window you asked about. {remedy}"
+                ),
+            )
+        )
+        return caveats
+
+    def to_wire(self) -> dict[str, Any]:
+        wire: dict[str, Any] = {
+            "returned": self.returned,
+            "matching": self.matching,
+            "truncated": self.truncated,
+        }
+        # Absent on a complete answer, exactly as `truncation` itself is absent
+        # on an uncapped tool: the key's presence is the statement that there is
+        # more to read, so a consumer that pages while the key is there stops
+        # when it is gone, without having to compare two numbers to know.
+        if self.next_cursor is not None:
+            wire["next_cursor"] = self.next_cursor
+        return wire
+
+
+@dataclass(frozen=True, slots=True)
 class Answer:
     """Rows, and everything a consumer needs to know about how far to trust them.
 
@@ -105,6 +785,21 @@ class Answer:
     warnings: list[Caveat]
     environment: str
     as_of: UtcInstant
+    #: 🔴 No default, and that is the mechanism rather than a style choice. It
+    #: sits BEFORE `coverage` so it cannot acquire one by drifting after a
+    #: defaulted field. Every construction site must say whether its answer was
+    #: computed over a window: an unwindowed tool writes `None` on purpose, and
+    #: a windowed tool that skipped the clamp would have to write `None` in
+    #: plain sight rather than merely forget a call. Three more windowed tools
+    #: are specified against this (`get_coverage_report`, `cashflow_summary`),
+    #: and a clamp each of them has to remember is a clamp that decays.
+    effective_window: Window | None
+    #: 🔴 No default, for the same reason and by the same mechanism as
+    #: `effective_window` above. `None` means this tool returns every row it
+    #: found, and a tool that caps its rows would have to write `None` in plain
+    #: sight to hide it. Aggregates write `None` truthfully:
+    #: `api-contract.md` fixes them as unpaginated, bounded by the grouping.
+    truncation: Truncation | None
     coverage: dict[str, Any] = field(default_factory=dict)
 
     def to_wire(self) -> dict[str, Any]:
@@ -123,6 +818,15 @@ class Answer:
             "build": build_identity().to_wire(),
             "warnings": [w.to_wire() for w in self.warnings],
             "coverage": self.coverage,
+            **(
+                {}
+                if self.effective_window is None
+                else {"effective_window": self.effective_window.to_wire()}
+            ),
+            # Absence says "this tool returns everything it found", exactly as an
+            # absent `effective_window` says "this tool takes no window". A
+            # consumer branching on the key gets a true answer either way.
+            **({} if self.truncation is None else {"truncation": self.truncation.to_wire()}),
             "rows": self.rows,
         }
 
@@ -260,18 +964,115 @@ def _coverage(conn: SAConnection) -> dict[str, Any]:
     }
 
 
-def _answer(config: Config, conn: SAConnection, rows: list[dict[str, Any]]) -> Answer:
-    now = now_utc()
-    return Answer(
-        rows=rows,
-        warnings=_pipeline_warnings(conn, now),
-        environment=config.environment,
-        as_of=now,
-        coverage=_coverage(conn),
+def _covered_rows(conn: SAConnection, *, since: date, until: date) -> int:
+    """How many transactions lie inside the window this answer actually covered.
+
+    🔴 Store-wide, never narrowed by `account_id`. Per-account coverage is its
+    own issue (#19) with its own shape; reporting a half of it here would leave
+    that work amending a field this chunk just shipped.
+
+    Counted over the EFFECTIVE bounds, which is what makes it a coverage fact
+    rather than a restatement of `matching`: it answers "how much data does this
+    window hold", against which a caller can read the account-scoped `matching`
+    beside it. The effective bounds select the same rows the requested ones would
+    -- the clamp only ever removes dates the store has no rows for -- so the
+    choice costs nothing and ties the number to the window the answer names.
+
+    Composed from `_transaction_filters`, like every other reader of this table:
+    the promise that a filter added later reaches every reader is worth nothing
+    if a reader rebuilds the predicates by hand. It passes `after=None` because
+    this is a fact about the WINDOW rather than about the page — a figure that
+    shrank as a caller paged would describe the walk instead of the store, and a
+    caller comparing it against `matching` would read the difference as data
+    going missing.
+
+    🔴 **Takes two `date`s, never the `Window`.** A window covering nothing has
+    null bounds, and SQLAlchemy's comparison operators accept `Any` -- so passing
+    the window in would let a `None` bound reach the predicate with mypy raising
+    nothing, and the guard against it would rest on a comment. Demanding `date`
+    here moves that guard into the signature: the caller cannot omit the null
+    check, because omitting it is a type error rather than a runtime surprise.
+    The empty case is answered at the call site, where the zero belongs and where
+    the caveat explaining it is already being assembled.
+    """
+    return int(
+        conn.execute(
+            select(func.count())
+            .select_from(transactions)
+            .where(*_transaction_filters(since=since, until=until, account_id=None, after=None))
+        ).scalar_one()
     )
 
 
-def _unusable(config: Config, problem: str) -> Answer:
+def _answer(
+    config: Config,
+    conn: SAConnection,
+    rows: list[dict[str, Any]],
+    *,
+    requested_window: tuple[date | None, date | None] | None,
+    truncation: Truncation | None,
+) -> Answer:
+    """One answer, and the one place a window is reconciled against coverage.
+
+    `requested_window` is a required keyword with no default: `None` means this
+    tool is not windowed, and it has to be written. Resolution lives here rather
+    than in each query function because this is where `_coverage` is already
+    computed -- one read, one reconciliation, and no second mechanism for a
+    later windowed tool to drift from.
+    """
+    now = now_utc()
+    coverage = _coverage(conn)
+    window = (
+        None
+        if requested_window is None
+        else resolve_window(
+            since=requested_window[0],
+            until=requested_window[1],
+            coverage=coverage,
+            as_of=now,
+        )
+    )
+    covered = None if window is None else window.covered_bounds()
+    if window is not None:
+        # 🔴 A SIBLING, never a narrowing of `coverage["transactions"]`, which
+        # keeps its store-wide meaning. `api-contract.md` forbids repurposing a
+        # field in red for the reason that bites here: a consumer still reading
+        # the old key would get a wrong number rather than an error, which is
+        # this work cycle's own defect introduced by its own fix.
+        coverage = {
+            **coverage,
+            # A window covering nothing counts nothing, and that zero is not a
+            # silent one: the caveat that made the bounds null is already in
+            # `window.caveats` and rides the warnings below.
+            "transactions_in_effective_window": (
+                0 if covered is None else _covered_rows(conn, since=covered[0], until=covered[1])
+            ),
+        }
+    return Answer(
+        rows=rows,
+        # 🔴 Connection-scoped warnings first, then this request's own. A
+        # consumer reading top-down meets the standing state of the pipeline
+        # before the thing that is specific to what they just asked.
+        warnings=(
+            _pipeline_warnings(conn, now)
+            + ([] if window is None else window.caveats)
+            + ([] if truncation is None else truncation.caveats)
+        ),
+        environment=config.environment,
+        as_of=now,
+        effective_window=window,
+        truncation=truncation,
+        coverage=coverage,
+    )
+
+
+def _unusable(
+    config: Config,
+    problem: str,
+    *,
+    requested_window: tuple[date | None, date | None] | None,
+    truncation: Truncation | None,
+) -> Answer:
     """🔴 An answer about a datastore that cannot be read. AC-ARCH.3.
 
     Zero rows and a warning, never an exception: the requirement is that the
@@ -283,6 +1084,31 @@ def _unusable(config: Config, problem: str) -> Answer:
     """
     return Answer(
         rows=[],
+        # 🔴 A windowed tool still reports a window here, with null effective
+        # bounds. The contract fixes ABSENCE of the key as "this tool takes no
+        # window", so omitting it on `query_transactions` would say something
+        # false about the tool rather than about the store -- and a consumer
+        # branching on the key's presence would take the wrong branch precisely
+        # when the datastore is unreadable. Nulls say "your window and this
+        # store do not overlap", which is true of a store that cannot be read.
+        effective_window=(
+            None
+            if requested_window is None
+            else Window(
+                requested_since=requested_window[0],
+                requested_until=requested_window[1],
+                effective_since=None,
+                effective_until=None,
+                caveats=[],
+            )
+        ),
+        # 🔴 Present with zeroes for a capped tool, matching what `coverage`
+        # does two fields down and for the same reason: the consumer sees the
+        # shape it expects, and the `partial` warning is what tells them the
+        # zeroes mean "nothing could be read". Every number here is true --
+        # nothing was returned, nothing was readable to match, and the answer was
+        # not truncated. It is empty for a reason the warning states.
+        truncation=truncation,
         warnings=[
             Caveat(
                 kind="partial",
@@ -301,6 +1127,13 @@ def _unusable(config: Config, problem: str) -> Answer:
             "transactions": 0,
             "earliest_transaction": None,
             "latest_transaction": None,
+            # 🔴 Keyed off the same condition that decides `effective_window`
+            # above, so the two cannot disagree about whether this answer is
+            # windowed. A windowed answer that carried `effective_window` but
+            # dropped this sibling would move the wire shape precisely when the
+            # store is unreadable, and a consumer branching on the key would
+            # take the "unwindowed tool" branch for a tool that has a window.
+            **({} if requested_window is None else {"transactions_in_effective_window": 0}),
         },
     )
 
@@ -320,7 +1153,7 @@ def list_accounts(config: Config) -> Answer:
     """Every account, with its latest recorded balance."""
     problem = _readable(config)
     if problem is not None:
-        return _unusable(config, problem)
+        return _unusable(config, problem, requested_window=None, truncation=None)
     with reader_connection(config) as conn:
         latest = (
             select(
@@ -372,7 +1205,7 @@ def list_accounts(config: Config) -> Answer:
             }
             for r in result
         ]
-        return _answer(config, conn, rows)
+        return _answer(config, conn, rows, requested_window=None, truncation=None)
 
 
 class UnknownAccountError(ValueError):
@@ -397,6 +1230,52 @@ def _account_exists(conn: SAConnection, account_id: int) -> bool:
     return found is not None
 
 
+def _transaction_filters(
+    *,
+    since: date | None,
+    until: date | None,
+    account_id: int | None,
+    after: Cursor | None,
+) -> list[Any]:
+    """🔴 The predicates of a transaction query, built once for both statements.
+
+    The row query and the count MUST select the same set, and "remember to
+    update both" is the enumeration failure this repo has already been bitten
+    by: the two would drift apart silently, and the symptom would be a
+    `matching` that contradicts the rows beside it -- a precise wrong number,
+    which is worse than the vague one this chunk exists to remove. Built here,
+    a filter added later reaches both by construction because there is only one
+    place to add it.
+    """
+    filters: list[Any] = [transactions.c.removed_at.is_(None)]
+    if since is not None:
+        filters.append(transactions.c.posted_date >= since)
+    if until is not None:
+        filters.append(transactions.c.posted_date <= until)
+    if account_id is not None:
+        filters.append(transactions.c.account_id == account_id)
+    if after is not None:
+        # 🔴 The keyset predicate belongs in the SHARED list, not on the row
+        # query alone. `matching` is the count of what this request selects, and
+        # a page whose count ignored the cursor would report the whole result
+        # set behind every page — so `truncated` would stay true on the last one
+        # and a caller paging until it went false would never stop.
+        #
+        # Spelled as an explicit disjunction rather than as a row-value
+        # comparison, because it mirrors the ORDER BY beside it one clause at a
+        # time: strictly older, or the same day and further down the tie-break.
+        filters.append(
+            or_(
+                transactions.c.posted_date < after.posted_date,
+                and_(
+                    transactions.c.posted_date == after.posted_date,
+                    transactions.c.transaction_id < after.transaction_id,
+                ),
+            )
+        )
+    return filters
+
+
 def list_transactions(
     config: Config,
     *,
@@ -404,11 +1283,28 @@ def list_transactions(
     until: date | None = None,
     account_id: int | None = None,
     limit: int = 100,
+    after: Cursor | None = None,
 ) -> Answer:
-    """Transactions in a window, newest first. Soft-deleted rows are excluded."""
+    """Transactions in a window, newest first. Soft-deleted rows are excluded.
+
+    `after` resumes a paged walk at the row a previous answer's `next_cursor`
+    named. It narrows this request the way `since` does — `matching` counts what
+    is left from that position, so `truncated` reads false on the page that
+    exhausts the window and the caller has a terminating condition rather than a
+    number to compare.
+    """
     problem = _readable(config)
     if problem is not None:
-        return _unusable(config, problem)
+        return _unusable(
+            config,
+            problem,
+            requested_window=(since, until),
+            # Zero returned of zero matching: nothing was readable, so nothing
+            # matched and nothing was dropped. The key stays present because its
+            # absence would say this tool returns everything it finds, and there
+            # is no page to resume from because there was no page.
+            truncation=Truncation.over(returned=0, counted=0, resume_from=None),
+        )
     with reader_connection(config) as conn:
         # 🔴 Ordered AFTER the readability check on purpose: an unreadable store
         # knows nothing about which accounts exist, and "that account does not
@@ -417,6 +1313,13 @@ def list_transactions(
             raise UnknownAccountError(
                 f"account_id {account_id} does not exist. list_accounts reports the ids that do."
             )
+        filters = _transaction_filters(since=since, until=until, account_id=account_id, after=after)
+        # 🔴 Both statements take the SAME from-clause as well as the same
+        # filters. The join to `accounts` is part of what selects a row -- an
+        # inner join drops a transaction whose account is absent -- so a count
+        # taken over the bare table would exceed the rows and report a
+        # truncation that never happened.
+        source = transactions.join(accounts)
         statement = (
             select(
                 transactions.c.transaction_id,
@@ -430,17 +1333,12 @@ def list_transactions(
                 transactions.c.source_category_primary,
                 transactions.c.category_override,
             )
-            .select_from(transactions.join(accounts))
-            .where(transactions.c.removed_at.is_(None))
+            .select_from(source)
+            .where(*filters)
             .order_by(transactions.c.posted_date.desc(), transactions.c.transaction_id.desc())
             .limit(max(1, min(limit, MAX_ROWS)))
         )
-        if since is not None:
-            statement = statement.where(transactions.c.posted_date >= since)
-        if until is not None:
-            statement = statement.where(transactions.c.posted_date <= until)
-        if account_id is not None:
-            statement = statement.where(transactions.c.account_id == account_id)
+        selected = conn.execute(statement).all()
         rows = [
             {
                 "transaction_id": int(r[0]),
@@ -454,9 +1352,38 @@ def list_transactions(
                 "category": r[9] or r[8],
                 "category_is_override": r[9] is not None,
             }
-            for r in conn.execute(statement).all()
+            for r in selected
         ]
-        return _answer(config, conn, rows)
+        matching = conn.execute(
+            select(func.count()).select_from(source).where(*filters)
+        ).scalar_one()
+        # 🔴 Built from the LAST ROW THE STATEMENT RETURNED, in the column types
+        # the order clause sorts on -- never re-parsed from the wire dict beside
+        # it, whose `date` is already a string. A cursor rebuilt from the
+        # rendering of a row is a second description of the position, and the
+        # ordering it has to agree with is SQL's.
+        resume_from = (
+            None
+            if not selected
+            else Cursor.issued_for(
+                posted_date=selected[-1][2],
+                transaction_id=int(selected[-1][0]),
+                since=since,
+                until=until,
+                account_id=account_id,
+            )
+        )
+        return _answer(
+            config,
+            conn,
+            rows,
+            requested_window=(since, until),
+            # `returned` is derived from the rows themselves rather than from
+            # `limit`, so it cannot claim a count the payload does not contain.
+            truncation=Truncation.over(
+                returned=len(rows), counted=matching, resume_from=resume_from
+            ),
+        )
 
 
 def spending_by_category(
@@ -471,7 +1398,9 @@ def spending_by_category(
     """
     problem = _readable(config)
     if problem is not None:
-        return _unusable(config, problem)
+        # An aggregate is unpaginated by contract, bounded by the grouping
+        # rather than by a row cap, so there is no truncation to report.
+        return _unusable(config, problem, requested_window=(since, until), truncation=None)
     with reader_connection(config) as conn:
         statement = (
             select(
@@ -483,17 +1412,24 @@ def spending_by_category(
                 func.count().label("count"),
                 func.sum(transactions.c.amount_minor).label("total"),
             )
+            # 🔴 The shared predicates, plus this tool's own. Rebuilding the
+            # soft-delete and window clauses by hand here is how "there is only
+            # one place to add a filter" quietly becomes three: a maintainer
+            # adding a predicate at the named single place would get it in the
+            # rows and the count and silently NOT here, and two tools would then
+            # disagree about which rows exist — a precise wrong number, not an
+            # error. The outflow clause rides on top because it is what makes
+            # this tool a SPENDING question rather than a transaction one.
+            # `after` is None because an aggregate is unpaginated by contract,
+            # bounded by its grouping rather than by a row cap, so there is no
+            # page for a cursor to resume.
             .where(
-                transactions.c.removed_at.is_(None),
+                *_transaction_filters(since=since, until=until, account_id=None, after=None),
                 transactions.c.amount_minor < 0,
             )
             .group_by("category")
             .order_by(func.sum(transactions.c.amount_minor))
         )
-        if since is not None:
-            statement = statement.where(transactions.c.posted_date >= since)
-        if until is not None:
-            statement = statement.where(transactions.c.posted_date <= until)
         rows = [
             {
                 "category": r[0],
@@ -502,7 +1438,7 @@ def spending_by_category(
             }
             for r in conn.execute(statement).all()
         ]
-        return _answer(config, conn, rows)
+        return _answer(config, conn, rows, requested_window=(since, until), truncation=None)
 
 
 def pipeline_health(config: Config) -> Answer:
@@ -513,7 +1449,7 @@ def pipeline_health(config: Config) -> Answer:
     """
     problem = _readable(config)
     if problem is not None:
-        return _unusable(config, problem)
+        return _unusable(config, problem, requested_window=None, truncation=None)
     with reader_connection(config) as conn:
         result = conn.execute(
             select(
@@ -557,4 +1493,4 @@ def pipeline_health(config: Config) -> Answer:
             }
             for r in result
         ]
-        return _answer(config, conn, rows)
+        return _answer(config, conn, rows, requested_window=None, truncation=None)

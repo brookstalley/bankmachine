@@ -15,7 +15,7 @@ import subprocess
 import sys
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import IO, Any, cast
 from unittest import mock
 
 import pytest
@@ -256,6 +256,196 @@ def test_an_unparseable_line_is_answered_rather_than_ignored(initialized_config:
 
     reply = json.loads(stdout.getvalue())
     assert reply["error"]["code"] == -32700
+
+
+def _undecodable() -> UnicodeDecodeError:
+    """What a read raises when the bytes behind it are not UTF-8."""
+    return UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+
+class _ScriptedStream:
+    """A stream serving a fixed sequence of reads, raising where the script says.
+
+    🔴 A stub rather than a real `TextIOWrapper`, because the property under test
+    is *the session continues*, and whether a real decoder can advance past bad
+    bytes is CPython's business rather than this server's. The last test in this
+    group covers the real decoder for the half that does reach an operator.
+
+    Deliberately not a `StringIO` subclass: the read loop calls `readline` and
+    nothing else, so the smallest object that can be wrong in the right way is a
+    plain one, and inheriting would let a method nobody named answer for it.
+    """
+
+    def __init__(self, *script: str | UnicodeDecodeError) -> None:
+        self._script = list(script)
+
+    def readline(self) -> str:
+        if not self._script:
+            return ""
+        item = self._script.pop(0)
+        if isinstance(item, UnicodeDecodeError):
+            raise item
+        return item
+
+
+class _NeverDecodes:
+    """A stream that never advances and never ends — the case the ceiling exists for."""
+
+    def readline(self) -> str:
+        raise _undecodable()
+
+
+def _as_stream(stub: _ScriptedStream | _NeverDecodes) -> IO[str]:
+    """The stub, at the type `serve` declares. `readline` is the whole surface used."""
+    return cast("IO[str]", stub)
+
+
+def _ping(message_id: int) -> str:
+    return json.dumps({"jsonrpc": "2.0", "id": message_id, "method": "ping", "params": {}}) + "\n"
+
+
+def _replies(stdout: io.StringIO) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
+
+
+def test_a_frame_that_is_not_utf8_is_answered_and_the_session_survives(
+    initialized_config: Config,
+) -> None:
+    """🔴 The decode failure one step EARLIER than the parse, through the adjacent door.
+
+    The bytes are decoded by the READ, before any JSON is looked at, so the
+    parse guards cannot reach it — and an uncaught `UnicodeDecodeError` ends
+    `serve()` exactly as the nested-frame case did, with the operator's tool
+    vanishing mid-session and nothing said.
+
+    The second reply is the assertion that carries the weight: a loop that
+    reported the bad frame and then stopped would satisfy the first half, and
+    the symptom a person reports is the disappearance rather than the refusal.
+    """
+    stdout = io.StringIO()
+
+    mcp.serve(
+        initialized_config,
+        stdin=_as_stream(_ScriptedStream(_undecodable(), _ping(2))),
+        stdout=stdout,
+    )
+
+    replies = _replies(stdout)
+    assert len(replies) == 2, "the session ended instead of carrying on past the bad frame"
+    assert replies[0]["error"]["code"] == mcp._PARSE_ERROR
+    assert replies[0]["error"]["message"] == "could not read a message: it is not valid UTF-8"
+    assert replies[1]["id"] == 2 and replies[1]["result"] == {}
+
+
+def test_the_give_up_ceiling_counts_consecutive_failures_not_lifetime_ones(
+    initialized_config: Config,
+) -> None:
+    """🔴 The word "consecutive" in the ceiling, which nothing else pins.
+
+    A counter that never reset would end a long-lived session on its third bad
+    frame ever — three failures spread over hours, each one recovered from — and
+    the operator would see the tool disappear for no reason they could connect
+    to anything. The ceiling exists to stop a spin, not to ration a session.
+
+    🔴 The reset is what nothing else in this group pins: every other case here
+    recovers at most once, so all of them pass whether the counter resets or
+    counts a lifetime. This one recovers repeatedly, which is the only shape
+    that can tell the two apart.
+    """
+    stdout = io.StringIO()
+    script: list[str | UnicodeDecodeError] = []
+    for message_id in range(mcp._MAX_UNDECODABLE_FRAMES + 2):
+        script += [_undecodable(), _ping(message_id)]
+
+    mcp.serve(initialized_config, stdin=_as_stream(_ScriptedStream(*script)), stdout=stdout)
+
+    replies = _replies(stdout)
+    answered = [r["id"] for r in replies if "result" in r]
+    assert answered == list(range(mcp._MAX_UNDECODABLE_FRAMES + 2)), (
+        "the session gave up part-way, so the failure counter is counting a lifetime "
+        "rather than a run"
+    )
+
+
+def test_a_stream_that_never_decodes_is_given_up_on_rather_than_spun_on(
+    initialized_config: Config,
+) -> None:
+    """🔴 The one outcome worse than the bug above: a server that hangs.
+
+    Reporting and carrying on is right only while the stream advances. Measured
+    behaviour is that a real one reports EOF after a decode failure, so the loop
+    ends on its own — but a stream that neither advanced nor ended would be spun
+    on forever, and a hung server is less diagnosable than a dead one.
+    """
+    stdout = io.StringIO()
+
+    mcp.serve(initialized_config, stdin=_as_stream(_NeverDecodes()), stdout=stdout)
+
+    replies = _replies(stdout)
+    assert len(replies) == mcp._MAX_UNDECODABLE_FRAMES
+    assert all(r["error"]["code"] == mcp._PARSE_ERROR for r in replies)
+
+
+def test_a_real_stream_of_invalid_bytes_does_not_take_the_server_down(
+    initialized_config: Config,
+) -> None:
+    """The same case against the real decoder rather than the stubs above.
+
+    The stubs prove the loop takes a recovery when one is offered; this proves
+    the thing that actually reaches an operator — invalid bytes on a real
+    `TextIOWrapper` — is answered rather than raised. What that decoder does
+    with the frames BEHIND the bad one is CPython's business, so nothing here
+    asserts it.
+    """
+    stdout = io.StringIO()
+
+    mcp.serve(
+        initialized_config,
+        stdin=io.TextIOWrapper(io.BytesIO(b"\xff\xfe not utf-8\n"), encoding="utf-8"),
+        stdout=stdout,
+    )
+
+    replies = _replies(stdout)
+    assert replies, "the server raised instead of answering"
+    assert replies[0]["error"]["message"] == "could not read a message: it is not valid UTF-8"
+
+
+def test_a_frame_nested_too_deeply_is_answered_and_the_session_survives(
+    initialized_config: Config,
+) -> None:
+    """🔴 The parse failure that is NOT a `JSONDecodeError`, and it used to kill the server.
+
+    `json.loads` raises `RecursionError` on a deeply nested document — a
+    `RuntimeError`, sharing no base with `JSONDecodeError` beyond `Exception`.
+    Uncaught it escaped the read loop and ended `serve()`, so the operator's
+    tool vanished mid-session with nothing said: the outcome `cmd_mcp` exists to
+    prevent, arriving one frame in rather than at startup.
+
+    The second request is the assertion that matters. A server that answered the
+    bad frame and then died would satisfy the first half of this test, and the
+    symptom a person actually reports is the disappearance rather than the
+    refusal.
+
+    The reply carries this server's own sentence, not the decoder's, whose text
+    names the stack size it blew.
+    """
+    stdin = io.StringIO(
+        "[" * 100_000
+        + "]" * 100_000
+        + "\n"
+        + json.dumps({"jsonrpc": "2.0", "id": 2, "method": "ping", "params": {}})
+        + "\n"
+    )
+    stdout = io.StringIO()
+
+    mcp.serve(initialized_config, stdin=stdin, stdout=stdout)
+
+    replies = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
+    assert len(replies) == 2, "the session ended instead of answering both frames"
+    assert replies[0]["error"]["code"] == mcp._PARSE_ERROR
+    assert replies[0]["error"]["message"] == "could not parse a message: it is nested too deeply"
+    assert "Stack overflow" not in replies[0]["error"]["message"]
+    assert replies[1]["id"] == 2 and replies[1]["result"] == {}
 
 
 def test_an_unknown_method_is_a_method_not_found(initialized_config: Config) -> None:
@@ -545,6 +735,51 @@ def test_every_tool_answers_against_a_missing_datastore(config: Config) -> None:
         assert any(w["kind"] == "partial" for w in wire["warnings"]), name
 
 
+@pytest.mark.parametrize(
+    ("tool", "arguments", "expects_window"),
+    [
+        ("query_transactions", {"since": "2024-01-01", "until": "2024-06-30"}, True),
+        ("spending_summary", {"since": "2024-01-01", "until": "2024-06-30"}, True),
+        ("list_accounts", {}, False),
+        ("get_pipeline_health", {}, False),
+    ],
+)
+def test_an_unreadable_store_still_reports_whether_the_tool_takes_a_window(
+    config: Config, tool: str, arguments: dict[str, Any], expects_window: bool
+) -> None:
+    """🔴 The key's PRESENCE is a fact about the tool, not about the store.
+
+    The contract fixes absence as "this tool takes no window". So a windowed
+    tool must still emit the key when the datastore cannot be read, with null
+    effective bounds — the true statement being "your window and this store do
+    not overlap", which is exactly the state of a store that cannot be read.
+    Omitting it here would say something false about the TOOL at precisely the
+    moment a consumer branching on the key would take the wrong branch.
+
+    Pinned because nothing did: every other `effective_window` assertion in this
+    file runs against an initialized store, so the old shape (key omitted) and
+    the new one passed the AC-ARCH.3 tests identically. `_unusable` is also the
+    one construction site that hand-builds a `Window` with no caveats, which
+    makes it the only place left that can emit an unexplained empty window.
+    """
+    assert not config.datastore_path.exists()
+
+    wire = _call(config, tool, arguments)["structuredContent"]
+
+    if not expects_window:
+        assert "effective_window" not in wire, tool
+        return
+
+    assert wire["effective_window"] == {
+        "requested": {"since": "2024-01-01", "until": "2024-06-30"},
+        "effective": {"since": None, "until": None},
+    }, tool
+    # The `partial` warning is what explains the emptiness here; a window caveat
+    # would be a second voice saying the same thing about a different subject.
+    assert _request_kinds(wire) == [], tool
+    assert any(w["kind"] == "partial" for w in wire["warnings"]), tool
+
+
 def test_the_missing_datastore_warning_says_the_zeroes_mean_nothing_read(
     config: Config,
 ) -> None:
@@ -721,6 +956,11 @@ def test_a_malformed_date_is_refused_with_a_sentence_a_caller_can_act_on(
         ({"limit": "lots"}, "limit"),
         ({"limit": True}, "limit"),
         ({"account_id": "1"}, "account_id"),
+        # A cursor is a string on the wire, so a caller sending the whole
+        # `truncation` block back — an ordinary slip — must be told which part
+        # of it to send instead.
+        ({"cursor": 7}, "cursor"),
+        ({"cursor": {"next_cursor": "x"}}, "cursor"),
     ],
 )
 def test_an_argument_of_the_wrong_json_type_is_refused_by_name(
@@ -894,16 +1134,66 @@ def test_the_instructions_name_every_field_the_envelope_actually_carries(
 
     Asserted against the real envelope rather than a second hand-written list,
     because a second list is one that stops matching the first.
+
+    🔴 **Over the UNION of every tool's envelope, and one level into it, never
+    one sample.** A tool that carries neither `effective_window` nor
+    `truncation` cannot discriminate a rule about them, and a scan of top-level
+    keys alone cannot see a key nested inside a block — so a guard written
+    either way passes while the only text a consuming agent reads at handshake
+    denies a field exists. A check that samples one instance of the thing it
+    generalises over is a check whose bad news never arrives, which is the trap
+    `learnings.md` records twice.
     """
     _seed(initialized_config)
-    envelope = _call(initialized_config, "list_accounts")["structuredContent"]
     instructions = mcp._instructions(initialized_config)
 
-    missing = sorted(key for key in envelope if f"`{key}`" not in instructions)
+    envelope: set[str] = set()
+    for definition in mcp._tool_definitions():
+        wire = _call(initialized_config, definition["name"])["structuredContent"]
+        for key, value in wire.items():
+            envelope.add(key)
+            # 🔴 One level down as well. A key nested inside a block is invisible
+            # to a scan of the top level, and that is not hypothetical: the
+            # window-scoped coverage sibling shipped and stayed unnamed here
+            # while this guard passed, because it lives inside `coverage`. The
+            # blocks are exactly where the numbers a consumer sums live.
+            if isinstance(value, dict):
+                envelope |= {f"{key}.{nested}" for nested in value}
+    assert {
+        "effective_window",
+        "truncation",
+        "coverage.transactions_in_effective_window",
+    } <= envelope, "the union lost the keys this guard exists for, so it is back to sampling"
+
+    # A nested key is named by its own leaf: the instructions say `matching`,
+    # not `truncation.matching`, which is also how a consumer reads it off the
+    # payload.
+    missing = sorted(key for key in envelope if f"`{key.rsplit('.', 1)[-1]}`" not in instructions)
 
     assert not missing, (
         f"the envelope carries {missing} but the instructions never name them; "
         f"an agent reading only the instructions does not know they exist"
+    )
+
+
+def test_the_instructions_name_every_warning_kind_the_vocabulary_defines(
+    initialized_config: Config,
+) -> None:
+    """🔴 The kinds are the half an agent is told to branch on, and they were short by four.
+
+    The envelope guard above pins FIELDS. Nothing pinned KINDS, so the four
+    request-scoped kinds this cycle added were absent from the handshake text
+    while `warnings` was the thing that text tells the reader to check first.
+    Derived from the vocabulary rather than from a second list here, for the
+    reason the vocabulary exists at all.
+    """
+    instructions = mcp._instructions(initialized_config)
+
+    missing = sorted(k for k in query.WARNING_KINDS if f"`{k}`" not in instructions)
+
+    assert not missing, (
+        f"the vocabulary defines {missing} but the instructions never name them; "
+        f"an agent told to read `warnings` cannot act on a kind it was never given"
     )
 
 
@@ -1260,3 +1550,515 @@ def test_the_advertised_bounds_match_the_enforced_ones() -> None:
 
     assert limit["minimum"] == 1
     assert limit["maximum"] == query.MAX_ROWS
+
+
+# --------------------------------------------------------------------------
+# The window the answer actually covered (#16)
+# --------------------------------------------------------------------------
+
+
+def _request_kinds(wire: dict[str, Any]) -> list[str]:
+    """🔴 The request-scoped warnings only, compared as a whole list.
+
+    Never a substring test: `window_starts_before_coverage` and
+    `window_extends_past_coverage` share a prefix, and `learnings.md` records two
+    occasions where `in` passed against the value the assertion was written to
+    exclude. Filtering to the request-scoped kinds and comparing the list also
+    pins ABSENCE, which is the half that catches a warning firing on every
+    response — the defect these kinds exist to fix.
+
+    🔴 Keyed on what the vocabulary DECLARES request-scoped, not on how the kinds
+    are spelled. Deriving the set from a shared `window_` prefix worked only
+    while every request-scoped kind was about a window: `rows_truncated` is
+    request-scoped and carries no such prefix, so a prefix filter would have
+    silently exempted it from every absence assertion below — and absence is the
+    half these assertions exist for.
+    """
+    request_scoped = set(query.REQUEST_SCOPED_KINDS)
+    assert request_scoped, "the request-scoped kinds vanished from the vocabulary"
+    return [w["kind"] for w in wire["warnings"] if w["kind"] in request_scoped]
+
+
+@pytest.mark.parametrize("tool", ["query_transactions", "spending_summary"])
+def test_a_windowed_answer_states_the_window_it_covered(
+    initialized_config: Config, tool: str
+) -> None:
+    """Both windowed tools, because one that forgot would be invisible.
+
+    The fixture's transactions are all dated today, so a request reaching back
+    to 2024 crosses the coverage boundary by nearly two years.
+    """
+    _seed(initialized_config)
+    today = str(now_utc().date())
+
+    wire = _call(initialized_config, tool, {"since": "2024-01-01", "until": today})[
+        "structuredContent"
+    ]
+
+    assert _request_kinds(wire) == ["window_starts_before_coverage"], tool
+    assert wire["effective_window"]["requested"]["since"] == "2024-01-01"
+    assert wire["effective_window"]["effective"]["since"] == today
+    assert wire["effective_window"]["effective"]["until"] == today
+
+
+@pytest.mark.parametrize("tool", ["query_transactions", "spending_summary"])
+def test_a_window_inside_coverage_carries_no_window_warning(
+    initialized_config: Config, tool: str
+) -> None:
+    """The silence that makes the warning worth reading.
+
+    An acceptance round measured the connection-scoped `gapped` notice arriving
+    identically on a covered window, an uncovered one and a future one, which is
+    why it says nothing about any of them. If these fired here too they would
+    inherit that uselessness on the day they shipped.
+    """
+    _seed(initialized_config)
+    today = str(now_utc().date())
+
+    wire = _call(initialized_config, tool, {"since": today, "until": today})["structuredContent"]
+
+    assert _request_kinds(wire) == [], tool
+    assert wire["effective_window"]["effective"] == {"since": today, "until": today}
+
+
+def test_a_future_window_says_so_rather_than_reading_as_a_quiet_period(
+    initialized_config: Config,
+) -> None:
+    """Measured: a 2027 window returned `rows: []` indistinguishable from real quiet."""
+    _seed(initialized_config)
+
+    wire = _call(
+        initialized_config,
+        "query_transactions",
+        {"since": "2027-01-01", "until": "2027-12-31"},
+    )["structuredContent"]
+
+    assert wire["rows"] == []
+    assert _request_kinds(wire) == ["window_extends_past_coverage"]
+    assert wire["effective_window"]["effective"] == {"since": None, "until": None}
+
+
+def test_an_empty_answer_outside_coverage_is_told_apart_from_a_zero(
+    initialized_config: Config,
+) -> None:
+    """🔴 The single most believable wrong answer this surface can produce.
+
+    `spending_summary` over a window that precedes coverage returns no rows.
+    "You spent nothing" and "this is not knowable" were the same payload; the
+    effective window plus its warning are what separate them.
+    """
+    _seed(initialized_config)
+
+    wire = _call(
+        initialized_config,
+        "spending_summary",
+        {"since": "2024-01-01", "until": "2024-06-30"},
+    )["structuredContent"]
+
+    assert wire["rows"] == []
+    assert _request_kinds(wire) == ["window_starts_before_coverage"]
+    assert wire["effective_window"]["effective"] == {"since": None, "until": None}
+
+
+@pytest.mark.parametrize("tool", ["list_accounts", "get_pipeline_health"])
+def test_an_unwindowed_tool_reports_no_window_at_all(initialized_config: Config, tool: str) -> None:
+    """The key is ABSENT, not null.
+
+    A null `effective_window` on a tool that takes no window would invite a
+    consumer to reconcile one that does not exist. Absence is the honest shape,
+    and it is what `requested_window=None` at the construction site produces.
+    """
+    _seed(initialized_config)
+
+    wire = _call(initialized_config, tool)["structuredContent"]
+
+    assert "effective_window" not in wire, tool
+    assert _request_kinds(wire) == [], tool
+
+
+def test_the_two_windowed_tools_describe_the_window_in_one_shared_sentence() -> None:
+    """One mechanism, one description — the drift #16's own triage note predicted.
+
+    Two tools explaining one behaviour in two sentences is how the sentences
+    stop agreeing. Pinning the shared text is what makes a divergence a test
+    failure rather than a slow documentation rot.
+    """
+    described = {
+        d["name"]: d["description"]
+        for d in mcp._tool_definitions()
+        if d["name"] in {"query_transactions", "spending_summary"}
+    }
+
+    assert len(described) == 2
+    for name, text in described.items():
+        assert mcp._WINDOW_NOTE in text, name
+    for name, text in described.items():
+        assert "ABSENT rather than zero" in text, name
+
+
+# --------------------------------------------------------------------------
+# Truncation, read as a consumer reads it — over the wire, not off the object
+# --------------------------------------------------------------------------
+
+
+def _seed_many(config: Config, count: int) -> None:
+    """`count` transactions on distinct dates, so the cap has something to hide.
+
+    The shared `_seed` above writes three, which cannot truncate under any limit
+    a caller is allowed to send — so the case this chunk exists to fix is
+    unreachable from it.
+    """
+    now = now_utc()
+    _seed(config)
+    added = [
+        {
+            "account_id": "acct-1",
+            "transaction_id": f"bulk-{index}",
+            "amount": "5.00",
+            "iso_currency_code": "USD",
+            "date": str(now.date() - timedelta(days=index)),
+            "authorized_date": None,
+            "pending": False,
+            "pending_transaction_id": None,
+            "name": f"Bulk {index}",
+            "merchant_name": None,
+            "personal_finance_category": {
+                "primary": "GENERAL_MERCHANDISE",
+                "detailed": "GENERAL_MERCHANDISE",
+            },
+        }
+        for index in range(count)
+    ]
+    with writer_connection(config) as conn:
+        apply_response(
+            conn,
+            connection_id=1,
+            endpoint=TRANSACTIONS_SYNC.path,
+            body=json.dumps(
+                {
+                    "accounts": [],
+                    "added": added,
+                    "modified": [],
+                    "removed": [],
+                    "next_cursor": "cursor-2",
+                    "has_more": False,
+                    "transactions_update_status": "HISTORICAL_UPDATE_COMPLETE",
+                    "request_id": "req-bulk",
+                }
+            ).encode(),
+            received_at=now,
+            derivers=ALL_DERIVERS,
+        )
+
+
+def test_a_capped_answer_says_so_in_the_payload_a_consumer_reads(
+    initialized_config: Config,
+) -> None:
+    """🔴 The defect, over the wire: an answer that hit the cap must stop reading as complete.
+
+    Measured harm — the documented default of 100 silently dropped ~16 months of
+    one account's history, and summing what came back understated a two-year
+    total by roughly 40% with nothing in the response saying so. A consumer sees
+    only this payload, so the correction has to be in it.
+    """
+    _seed_many(initialized_config, 130)
+
+    wire = _call(initialized_config, "query_transactions", {"limit": 10})["structuredContent"]
+
+    assert wire["truncation"]["returned"] == 10
+    assert wire["truncation"]["matching"] == 133
+    assert wire["truncation"]["truncated"] is True
+    assert len(wire["rows"]) == 10, "the block disagrees with the rows beside it"
+    assert _request_kinds(wire) == ["rows_truncated"]
+    detail = next(w["detail"] for w in wire["warnings"] if w["kind"] == "rows_truncated")
+    assert "123 are missing" in detail
+
+
+def test_a_complete_answer_says_it_is_complete(initialized_config: Config) -> None:
+    """The reverse half. A block that read `truncated: true` always would say nothing."""
+    _seed(initialized_config)
+
+    wire = _call(initialized_config, "query_transactions")["structuredContent"]
+
+    assert wire["truncation"] == {"returned": 3, "matching": 3, "truncated": False}
+    assert _request_kinds(wire) == []
+
+
+def test_the_aggregate_carries_no_truncation_block_over_the_wire(
+    initialized_config: Config,
+) -> None:
+    """🔴 `api-contract.md` fixes aggregates as unpaginated, and absence is how that is said."""
+    _seed_many(initialized_config, 130)
+
+    wire = _call(initialized_config, "spending_summary")["structuredContent"]
+
+    assert "truncation" not in wire
+    assert _request_kinds(wire) == []
+
+
+@pytest.mark.parametrize("tool", ["list_accounts", "get_pipeline_health"])
+def test_an_uncapped_tool_carries_no_truncation_block_over_the_wire(
+    initialized_config: Config, tool: str
+) -> None:
+    """Absence says "this tool returns everything it found"."""
+    _seed(initialized_config)
+
+    wire = _call(initialized_config, tool)["structuredContent"]
+
+    assert "truncation" not in wire, tool
+
+
+def test_the_window_scoped_count_rides_beside_the_store_wide_one(
+    initialized_config: Config,
+) -> None:
+    """🔴 A new coverage key, never the old one narrowed.
+
+    `coverage.transactions` is store-wide, and a consumer still reading it after
+    a silent window-scoping would get a wrong answer rather than an error — the
+    repurpose `api-contract.md` forbids in red.
+    """
+    _seed_many(initialized_config, 130)
+    today = now_utc().date()
+
+    wire = _call(
+        initialized_config,
+        "query_transactions",
+        {"since": str(today - timedelta(days=4)), "limit": query.MAX_ROWS},
+    )["structuredContent"]
+
+    assert wire["coverage"]["transactions"] == 133
+    assert wire["coverage"]["transactions_in_effective_window"] == 8
+    assert wire["truncation"]["matching"] == 8
+
+
+def test_the_capped_tool_describes_its_cap_and_the_aggregate_does_not() -> None:
+    """AC-9.4: a tool description states its conventions.
+
+    The note belongs to `query_transactions` alone — saying it on the aggregate
+    would describe a cap that tool does not have.
+    """
+    described = {d["name"]: d["description"] for d in mcp._tool_definitions()}
+
+    assert mcp._TRUNCATION_NOTE in described["query_transactions"]
+    for name in ("spending_summary", "list_accounts", "get_pipeline_health"):
+        assert mcp._TRUNCATION_NOTE not in described[name], name
+
+
+@pytest.mark.parametrize(
+    ("tool", "expects_truncation"),
+    [("query_transactions", True), ("spending_summary", False), ("list_accounts", False)],
+)
+def test_an_unreadable_store_still_reports_whether_the_tool_is_capped(
+    config: Config, tool: str, expects_truncation: bool
+) -> None:
+    """🔴 The capped-tool key, pinned over the wire and not only on the object.
+
+    The sibling of the `effective_window` test above, and it exists because that
+    one had to be written after the fact: the old shape and the new one passed
+    every AC-ARCH.3 assertion identically, since each of them runs against an
+    initialized store. `_unusable` is the construction site where a key is
+    easiest to drop, and dropping this one would tell a consumer that
+    `query_transactions` returns everything it finds — a false statement about
+    the tool, made precisely when the datastore cannot be read.
+    """
+    assert not config.datastore_path.exists()
+
+    wire = _call(config, tool)["structuredContent"]
+
+    if not expects_truncation:
+        assert "truncation" not in wire, tool
+        return
+
+    assert wire["truncation"] == {"returned": 0, "matching": 0, "truncated": False}
+    assert _request_kinds(wire) == [], tool
+    assert any(w["kind"] == "partial" for w in wire["warnings"]), tool
+
+
+# --------------------------------------------------------------------------
+# The cursor, read as a consumer reads it — a paged walk over the wire (#17)
+# --------------------------------------------------------------------------
+
+
+def _walk_the_wire(
+    config: Config, arguments: dict[str, Any], *, limit: int
+) -> tuple[list[int], list[dict[str, Any]]]:
+    """Page `query_transactions` over stdio until it stops offering a next page.
+
+    🔴 The loop a consuming agent actually writes, driven through the JSON-RPC
+    surface rather than against the query function: the fields it branches on
+    are the ones in `structuredContent`, and a cursor that never reached the
+    payload would leave an object-level test passing while every consumer was
+    stranded at the cap.
+    """
+    seen: list[int] = []
+    pages: list[dict[str, Any]] = []
+    cursor: str | None = None
+    while True:
+        sent = {**arguments, "limit": limit}
+        if cursor is not None:
+            sent["cursor"] = cursor
+        result = _call(config, "query_transactions", sent)
+        assert result["isError"] is False, result["content"][0]["text"]
+        wire = result["structuredContent"]
+        pages.append(wire)
+        seen.extend(int(row["transaction_id"]) for row in wire["rows"])
+        cursor = wire["truncation"].get("next_cursor")
+        if cursor is None:
+            break
+        # A cursor that fails to advance hangs the test rather than reddening
+        # it, so the walk carries its own ceiling.
+        assert len(pages) <= 40, "the walk did not terminate"
+    return seen, pages
+
+
+def test_a_paged_walk_reassembles_every_row_the_first_page_left_behind(
+    initialized_config: Config,
+) -> None:
+    """🔴 The other half of #17: visibility without a route past the cap is not enough.
+
+    Chunks 01 and 02 made a truncated answer stop reading as a complete one.
+    This is the part that lets a caller do something about it — the measured
+    harm was a two-year card total understated by roughly 40%, and knowing the
+    figure is wrong does not make it right.
+
+    Asserted against `matching` from the FIRST page, which is the number the
+    caller is given up front and the one they would check the walk against.
+    """
+    _seed_many(initialized_config, 130)
+
+    seen, pages = _walk_the_wire(initialized_config, {}, limit=10)
+
+    assert pages[0]["truncation"]["matching"] == 133
+    assert len(seen) == 133, "the walk did not reassemble the answer"
+    assert len(set(seen)) == 133, "a row came back on more than one page"
+    assert len(pages) == 14
+    assert sum(len(page["rows"]) for page in pages) == 133
+
+
+def test_the_last_page_of_a_walk_says_it_is_the_last_one(initialized_config: Config) -> None:
+    """The terminating condition, over the wire and stated in both fields.
+
+    A consumer stops when `next_cursor` is absent; one that branches on
+    `truncated` instead must reach the same conclusion, or the two halves of the
+    block disagree about whether the answer is complete.
+    """
+    _seed_many(initialized_config, 130)
+
+    _, pages = _walk_the_wire(initialized_config, {}, limit=50)
+
+    for page in pages[:-1]:
+        assert page["truncation"]["truncated"] is True
+        assert isinstance(page["truncation"]["next_cursor"], str)
+
+    last = pages[-1]["truncation"]
+    assert last["truncated"] is False
+    assert "next_cursor" not in last
+    assert _request_kinds(pages[-1]) == []
+
+
+def test_a_page_states_the_same_window_every_other_page_states(
+    initialized_config: Config,
+) -> None:
+    """🔴 Paging moves the rows, never the window the answer claims to cover.
+
+    `effective_window` is a statement about the question, and the cursor narrows
+    only which rows of the answer are in hand. A window that crept forward page
+    by page would report each page's own span as the window the caller asked
+    about — the precise wrong number this work cycle exists to remove.
+    """
+    _seed_many(initialized_config, 130)
+
+    _, pages = _walk_the_wire(initialized_config, {}, limit=50)
+
+    windows = {json.dumps(page["effective_window"], sort_keys=True) for page in pages}
+    assert len(pages) > 1
+    assert len(windows) == 1, "the effective window moved while the caller was paging"
+
+
+@pytest.mark.parametrize(
+    ("presented", "why"),
+    [
+        ("", "empty"),
+        ("MTIzNA", "base64 of something that is not a cursor"),
+        ("not a cursor", "not base64 at all"),
+    ],
+)
+def test_a_cursor_this_server_did_not_issue_is_refused_by_name(
+    initialized_config: Config, presented: str, why: str
+) -> None:
+    """🔴 Refused, not read as "start again from the newest row".
+
+    The silent fallback returns page one under the name of page two: a
+    well-formed, plausible, complete-looking answer to a question nobody asked.
+    The refusal names the argument, offers the route back, and — like every other
+    refusal on this boundary — carries no exception class for a caller to puzzle
+    over.
+    """
+    _seed(initialized_config)
+
+    result = _call(initialized_config, "query_transactions", {"cursor": presented})
+
+    assert result["isError"] is True, why
+    assert result["structuredContent"]["error"]["code"] == "invalid_argument", why
+    message = result["content"][0]["text"]
+    assert "cursor" in message, why
+    assert "`next_cursor`" in message, why
+    assert "Error" not in message, why
+
+
+def test_a_cursor_from_a_different_question_is_refused_rather_than_answered(
+    initialized_config: Config,
+) -> None:
+    """🔴 The reachable foreign cursor: the caller's own, against a changed request.
+
+    It would select real rows in the right order and answer a question the
+    caller did not ask — no error, no warning, and a payload that reads as a
+    continuation of the walk they thought they were on. So a cursor carries the
+    request it was issued for, and the boundary compares them.
+    """
+    _seed_many(initialized_config, 130)
+    first = _call(initialized_config, "query_transactions", {"limit": 10})
+    issued = first["structuredContent"]["truncation"]["next_cursor"]
+
+    same = _call(initialized_config, "query_transactions", {"limit": 10, "cursor": issued})
+    assert same["isError"] is False, same["content"][0]["text"]
+
+    changed = _call(
+        initialized_config,
+        "query_transactions",
+        {"limit": 10, "cursor": issued, "account_id": 1},
+    )
+
+    assert changed["isError"] is True, "a cursor from another question was answered"
+    assert "cursor" in changed["content"][0]["text"]
+
+
+def test_the_cursor_is_advertised_on_the_capped_tool_and_nowhere_else() -> None:
+    """A caller learns the argument from the schema, and a misspelling is refused by name.
+
+    `additionalProperties: False` plus `_permitted_arguments` means an argument
+    that is not advertised cannot be sent — so an unadvertised `cursor` would
+    make the escape route unreachable to a caller reading the tool definition,
+    which is the only thing an agent reads.
+    """
+    assert "cursor" in mcp._permitted_arguments("query_transactions")
+    for name in ("spending_summary", "list_accounts", "get_pipeline_health"):
+        assert "cursor" not in mcp._permitted_arguments(name), name
+
+
+def test_the_instructions_say_how_to_reach_what_a_truncated_answer_left_behind(
+    initialized_config: Config,
+) -> None:
+    """🔴 `next_cursor` is nested inside `truncation`, so the envelope guard cannot see it.
+
+    That guard walks the TOP-LEVEL keys of each tool's payload; a field one
+    level down is invisible to it, and a field that appears only on a truncated
+    answer is invisible to a call it makes with no arguments. Both gaps point the
+    same way — the only text a consuming agent reads before it calls anything
+    would not mention the one field that gets it past the cap.
+    """
+    instructions = mcp._instructions(initialized_config)
+
+    assert "`next_cursor`" in instructions
+    assert "`cursor`" in instructions
+    assert mcp._TRUNCATION_NOTE.count("`next_cursor`") >= 1

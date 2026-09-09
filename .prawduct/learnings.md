@@ -131,6 +131,61 @@ case to fall outside of. Prefer the second form even when the first is true toda
   and 552 tests plus a live sandbox test all passed against a criterion that was exactly inverted. A
   second institution found it in one enrollment.
 
+- *2026-09-08, the window resolver, and the sharpest version of this yet.* I wrote a hand-built
+  boundary matrix for a clamp — inside coverage, before it, after today, both, unbounded, no
+  overlap, empty store, on the edge — then ran nine mutations against it and **every mutation was
+  caught.** By the rule as written, the checks were validated. Three real bugs were still live, and
+  each was a *plausible sentence the payload beside it contradicted*: a future window whose warning
+  read "this answer covers through 2026-09-08" while `effective` was null; `{since: 2027-01-01}`
+  with no `until`, an ordinary shape, producing a null window and **no warning at all**; and its
+  mirror, `{until: "2020-01-01"}` with no `since`. I found the first by re-reading the diff, the
+  second by probing reachable inputs by hand, and **the third was found in under a second by a
+  property test asserting the invariant** — "a window that covers nothing always says why" — which
+  I had only written *because* the first two had already escaped.
+  🔴 **Mutation testing validates the checks you wrote; it is structurally blind to the case you
+  did not think to write.** And a hand-built matrix is written by the same mind, at the same
+  sitting, from the same mental model as the code — so it reproduces the code's blind spot rather
+  than crossing it. Both bound-checks were keyed on one bound because I was picturing one bound.
+  **The escape is to assert the INVARIANT rather than enumerate the instances**: `if
+  window.covers_nothing: assert window.caveats` cannot be written from a mental model of which
+  windows are empty, so it does not inherit one. Note the shape of the failure — the enumeration
+  was in the *test matrix*, not in the code, which is the same decay this rule names one layer up.
+
+- *2026-09-08, the truncation guard, and the sharpest form of this rule yet — because the check that
+  failed was **mine**, and it failed silently.* The guard compared the WHERE clause of the row query
+  against the WHERE clause of the count, to catch the two being built from different predicates. It
+  extracted each by `statement.partition(" WHERE ")`. SQLAlchemy compiles with newlines
+  (`count_1 \nFROM transactions \nWHERE ...`), so the separator never matched, the extraction
+  returned `""` for **both** sides, and `"" == ""` agreed with everything. It passed its first run
+  and it passed every mutation aimed at it; only the *survival* of a mutation another test should
+  not have caught exposed it.
+  🔴 **A test that derives what it compares — parsing, extracting, filtering, transforming — has a
+  second point of failure, and that one fails OPEN.** A loose comparison is the known trap; this is
+  its quieter sibling, where the comparison is strict equality and the *operands* are empty. Nothing
+  distinguishes "these two agree" from "I found neither". The defense is one line: **every
+  extraction asserts it found what it was looking for**, before anything is compared. The repo
+  already had this right one function away — the helper in the MCP tests that derives the
+  request-scoped warning kinds from the vocabulary asserts the derived set is non-empty before using
+  it, for exactly this reason — and I did not carry it to the new extraction I wrote beside it.
+- *2026-09-08, the cursor's forged-payload fixtures, and the same rule one layer further out.* Ten
+  mutations were aimed at the new refusal paths and two SURVIVED — removing the bool guard that stops
+  JSON `true` becoming transaction id 1, and removing the scheme-tag check. Neither assertion was
+  wrong. **The fixtures were**: each forged cursor carried a placeholder fingerprint, so an EARLIER
+  guard refused every one of them before the branch under test was reached, and ten cases all passed
+  by proving the same one thing. Fixed by giving the fixtures the real fingerprint, which is the only
+  value that lets each case be wrong in exactly one way.
+  🔴 **The trap here is not a loose assertion or a derived operand — it is a fixture that cannot
+  REACH the subject**, because some other guard between the entry point and the branch fires first.
+  A parametrized list makes it worse, not better: ten green cases read as ten checks. The tell is
+  that the input is invalid in more than one way at once. **When a case exists to exercise one
+  rejection path, make it valid in every respect but that one** — and confirm it by breaking that
+  path alone and watching this case, not the list, go red.
+
+  *(Two further defects in the same chunk were found by neither the matrix nor 22 mutations, but by
+  reading reachable inputs by hand: a caveat advising a caller to raise `limit` past a cap it had
+  already hit, and a windowed answer that dropped a coverage key only when the datastore was
+  unreadable. Both reconfirm the rule above rather than extending it.)*
+
 **How to apply:** before recording a guarantee, name the surface that could violate it and check
 that surface exists in the product. **And for every check you write, break the thing it names and
 watch it fail** — a green first run is the moment to distrust, not the moment to move on. Where a
@@ -138,7 +193,12 @@ mutation harness exists, point one at the branch the assertion actually reads; w
 edit the source, run the test, and put the source back. If the answer is "a future command someone forgets to add to
 the list" or "any SQL that reaches this handle", the guarantee needs a different mechanism, not a
 firmer sentence. And when a rule matches on a *name* — a column name, a filename, a function name —
-ask what relationship the name is standing in for, and match on that instead. Related:
+ask what relationship the name is standing in for, and match on that instead. **When the thing
+under test has a stateable invariant, write the invariant as well as the cases** — the cases check
+your model, and only the invariant checks the model itself; where a property-based library is
+available, that is what it is for. **And when a check derives its own operands, make the derivation
+assert it succeeded** — an extraction that can quietly return nothing turns a strict comparison into
+a tautology, and the green it produces is indistinguishable from the green you wanted. Related:
 [[review-coverage]] — both are the same family, a check whose bad news never arrives.
 
 ---

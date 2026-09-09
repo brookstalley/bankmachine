@@ -64,6 +64,34 @@ _METHOD_NOT_FOUND = -32601
 _INTERNAL_ERROR = -32603
 
 
+#: What every windowed tool says about its own window. Written once and shared
+#: because two tools describing one mechanism in two sentences is how the two
+#: sentences stop agreeing -- and this text is the only place a caller is told
+#: the field exists before they have seen one.
+_WINDOW_NOTE = (
+    "The window you ask for is CLAMPED to what the store can answer over, and the result "
+    "says so: `effective_window` carries the window requested beside the window actually "
+    "covered, and a `window_starts_before_coverage` or `window_extends_past_coverage` warning "
+    "names the boundary crossed. Absent those warnings, the window you asked for is the "
+    "window you got. Read it before treating an empty result as a zero -- outside coverage, "
+    "data is ABSENT rather than zero."
+)
+
+#: 🔴 On `query_transactions` alone. `spending_summary` is an aggregate, fixed
+#: unpaginated by `api-contract.md` and bounded by its grouping, so saying this
+#: there would describe a cap it does not have.
+_TRUNCATION_NOTE = (
+    "This tool is CAPPED. `truncation` carries `matching` (how many rows the request "
+    "selects), `returned` (how many came back) and `truncated`. 🔴 When `truncated` is true "
+    "the rows are the NEWEST ones only, so summing or counting them describes what came "
+    "back rather than the window you asked about -- a `rows_truncated` warning says by how "
+    "much. To read the rest, pass the answer's `next_cursor` straight back as `cursor` with "
+    "the SAME window and account, and keep going until `truncated` is false -- that is the "
+    "only route that reaches every matching row. Narrowing the window or raising `limit` "
+    "moves the cap; paging removes it."
+)
+
+
 def _tool_definitions() -> list[dict[str, Any]]:
     """The tool surface. 🔴 Every one of them reads; none of them writes."""
     return [
@@ -90,7 +118,10 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "`merchant` is the AGGREGATOR'S guess at a merchant name, unvalidated and "
                 "often absent or wrong -- it reads 'FUN' for a purchase whose description is "
                 "'SparkFun'. Do not roll up or match on `merchant` without saying it may be "
-                "wrong, and prefer `description` when the two disagree."
+                "wrong, and prefer `description` when the two disagree. "
+                + _WINDOW_NOTE
+                + " "
+                + _TRUNCATION_NOTE
             ),
             "inputSchema": {
                 "type": "object",
@@ -108,6 +139,15 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             f"{query.MAX_ROWS}; asking for more is refused, not trimmed"
                         ),
                     },
+                    "cursor": {
+                        "type": "string",
+                        "description": (
+                            "resume a paged walk: pass back the `next_cursor` from a "
+                            "previous answer, unchanged, with the same window and account. "
+                            "OPAQUE -- do not read it, build one, or edit one; a cursor "
+                            "this server did not issue for this request is refused"
+                        ),
+                    },
                 },
                 "additionalProperties": False,
             },
@@ -118,7 +158,8 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "description": (
                 "Total outflow per category in a date window. Sums only money leaving, "
                 "reported as positive magnitudes in INTEGER MINOR UNITS -- refunds and "
-                "income are excluded, because 'spending' is a question about outflow."
+                "income are excluded, because 'spending' is a question about outflow. "
+                + _WINDOW_NOTE
             ),
             "inputSchema": {
                 "type": "object",
@@ -247,6 +288,31 @@ def _window(arguments: dict[str, object]) -> tuple[date | None, date | None]:
     return since, until
 
 
+def _cursor(
+    arguments: dict[str, object],
+    *,
+    since: date | None,
+    until: date | None,
+    account_id: int | None,
+) -> query.Cursor | None:
+    """The `cursor` argument, narrowed to the position type the query layer accepts.
+
+    🔴 Narrowed HERE, like every other argument, so no raw string reaches the
+    query layer. The decoding and the fingerprint check live in `query` beside
+    the encoder that produced them -- a decoder written one module from its
+    encoder is the second description that stops matching the first -- and the
+    refusal it raises rides the same boundary path `UnknownAccountError` does,
+    because what a caller gets told is this boundary's to decide.
+    """
+    raw = arguments.get("cursor")
+    if raw is not None and not isinstance(raw, str):
+        raise BadArgumentError(
+            f"cursor must be the `next_cursor` string from a previous answer, "
+            f"got {type(raw).__name__}"
+        )
+    return query.parse_cursor(raw, since=since, until=until, account_id=account_id)
+
+
 def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> query.Answer:
     """🔴 `arguments` is `dict[str, object]`, not `dict[str, Any]`, and that is load-bearing.
 
@@ -271,6 +337,10 @@ def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> q
     since, until = _window(arguments)
     limit = _whole_number(arguments, "limit", 100, minimum=1, maximum=query.MAX_ROWS)
     account_id = _whole_number(arguments, "account_id", None, minimum=1)
+    # 🔴 After the window and the account, because a cursor is only meaningful
+    # against the request it accompanies and this is the call that compares the
+    # two. A cursor narrowed first would have nothing to be checked against.
+    cursor = _cursor(arguments, since=since, until=until, account_id=account_id)
     handlers: dict[str, Callable[..., query.Answer]] = {
         "list_accounts": lambda: query.list_accounts(config),
         "query_transactions": lambda: query.list_transactions(
@@ -279,6 +349,7 @@ def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> q
             until=until,
             account_id=account_id,
             limit=limit if limit is not None else 100,
+            after=cursor,
         ),
         "spending_summary": lambda: query.spending_by_category(config, since=since, until=until),
         "get_pipeline_health": lambda: query.pipeline_health(config),
@@ -313,15 +384,44 @@ def _instructions(config: Config) -> str:
         f"This server reads a local {config.environment} finance datastore. It is READ-ONLY "
         f"and never moves money.\n\n"
         f"Every response carries `environment`, `as_of`, `build`, `coverage`, `warnings` and "
-        f"`rows`. `build` says which code answered you -- this server is a subprocess launched "
+        f"`rows`. `build` carries `version`, `commit` and `dirty`, and says which code answered "
+        f"you -- this server is a subprocess launched "
         f"at connect time, so it runs whatever existed then, and `commit` is captured once at "
         f"start rather than re-read (a null `commit` means the build could not be identified, "
-        f"and `dirty` is then null too, never false). 🔴 Read "
-        f"`warnings` before drawing a conclusion: an answer can be perfectly well-formed and "
-        f"still be computed over incomplete data. `stale` means a connection has not synced "
+        f"and `dirty` is then null too, never false).\n\n"
+        f"🔴 A WINDOWED tool also carries `effective_window`, holding `requested` (the window "
+        f"you asked for) beside `effective` (the one the data could answer over), each a "
+        f"`since` and an `until`. A CAPPED tool also carries `truncation` "
+        f"(`matching`, `returned`, `truncated`). Absence of either key means that tool has no "
+        f"window, or returns every row it finds. 🔴 **If `truncated` is true the rows are the "
+        f"NEWEST ones only, so summing or counting them describes what came back rather than "
+        f"the window you asked about.** A truncated answer also carries "
+        f"a `next_cursor` inside `truncation`: pass it straight back as the tool's `cursor` "
+        f"argument, "
+        f"with the same window and account, to read the next page, and keep going until "
+        f"`truncated` is false. The cursor is OPAQUE -- never build or edit one -- and it is "
+        f"present when and only when there is more to read.\n\n"
+        f"🔴 `coverage` says what the store HOLDS, which is how an empty answer is told from an "
+        f"empty world: `connections`, `accounts`, `transactions`, and `earliest_transaction` / "
+        f"`latest_transaction`, the first and last dates any transaction carries. 🔴 "
+        f"`transactions` is ALWAYS store-wide and never narrows with your question. A windowed "
+        f"answer adds `transactions_in_effective_window` — how many rows the window it actually "
+        f"covered holds — and that is the one to read against a windowed question. It is not "
+        f"narrowed by `account_id` either, so it is a fact about the window rather than about "
+        f"your filters; compare it against `truncation.matching`, which is.\n\n"
+        f"🔴 Read `warnings` before drawing a conclusion: an answer can be perfectly "
+        f"well-formed and still be computed over incomplete data. Some warnings describe the "
+        f"PIPELINE and ride every response: `stale` means a connection has not synced "
         f"recently; `degraded` means one is failing; `gapped` means the institution granted "
         f"less history than was asked for, so older data is ABSENT rather than zero; "
-        f"`partial` means something is not yet known.\n\n"
+        f"`partial` means something is not yet known; `rule-applied` means an account rule "
+        f"filtered rows out of an aggregate, so the total excludes them on purpose. The rest "
+        f"describe THIS REQUEST and "
+        f"appear only when it crosses the boundary they name, so their absence is information "
+        f"too: `window_starts_before_coverage` and `window_extends_past_coverage` mean the "
+        f"window you asked for reaches outside what the store holds; `rows_truncated` means "
+        f"rows were left behind; `counted_during_change` means a write landed while the "
+        f"answer was being assembled.\n\n"
         f"All amounts are integer minor units (cents for USD) and signed from the account "
         f"holder's point of view: negative is money out, positive is money in."
     )
@@ -374,7 +474,12 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
             return _error(message_id, _METHOD_NOT_FOUND, f"no tool named {name!r}")
         try:
             answer = _dispatch_tool(config, name, arguments)
-        except (BadArgumentError, query.UnknownAccountError) as exc:
+        except (
+            BadArgumentError,
+            query.UnknownAccountError,
+            query.InvertedWindowError,
+            query.MalformedCursorError,
+        ) as exc:
             # Ahead of the broad catch. The message is the caller's to act on,
             # so it is rendered without the exception class name -- and it is
             # safe to send verbatim because this product wrote every word of it.
@@ -465,8 +570,39 @@ def serve(config: Config, *, stdin: IO[str], stdout: IO[str]) -> int:
     return EXIT_OK
 
 
+#: How many consecutive undecodable frames the read loop reports before it gives
+#: up. 🔴 A floor under an assumption, not a tuning knob: reporting and carrying
+#: on is right if the stream advances, and measurement says it does — after a
+#: decode failure it reports EOF. If some stream neither advanced nor ended,
+#: carrying on would spin, and a HUNG server is less diagnosable than a dead
+#: one, which is the only outcome worse than the bug this guard sits beside.
+_MAX_UNDECODABLE_FRAMES = 3
+
+
 def _read_messages(stdin: IO[str], stdout: IO[str]) -> Iterator[dict[str, Any]]:
-    for line in stdin:
+    undecodable = 0
+    while True:
+        try:
+            line = stdin.readline()
+        except UnicodeDecodeError:
+            # 🔴 The decode happens in the READ, one step before this function's
+            # own parsing, so the `try` further down cannot reach it — and an
+            # uncaught one escapes this generator and ends `serve()`, which is
+            # the operator's tool disappearing mid-session. Same outcome as an
+            # undecodable JSON body, through the adjacent door.
+            undecodable += 1
+            _write(
+                stdout,
+                _error(None, _PARSE_ERROR, "could not read a message: it is not valid UTF-8"),
+            )
+            if undecodable >= _MAX_UNDECODABLE_FRAMES:
+                return
+            continue
+        undecodable = 0
+        if not line:
+            # End of stream. The client closed the pipe, which is how a session
+            # ends normally.
+            return
         line = line.strip()
         if not line:
             continue
@@ -476,6 +612,23 @@ def _read_messages(stdin: IO[str], stdout: IO[str]) -> Iterator[dict[str, Any]]:
             # Answered rather than ignored: a client that sent something
             # unparseable is waiting, and silence would look like a hang.
             _write(stdout, _error(None, _PARSE_ERROR, f"could not parse a message: {exc}"))
+            continue
+        except RecursionError:
+            # 🔴 Not a `JSONDecodeError`, and not a syntax error at all:
+            # `json.loads` exhausts the stack on a deeply nested document and
+            # raises this instead. Uncaught it escapes this generator and ends
+            # `serve()`, so the client's tool DISAPPEARS mid-session — which is
+            # the outcome `cmd_mcp` exists to prevent, arriving one frame in
+            # rather than at startup. The clause above cannot cover it, because
+            # the two do not share a base beyond `Exception`.
+            #
+            # Answered in this server's own words rather than the decoder's,
+            # whose text names the stack size it blew: `api-contract.md`
+            # § Error Model keeps internals off the wire.
+            _write(
+                stdout,
+                _error(None, _PARSE_ERROR, "could not parse a message: it is nested too deeply"),
+            )
             continue
         if not isinstance(message, dict):
             _write(stdout, _error(None, _INVALID_REQUEST, "a message must be an object"))

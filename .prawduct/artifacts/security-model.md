@@ -160,7 +160,7 @@ and *why* they do not apply is the useful part:
 | **BOLA / object-level authz** (API1) | **No** | One operator owns every object. There is no "another user's transaction" to leak |
 | **Broken authentication** (API2) | **No** | Nothing to authenticate to; process ancestry is the boundary |
 | **Broken object property level authz** / mass assignment | **No** | 🔴 The surface is **read-only**. There is no request binding to over-permit |
-| **Unrestricted resource consumption** (API4) | 🔴 **Yes** | A caller can drive cost. Mitigated by the ~500-row hard cap and aggregate-first design (AC-9.1) |
+| **Unrestricted resource consumption** (API4) | 🔴 **Yes** | A caller can drive cost. Mitigated by the ~500-row hard cap and aggregate-first design (AC-9.1); a cursor narrows a request rather than lifting the cap, so each page stays bounded by it |
 | **Improper inventory management** (API9) | 🔴 **Yes** | A forgotten tool is a real risk. Mitigated by the declared surface inventory in `api-contract.md` |
 | **Unsafe consumption of third-party APIs** (API10) | 🔴 **Yes** | The aggregator's responses are unowned input. See "Data integrity" below |
 | **Excessive data exposure** | Partly | The consumer is an LLM with finite context; returning less is a *performance* requirement too |
@@ -408,6 +408,11 @@ The MCP-surface controls are partly verifiable now that the first slice exists. 
 surface is read-only by construction — every tool reads through a `mode=ro` handle, and a test
 asserts the tool inventory contains no mutating verb. `query_transactions` is hard-capped at the contracted ~500
 rows, refused above the ceiling rather than trimmed to it -- so an accepted
-request is known not to have been capped. **Not yet verifiable:** the caps and inventory of the six tools that are specification only,
+request is known not to have been capped. **Cursor pagination does not widen that.** A cursor
+narrows the request rather than lifting the cap, so every single call stays bounded by the same
+~500; walking a large result set costs one bounded call per page, which is what a caller could
+already do by narrowing the window by hand. A cursor is also unsigned by design, and reaches only
+rows the request's own filters already admit -- it names a position in a result set, never a
+predicate of its own. **Not yet verifiable:** the caps and inventory of the six tools that are specification only,
 and whether an analyst client actually *reads* the warnings every answer carries (queued as
 VRF-004 — no test can settle it).

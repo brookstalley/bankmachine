@@ -89,11 +89,39 @@ unavailable), and `dirty` is then null too, never false. `dirty: true` means the
 uncommitted changes, so the commit alone does not describe it.
 
 
-Every response carries `environment`, `as_of`, `build`, `coverage`, `warnings` and `rows`. The
-server's own `instructions` are the authority on that list — a test holds them against a live
-envelope, so they cannot fall behind the wire; this page is a copy and can. **Read the warnings before
-drawing a conclusion**: an answer can be perfectly well-formed and still be computed over incomplete
-data, and that is the failure this product exists to prevent.
+Every response carries `environment`, `as_of`, `build`, `coverage`, `warnings` and `rows`. A
+**windowed** tool also carries `effective_window`; a **capped** tool also carries `truncation`.
+Absence of either key means that tool takes no window, or returns every row it finds.
+
+The server's own `instructions` are the authority on that list — a test holds them against the union
+of every tool's live envelope and against the warning vocabulary, so they cannot fall behind the
+wire; this page is a copy and can. **Read the warnings before drawing a conclusion**: an answer
+can be perfectly well-formed and still be computed over incomplete data, and that is the failure this
+product exists to prevent.
+
+🔴 **`coverage.transactions` is always store-wide.** It does not narrow with your question, so a
+windowed answer carries a sibling — `coverage.transactions_in_effective_window` — counted over the
+window the answer actually covered. Read the sibling against a windowed question; reading
+`coverage.transactions` there gives you the whole store's count for a question that asked about a
+slice of it. The sibling is not narrowed by `account_id` either, so it is a fact about the *window*
+rather than about your filters; `truncation.matching` is the one that answers "how many rows did my
+whole request select".
+
+🔴 **`truncation` is the one to check before you sum anything.** It carries `matching` (how many rows
+the request selects), `returned` (how many came back) and `truncated`. When `truncated` is true the
+rows are the **newest ones only**, so adding them up describes what came back rather than the window
+you asked about — measurement found a two-year card total understated by roughly 40% that way, with
+nothing in the payload saying so.
+
+**To read the rest, page.** A truncated answer also carries `truncation.next_cursor`; hand it back as
+`query_transactions`'s `cursor` argument, with the same window and account, and keep going until
+`truncated` is false — the last page carries no `next_cursor`, which is the signal to stop. The
+cursor is opaque: pass it back unchanged, never build or edit one, and never send one issued for a
+different question, because both are refused rather than answered. Narrowing the window or raising
+`limit` moves the cap; paging is what gets past it.
+
+Warnings come in two scopes, and the difference is why they are worth reading. The first group
+describes the **pipeline**, so it rides every response equally:
 
 - `stale` — a connection has not synced recently.
 - `degraded` — a connection is failing; its data stops at the last successful run.
@@ -103,6 +131,20 @@ data, and that is the failure this product exists to prevent.
   2026-09-08: a sandbox connection to `ins_109511` granted 722 days against 730 requested.)*
 - `partial` — something is not yet known, such as a granted window that has not been measured. 🔴 A
   null granted window means *not yet measured*, never *no shortfall*.
+- `rule-applied` — an account rule filtered rows out of an aggregate, so the total excludes them on
+  purpose.
+
+The second group describes **this request**, and fires only when the request actually crosses the
+boundary it names — so the *absence* of one is information too:
+
+- `window_starts_before_coverage` — the window you asked for reaches back past the first covered
+  date. Anything before it is *absent rather than zero*.
+- `window_extends_past_coverage` — the window reaches past the covered end (today, or the last
+  transaction when that is later).
+- `rows_truncated` — the request matched more rows than the cap returned, and the answer holds only
+  the newest of them. The detail says how many are missing and what to do about it.
+- `counted_during_change` — a write landed between the row read and the count read, so the two
+  describe moments a fraction apart. The rows are accurate as of the `as_of` stamp.
 
 **Amounts are integer minor units** (cents for USD) and the field names say so — `amount_minor_units`,
 `current_minor_units`. They are signed from the account holder's point of view: negative is money

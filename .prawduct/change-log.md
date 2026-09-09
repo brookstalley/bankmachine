@@ -34,6 +34,273 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-08: A truncated answer carries the route to the rest
+
+<!-- prawduct: scope=mcp-answer-scope -->
+
+**Why:** the entry below made a capped answer stop reading as a complete one. It did not make the
+missing rows reachable. The cap is a contract term, narrowing the window moves the boundary rather
+than removing it, and at the ceiling the only advice left was one the payload's own `returned`
+contradicted — so a caller could see that a two-year card total was understated by roughly 40% and
+still have no way to get the right number. #17 asked for a total *or* a cursor; the total alone
+leaves the honest answer unobtainable.
+
+**What changed:**
+
+- **`truncation.next_cursor`, present when and only when `truncated` is true**, and an optional
+  `cursor` argument on `query_transactions`. **The key's presence is the loop condition** — page
+  while it is there, stop when it is gone — so a consumer never has to compare two counts to know
+  whether it is done. Both `next_cursor` and `truncated` derive from the same two counts, so they
+  cannot disagree.
+- **`cursor` narrows the request the way `since` does.** The keyset predicate lives in the shared
+  `_transaction_filters`, so the count narrows with the page. A count taken over the whole result
+  set behind every page would leave `truncated` true on the final page forever, and a caller paging
+  until it went false would never stop.
+- **Opaque keyset state over `(posted_date, transaction_id)`, never an offset.** That order is
+  already total, so "everything after this row" is a predicate rather than a count of rows to skip.
+  One insert from a concurrent sync shifts every offset page, so a caller would see one row twice
+  and never see another — this work cycle's own defect arriving through a new door.
+- **A cursor carries a fingerprint of the predicate it was issued for**, and one presented with a
+  different `since`, `until` or `account_id` is refused. 🔴 **This is a requirement that surfaced
+  during the build and is recorded as an amendment in the plan's Chunk 03 deliverables rather than
+  designed in chat.** The reachable foreign cursor is not a forged string — it is the caller's own
+  against a changed request, which selects real rows, in the right order, and answers a question
+  nobody asked, with no error and no warning. `limit` is deliberately outside the fingerprint:
+  changing page size between pages does not change which result set is being walked.
+- **Every rejection path answers in one sentence that names `cursor`** and leaks nothing of the
+  decoder, and none of them falls back to "start from the newest row" — that fallback returns page
+  one under the name of page two.
+- **The `rows_truncated` remedy leads with paging**, because it is the only route that reaches every
+  matching row; "raise `limit`" is still offered only while `limit` has something left to give.
+- **The cap did not move.** ~500 stays a contract term across `api-contract.md`,
+  `nonfunctional-requirements.md` and `security-model.md`; the security model now records that a
+  cursor narrows a request rather than lifting the cap, so each page stays bounded by it.
+
+**The plan's Done-when 2 — "ask which existing tests now short-circuit" — asked and answered.** The
+chunk changes control flow through the statement builder, and `learnings.md` records that mutation
+testing is structurally blind to this, because reverting removes the damage along with the fix. Two
+checks were narrowed by the change and both were widened rather than left:
+
+- The guard comparing the row query's `WHERE` against the count's had no case carrying a cursor, so
+  it would have agreed about a predicate *neither* statement held. It is now parametrized with two
+  cursor cases, and asserts the keyset clause reached the row query **before** comparing the two —
+  `learnings.md` § *Guarantees by construction* records this exact fail-open shape from the same
+  guard one chunk ago.
+- The invariant grid spanned every request the store could answer *before* the function grew a
+  second half. It now carries the cursor as a dimension, with an oracle that spells the keyset out
+  independently, so every invariant is checked on page two as well as page one.
+
+**Done-when 3 — every new assertion broken and watched to fail — ran as ten mutations, and two of
+them survived the first time.** Both survived for the same reason: the forged-cursor fixtures
+carried a placeholder fingerprint, so `parse_cursor` refused them at the fingerprint check before
+the branch under test was ever reached. Removing the bool guard and removing the scheme-tag check
+both left the suite green. The fixtures now carry the real fingerprint, and every mutation goes red.
+🔴 **A check that cannot fail hides every problem in its blast radius, not one** — the rule
+`learnings.md` already records, met again in the fixture rather than in the assertion.
+
+**The Critic caught a refusal path that answers "internal error".** `Cursor.decode` caught only
+`ValueError`, on the stated grounds that every decode failure derives from it. One does not:
+`json.loads` on a deeply nested payload raises `RecursionError`, a `RuntimeError`, so that cursor
+escaped the refusal, escaped the boundary's narrowing, and landed in its broad catch — answering a
+caller who mistyped an argument with "the failure has been logged; `bankmachine store status`
+reports whether the datastore is readable". A false statement about a caller mistake is the exact
+outcome `InvertedWindowError` exists to prevent. Reasoned by the Critic from the exception surface,
+then reproduced, then fixed and pinned by a case that survives a future iterative JSON decoder.
+
+**The same defect class was one layer out, in code this branch never touched, and it is fixed
+here too.** `_read_messages` caught only `json.JSONDecodeError` around its `json.loads`, so a
+deeply nested JSON-RPC frame ended `serve()` outright — the operator's tool disappearing
+mid-session, which is what `cmd_mcp` exists to prevent, arriving one frame in rather than at
+startup. Reproduced, then fixed. A second review pass then named the *adjacent* door: the bytes are
+decoded by the **read**, one step before any parsing, so invalid UTF-8 raised `UnicodeDecodeError`
+during iteration and escaped the same way. 🔴 **Worth recording as a pattern rather than as two
+bugs: the class search was run and stopped at `json.loads`.** The read is now guarded too, and
+because reporting-and-continuing is only right while the stream advances, a consecutive-failure
+ceiling sits beside it — a hung server is less diagnosable than a dead one, and removing that
+ceiling makes the test suite hang rather than fail, which is the shape the ceiling is there for.
+The counter resets on every good read: counting a session's lifetime rather than a run would end a
+long-lived session on its third bad frame ever. That reset survived its first mutation, because no
+test recovered more than once; there is now one that does.
+
+**Verified against the real sandbox store**, not only the fixture: account 4 over
+2024-01-01..2026-12-31 still returns 100 of 144 truncated, and now pages to 144 distinct rows in two
+pages, the last carrying no cursor and no `rows_truncated` warning. August 2026 still reports
+1,114,946 minor units across 8 categories, so no figure moved. Suite green.
+
+## 2026-09-08: A capped answer says how much it left behind
+
+<!-- prawduct: scope=mcp-answer-scope -->
+
+**Why:** `query_transactions` stops at its row cap and says nothing. An acceptance round measured
+what that costs: the documented default of `limit: 100` silently dropped ~16 months of one
+account's history, and a caller summing a two-year card total understated it by roughly 40% — with
+a payload that read as a complete answer throughout. `rows` alone cannot say it, because "100 rows"
+is a believable complete answer. This is the row axis of the same defect the entry below fixes on
+the time axis: an answer that does not say what it was computed over.
+
+**What changed:**
+
+- **A `truncation` block on `query_transactions`** — `returned`, `matching`, `truncated` — present
+  on capped tools only, so its absence truthfully says "this tool returns everything it found".
+  `truncated` is a derived property rather than a stored field: a third number is a third thing
+  that can disagree with the other two, and a derived one cannot.
+- **`rows_truncated`**, a request-scoped warning kind. The block alone would not satisfy the
+  contract's own direction that *incompleteness rides the success path as a warning field*, and a
+  consumer reads `warnings` precisely when the numbers look wrong.
+- **One predicate list feeding both the row query and the count**, from one `_transaction_filters`
+  and one from-clause. "Remember to update both" is the enumeration failure this repo has already
+  been bitten by, and its symptom here would be a *precise* wrong number — worse than the vague one
+  being removed. A guard test reads the SQL the engine actually runs and compares the two.
+- **`coverage.transactions_in_effective_window`**, a new sibling. `coverage.transactions` keeps its
+  store-wide meaning: narrowing it in place is the repurpose `api-contract.md` forbids in red, where
+  a consumer still reading it gets a wrong answer rather than an error.
+- **`window_extends_past_today` renamed to `window_extends_past_coverage`.** 🔴 **This departs from
+  the kind name the discovery specified**, deliberately: the old name states the wrong bound, since
+  the covered end is today *or the last transaction when that is later*, so the name was stale by
+  one word while the detail text beside it was accurate. Renaming a shipped warning code is a
+  breaking change under the contract's evolution rules, which is exactly why it happened while the
+  surface was still unreleased. It now mirrors `window_starts_before_coverage` — one boundary
+  concept named from its two ends.
+- **The warning vocabulary carries its own scope.** `CONNECTION_SCOPED_KINDS` and
+  `REQUEST_SCOPED_KINDS` compose into `WARNING_KINDS`, so a kind cannot join without declaring which
+  it is. This discharges a finding carried in from the previous chunk's review: the test helper
+  derived "request-scoped" from a `window_` prefix, which was the same set only until a
+  request-scoped kind arrived that is not about a window.
+
+**The latency question the plan refused to assume, answered:** `matching` costs a second `COUNT(*)`
+per call against a promise of under ~1s over 24 months, unmeasurable on the 388-row fixture.
+Measured against synthetic stores (`mcp-count-latency-2026-09-08.md`), each count costs about what
+the row query itself costs — ~1ms at 10k rows, ~89ms at 200k — and a full call lands at ~18ms and
+~435ms. **`matching` ships exact; the approximate-count fallback held in reserve is not built.**
+
+**Two defects found by hand-probing, which no mutation would have caught.** Both are the shape this
+work cycle exists to remove — a well-formed sentence its own payload denies — and every test passed
+while they were there. At the cap the caveat read *"the newest 500 are returned … raise `limit` (at
+most 500)"*, telling a caller to raise a number to the value it already held; the remedy now depends
+on whether `limit` has anything left to give. And a windowed answer against an unreadable store
+carried `effective_window` but dropped the new coverage sibling, so the key set a consumer branches
+on moved exactly when the datastore could not be read — the same shape as the blocking finding the
+previous chunk's second review round raised, now pinned at both the query and the wire level.
+
+**The Critic found the one thing I had asserted and not checked.** `Truncation` raised on
+`returned > matching`, and its docstring called that unreachable "while the two statements share one
+filter list". It is reachable: the read handle is autocommit — `store/connection.py`, *"every
+statement is its own snapshot"* — so the row query and the count are two snapshots, and the scheduled
+sync writer soft-deletes transactions while the MCP reader may be mid-query. Plaid removals are
+typically recent pending rows, which are exactly the newest rows a default query returns, and the
+*untruncated* case is where it bites, since `returned == matching` there and one removal suffices.
+The raise would have refused a good question because a nightly sync landed mid-query — a failed tool
+call where the contract's own Direction says incompleteness rides the success path. **Resolved by
+treating it as the data condition it is:** `Truncation.over()` floors `matching` at `returned`,
+`truncated` reads false because nothing is hidden, and a new `counted_during_change` warning
+announces the skew rather than smoothing it away. 🔴 **A guarantee stated above its mechanism is
+exactly what `learnings.md` warns fails silently later, and this one was mine.**
+
+**Left open, and deliberately out of this chunk's scope — filed as #27.** One `Answer` is assembled
+from eight or more statements, each its own snapshot, so this is not a property of the new counts:
+`coverage.transactions` has had it since it shipped. Two consequences reach further than the
+truncation block and are worth naming rather than discovering later. **Chunk 01's guarantee that
+"every returned row lies inside `effective_window`" holds against the COVERAGE snapshot, not the ROW
+snapshot** — `_coverage` filters `removed_at IS NULL`, so a soft delete of the store's oldest row
+between the two reads moves `earliest_transaction` forward and can push `effective_since` past a row
+already in `rows`. And **the three transaction counts are three reads at three times**, so the
+relations a caller would assume between `coverage.transactions`, `transactions_in_effective_window`
+and `matching` hold only per-snapshot. The wording in `query.py`, `api-contract.md` and
+`tests/test_query_window.py` now states the conditional version rather than the one that reads
+better; #27 is what would earn back the unqualified claim.
+
+*(An earlier draft of this entry also named `as_of` as a consequence. It is not one, and the
+ordering is the safe one: `as_of` is captured after the rows, so `today` — and therefore
+`covered_end` — can only widen relative to what the rows saw, and a wider window still contains them.
+Capturing it first would be the hazardous direction, and the code does not.)*
+
+Not fixed here, and the reason is governance rather than effort. The fix is a per-answer read
+snapshot, which departs from a documented norm — `store/connection.py` opens the reader autocommit
+*specifically* so no read transaction spans two statements, with WAL checkpoint starvation as the
+stated reason — and it changes read semantics for every query, not this one. A norm departure is a
+recorded decision, and one this structural belongs to the owner rather than to a chunk already
+mid-flight. The counter-argument is real and is recorded on #27: `query.py` is open now, so doing it
+here would be cheaper than as a follow-on.
+
+**Verification:** 22 mutations applied against the new assertions, every one caught. The invariants
+were written before the hand matrix, on the previous chunk's evidence that a matrix inherits the
+code's blind spot. One mutation exposed a defect in a *test*: the SQL guard partitioned on `" WHERE "`
+against text SQLAlchemy compiles with newlines, so it compared empty string with empty string and
+agreed with everything — it now normalizes first and refuses to pass on a failed parse.
+
+## 2026-09-08: An answer says which window it actually covered
+
+<!-- prawduct: scope=mcp-answer-scope -->
+
+**Why:** `spending_summary` over a window that precedes coverage returned no rows, and nothing in
+the payload distinguished "you spent nothing" from "this is not knowable". Four independent
+acceptance rounds each arrived at the same judgement — an empty summary is the most believable wrong
+answer this surface can produce — and each had to work the truth out by hand by comparing their
+window against `coverage`. The connection-scoped `gapped` notice could not help: it arrives
+character-for-character identical on a covered window, an uncovered one, a future one, and a query
+for an account that does not exist, so it says nothing about any of them.
+
+**What changed:**
+
+- Every windowed response carries `effective_window` — the window requested beside the window
+  actually covered. Unwindowed tools carry no such key, so absence means "takes no window" and null
+  effective bounds mean "your window and this store do not overlap", which are different facts.
+- Two request-scoped warning kinds, `window_starts_before_coverage` and `window_extends_past_today`,
+  which fire only when this request crosses the boundary they name. Their absence is now
+  information — the property the five connection-scoped kinds cannot have.
+- The clamp is reportorial, not selective: no predicate narrowed, no figure moved. Verified against
+  the real sandbox store, where August 2026 still reports 1,114,946 minor units across 8 categories,
+  matching an independently recorded acceptance figure to the unit.
+- The covered span ends at today *or the last transaction when that is later*, so that "every
+  returned row lies inside `effective_window`" holds by construction. Bare `today` would have
+  reported an answer stopping in September while returning a row dated in December, since the
+  row-level predicate uses the caller's `until`. A forward-dated row is ordinary — a forward-posting
+  authorization, or an institution a day ahead in local time — and the sandbox cannot express it.
+- `_answer` gained a required keyword `requested_window` with no default, so every construction site
+  must state whether its answer is windowed. Three more windowed tools are specified against this;
+  a clamp each of them had to remember is a clamp that decays.
+- Both windowed tool descriptions now share one sentence about the window, written once, so the two
+  cannot drift into disagreeing.
+- An inverted window (`until` before `since`) is refused by the resolver as its own
+  `InvertedWindowError`, which the MCP boundary renders as a clean refusal alongside
+  `UnknownAccountError`. Unreachable today — `_window` refuses the transposed pair first, and that
+  remains the better place because the caller's own words are still in hand there — but a future
+  windowed tool that skipped argument narrowing would otherwise have hit the boundary's broad catch
+  and been told "internal error" for what is a caller mistake.
+- Fixed while passing: `_declared_floor()` returned `Any` from a `-> str` function under
+  `warn_return_any`, so `mypy --strict` had been failing on `tests/` since the floor test landed.
+
+**Verified by breaking what each check names.** Ten mutations, each reverted after: the boundary
+comparison loosened to `<=` (2 red); the two warning kind strings swapped, which is the shared-prefix
+trap (3 red); `caveats` given a default, removing the structural guarantee (1 red); the covered end
+pinned to the last transaction (8 red); `list_transactions` no longer declaring its window (3 red);
+`effective_window` dropped from the wire (6 red); an unwindowed tool made to report one (2 red);
+`spending_summary` stripped of the shared window sentence (1 red); the contradiction fix reverted
+(1 red); and `_unusable` returned to omitting the window key (4 red). Every mutation was caught — which is the point of the entry below about what mutation
+testing cannot do.
+
+🔴 **Four bugs survived that mutation pass and a hand-written boundary matrix**, every one of them
+an empty answer that failed to say why — the same shape as the defect being fixed. One was found
+re-reading the diff, one by probing reachable inputs, and **two by the hypothesis property that was
+only written because the first two had escaped**. The fourth was an inverted window, a shape the
+property had no idea the MCP boundary already refuses; it is now refused in the resolver too, so
+that function's invariant is total rather than resting on a boundary staying in front of it. Review
+found two more, including the one below about forward-dated rows.
+
+The lesson is recorded in `learnings.md`: mutation testing validates the checks you wrote and is
+structurally blind to the case you did not think to write, and a hand-built matrix inherits the
+code's blind spot because the same mind writes both at the same sitting. The invariant — *a window
+that covers nothing always says why* — is the check that cannot be written from a model of which
+windows are empty, which is why it kept finding what the model missed.
+
+**Ruled during the work:** clamp and announce, rather than refuse. `operational-spec.md` refuses an
+out-of-range *enrollment* window because a clamp would enroll at a window the operator never chose
+and was never told about; on a read that reason points the other way, since refusing "show me 2024"
+against a store beginning 2024-09-16 refuses an ordinary question and no history is lost. Silent
+clamping was offered and rejected.
+
+**Closes:** #16.
+
 ## 2026-09-08: The log can tell a failed run from a quiet one, and two claims stop being unchecked
 
 <!-- prawduct: scope=observability -->
