@@ -8,16 +8,21 @@ a real inflow). 🔴 **Neither closes here, and neither closes on this document'
 
 ---
 
-## 🔴 Status: proposed, awaiting the owner's ratification
+## 🔴 Status: integrated 2026-09-09; two gates still need a human
 
-**Everything below is a proposal.** Nothing in this document is a decided requirement, a ratified
-norm, or an agreed procedure. That applies to every `AC-13.x` and `AC-14.x` criterion, to the
-recommended verification mechanism, and — most of all — to the two closure gates, because **both
-gates commit the owner to doing something with real financial data on a real household's accounts.**
-Read them as a proposal to accept, amend, or reject.
+**AC-13.1–13.9 and AC-14.1–14.9 now live in `docs/system-requirements.md` § 7** and are in force as
+requirements. This document remains their derivation, not their home.
 
-This document was drafted by a delegate. A requirement an owner never ratified is an invented
-requirement whether or not it is written down neatly, and the artifact's existence is not approval.
+It was drafted by a delegate, so its **assumptions are vetoable** — they are listed in
+§ *Assumptions, vetoable*, and an assumption the owner rejects retires the criteria that rest on it.
+That is the mechanism; requirements are not held in limbo awaiting a signature.
+
+🔴 **The two closure gates are different, and they are not integrated in the same sense.**
+VRF-005 and VRF-006 are **enqueued** in `.prawduct/operator-verification.md`, blocked until
+production data is connected. Enqueuing them is not a commitment to perform them: **both commit the
+owner to doing something with real financial data on a real household's accounts**, and only the
+owner can decide to do that. AC-13.1–13.7 and AC-14.1–14.6 gate on none of it and are ordinary build
+work today.
 
 ---
 

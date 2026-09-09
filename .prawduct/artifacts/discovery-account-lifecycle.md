@@ -8,14 +8,22 @@ before yes"
 
 ---
 
-> 🔴 **Everything in this document is PROPOSED and awaiting the owner's ratification — the AC-12.x
-> criteria included.** It was drafted by a delegate working from the tree and the existing artifacts,
-> not from an owner interview. Nothing here is settled contract, nothing here amends a shared
-> artifact (every change it wants is a proposal in the final section), and no requirement here binds
-> a builder until the owner ratifies it. The one product ruling this item turns on is left **visibly
-> open** with a recommendation and its trade-offs; it is not decided here. Read the confidence
-> section before treating any claim as load-bearing — the measured findings and the proposals are
-> deliberately separable, and only the findings are facts.
+> 🔴 **Integrated 2026-09-09. AC-12.1–12.9 now live in `docs/system-requirements.md` § 4 as
+> FR-9 and are in force as requirements.** This document remains their derivation, not their home.
+>
+> It was drafted by a delegate working from the tree and the existing artifacts, not from an owner
+> interview, so its **assumptions are vetoable** — they are listed in § *Assumptions, vetoable*, and
+> an assumption the owner rejects retires the criteria that rest on it. That is the mechanism here;
+> requirements are not held in limbo awaiting a signature.
+>
+> **One product ruling is genuinely open and is the owner's**: whether a total over account balances
+> excludes non-active accounts or includes and flags them (§ *The ruling the owner owes*). AC-12.8 is
+> written to hold either way, so it does not block the rest. The candidate fifth § Direction norm
+> proposed alongside it stays **unborn** until that ruling is taken — a norm's birth is a ruling, not
+> an integration step.
+>
+> The measured findings and the proposals are deliberately separable, and only the findings are
+> facts. Read § *Requirements confidence* before treating any claim as load-bearing.
 
 ---
 

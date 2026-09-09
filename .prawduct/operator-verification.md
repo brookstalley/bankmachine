@@ -321,3 +321,63 @@ warnings are read rather than skipped.
    silently not appearing.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-004`
+
+---
+
+<!-- VRF-005 and VRF-006 enqueued 2026-09-09 from `.prawduct/artifacts/discovery-production-data-semantics.md`. Both are BLOCKED until production
+     data is connected -- they gate trusting a current-period figure, not connecting. Enqueuing
+     them is not a commitment to perform them today. -->
+
+## VRF-005 — one real pending transaction watched across settlement
+
+**Chunk:** production-data semantics (#22) · **Raised:** 2026-09-09 · **Status:** pending
+
+**Why a human:** the sandbox has zero pending rows and has never had one — `pending` is 0 on all
+388, `source_pending_transaction_id` is NULL on all 388. The deriver's pending→posted branch is
+unit-tested against hand-built payloads, which proves what *this system* does with a stipulated
+input and says nothing about what the aggregator actually sends. Only a real settlement can show
+the delivery sequence.
+
+**To verify**, once at least one production connection is syncing:
+
+1. Make a card purchase you will recognise. Within a day, find it: it should appear with
+   `pending: true`. Note the amount, the date, and the local `transaction_id`.
+2. Ask a spending question covering that day and note the total.
+3. After it posts (typically 1-3 days), re-query. Confirm **exactly one** row for that purchase —
+   not two — that `pending` is now false, and that the local `transaction_id` is **unchanged**.
+4. 🔴 **Confirm the amount is the settled one.** If the hold and the settlement differ (a tip, a
+   fuel hold), the row must carry the settled figure. This is the case the existing tests do not
+   cover — both use the same amount on both sides.
+5. Re-ask the question from step 2 and confirm the total moved by exactly the difference, and that
+   nothing else changed.
+6. Paste the two observations below, and record the `raw_response` ids of the sync pages spanning
+   the transition — those are what AC-13.9 promotes to a regression fixture.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-005`
+
+## VRF-006 — the sign convention on a real inflow, across two institutions
+
+**Chunk:** production-data semantics (#23) · **Raised:** 2026-09-09 · **Status:** pending
+
+**Why a human:** normalization is an unconditional negation, and it is already exercised in both
+directions by the suite and by the sandbox (49 of 388 rows are stored positive). What no test can
+speak to is whether a **real institution's** feed obeys the convention the negation assumes — and
+the sandbox is single-connection, so a per-connection comparison is impossible there. This needs
+ground truth about money you already know about.
+
+**To verify**, with at least two production connections at **different** institutions:
+
+1. Pick a paycheck you know the amount of. Confirm it reads **positive** and matches to the cent.
+2. Pick a bill you know the amount of. Confirm it reads **negative** and matches to the cent.
+3. Repeat both at the second institution. 🔴 **This is the step the sandbox cannot rehearse**, and
+   it is the whole point of the entry: one feed obeying the convention is not evidence about
+   another.
+4. Run the per-connection check (AC-14.2) and paste its output. A connection whose
+   never-plausibly-inflow categories come back predominantly positive has an inverted feed;
+   the sandbox's measured baseline on one connection is 219 of 219 negative.
+5. 🔴 Do **not** use a transaction's description text to judge its direction. The sandbox's payroll
+   row reads "ACH Electronic Credit" and is categorised `TRANSFER_OUT` in both structured fields;
+   that was adjudicated as faithful passthrough and is settled.
+6. Record the `raw_response` id of the page carrying the observed deposit (AC-14.9).
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-006`

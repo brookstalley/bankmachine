@@ -475,6 +475,17 @@ and zero, so the key set a consumer branches on never depends on the store's hea
 
 ### Coverage is reported per account, never per institution (AC-9.5)
 
+🔴 **Ruling, 2026-09-09 — where the three new findings live.** Two discovery passes each asked
+whether their per-account and per-connection findings belong on `get_coverage_report` or
+`get_pipeline_health`, and both deferred it so it would be decided once. 🔴 **§ Direction's fourth
+norm already answers it: a tool's boundary is drawn where the answer *shape* changes, never where
+the question changes.** So the split is by the shape of the finding, not by its subject matter:
+a **per-account** finding goes to `get_coverage_report` (AC-12.7's retired-account silence,
+AC-13.5's stranded hold), and a **per-connection** finding goes to `get_pipeline_health`
+(AC-14.2's sign-convention check). This is an application of the existing norm, not a new one —
+no fifth norm is born here, and the candidate one proposed alongside AC-12.8 stays unborn until
+that ruling is taken.
+
 One institution may hold many accounts with different coverage windows, and an institution-level
 summary hides exactly that.
 
@@ -562,6 +573,9 @@ three-week-old hole in the data and answer confidently.
 | `rows_truncated` | The request matched more rows than the cap returned, and the answer holds only the newest of them |
 | `counted_during_change` | A write landed between the row read and the count read, so the two describe moments a fraction apart |
 | `accounts_without_coverage` | An account in the scope of THIS request has never had a transaction recorded, so its empty result means data not present, never no activity |
+| `account_no_longer_active` *(specified, not built)* | An account in the scope of THIS request is closed or is no longer listed by its institution, so its balance is frozen as of the date beside it and is not a fact about today |
+| `includes_pending_rows` *(specified, not built)* | This answer's rows include authorisation holds that have not settled, so a figure computed from it may change without any new activity |
+| `sign_convention_unverified` *(specified, not built)* | This answer draws on a connection whose sign convention has not been observed against a known inflow, so its direction is assumed rather than confirmed |
 
 🔴 **The window/row/account kinds below the line are REQUEST-scoped; the connection kinds above them
 are CONNECTION-scoped, and the distinction is the reason they exist.** A connection-scoped warning describes the standing state of the pipeline,
@@ -584,6 +598,15 @@ uncovered account: on `list_accounts` when the listing holds one, and on
 without being added here goes unnoticed — which is how `accounts_without_coverage` was missing from
 this table for a full work cycle after it shipped. Adding a kind means editing both until something
 derives one from the other.
+
+🔴 **The three kinds marked *specified, not built* were proposed by two separate discovery
+passes that could not see each other, and each registered only its own.** They are recorded here
+together for that reason. Whichever ships first must add **all three** to
+`envelope.REQUEST_SCOPED_KINDS` in the same change, or the closed-vocabulary test fails and a
+schema-validating client rejects the whole answer rather than the unknown code. Sources:
+`.prawduct/artifacts/discovery-account-lifecycle.md` (AC-12.x) and
+`.prawduct/artifacts/discovery-production-data-semantics.md` (AC-13.x, AC-14.x). The two names
+the second document left to the builder are fixed here so the three are chosen as a set.
 
 Added additively under the evolution rules below (new warning codes need no version bump; consumers
 must tolerate a code they do not recognize), so AC-9.3's list — itself a minimum — is unamended.
