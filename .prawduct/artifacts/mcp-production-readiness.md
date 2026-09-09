@@ -255,8 +255,8 @@ discover in production.
    the direction it will actually run.
 
 8. ~~**A datastore this build cannot serve answers successfully, with zeroes**~~ — **FIXED
-   2026-09-09 on `fix/unservable-datastore-refuses` (#58), and #57 closed with it **on this
-   surface**.** Every unservable state now refuses with `isError: true` and the stable code
+   2026-09-09 on `fix/unservable-datastore-refuses` (#58), and #57 closed with it.** Every
+   unservable state now refuses with `isError: true` and the stable code
    `datastore_unservable`, carrying a remedy chosen by state; a store that is merely MISSING keeps
    AC-ARCH.3's answer-with-zeroes carve-out. Both halves are pinned by go-red cases.
    🔴 **#57 is closed for the CLI too, and that took a second pass.** The first version of this

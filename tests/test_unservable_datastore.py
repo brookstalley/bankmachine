@@ -320,9 +320,8 @@ def _cleanup(config: Config) -> None:
     The lock file is chmodded BACK because one builder deliberately made it
     unopenable; leaving it that way would strand the tmp tree for cleanup.
     """
-    lock = config.datastore_path.with_suffix(config.datastore_path.suffix + ".lock")
-    if lock.exists():
-        lock.chmod(0o600)
+    if config.lock_path.exists():
+        config.lock_path.chmod(0o600)
     delete_datastore_key(config)
 
 

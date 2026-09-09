@@ -1049,7 +1049,7 @@ def _unusable(
                 detail=(
                     f"the {config.environment} datastore is not readable ({problem}), so this "
                     f"answer is empty because nothing could be read — not because there is "
-                    f"nothing to report. Run `bankmachine store init` to create it"
+                    f"nothing to report. {remedy_for(DatastoreProblem.MISSING)}"
                 ),
             )
         ],
