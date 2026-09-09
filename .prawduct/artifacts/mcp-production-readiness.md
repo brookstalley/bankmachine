@@ -254,6 +254,41 @@ discover in production.
    arrives pre-inverted from the aggregator. The normalization is unverified in
    the direction it will actually run.
 
+8. ~~**A datastore this build cannot serve answers successfully, with zeroes**~~ — **FIXED
+   2026-09-09 on `fix/unservable-datastore-refuses` (#58), and #57 closed with it.** Every unservable
+   state now refuses with `isError: true` and the stable code `datastore_unservable`, carrying a
+   remedy chosen by state; a store that is merely MISSING keeps AC-ARCH.3's answer-with-zeroes
+   carve-out. Both halves are pinned by go-red cases. The entry stays rather than being deleted,
+   because the reason it was missed is the durable part — **added 2026-09-09,
+   found by driving the server rather than by reading it.** This item was not in the original
+   seven because the acceptance session probed a store the build could serve, and that is the only
+   state in which the defect is invisible. A populated datastore at a schema version this build
+   does not serve is reported to the client as a **success**: `isError` false, no JSON-RPC error,
+   `rows: []`, and every `coverage` figure zero, with the diagnosis carried only in `warnings`.
+   Measured against this machine's sandbox store — schema 2, build serves 4, **14 accounts and 388
+   transactions present** — every tool answers as though the household owned nothing. An agent that
+   does not parse `warnings` reports "you have no accounts" and "you spent nothing", which is the
+   plausible-and-wrong shape § *Where my confidence comes from* argues is the whole risk.
+
+   **Why it is a blocker rather than an annoyance:** schema mismatch is the ORDINARY state of a
+   store the day after a migration ships, and two migrations shipped in the last two cycles. It is
+   not an edge case, it is the upgrade experience — and in production it runs against real
+   household data.
+
+   **Why it is a ruling and not just a fix.** `architecture.md` § Direction carries a steady-state
+   norm — *a process that does not recognize the datastore's schema version refuses to serve,
+   loudly ... answers `get_pipeline_health` with a hard error instead of serving queries* — whose
+   stated why is this exact failure. AC-ARCH.3's carve-out is narrower than the code applies it:
+   the requirement says **"empty or missing"**, and both go-red cases that enforce it anchor to
+   tests named for a *missing* datastore. `query._readable` collapses all five of
+   `connection.inspect`'s distinct problems into one path, so the missing-store carve-out is
+   applied to a populated store as well. 🔴 **The fix must not simply zero-out differently:**
+   `api-contract.md` § Direction separately pins the unreadable path's coverage as
+   present-and-zero, with two `verify_norms_go_red.py` cases. Which way this resolves — honour the
+   norm for the schema-mismatch state while AC-ARCH.3's empty/missing path keeps answering, or
+   amend the norm with a recorded reason — is the owner's, and **amending the norm to match the
+   code is the move that is not available.**
+
 ---
 
 ## Where my confidence comes from sandbox specifics that will not hold
@@ -307,6 +342,76 @@ Specific sandbox properties my confidence rests on that production breaks:
   is the right shape. But every account reports the same timestamp here, so
   divergent per-connection staleness, which is normal in production, has never
   been seen.
+
+---
+
+## Cutover readiness — checked 2026-09-09, second pass
+
+Asked directly: *are we done, tested, ready to switch to production data?* This section answers
+that question as of `e846a21` on `develop`, and it is deliberately separate from the 2026-09-08
+verdict above, which was a black-box acceptance judgement on an older build.
+
+**Yes to connecting. Not yet to trusting a current-period figure — by design, and § "Day one in
+production" below is how that gap closes.**
+
+### What is actually true now
+
+- **Suite green with nothing failing and nothing skipped**, re-run on this tree rather than quoted
+  from the last cycle. The count lives in the evidence store — `prawduct-hook test-status` — because
+  a number copied into prose here drifts silently while the sentence keeps reading true. The only
+  tests not run are the `-m sandbox` live-call set, deselected by `addopts` and run deliberately.
+  Tree clean, last Critic round 0 findings.
+- **All three `blocks:production` issues have their code built.** `feat/production-blockers` shipped
+  #40's lifecycle path, #22's pending semantics and #23's sign-convention check;
+  `feat/production-blocker-findings` shipped the three findings that cycle produced. What remains on
+  each is a **production-data tail** — AC-13.8/13.9, AC-14.7/14.8/14.9, and #40's operator-declared
+  retirement — which is why the label is still on. The label comes off when VRF-005 and VRF-006 are
+  performed, and neither can be performed before the data is connected.
+- **The environment switch itself is clean.** `config.py` gives sandbox and production separate
+  datastores, separate datastore keys, separate aggregator secrets and separate per-connection
+  credential accounts, so a production cut cannot be contaminated by sandbox state.
+- **`history_days` defaults to `MAX_HISTORY_DAYS` (730)** and there is no config file and no
+  override in the environment — so the highest-stakes parameter is at its maximum by default.
+
+### 🔴 What the cutover creates, that no issue tracks
+
+The three filed blockers are all about *reading* production data. The risk the cutover introduces is
+about *keeping* it, and it is not on the `blocks:production` query:
+
+**The first production sync starts accumulating the one series no re-sync can rebuild**
+(`balances_daily`, per § RPO / RTO in `operational-spec.md`) **while nothing schedules a backup and
+the restore procedure has never been rehearsed by a human** (`#10`; `operational-spec.md` § Restore).
+Add the fact that the datastore key has no recovery path, and day one in production is the day the
+cost of those two open items stops being theoretical. In sandbox, losing the store costs a re-sync.
+In production it costs the balance history permanently.
+
+### 🔴 The irreversible step is the one whose operator check is still pending
+
+**VRF-003 is `pending`, and the first production `enroll` is where AC-1.2 becomes irreversible** —
+the requested history window "cannot be raised after enrollment without removing and re-linking the
+connection" (`docs/system-requirements.md` AC-1.2). VRF-003 exists precisely to confirm that the
+window line reads as a warning *before* the URL, at the last moment it is still reversible. It is
+runnable against sandbox at zero cost. Running it after the production enroll verifies nothing that
+still matters.
+
+**VRF-004 is also `pending`** and is the judgement layer — whether an agent reads the warnings rather
+than skipping them. It too is sandbox-runnable today, and it is the check whose failure mode is a
+confidently wrong answer, which § "Where my confidence comes from" above argues is the whole risk.
+
+**VRF-001 is `pending` in status only** — a full session is recorded against it, items 1–8 exercised,
+item 9 terminal-only. It is a drain away from `verified`, not a piece of work.
+
+### The ordered answer
+
+1. Run **VRF-003** and **VRF-004** against sandbox, and drain **VRF-001**. All three are free now
+   and one of them stops being meaningful the moment production is enrolled.
+2. Back up the datastore key out of the keychain, and rehearse **restore** once against a scratch
+   store. This is `#10`, and the cutover is what makes it urgent.
+3. Set `operator_verification_required: true` in `project-state.yaml` before the first production
+   cut, so the remaining VRF entries gate rather than advise.
+4. Enroll production. Work § "Day one in production" below in order.
+5. Discharge **VRF-005** and **VRF-006** over the first weeks; that is what lifts `blocks:production`
+   from #22 and #23, and #40's tail with them.
 
 ---
 

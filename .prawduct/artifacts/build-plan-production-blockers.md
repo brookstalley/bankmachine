@@ -141,9 +141,7 @@ criterion text (read it, never edit it), and the `git` history.
 tail is an append/append conflict whose resolution is "keep all three", and inventing per-item
 anchors to avoid it would be structure built for the org chart. The coordinator resolves it.
 
-## Chunks
-
-### Status
+## Status
 
 - [x] **00 · The ruling, the norm it births, and the shared vocabulary** *(coordinator)*
 - [x] **01 · Account lifecycle, made visible — #40, AC-12.1–12.9** *(delegate)*
@@ -151,10 +149,18 @@ anchors to avoid it would be structure built for the org chart. The coordinator 
 - [x] **03 · The per-connection sign-convention check — #23, AC-14.1–14.6** *(delegate)*
 - [x] **04 · Integration** *(coordinator)*
 
-**Context.** All chunks complete on `feat/production-blockers`, suite green and recorded at 966.
-Seven review rounds: one cumulative over the delegate work, four verify-resolutions rounds, and a
-second cumulative; every finding is fixed or accepted with a recorded reason. 🔴 **Nothing is
-pushed and no PR exists — nobody asked for one.**
+**Context.** All chunks complete, suite green and recorded at 966. Seven review rounds: one
+cumulative over the delegate work, four verify-resolutions rounds, and a second cumulative; every
+finding is fixed or accepted with a recorded reason.
+
+**Merged 2026-09-09 as PR #54**, and the branch this plan's frontmatter names was deleted at merge —
+which is the ordinary end state here, not a loose end. The three findings that cycle produced went
+to `build-plan-production-blocker-findings.md`, merged as PR #55.
+
+🔴 **This heading was `### Status` under a `## Chunks` parent until 2026-09-09.** Every other plan in
+this repo puts it at the top level, and that is where governance looks, so a fully-ticked plan read
+as one with chunks outstanding. The ticks are what disarm the Stop gates — nest this heading again
+and the ticks stop being read.
 
 🔴 **One warning is recorded UNRESOLVED by design, and it is not a drop.** The cumulative's R-8
 part (2): `list_accounts` and `_not_active_balances` each build the latest-recorded-balance
@@ -169,6 +175,10 @@ same read path.
 AC-14.7, AC-14.8, AC-14.9) that no chunk here may claim, and #40 additionally cannot reach its
 `closed` lifecycle value until an operator declaration path exists. See § *What this plan does NOT
 close* and the as-built notes under chunk 04.
+
+---
+
+## Chunks
 
 ### Chunk 00: The ruling, the norm it births, and the shared vocabulary
 

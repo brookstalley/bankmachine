@@ -346,6 +346,15 @@ def test_only_the_initializing_writer_creates_the_file(config: Config) -> None:
 
 # --------------------------------------------------------------------------
 # Norm 4: a process that does not recognize the schema version refuses to serve.
+#
+# 🔴 The three tests below cover the STORE layer -- reader, writer, and what
+# `inspect` reports. The norm's other clause is about the surface above them:
+# `architecture.md` § Direction and `api-contract.md` § Hard errors both say such
+# a store "answers `get_pipeline_health` with a hard error instead of serving
+# queries". Nothing covered that clause, and the code did the opposite for two
+# years of migrations -- see `tests/test_unservable_datastore.py`, which owns it
+# rather than duplicating these three. Kept as a pointer because the gap was
+# invisible precisely BECAUSE this section looked complete.
 # --------------------------------------------------------------------------
 
 

@@ -79,6 +79,7 @@ ENVELOPE = pathlib.Path("src/bankmachine/envelope.py")
 MCP = pathlib.Path("src/bankmachine/mcp.py")
 CLIENT_GUIDE = pathlib.Path("docs/connecting-an-mcp-client.md")
 MCP_TESTS = "tests/test_mcp.py"
+UNSERVABLE_TESTS = "tests/test_unservable_datastore.py"
 NO_STDOUT = "tests/preferences/test_the_server_never_writes_to_stdout.py"
 TOOL_SURFACE = "tests/preferences/test_the_documented_tool_surface_is_the_built_one.py"
 VOCABULARY = "tests/preferences/test_the_warning_vocabulary_is_closed.py"
@@ -932,12 +933,33 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         f"{SYNC_RUN_TESTS}::test_a_bounded_run_does_not_claim_the_connection_is_up_to_date",
     ),
     (
-        "AC-ARCH.3: the MCP server reports an unreadable datastore, never refuses",
+        # 🔴 This case used to read "an unreadable datastore, never refuses", and
+        # that label was where an over-generalization lived: AC-ARCH.3's words
+        # are "empty or missing", and this case's own anchor test is named for a
+        # MISSING datastore. The requirement never covered a populated store the
+        # build cannot serve -- `api-contract.md` § Hard errors and
+        # `architecture.md` § Direction both require that one to refuse -- but
+        # the code it guarded collapsed every unreadable state into one path, so
+        # the carve-out reached them all. The label now names the state it
+        # actually enforces.
+        "AC-ARCH.3: the MCP server reports a MISSING datastore rather than refusing",
         QUERY,
-        "    status = inspect(config)\n"
-        '    return None if status.healthy else (status.problem or "it is missing or unreadable")',
-        "    return None",
+        "    if status.reason is DatastoreProblem.MISSING:\n"
+        '        return status.problem or "it is missing or unreadable"',
+        '    if False:\n        return status.problem or "it is missing or unreadable"',
         f"{MCP_TESTS}::test_the_server_starts_and_answers_when_the_datastore_is_missing",
+    ),
+    (
+        # The other half of the same line, and the reason the split exists. A
+        # store holding 14 accounts and 388 transactions at a schema version this
+        # build does not serve answered every tool with zeroed coverage on the
+        # SUCCESS path; an agent skipping `warnings` reported the household owned
+        # nothing. Removing the raise restores exactly that.
+        "api-contract § Hard errors: a store this build cannot serve refuses, never answers zero",
+        QUERY,
+        "    raise DatastoreUnservableError(_unservable_remedy(status))",
+        '    return status.problem or "it is missing or unreadable"',
+        f"{UNSERVABLE_TESTS}::test_every_tool_refuses_an_unservable_store",
     ),
     (
         "AC-11.8: the granted window is measured once, never re-measured",
@@ -949,9 +971,14 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-ARCH.3: cmd_mcp starts against a missing datastore rather than refusing",
         MCP,
-        "    status = inspect(config)\n    if not status.healthy:\n        logger.warning(",
-        "    status = inspect(config)\n    if not status.healthy:\n        raise SystemExit(2)\n"
-        "    if not status.healthy:\n        logger.warning(",
+        # Anchored on the branch's FIRST line rather than on the statement that
+        # used to follow it: what the branch does inside grew a state check, and
+        # an anchor that reached past the `if` broke the moment it did. The
+        # mutation still says the same thing -- refuse to start instead of
+        # serving -- and everything after it in the branch becomes unreachable,
+        # which parses and is what makes the case runnable.
+        "    status = inspect(config)\n    if not status.healthy:\n",
+        "    status = inspect(config)\n    if not status.healthy:\n        raise SystemExit(2)\n",
         f"{MCP_TESTS}::test_cmd_mcp_itself_starts_against_a_missing_datastore",
     ),
     (

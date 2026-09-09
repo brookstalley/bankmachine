@@ -25,6 +25,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Final
 
 from sqlcipher3 import dbapi2
@@ -133,6 +134,39 @@ class SchemaVersionUnsupportedError(StoreError):
     """The datastore's schema version is not one this build understands."""
 
 
+class DatastoreProblem(StrEnum):
+    """Which unhealthy state `inspect` found, as a value rather than as prose.
+
+    🔴 The `problem` sentence beside this is written for a human and changes
+    freely; anything that must BRANCH on the state reads this instead. The two
+    exist together because a caller composing an operator remedy needs to pick a
+    remedy per state, and picking one by matching substrings of a sentence makes
+    every later rewording of that sentence a silent behaviour change.
+
+    `MISSING` is separated from the rest for a reason that outranks tidiness: a
+    store that is not there has no data to misreport, so it is the one state the
+    MCP surface may answer rather than refuse (AC-ARCH.3). Every other value here
+    means data exists and could not be read.
+    """
+
+    MISSING = "missing"
+    NO_SCHEMA_VERSION = "no_schema_version"
+    #: 🔴 The two schema mismatches are SEPARATE values, and collapsing them is a
+    #: defect with a specific victim. `migrate()` is forward-only, so "run the
+    #: migrations" is the remedy for a store BEHIND this build and does literally
+    #: nothing for one AHEAD of it -- the operator runs the command, is told
+    #: there was nothing to apply, and never learns the real fix is to upgrade
+    #: the reader. The ahead case is not the exotic one: it is what
+    #: `api-contract.md` § Hard errors gives as the REASON this state refuses at
+    #: all ("a reader running older code against a migrated schema"), and it is
+    #: what a second checkout, a rolled-back deploy, or a sync process upgraded
+    #: before the MCP server produces.
+    SCHEMA_BEHIND_BUILD = "schema_behind_build"
+    SCHEMA_AHEAD_OF_BUILD = "schema_ahead_of_build"
+    KEY_MISSING = "key_missing"
+    UNREADABLE = "unreadable"
+
+
 @dataclass(frozen=True, slots=True)
 class DatastoreStatus:
     """What `store status` reports. Nothing here raises on an absent datastore."""
@@ -146,6 +180,8 @@ class DatastoreStatus:
     writer_lock_held: bool = False
     readable: bool = True
     problem: str | None = None
+    #: The machine-readable twin of `problem`; None exactly when healthy.
+    reason: DatastoreProblem | None = None
 
     @property
     def healthy(self) -> bool:
@@ -409,7 +445,11 @@ def inspect(config: Config) -> DatastoreStatus:
     path = str(config.datastore_path)
     if not config.datastore_path.exists():
         return DatastoreStatus(
-            path=path, exists=False, environment=config.environment, problem="datastore missing"
+            path=path,
+            exists=False,
+            environment=config.environment,
+            problem="datastore missing",
+            reason=DatastoreProblem.MISSING,
         )
     try:
         lock_held = writer_lock_held(config)
@@ -423,19 +463,27 @@ def inspect(config: Config) -> DatastoreStatus:
             environment=config.environment,
             readable=False,
             problem=str(exc),
+            reason=DatastoreProblem.UNREADABLE,
         )
     try:
         with reader(config, require_supported_schema=False) as conn:
             journal = conn.execute("PRAGMA journal_mode").fetchone()
             version = read_schema_version(conn)
             problem = None
+            reason = None
             if version is None:
                 problem = (
                     "no schema version recorded -- datastore is uninitialized, "
                     "or a migration did not complete"
                 )
+                reason = DatastoreProblem.NO_SCHEMA_VERSION
             elif version != SUPPORTED_SCHEMA_VERSION:
                 problem = f"schema version {version} is not served by this build"
+                reason = (
+                    DatastoreProblem.SCHEMA_AHEAD_OF_BUILD
+                    if version > SUPPORTED_SCHEMA_VERSION
+                    else DatastoreProblem.SCHEMA_BEHIND_BUILD
+                )
             return DatastoreStatus(
                 path=path,
                 exists=True,
@@ -444,11 +492,18 @@ def inspect(config: Config) -> DatastoreStatus:
                 schema_version=version,
                 writer_lock_held=lock_held,
                 problem=problem,
+                reason=reason,
             )
     except (StoreError, SecretsError) as exc:
         # SecretsError belongs here as much as StoreError does: a datastore whose
         # key is missing from the keychain is a state to report, not a crash. It
         # is the state a fresh clone is in, and AC-ARCH.3 asks for it by name.
+        #
+        # 🔴 The two are told apart in `reason` even though they share this
+        # handler, because their remedies share nothing: a missing key is
+        # restored from the operator's backup and cannot be regenerated, while
+        # every other read failure is about the file. A caller composing a
+        # remedy must not have to guess which happened from the sentence.
         return DatastoreStatus(
             path=path,
             exists=True,
@@ -456,4 +511,9 @@ def inspect(config: Config) -> DatastoreStatus:
             writer_lock_held=lock_held,
             readable=False,
             problem=str(exc),
+            reason=(
+                DatastoreProblem.KEY_MISSING
+                if isinstance(exc, SecretsError)
+                else DatastoreProblem.UNREADABLE
+            ),
         )

@@ -62,3 +62,49 @@ the build plan's frontmatter, which is this repo's own precedent.
 Cost when skipped: a norm nobody ratified binds every future cycle, and the tell — amending a norm to
 match a decision you just took — is the one the Critic routes to BLOCKING.
 
+
+## Removing a value from every literal does not remove it from what those literals interpolate
+
+*2026-09-09, `_unservable_remedy`.* A refusal sentence carried the absolute datastore path — which
+on a personal machine contains the operator's account name — onto the MCP wire, where nothing else
+carries it. The path was removed from **every literal**, a docstring was written stating "no branch
+carries the datastore PATH" as a rule, and a guard was added asserting it.
+
+The path was still on the wire. The fallback branch interpolated `status.problem`, and for the
+unreadable state that string is `str(exc)` from the store layer, whose exceptions carry absolute
+paths *by design* (`could not probe the writer lock at <path>`). Four branches were cleaned, one
+built its sentence from someone else's, and the boundary performs no redaction.
+
+**The guard is why it survived a round.** It ran against one fixture — a schema-2 store — which
+takes a branch that interpolates nothing. It asserted the rule on the one state that could not
+break it. The sibling enum-driven test *did* build the leaking state, and asserted only that its
+remedy was not a duplicate of another's.
+
+Two things generalize. **A rule about output is not checked by testing the branch you were looking
+at**; drive it from the set of states the code declares, which is the same fix as the entry below.
+And **the fallback branch is where this hides**, because it looks too generic to be worth checking
+and is the only one whose text comes from elsewhere.
+
+## A carve-out reaches every state that shares its return type
+
+*2026-09-09, `query._readable` (#58).* `connection.inspect` distinguishes five unhealthy states.
+`_readable` returned `str | None` for all of them. AC-ARCH.3 carves out one — *"the MCP server
+starts successfully when the datastore is empty or missing, and reports that state through
+`get_pipeline_health` rather than crashing"* — and because every state arrived as the same string,
+the carve-out written for a MISSING store governed a POPULATED one this build could not serve.
+
+Measured cost: a store holding 14 accounts and 388 transactions answered every tool with
+`isError: false`, `rows: []` and every coverage figure zero. An agent that does not parse `warnings`
+reported the household owned nothing. Three acceptance rounds missed it because all three probed a
+store the build could serve — the only state in which it is invisible.
+
+Every individual piece was correct. `inspect` reported truthfully, the carve-out was real, the
+warning was accurate. **The defect was one return type erasing a distinction the layer below had
+already made.** The fix was not new logic: it was making `inspect` say WHICH state it found, so the
+branch is on a declared value rather than on prose.
+
+🔴 **The same collapse reappeared inside the fix.** `version != SUPPORTED_SCHEMA_VERSION` is true in
+both directions, and one remedy answered both — telling an operator whose store is AHEAD of the
+build to run forward-only migrations that apply nothing. Caught by the Critic, not by me, in the
+commit that existed to fix exactly this shape. Fixing a class of bug does not confer immunity to it
+while you work.
