@@ -622,24 +622,25 @@ tables and nothing else:
   no parsing.
 - **How a nested block is spelled:** a block gets **its own table**, whose caption carries the
   dotted path from the response root (`coverage.not_active_balance_minor_units[]`,
-  `rows[].source_breakdown`) while its rows still hold bare names. The block also appears as a row in
-  its parent's table, typed `object` or `array of object`. So every name is written once per block it
-  occurs in, and a reader never has to take a path apart to get a field name back out.
+  `rows[].source_breakdown`) while its rows still hold bare names. The block also appears as a row
+  in its parent's table, typed `object` or `array of object`. So every name is written once per
+  block it occurs in, and a reader never has to take a path apart to get a field name back out.
 - **`[]` in a caption means the table describes one ELEMENT** of that array, not the array itself.
-- **One caption may name several paths** when the blocks are the same shape (`effective_window`'s two
-  halves are the clearest case). The paths are comma-separated; the rows below are the shape all of
-  them have.
+- **One caption may name several paths** when the blocks are the same shape (`effective_window`'s
+  two halves are the clearest case). The paths are comma-separated; the rows below are the shape
+  all of them have.
 - **The same name in two different blocks is two rows in two tables**, deliberately.
-  `current_minor_units` is a balance on an account row and a per-currency subtotal inside `coverage`;
-  `transactions` is a store-wide count in `coverage` and a per-group count on a `money_summary` row.
+  `current_minor_units` is a balance on an account row and a per-currency subtotal inside
+  `coverage`; `transactions` is a store-wide count in `coverage` and a per-group count on a
+  `money_summary` row.
   Collapsing either pair into one entry would document one of the two and silently imply the other.
-- **A tool named in a caption is the only tool that carries that block.** Where no tool is named, the
-  block rides every response.
+- **A tool named in a caption is the only tool that carries that block.** Where no tool is named,
+  the block rides every response.
 
-**What these tables deliberately do NOT state: whether a field is required.** That is the schema's to
-say, and § Direction's fourth norm already fixes it for rows — every row field is required, nullable
-where it has nothing to say, never absent. Absence carries meaning only at the envelope, where each
-case is argued in a section above (`truncation` absent means *this tool is not capped*;
+**What these tables deliberately do NOT state: whether a field is required.** That is the schema's
+to say, and § Direction's fourth norm already fixes it for rows — every row field is required,
+nullable where it has nothing to say, never absent. Absence carries meaning only at the envelope,
+where each case is argued in a section above (`truncation` absent means *this tool is not capped*;
 `effective_window` absent means *this tool takes no window*) rather than compressed into a column
 here.
 
