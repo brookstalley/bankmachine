@@ -90,6 +90,14 @@ migrate or grandfather.
   because if they were they would share a shape and already be one tool. Capabilities grow fast; row
   entities do not. The first guardrail is checkable at registration, so the norm enforces itself
   rather than resting on the judgment of whoever adds the next tool.
+  🔴 **Enforced structurally since 2026-09-09**, not merely checkable: `mcp._refuse_optional_row_fields`
+  refuses a definition whose row schema declares a field it does not require, and it runs inside
+  `_tool_definitions()` — the one function that hands out a definition — so no caller can route
+  around it. `mcp._refuse_colliding_parameters` sits beside it for #30's A3, because both fail for
+  one reason: a surface that cannot be described strictly should not be advertised. The check is
+  scoped to ROWS. The stronger rule — every declared property required, everywhere in the schema —
+  refuses the shipped surface, because a warning carries `connection_id` only when it is about one
+  connection; that is absence-as-information at the envelope level, which this norm does not govern.
   🔴 **Retroactive, and it has one migration to pay:** `spending_summary` ships today as its own tool
   and merges into the grouped-aggregate tool, which is chunk C4 of `discovery-mcp-answer-scope.md`.
   Every MCP tool is `experimental` (§ Surface Inventory), where "removing one is the policy working,

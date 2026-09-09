@@ -66,8 +66,8 @@ integration conflicts.
 
 - [x] **A — The per-account coverage signal, and the two tools that read it** (C2 · #19, #35)
 - [x] **B — One aggregate tool, both directions, currency-grouped** (C4 · #20, #21)
-- [ ] **C — `flow_class`, so "spending" stops meaning three different things** (C3 · #18)
-- [ ] **D — The guards that make the norm self-enforcing, and the go-red cases nothing had**
+- [x] **C — `flow_class`, so "spending" stops meaning three different things** (C3 · #18)
+- [x] **D — The guards that make the norm self-enforcing, and the go-red cases nothing had**
 - [x] **E — The claim-site sweep, and the artifacts that describe an eight-tool surface** *(pulled forward into B — see below)*
 
 ---
@@ -371,6 +371,30 @@ been fooled by exactly that twice. Prefer a whole statement over a line fragment
 
 **Done when:** every new case is verified red for the right reason, with the anchor confirmed
 applied rather than assumed.
+
+**Done, 2026-09-09.** All **136** cases red, sixteen of them new; every anchor asserted present
+before the run rather than inferred from its result.
+
+🔴 **The audit found a seventeenth thing: a case that was stale in BOTH halves at once.**
+"AC-4.2: spending sums outflow only" had its anchor moved by chunk B's reformat *and* named a test
+chunk B had deleted along with `spending_summary`. Either alone would have been caught — the
+harness reports a missing anchor as a SURVIVOR, which is the design working — but neither had been
+run since the merge. Retargeted to `test_the_aggregate_reports_both_directions_as_magnitudes`
+rather than deleted: the guarantee did not change, only the code and the test carrying it.
+
+**The registration guards live in `_tool_definitions()`, not beside `serve`.** Written while
+implementing, because "refused at registration" assumes a registration event this server does not
+have: `tools/list`, the derived reference documents and every test each build the surface by
+calling that function. A check at startup would be one three callers route around. In the producer,
+no code path can obtain a definition nothing validated — which is also why the go-red case for it
+is an `inspect.getsource` assertion rather than a behavioural one.
+
+**Guardrail 1 is checked over ROWS only, and the scope was found by trying the stronger rule.**
+"Every declared property is required, everywhere in the schema" is the tempting invariant and it
+**refuses the shipped surface**: a warning carries `connection_id` and `institution` only when it
+is about one connection. That is absence-as-information at the envelope level, which the norm does
+not speak about — the norm is about the row shape a merge has to unify. Checked before the guard
+was written rather than discovered by a red suite.
 
 ---
 
