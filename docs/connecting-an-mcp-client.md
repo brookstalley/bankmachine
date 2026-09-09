@@ -99,6 +99,14 @@ wire; this page is a copy and can. **Read the warnings before drawing a conclusi
 can be perfectly well-formed and still be computed over incomplete data, and that is the failure this
 product exists to prevent.
 
+🔴 **`coverage.transactions` is always store-wide.** It does not narrow with your question, so a
+windowed answer carries a sibling — `coverage.transactions_in_effective_window` — counted over the
+window the answer actually covered. Read the sibling against a windowed question; reading
+`coverage.transactions` there gives you the whole store's count for a question that asked about a
+slice of it. The sibling is not narrowed by `account_id` either, so it is a fact about the *window*
+rather than about your filters; `truncation.matching` is the one that answers "how many rows did my
+whole request select".
+
 🔴 **`truncation` is the one to check before you sum anything.** It carries `matching` (how many rows
 the request selects), `returned` (how many came back) and `truncated`. When `truncated` is true the
 rows are the **newest ones only**, so adding them up describes what came back rather than the window

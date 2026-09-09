@@ -304,7 +304,7 @@ def resolve_window(
     #
     # The sandbox cannot express it -- its last transaction is deliberately
     # earlier than `as_of` -- so this is reasoned from the predicate, not
-    # measured. Found by review.
+    # measured.
     covered_end = today if latest is None or latest < today else latest
 
     caveats: list[Caveat] = []
@@ -535,8 +535,7 @@ class Cursor:
             # broad catch — so a caller who mistyped an argument is answered
             # "internal error" and told to check whether their datastore is
             # readable. A false statement about a caller mistake is the exact
-            # outcome `InvertedWindowError` exists to prevent. Found by review,
-            # then reproduced.
+            # outcome `InvertedWindowError` exists to prevent.
             #
             # `from None` because the cause is a decoder's internals, which
             # `api-contract.md` § Error Model keeps off the wire.

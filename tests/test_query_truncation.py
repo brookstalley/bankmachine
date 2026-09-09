@@ -866,12 +866,11 @@ def test_an_unreadable_store_does_not_move_the_windowed_wire_shape(
 ) -> None:
     """🔴 The key set a consumer branches on must not depend on the store's health.
 
-    Chunk 01 shipped a blocking finding of exactly this shape — a fix that
-    changed the unreadable-store wire shape with nothing pinning it, invisible
-    because every other assertion ran against an initialized store. So the
-    windowed coverage sibling is asserted here, where it is easiest to forget:
-    a consumer branching on the key would otherwise read "this tool takes no
-    window" precisely when the datastore cannot be read.
+    🔴 The unreadable-store path is where a key is easiest to drop and hardest
+    to notice, because every other assertion in this file runs against an
+    initialized store. A consumer branching on the key would otherwise read
+    "this tool takes no window" precisely when the datastore cannot be read —
+    the one moment the shape must not move.
     """
     answer = getattr(query, tool)(config)
 

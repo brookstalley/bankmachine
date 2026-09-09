@@ -1135,25 +1135,40 @@ def test_the_instructions_name_every_field_the_envelope_actually_carries(
     Asserted against the real envelope rather than a second hand-written list,
     because a second list is one that stops matching the first.
 
-    🔴 **Over the UNION of every tool's envelope, never one sample.** This read
-    `list_accounts` alone, which is the one tool carrying neither
-    `effective_window` nor `truncation` — so two whole chunks added two envelope
-    keys and four warning kinds and this guard passed unchanged, while the only
-    text a consuming agent reads at handshake actively denied they existed. A
-    check that samples one instance of the thing it generalises over is a check
-    whose bad news never arrives, which is the trap `learnings.md` records twice.
+    🔴 **Over the UNION of every tool's envelope, and one level into it, never
+    one sample.** A tool that carries neither `effective_window` nor
+    `truncation` cannot discriminate a rule about them, and a scan of top-level
+    keys alone cannot see a key nested inside a block — so a guard written
+    either way passes while the only text a consuming agent reads at handshake
+    denies a field exists. A check that samples one instance of the thing it
+    generalises over is a check whose bad news never arrives, which is the trap
+    `learnings.md` records twice.
     """
     _seed(initialized_config)
     instructions = mcp._instructions(initialized_config)
 
     envelope: set[str] = set()
     for definition in mcp._tool_definitions():
-        envelope |= set(_call(initialized_config, definition["name"])["structuredContent"])
-    assert {"effective_window", "truncation"} <= envelope, (
-        "the union lost the windowed/capped keys, so this guard is back to sampling"
-    )
+        wire = _call(initialized_config, definition["name"])["structuredContent"]
+        for key, value in wire.items():
+            envelope.add(key)
+            # 🔴 One level down as well. A key nested inside a block is invisible
+            # to a scan of the top level, and that is not hypothetical: the
+            # window-scoped coverage sibling shipped and stayed unnamed here
+            # while this guard passed, because it lives inside `coverage`. The
+            # blocks are exactly where the numbers a consumer sums live.
+            if isinstance(value, dict):
+                envelope |= {f"{key}.{nested}" for nested in value}
+    assert {
+        "effective_window",
+        "truncation",
+        "coverage.transactions_in_effective_window",
+    } <= envelope, "the union lost the keys this guard exists for, so it is back to sampling"
 
-    missing = sorted(key for key in envelope if f"`{key}`" not in instructions)
+    # A nested key is named by its own leaf: the instructions say `matching`,
+    # not `truncation.matching`, which is also how a consumer reads it off the
+    # payload.
+    missing = sorted(key for key in envelope if f"`{key.rsplit('.', 1)[-1]}`" not in instructions)
 
     assert not missing, (
         f"the envelope carries {missing} but the instructions never name them; "

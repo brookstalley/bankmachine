@@ -384,12 +384,14 @@ def _instructions(config: Config) -> str:
         f"This server reads a local {config.environment} finance datastore. It is READ-ONLY "
         f"and never moves money.\n\n"
         f"Every response carries `environment`, `as_of`, `build`, `coverage`, `warnings` and "
-        f"`rows`. `build` says which code answered you -- this server is a subprocess launched "
+        f"`rows`. `build` carries `version`, `commit` and `dirty`, and says which code answered "
+        f"you -- this server is a subprocess launched "
         f"at connect time, so it runs whatever existed then, and `commit` is captured once at "
         f"start rather than re-read (a null `commit` means the build could not be identified, "
         f"and `dirty` is then null too, never false).\n\n"
-        f"🔴 A WINDOWED tool also carries `effective_window` (the window you asked for beside "
-        f"the one the data could answer over), and a CAPPED tool also carries `truncation` "
+        f"🔴 A WINDOWED tool also carries `effective_window`, holding `requested` (the window "
+        f"you asked for) beside `effective` (the one the data could answer over), each a "
+        f"`since` and an `until`. A CAPPED tool also carries `truncation` "
         f"(`matching`, `returned`, `truncated`). Absence of either key means that tool has no "
         f"window, or returns every row it finds. 🔴 **If `truncated` is true the rows are the "
         f"NEWEST ones only, so summing or counting them describes what came back rather than "
@@ -399,6 +401,14 @@ def _instructions(config: Config) -> str:
         f"with the same window and account, to read the next page, and keep going until "
         f"`truncated` is false. The cursor is OPAQUE -- never build or edit one -- and it is "
         f"present when and only when there is more to read.\n\n"
+        f"🔴 `coverage` says what the store HOLDS, which is how an empty answer is told from an "
+        f"empty world: `connections`, `accounts`, `transactions`, and `earliest_transaction` / "
+        f"`latest_transaction`, the first and last dates any transaction carries. 🔴 "
+        f"`transactions` is ALWAYS store-wide and never narrows with your question. A windowed "
+        f"answer adds `transactions_in_effective_window` — how many rows the window it actually "
+        f"covered holds — and that is the one to read against a windowed question. It is not "
+        f"narrowed by `account_id` either, so it is a fact about the window rather than about "
+        f"your filters; compare it against `truncation.matching`, which is.\n\n"
         f"🔴 Read `warnings` before drawing a conclusion: an answer can be perfectly "
         f"well-formed and still be computed over incomplete data. Some warnings describe the "
         f"PIPELINE and ride every response: `stale` means a connection has not synced "
@@ -579,7 +589,7 @@ def _read_messages(stdin: IO[str], stdout: IO[str]) -> Iterator[dict[str, Any]]:
             # own parsing, so the `try` further down cannot reach it — and an
             # uncaught one escapes this generator and ends `serve()`, which is
             # the operator's tool disappearing mid-session. Same outcome as an
-            # undecodable JSON body, through the adjacent door. Found by review.
+            # undecodable JSON body, through the adjacent door.
             undecodable += 1
             _write(
                 stdout,
