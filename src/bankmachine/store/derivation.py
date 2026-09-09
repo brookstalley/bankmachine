@@ -69,7 +69,8 @@ DERIVATION_VERSION = 3
 #: an old version says something useful about them years later.
 DERIVATION_DESCRIPTION = (
     "institutions and accounts derived from the aggregator; balances signed from the "
-    "operator's point of view; the roster observation recorded per connection"
+    "operator's point of view; the roster observation recorded per account "
+    "(`accounts.last_seen_date`) and per connection (`connections.roster_observed_date`)"
 )
 
 

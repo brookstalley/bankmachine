@@ -359,7 +359,7 @@ lifecycle axis and should be built the same way**, down to the shared fragment â
 |---|---|---|
 | `lifecycle` | `string`, enum | The verdict. Vocabulary below |
 | `closed_date` | `["string","null"]` | The stored `accounts.closed_date`; null when none is recorded |
-| `last_seen_in_roster` | `["string","null"]` | The date the institution last listed this account; null when no roster observation stands behind the account (import-only, or a connection never yet observed) with no connection |
+| `last_seen_in_roster` | `["string","null"]` | The date the institution last listed this account; null when no roster observation stands behind the account (import-only, or a connection never yet observed) |
 | `roster_last_observed` | `["string","null"]` | The date this account's connection's roster was last successfully observed; null when no roster observation stands behind the account (import-only, or a connection never yet observed) |
 
 **Vocabulary â€” three values, all reachable:**
