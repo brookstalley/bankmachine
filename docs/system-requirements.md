@@ -440,7 +440,13 @@ can tell which story it is. Suppressing (1) is what produced the N=1 failure; pu
 
 **AC-12.5a · An empty roster is a successful observation of zero accounts, and is recorded as one.**
 A roster response listing no accounts advances the connection's recorded observation and raises
-`roster_observed_empty`. It is never treated as a failed fetch, **and it is surfaced by
+`roster_observed_empty`, **at calendar-day resolution**: emptiness is the absence of any account
+whose last-listed date equals the connection's recorded observation, and both are calendar dates, so
+a roster that listed accounts earlier the SAME DAY and comes back empty later that day is one
+observation and raises nothing. That bound is accepted rather than overlooked — it follows from the
+column's type, which AC-12.4 fixes as a calendar date so the comparison does not mix types — and it
+is stated here because a criterion that claimed to fire unconditionally would be claiming more than
+the store can tell. It is never treated as a failed fetch, **and it is surfaced by
 `get_pipeline_health` as well as on the answer that draws on it.** *Why:* the two are genuinely
 different events and only the caller can tell them apart — an operator who de-selected every account
 produces a truthful empty roster, and a broken feed produces a lie — so the pipeline records what it

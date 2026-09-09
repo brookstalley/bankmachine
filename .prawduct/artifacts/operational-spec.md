@@ -176,12 +176,29 @@ does not recognize the datastore's version refuses to serve, so the datastore mu
 6. Reconnect the MCP client and `launchctl load` the agent.
 
 **Migrations 003 (`accounts.last_seen_date`, FR-9) and 004 (`connections.roster_observed_date`,
-AC-12.4) are what this procedure has been written for, and they have the same shape** — additive
-nullable columns, no backfill, forward-only.** Neither backfills anything, so the first sync after the upgrade is what repopulates the columns;
-until then every account reads as still-reported, which is the pre-migration answer rather than a
-wrong one. 🔴 **004 has one extra consequence worth expecting**: until that first sync, no connection
-has a recorded roster observation, so nothing is measured as absent and no `roster_observed_empty`
-can fire — the upgrade window reads as "we have not looked yet", which is exactly what it is. The MCP server and the CLI must be upgraded *with* the datastore — an older reader
+AC-12.4) are what this procedure has been written for.** Both are additive nullable columns,
+applied forward-only, and neither backfills — so the first sync after the upgrade is what
+populates them.
+
+🔴 **Their upgrade windows are NOT the same, and 004's costs something 003's did not.** For 003 the
+window reads as the pre-migration answer: nothing had ever been reported absent, so nothing changes.
+**For 004 it is a regression, briefly.** Before it, an account was measured against the maximum of
+its own connection's last-listed dates, so an account whose siblings kept being listed *already*
+read `no_longer_reported`. After 004, `roster_observed_date` is null for every connection, the
+"never observed" branch marks nothing absent, and **those same accounts revert to `active` beside a
+frozen balance with no warning** — FR-9's own failure, restored for the length of the window.
+
+**For a healthy connection the window closes at the next successful sync.** For a connection that
+never syncs successfully again — login required, never re-linked — **it never closes on its own, and
+that is exactly the connection whose absent accounts matter most.**
+
+🔴 **So run `bankmachine store rebuild` after step 5 if any connection is not syncing.** It replays
+every archived `/accounts/get` through the accounts deriver, which populates the column from the
+same responses the original observation came from. Expect it to report a content change:
+`content_digest` walks every table, `connections` included. This is the remedy; it existed before
+this migration and simply was not written down.
+
+The MCP server and the CLI must be upgraded *with* the datastore — an older reader
 refuses to serve, which is the norm working rather than a fault.
 
 **Rollback** is `git checkout` plus `uv sync`. There is nothing deployed to roll back — but note that

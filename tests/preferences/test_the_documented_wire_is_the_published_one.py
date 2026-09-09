@@ -70,22 +70,19 @@ def _published_field_names() -> set[str]:
 def test_every_published_field_is_described_in_the_api_contract() -> None:
     """🔴 The wire cannot grow past the document that is supposed to define it.
 
-    Unconditional since 2026-09-09: it compares EVERY published name against the
-    contract, with no exemption set beside it. It did not start that way. It
-    shipped as a ratchet -- a frozen set of 34 names measured on the shipped
-    surface the day the walk was first run over it, which a new field could not
-    join and which a later documented name could not linger in. That set is now
-    empty and gone, and its two pawls with it.
+    It compares EVERY published name against the contract, with no exemption set
+    beside it.
 
-    The shape is worth keeping in view rather than only the outcome, because it
-    is what let the guard exist before the work it demanded was done: a check
-    that had waited for 34 descriptions would not have been holding the line
-    during the cycle in which they were written, and the drift it exists to stop
-    happened twice in one cycle before it existed.
+    🔴 There is no exemption set to add a name to, and introducing one is not the
+    way past a failure here. A field that genuinely cannot be described is a
+    finding about the field.
 
-    🔴 There is no exemption set to add a name to any more, and reintroducing one
-    is not the way past a failure here. A field that genuinely cannot be
-    described is a finding about the field.
+    🔴 Known bound, so nobody reads this as stronger than it is: the test asks
+    whether the name appears in backticks ANYWHERE in the contract, not whether
+    it appears in one of the authoritative row tables. A name backticked in
+    prose, in a `## Direction` norm or in the CLI section satisfies it. Closing
+    that -- reading only the tables, via the extraction contract the document now
+    carries -- is `#47`, which needs the same parser for its own direction.
     """
     published = _published_field_names()
     contract = CONTRACT.read_text(encoding="utf-8")

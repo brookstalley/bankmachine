@@ -129,6 +129,17 @@ arriving on the parameter rather than on the columns — and it is a hazard **on
 clock-parameterised. A model that hides the clock inside a per-row value makes this harder to see, not
 easier.
 
+> 🔴 **Dated note, added by the coordinator at chunk 04 (2026-09-09): the double read is FIXED and
+> this paragraph is now history rather than evidence.** `coverage_report` derives its calendar day
+> once, above its first reader, and `tests/test_pending_semantics.py::
+> test_the_coverage_report_derives_its_calendar_day_once` holds it there with a clock that advances
+> a day per read — a frozen clock cannot see the defect at all, since two reads of a stopped clock
+> agree. The reasoning above is untouched **because it is why the fix happened**: this discovery
+> found the defect while pricing shapes, nobody was looking for it, and the argument it supports —
+> that stranded's clock-parameterisation is a hazard a per-row enum would hide — is unaffected by
+> the instance being repaired. A reader checking the line numbers against the tree will not find
+> them; the reading was true at `1d888ec`.
+
 So an unchanged row is outstanding on day 29 and stranded on day 31. Any per-row enum must therefore
 either take `today` as an argument — making "the state of this row" a function of when you ask,
 which is a different kind of thing from the other four values and is a trap the next reader will

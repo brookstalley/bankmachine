@@ -525,8 +525,11 @@ def _lifecycle_row_fields() -> dict[str, dict[str, Any]]:
         "last_seen_in_roster": {
             "type": ["string", "null"],
             "description": (
-                "the date this account was last listed by its institution; null for an "
-                "import-only account, which has no roster behind it. A DIFFERENT fact from "
+                "the date this account was last listed by its institution; null when there "
+                "is no roster observation behind it -- an import-only account has no "
+                "connection, and an aggregator account's connection has none until its first "
+                "sync after the roster-observation migration. A null is silence, NEVER a "
+                "statement that the account is import-only. A DIFFERENT fact from "
                 "`last_transaction_date` and often a much later one -- an account can be "
                 "listed for months after its last transaction, and neither may be derived "
                 "from the other"
@@ -536,7 +539,9 @@ def _lifecycle_row_fields() -> dict[str, dict[str, Any]]:
             "type": ["string", "null"],
             "description": (
                 "the date this account's institution's roster was last successfully observed; "
-                "null for an import-only account. Read it against `last_seen_in_roster`: the "
+                "null for an import-only account, and equally for any account whose "
+                "connection's roster has never been observed. Read it against "
+                "`last_seen_in_roster`: the "
                 "two being equal is what makes an account `active`, and the earlier one is the "
                 "whole derivation of `no_longer_reported`, so the verdict can be re-derived "
                 "from this row without a second call"

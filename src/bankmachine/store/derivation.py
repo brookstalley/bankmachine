@@ -63,13 +63,13 @@ from bankmachine.store.types import UtcInstant, now_utc
 #: column. AC-5.3 exists because losslessness is only well-defined against a
 #: recorded version: without one, an upstream taxonomy change and a rebuild bug
 #: are indistinguishable, since both simply produce different rows than before.
-DERIVATION_VERSION = 2
+DERIVATION_VERSION = 3
 
 #: What that version means, recorded beside it so a datastore carrying rows from
 #: an old version says something useful about them years later.
 DERIVATION_DESCRIPTION = (
     "institutions and accounts derived from the aggregator; balances signed from the "
-    "operator's point of view"
+    "operator's point of view; the roster observation recorded per connection"
 )
 
 

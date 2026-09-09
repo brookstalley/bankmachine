@@ -641,6 +641,16 @@ def _roster_observed_empty_caveat(lifecycle: list[AccountLifecycle]) -> list[Cav
     connection is behind that connection's observation, so every one of them is
     non-active and none of them can be missing from it.
 
+    🔴 **It names the accounts and asserts NO verdict over them.** The scope it
+    is handed mixes both non-active values, and `closed` is the operator's own
+    declaration while `no_longer_reported` is only the institution having
+    stopped listing an account -- the same distinction `_not_active_caveat`
+    refuses to flatten, for the same reason. Flattening here would tell an
+    operator that an account they closed themselves may be the victim of a
+    broken feed. Filtering the closed ones out instead would be worse: a
+    connection whose only accounts are operator-closed still had its roster come
+    back empty, and that connection would emit a caveat naming nobody.
+
     🔴 **One caveat per connection, naming the connection and its accounts.**
     The pair is the point: the account rows say each balance froze, and this
     says the roster came back empty, and a reader holding both can tell fourteen
@@ -658,9 +668,12 @@ def _roster_observed_empty_caveat(lifecycle: list[AccountLifecycle]) -> list[Cav
             kind="roster_observed_empty",
             detail=(
                 f"connection {connection_id}'s roster was read SUCCESSFULLY and listed no "
-                f"accounts at all, so account(s) "
-                f"{', '.join(str(account_id) for account_id in account_ids)} are all marked "
-                f"no longer reported and their balances froze on the dates their rows name. "
+                f"accounts at all. Account(s) "
+                f"{', '.join(str(account_id) for account_id in account_ids)} sit on it and "
+                f"their balances froze on the dates their rows name. 🔴 Read each row's own "
+                f"`lifecycle` rather than treating them alike: an account the operator "
+                f"declared `closed` is not evidence about this roster, and saying otherwise "
+                f"would ask them to re-confirm a closure they made themselves. "
                 f"Two very different things produce this and the payload cannot tell them "
                 f"apart: the operator de-selected every account from sharing, or the feed "
                 f"broke in a way that returns success. Do NOT report it as accounts having "
@@ -695,8 +708,11 @@ def _roster_observed_empty_findings(rows: list[dict[str, Any]], empty: set[int])
                 f"at all. That is not a failed fetch and it is not reported as one -- but it "
                 f"is equally consistent with the operator having de-selected every account "
                 f"from sharing and with a feed that broke and still returns success. Every "
-                f"account on this connection is separately marked no longer reported and its "
-                f"balance is frozen. Confirm with the institution which of the two it is"
+                f"account on this connection has its balance frozen as of the date its row "
+                f"names. 🔴 Ask the OPERATOR which of the two it is -- de-selecting accounts "
+                f"from sharing is done in the aggregator's link flow and the institution has "
+                f"no knowledge of it, so only they can say. The institution is worth calling "
+                f"only if they confirm they de-selected nothing"
             ),
             connection_id=int(row["connection_id"]),
             institution=row["institution"],
@@ -734,8 +750,26 @@ def _connections_with_an_empty_roster(
     the observations hands them over rather than making the reader -- which is
     autocommit, and releases its snapshot per statement -- take a second one
     that could differ.
+
+    🔴 **A retired connection is excluded, because the condition could never
+    end for one.** An empty roster is itself a reason to retire and re-enroll,
+    and once retired there is no later non-empty read to clear it -- so every
+    answer would carry the caveat forever, and the health surface would keep
+    asking the operator to pursue a connection the product itself records as
+    removed at the aggregator. That is the "true and useless" degradation the
+    two warning tuples in `envelope.py` exist to prevent, and
+    `_connection_caveats` already sets this repo's answer.
     """
     observed = _roster_observations(conn) if observed is None else observed
+    if not observed:
+        return set()
+    live = {
+        int(connection_id)
+        for (connection_id,) in conn.execute(
+            select(connections.c.connection_id).where(connections.c.retired_at.is_(None))
+        ).all()
+    }
+    observed = {cid: date for cid, date in observed.items() if cid in live}
     if not observed:
         return set()
     matched = {

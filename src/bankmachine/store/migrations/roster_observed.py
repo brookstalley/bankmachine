@@ -38,9 +38,18 @@ was read, which is the whole reason this column exists.
 
 🔴 **So a null means "this connection's roster has never been observed", and
 `query._account_lifecycle` reads it as exactly that -- never as a date.** A
-connection with no observation marks nothing absent (AC-12.5's first clause),
-which is what makes the upgrade window safe: between this migration and a
-connection's next successful sync, nothing on it can be called absent.
+connection with no observation marks nothing absent (AC-12.5's first clause).
+
+🔴 **That is correct and it is not free, and calling the window "safe" would
+overstate it.** The design this replaces derived the observation from the
+accounts themselves, so a store already running it reported some accounts
+absent. Those accounts read `active` again from this migration until their
+connection's next successful sync -- a frozen balance with no warning, which is
+the failure FR-9 exists to remove. The window closes on the next sync for a
+healthy connection and NOT AT ALL for one that never succeeds again, which is
+the connection whose absent accounts matter most. `bankmachine store rebuild`
+closes it deliberately by replaying the archived roster responses; the upgrade
+procedure in `operational-spec.md` says when to run it.
 """
 
 from __future__ import annotations

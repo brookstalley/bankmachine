@@ -38,10 +38,17 @@ from bankmachine import query
 from bankmachine.config import Config
 from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS
+from bankmachine.store import derivation
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import writer_connection
 from bankmachine.store.rebuild import rebuild
-from bankmachine.store.schema import accounts, connections, institutions
+from bankmachine.store.schema import (
+    accounts,
+    balances_daily,
+    connections,
+    institutions,
+    transactions,
+)
 from bankmachine.store.types import CalendarDate, UtcInstant, calendar_date, now_utc
 
 # 🔴 Imported rather than copied, exactly as `test_account_coverage.py` does it:
@@ -646,6 +653,94 @@ def test_an_empty_roster_says_which_connection_and_which_accounts(
         assert account_id in caveat["detail"], caveat["detail"]
 
 
+def test_an_empty_roster_names_an_operator_closed_account_without_assigning_it_the_verdict(
+    initialized_config: Config,
+) -> None:
+    """🔴 The caveat names the accounts; it does not tell the reader what they are.
+
+    The scope this emitter is handed mixes both non-active values, and they mean
+    opposite things about the roster: `no_longer_reported` is the institution
+    having stopped listing an account, while `closed` is the operator's own
+    declaration and is no evidence about a roster at all (AC-12.6). Flattening
+    them tells an operator that an account they closed themselves may be the
+    victim of a broken feed, and asks them to go and confirm it -- the exact
+    conflation `_not_active_caveat` refuses two hundred lines away.
+
+    🔴 And it must NOT be fixed by filtering the closed ones out of the scope: a
+    connection whose only accounts are operator-closed still had its roster come
+    back empty, and it would then emit a caveat naming nobody.
+
+    The change that flips this test: restore any wording that asserts one
+    lifecycle verdict over every account named.
+    """
+    later = now_utc()
+    earlier = UtcInstant(later - timedelta(days=30))
+    connection_id = _enroll(initialized_config)
+    _observe(initialized_config, connection_id, [KEPT, DROPPED], at=earlier)
+    _declare_closed(initialized_config, KEPT)
+    _observe(initialized_config, connection_id, [], at=later)
+
+    wire = _wire(initialized_config)
+    caveat = next(c for c in wire["warnings"] if c["kind"] == "roster_observed_empty")
+    by_id = {int(row["account_id"]): row for row in wire["rows"]}
+    closed = [i for i, row in by_id.items() if row["lifecycle"] == "closed"]
+    assert closed, "the fixture stopped producing an operator-closed account; this proves nothing"
+
+    for account_id in by_id:
+        assert str(account_id) in caveat["detail"], caveat["detail"]
+    assert "are all marked no longer reported" not in caveat["detail"], (
+        "the caveat asserted one verdict over accounts whose rows carry two different ones. "
+        f"Row {closed[0]} says lifecycle='closed' -- the operator's own declaration -- while "
+        f"the warning calls it no-longer-reported: {caveat['detail']}"
+    )
+
+
+def test_a_retired_connection_raises_no_empty_roster_warning_it_could_never_clear(
+    initialized_config: Config,
+) -> None:
+    """🔴 A warning that can never stop firing is the "true and useless" defect.
+
+    An empty roster is itself a reason to retire a connection and re-enroll, so
+    this sequence is ordinary rather than exotic. Once retired there is no later
+    non-empty roster read to move the observation, so the condition can only
+    clear by never having fired: every `list_accounts`, `query_transactions` and
+    `get_coverage_report` answer would carry it forever, and the health surface
+    would keep asking the operator to pursue a connection the product itself
+    records as removed at the aggregator.
+
+    That is precisely what `envelope.py`'s split into connection-scoped and
+    request-scoped kinds exists to prevent -- a warning riding every answer
+    equally teaches its reader to skip it -- and `_connection_caveats` already
+    settles the repo's answer with `retired_at IS NULL`.
+
+    The change that flips this test: drop the retirement filter from
+    `_connections_with_an_empty_roster`, the one producer both emitters read.
+    """
+    later = now_utc()
+    earlier = UtcInstant(later - timedelta(days=30))
+    connection_id = _enroll(initialized_config)
+    _observe(initialized_config, connection_id, [KEPT, DROPPED], at=earlier)
+    _observe(initialized_config, connection_id, [], at=later)
+
+    assert "roster_observed_empty" in _kinds(_wire(initialized_config)), (
+        "the fixture never raised the warning while live, so retiring it proves nothing"
+    )
+
+    with writer_connection(initialized_config) as conn:
+        conn.execute(
+            update(connections)
+            .where(connections.c.connection_id == connection_id)
+            .values(status="retired", retired_at=now_utc())
+        )
+
+    assert "roster_observed_empty" not in _kinds(_wire(initialized_config)), (
+        "a retired connection still raises the empty-roster warning. Nothing can ever clear "
+        "it -- a retired connection has no next roster read -- so it rides every answer "
+        "forever and the health surface keeps naming an institution the operator has already "
+        "removed"
+    )
+
+
 def test_a_request_over_a_healthy_roster_does_not_carry_the_empty_roster_warning(
     initialized_config: Config,
 ) -> None:
@@ -838,6 +933,84 @@ def test_a_rebuild_does_not_undo_the_operators_declaration(
     rebuild(initialized_config, derivers=ALL_DERIVERS)
 
     assert _rows(initialized_config)[f"Account {DROPPED}"]["lifecycle"] == "closed"
+
+
+#: The derivation version that shipped before `_record_roster_observation` existed.
+#: 🔴 A fixed historical fact, deliberately not written as `DERIVATION_VERSION - 1`:
+#: a relative stamp moves with the constant, so the archived rows and the running
+#: build can never carry the same version and the test below would pass whether or
+#: not the bump was made. It does not change when the version bumps again.
+_VERSION_THAT_SHIPPED_WITHOUT_THE_ROSTER_OBSERVATION = 2
+
+
+def test_a_store_derived_before_the_roster_column_rebuilds_instead_of_rolling_back(
+    initialized_config: Config,
+) -> None:
+    """🔴 The upgrade procedure's own remedy, asserted against the tool that runs it.
+
+    `operational-spec.md` tells an operator to run `bankmachine store rebuild`
+    when a connection is not syncing, because that is what closes migration
+    004's window on a connection that will never sync again -- the one whose
+    absent accounts matter most. **A documented remedy that fails is worse than
+    no remedy**, so it is asserted here rather than trusted.
+
+    The rebuild MUST move the digest: replaying the archive turns
+    `connections.roster_observed_date` from null into a date, and
+    `content_digest` walks every table. Whether that is a defect or the point
+    turns entirely on the derivation version -- `change_was_expected` is false
+    only when the replaced rows were derived by the version that just re-derived
+    them. So the bump owed by `_record_roster_observation` (`derivation.py` names
+    "a newly-populated column" as exactly this trigger) is what makes the remedy
+    work, and without it the operator gets a rollback blaming deriver impurity.
+
+    🔴 **The existing rebuild tests cannot catch this and this one is not
+    redundant with them.** They replay through the same deriver that produced
+    their rows, at the same version, so their digest cannot move. This one
+    stamps the derived rows at the PREVIOUS version and clears the column, which
+    is the only shape a real upgraded store has.
+
+    🔴 The stamped version is a fixed historical number, NOT
+    `DERIVATION_VERSION - 1`. Written relatively it moves with the constant, so
+    the stamp and the build can never collide and the test passes whether or not
+    the bump was made -- which is what the first version of this test did.
+
+    The change that flips this test: return `DERIVATION_VERSION` to the value
+    the archived rows carry.
+    """
+    _shrinking_roster(initialized_config)
+
+    with writer_connection(initialized_config) as conn:
+        # The store as it stands the moment migration 004 finishes: the column
+        # exists and is empty, and every derived row predates the deriver that
+        # fills it. The older version is REGISTERED rather than written as a
+        # bare id, because a real upgraded store has that row -- it is what
+        # derived its rows.
+        previous = derivation.ensure_derivation_version(
+            conn,
+            version=_VERSION_THAT_SHIPPED_WITHOUT_THE_ROSTER_OBSERVATION,
+            description="the version that shipped before the roster observation",
+        )
+        conn.execute(update(connections).values(roster_observed_date=None))
+        for table in (transactions, balances_daily):
+            conn.execute(update(table).values(derivation_version_id=previous))
+
+    report = rebuild(initialized_config, derivers=ALL_DERIVERS)
+
+    assert report.content_changed, (
+        "the rebuild did not move the digest, so this test is no longer exercising the "
+        "upgrade window it exists for -- check that the column was actually cleared"
+    )
+    assert report.change_was_expected, (
+        "`store rebuild` would refuse and roll back on a store upgraded across migration 004, "
+        "so the remedy operational-spec.md tells the operator to run does not run. Bump "
+        "DERIVATION_VERSION in the commit that populates a new column"
+    )
+    with writer_connection(initialized_config) as conn:
+        observed = conn.execute(select(connections.c.roster_observed_date)).scalars().all()
+    assert any(value is not None for value in observed), (
+        "the rebuild succeeded but left the roster observation empty, so the window it is "
+        "prescribed to close stays open"
+    )
 
 
 # --------------------------------------------------------------------------

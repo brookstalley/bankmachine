@@ -1262,6 +1262,42 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "test_an_account_the_roster_stopped_listing_is_reported_no_longer_reported",
     ),
     (
+        # 🔴 A warning nothing can ever clear is the "true and useless" defect
+        # the two warning tuples exist to prevent. A retired connection has no
+        # next roster read, so the condition ends only by never starting.
+        # Anchors on the one shared producer both emitters read.
+        "AC-12.5a: a retired connection raises no empty-roster warning it could never clear",
+        QUERY,
+        "    observed = {cid: date for cid, date in observed.items() if cid in live}",
+        "    observed = dict(observed)",
+        f"{LIFECYCLE_TESTS}::"
+        "test_a_retired_connection_raises_no_empty_roster_warning_it_could_never_clear",
+    ),
+    (
+        # 🔴 AC-12.6: `closed` is the operator's own declaration and is no
+        # evidence about a roster. Flattening it into the empty-roster caveat
+        # asks an operator to re-confirm a closure they made themselves.
+        "AC-12.6: the empty-roster caveat asserts no verdict over the accounts it names",
+        QUERY,
+        'f"accounts at all. Account(s) "',
+        'f"accounts at all, so account(s) are all marked no longer reported: "',
+        f"{LIFECYCLE_TESTS}::"
+        "test_an_empty_roster_names_an_operator_closed_account_without_assigning_it_the_verdict",
+    ),
+    (
+        # 🔴 AC-5.3: losslessness is only well-defined against a recorded
+        # version. A deriver that fills a new column without a bump makes
+        # `store rebuild` refuse and roll back -- which is the remedy the
+        # upgrade procedure prescribes for the connection that never syncs
+        # again, so the documented fix would fail on the store it is for.
+        "AC-5.3: a newly-populated column bumps the derivation version",
+        pathlib.Path("src/bankmachine/store/derivation.py"),
+        "DERIVATION_VERSION = 3",
+        "DERIVATION_VERSION = 2",
+        f"{LIFECYCLE_TESTS}::"
+        "test_a_store_derived_before_the_roster_column_rebuilds_instead_of_rolling_back",
+    ),
+    (
         "AC-12.7: a non-active account's silence is closure, not a coverage finding",
         QUERY,
         "                        False if ratio is None or not lifecycle[account_id].active "
