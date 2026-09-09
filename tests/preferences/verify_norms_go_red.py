@@ -1323,8 +1323,9 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-14.5: an aggregate over an inverted connection says so",
         QUERY,
-        "                + signs.caveats(conn, since=since, until=until)",
-        "                + []",
+        "                _pending_caveat(pending, stranded) "
+        "+ signs.caveats(conn, since=since, until=until)",
+        "                _pending_caveat(pending, stranded)",
         f"{SIGN_TESTS}::test_an_aggregate_over_a_flagged_connection_says_so",
     ),
     (

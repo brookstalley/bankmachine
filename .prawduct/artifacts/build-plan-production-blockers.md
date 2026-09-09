@@ -144,10 +144,20 @@ anchors to avoid it would be structure built for the org chart. The coordinator 
 ### Status
 
 - [x] **00 · The ruling, the norm it births, and the shared vocabulary** *(coordinator)*
-- [ ] **01 · Account lifecycle, made visible — #40, AC-12.1–12.9** *(delegate)*
-- [ ] **02 · Pending-transaction semantics — #22, AC-13.1–13.7** *(delegate)*
-- [ ] **03 · The per-connection sign-convention check — #23, AC-14.1–14.6** *(delegate)*
+- [x] **01 · Account lifecycle, made visible — #40, AC-12.1–12.9** *(delegate)*
+- [x] **02 · Pending-transaction semantics — #22, AC-13.1–13.7** *(delegate)*
+- [x] **03 · The per-connection sign-convention check — #23, AC-14.1–14.6** *(delegate)*
 - [ ] **04 · Integration** *(coordinator)*
+
+**Context.** All three delegate branches are merged into `feat/production-blockers`; the suite is
+green and recorded. 01–03 are ticked as *built and merged*; this plan's `critic_mode` is
+`cumulative-final`, so their review is the single cumulative that lands with chunk 04 — which is why
+04 is the last tick and stays open until that review returns.
+
+🔴 **Ticked ≠ closed.** Every one of the three items keeps a production-data tail (AC-13.8, AC-13.9,
+AC-14.7, AC-14.8, AC-14.9) that no chunk here may claim, and #40 additionally cannot reach its
+`closed` lifecycle value until an operator declaration path exists. See § *What this plan does NOT
+close* and the as-built notes under chunk 04.
 
 ### Chunk 00 · The ruling, the norm it births, and the shared vocabulary
 
@@ -320,6 +330,38 @@ the full harness run; the combined suite; `/prawduct:critic cumulative`.
 
 **Done when:** the suite is green on the merged tree, every go-red case in `CASES` is red, AC-14.5
 holds end to end, and the Critic has no unresolved blocking findings.
+
+### Chunk 04 — as built
+
+**The two boundary-crossing wirings, which were the partition's real risk and were both real.**
+AC-14.5 (`signs.caveats` → `money_summary`) and AC-13.5 (`_stranded_holds` → `coverage_report`) each
+had a producer that was finished, tested and correct, and a call site inside a function a different
+delegate owned. Neither wrote the call, exactly as this plan predicted. Both are now wired and tested
+**from the answer's side, over the wire** — never by asserting that a function is called — and both
+go-red cases anchor on the CALL rather than the producer, because a producer that works and a surface
+that never invokes it are indistinguishable from the producer's own tests.
+
+AC-13.5's suppression carries AC-12.7's reasoning onto its sibling: a non-active account's stranded
+hold can never settle and can never be cleared, so the *call to action* is withheld while the *count*
+stays as measured. Hiding the count too would be the opposite error and was just as available.
+
+**Three defects delegates found outside their own maps, all fixed here.** Chunk 00's guidance for
+`sign_convention_unverified` described a broader trigger than the check fires on; the client guide had
+fallen four kinds behind with no guard on it; and the DDL comment beside `transactions_pending_link`
+still carried the claim `data-model.md` had withdrawn — correctable without touching the frozen hash,
+because the comment sits between the statement strings rather than inside one.
+
+**A guard was added for a drift class that has now recurred twice**: the contract table and the client
+guide are both reconciled against `envelope.WARNING_KINDS`. The client-guide reader counts *definition*
+lines only, because the kind that went missing was named in the guide's prose — a substring check would
+have called that documented.
+
+**One phrase was reworded rather than narrowing a rule.** A test message collided with a roster
+institution name on a word boundary and `check-no-personal-data.sh` stopped the run. The check was
+right; weakening a security guard to keep a turn of phrase is a bad trade, and the script says so
+itself.
+
+---
 
 ## What this plan does NOT close
 
