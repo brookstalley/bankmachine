@@ -426,7 +426,7 @@ is the reason to prefer this over a stored per-connection column, which would ha
 the same case written into it by hand.
 
 > 🔴 **Superseded 2026-09-09 by the owner's ruling on #51, and the paragraph above is kept as the
-> argument that lost.** The stored column was built as `connections.roster_observed_date` (a calendar
+> argument that lost.** The stored column is specified as `connections.roster_observed_date` (a calendar
 > date -- `roster_observed_at` was considered and rejected, since its only use is a comparison
 > against `last_seen_date`). What defeated the reasoning above is that the "by construction" property
 > it prizes is the DEFECT at one account: a maximum over the accounts that were listed moves with

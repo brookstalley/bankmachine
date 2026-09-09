@@ -109,11 +109,18 @@ survive the reversal rather than being deleted with it.
 
 ## Status
 
-- [ ] **00 · The amendment, the column's type, the new warning kind, and one deletion** *(coordinator)*
+- [x] **00 · The amendment, the column's type, the new warning kind, and one deletion** *(coordinator)*
 - [ ] **01 · The roster observation, recorded — #51** *(delegate, worktree)*
 - [ ] **02 · The contract describes everything it publishes — #52** *(delegate, worktree)*
 - [ ] **03 · Hold state: two shapes, priced — #53** *(delegate, worktree, discovery only)*
 - [ ] **04 · Integration** *(coordinator)*
+
+**Context.** Chunk 00 closed 2026-09-09 at `66189da`, after two review rounds. Both found the same
+class of defect — **prose still asserting the design the amendment had just replaced** — first in
+`data-model.md`, then surviving in two files the first round had not cited. 🔴 **The lesson for
+chunk 04: when a ratified decision is reversed, the reversal is a SWEEP, not an edit.** Grep the
+repo for the rejected spelling and for the superseded claim; do not fix the file the finding names
+and stop there. Suite green at 966.
 
 ---
 
