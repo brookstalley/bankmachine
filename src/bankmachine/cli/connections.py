@@ -35,7 +35,7 @@ from bankmachine.secrets import (
     get_access_token,
     get_plaid_secret,
 )
-from bankmachine.store.connection import DatastoreMissingError, inspect
+from bankmachine.store.connection import DatastoreMissingError, inspect, remedy_for
 from bankmachine.store.engine import reader_connection, transaction, writer_connection
 from bankmachine.store.schema import connections, institutions
 from bankmachine.store.types import UtcInstant, now_utc
@@ -100,8 +100,8 @@ def _require_datastore(config: Config) -> None:
     status = inspect(config)
     if not status.healthy:
         raise DatastoreMissingError(
-            f"datastore at {status.path} is not ready ({status.problem or 'unknown problem'}); "
-            f"run `bankmachine store init` first"
+            f"cannot list connections: the datastore at {status.path} is not ready "
+            f"({status.problem or 'unknown problem'}). {remedy_for(status.reason)}"
         )
 
 

@@ -43,7 +43,7 @@ from bankmachine.connector.plaid.client import (
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.logging_setup import get_logger
 from bankmachine.secrets import get_plaid_secret, set_access_token
-from bankmachine.store.connection import DatastoreMissingError, inspect
+from bankmachine.store.connection import DatastoreMissingError, inspect, remedy_for
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, transaction, writer_connection
 from bankmachine.store.schema import connections, institutions
@@ -361,8 +361,8 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
     status = inspect(config)
     if not status.healthy:
         raise DatastoreMissingError(
-            f"datastore at {status.path} is not ready ({status.problem or 'unknown problem'}); "
-            f"run `bankmachine store init` before enrolling"
+            f"cannot enroll: the datastore at {status.path} is not ready "
+            f"({status.problem or 'unknown problem'}). {remedy_for(status.reason)}"
         )
 
     # 🔴 Checked BEFORE the link token exists, because the alternative is

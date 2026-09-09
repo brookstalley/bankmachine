@@ -557,3 +557,7 @@ caller's must anchor on the call.
 
 ## Recording a policy is not ratifying one: an instruction given for one piece of work belongs in that work's plan, and a `project-preferences.md` norm row has prerequisites that file states for itself
 
+
+## Removing a value from every literal does not remove it from what those literals interpolate: a branch that builds its sentence from an exception string is the one that keeps leaking, and a guard exercising a single state proves nothing about it
+
+## A carve-out reaches every state that shares its return type: when one function collapses several distinguishable states into one value, an exception written for one of them silently governs all of them, and the collapse is the defect rather than the exception

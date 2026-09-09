@@ -36,7 +36,7 @@ from bankmachine.connector.plaid.client import PlaidClient
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.logging_setup import get_logger
 from bankmachine.secrets import SecretsError, get_access_token, get_plaid_secret
-from bankmachine.store.connection import DatastoreMissingError, inspect
+from bankmachine.store.connection import DatastoreMissingError, inspect, remedy_for
 from bankmachine.store.derivation import DerivationError, apply_response
 from bankmachine.store.engine import reader_connection, transaction, writer_connection
 from bankmachine.store.schema import (
@@ -147,8 +147,8 @@ def cmd_sync_run(config: Config, args: argparse.Namespace) -> int:
     status = inspect(config)
     if not status.healthy:
         raise DatastoreMissingError(
-            f"datastore at {status.path} is not ready ({status.problem or 'unknown problem'}); "
-            f"run `bankmachine store init` before syncing"
+            f"cannot sync: the datastore at {status.path} is not ready "
+            f"({status.problem or 'unknown problem'}). {remedy_for(status.reason)}"
         )
 
     with reader_connection(config) as conn:

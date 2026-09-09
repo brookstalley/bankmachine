@@ -36,7 +36,7 @@ from bankmachine.build_id import build_identity
 from bankmachine.cli.exit_codes import EXIT_ERROR, EXIT_OK
 from bankmachine.config import Config
 from bankmachine.logging_setup import get_logger
-from bankmachine.store.connection import inspect
+from bankmachine.store.connection import DatastoreProblem, inspect
 from bankmachine.store.schema import PROVENANCE_SOURCES
 
 logger = get_logger("mcp")
@@ -1619,6 +1619,25 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
             return _error(message_id, _METHOD_NOT_FOUND, f"no tool named {name!r}")
         try:
             answer = _dispatch_tool(config, name, arguments)
+        except query.DatastoreUnservableError as exc:
+            # 🔴 Ahead of both catches below, and carrying its OWN code rather
+            # than falling through to `internal_error`. The distinction the code
+            # vocabulary exists to carry is whether the caller can do anything:
+            # `internal_error` says "logged, retry is pointless", and this state
+            # is one the operator fixes in a single command. Reporting it as an
+            # internal failure would bury a fixable state under an unfixable
+            # label.
+            #
+            # 🔴 This is the refusal `api-contract.md` § Hard errors requires --
+            # *a schema version the process does not recognize is a hard error,
+            # including for the reader*. Before it existed, a store this build
+            # could not serve answered every tool with zeroed coverage on the
+            # SUCCESS path, and an agent that skipped `warnings` reported that
+            # the household owned nothing. The message is the operator's remedy
+            # and is safe to send verbatim: this product wrote every word of it,
+            # and no exception text from beneath the store layer reaches it.
+            logger.warning("tool %s refused: datastore unservable: %s", name, exc)
+            return _tool_error(message_id, "datastore_unservable", str(exc))
         except (
             BadArgumentError,
             query.UnknownAccountError,
@@ -1848,12 +1867,25 @@ def cmd_mcp(config: Config, _args: argparse.Namespace) -> int:
         return EXIT_ERROR
     status = inspect(config)
     if not status.healthy:
+        # 🔴 What the tools will DO differs by state, so this line says which
+        # rather than making one claim for both. A missing datastore is reported
+        # as an answer with zeroed coverage (AC-ARCH.3); every other unservable
+        # state is REFUSED with `datastore_unservable`, because answering zero
+        # about data that exists is the failure `api-contract.md` § Hard errors
+        # forbids. This line used to promise "tools will report this rather than
+        # fail" for both, which stopped being true of four of the five states the
+        # moment the refusal landed.
+        outcome = (
+            "tools will report this as an empty answer"
+            if status.reason is DatastoreProblem.MISSING
+            else "tools will REFUSE with datastore_unservable rather than answer zero"
+        )
         logger.warning(
-            "serving %s with an unusable datastore at %s (%s); tools will report this rather "
-            "than fail",
+            "serving %s with an unusable datastore at %s (%s); %s",
             config.environment,
             status.path,
             status.problem or "unknown problem",
+            outcome,
         )
     else:
         logger.info("serving %s datastore over stdio", config.environment)

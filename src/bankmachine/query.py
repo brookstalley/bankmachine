@@ -46,7 +46,13 @@ from bankmachine.envelope import (
     iso_or_none,
     resolve_window,
 )
-from bankmachine.store.connection import inspect
+from bankmachine.logging_setup import get_logger
+from bankmachine.store.connection import (
+    DatastoreProblem,
+    DatastoreStatus,
+    inspect,
+    remedy_for,
+)
 from bankmachine.store.engine import reader_connection
 from bankmachine.store.schema import (
     PROVENANCE_SOURCES,
@@ -59,6 +65,8 @@ from bankmachine.store.schema import (
     transactions,
 )
 from bankmachine.store.types import CalendarDate, UtcInstant, calendar_date, now_utc
+
+logger = get_logger("query")
 
 
 def _is_short(granted: Any, requested: Any) -> bool:
@@ -1041,7 +1049,7 @@ def _unusable(
                 detail=(
                     f"the {config.environment} datastore is not readable ({problem}), so this "
                     f"answer is empty because nothing could be read — not because there is "
-                    f"nothing to report. Run `bankmachine store init` to create it"
+                    f"nothing to report. {remedy_for(DatastoreProblem.MISSING)}"
                 ),
             )
         ],
@@ -1072,15 +1080,144 @@ def _unusable(
     )
 
 
+class DatastoreUnservableError(RuntimeError):
+    """This build cannot serve this datastore, and data is sitting in it.
+
+    🔴 A refusal rather than an answer, and the distinction is the whole point.
+    `api-contract.md` § Hard errors: *a schema version the process does not
+    recognize is a hard error, including for the reader -- it answers
+    `get_pipeline_health` with a refusal rather than serving queries, because a
+    reader running older code against a migrated schema returns plausible,
+    structurally valid, wrong answers.* `architecture.md` § Direction states the
+    same rule as a norm, with the same why: refusing is recoverable, and a wrong
+    number that looks right is not.
+
+    Measured before this existed: a store holding 14 accounts and 388
+    transactions, at a schema version this build does not serve, answered every
+    tool with zeroed coverage on the SUCCESS path. An agent that does not read
+    `warnings` reported that the household owned nothing.
+
+    A datastore that is simply **not there** is the one unhealthy state that does
+    NOT raise -- it has no data to misreport, and AC-ARCH.3 asks for it to be
+    reported rather than crashed on. `_readable` draws that line.
+
+    Carries the operator's remedy as its message. Raised from the query layer
+    because only `inspect` knows which state the store is in; rendered at the MCP
+    boundary, which owns how a caller is told.
+    """
+
+
+def _unservable_remedy(status: DatastoreStatus) -> str:
+    """What the operator should actually do, chosen by state rather than by prose.
+
+    🔴 Branches on `status.reason`, never on the wording of `status.problem`.
+    The sentence is written for a human and is free to be reworded; a remedy
+    picked by matching substrings of it would change behaviour silently the next
+    time someone improves the English.
+
+    Every branch names a command that is tested against a store actually put into
+    that state -- `learnings.md`, *a documented remedy is a claim and is asserted
+    like one*. No branch names `store rebuild`: that step is recorded as having
+    rolled back on this very shape of store, and a remedy that fails spends the
+    operator's trust on the way to failing.
+
+    🔴 **No branch carries the datastore PATH**, and that is a deliberate
+    subtraction rather than an oversight. Nothing else on this wire carries it:
+    the path reaches the log, where the formatter's redaction applies, and it
+    reaches the operator's own terminal through `store status`. A refusal is read
+    by whatever model is driving the client, so putting an absolute path -- which
+    on a personal machine contains the operator's account name -- into every
+    refusal would newly export it from a product whose posture is that nothing
+    leaves the machine. The environment names which of the two stores this is,
+    which is the only thing the reader needs to act.
+
+    Every branch says **nothing was read and nothing was changed**. The operator's
+    first question, on seeing a tool refuse against the store holding their
+    finances, is whether the refusal did anything to it.
+    """
+    if status.reason is DatastoreProblem.SCHEMA_BEHIND_BUILD:
+        return (
+            f"the {status.environment} datastore is at schema version {status.schema_version} and "
+            f"this build serves {status.supported_schema_version}. Nothing was read and nothing "
+            f"was changed. {remedy_for(status.reason)}"
+        )
+    if status.reason is DatastoreProblem.SCHEMA_AHEAD_OF_BUILD:
+        # 🔴 The opposite remedy, because migrations are forward-only. Telling
+        # this operator to run them would send them to a command that applies
+        # nothing, reports nothing to do, and leaves the store exactly as
+        # unservable as it was -- which is worse than silence, because it reads
+        # as "I tried the fix and the fix is broken". The store is ahead: the
+        # thing that is out of date is THIS BUILD.
+        return (
+            f"the {status.environment} datastore is at schema version {status.schema_version}, "
+            f"which is NEWER than the {status.supported_schema_version} this build serves — a "
+            f"newer bankmachine has already migrated it. Nothing was read and nothing was "
+            f"changed, and migrations cannot run backwards. {remedy_for(status.reason)}"
+        )
+    if status.reason is DatastoreProblem.NO_SCHEMA_VERSION:
+        return (
+            f"the {status.environment} datastore records no schema version, so it is "
+            f"uninitialized or a migration did not complete. Nothing was read and nothing was "
+            f"changed. {remedy_for(status.reason)}"
+        )
+    if status.reason is DatastoreProblem.KEY_MISSING:
+        # 🔴 Deliberately does NOT say `store init`, which refuses to mint a key
+        # for a datastore that already exists -- and refuses correctly, because a
+        # fresh key would decrypt nothing. `secrets.py` carries the same refusal
+        # and the same two remedies; this sentence agrees with it rather than
+        # sending the operator to a command that will turn them away.
+        return (
+            f"the {status.environment} datastore exists, but its key is not in the keychain. A key "
+            f"cannot be recovered from the datastore. Nothing was read and nothing was changed. "
+            f"{remedy_for(status.reason)}"
+        )
+    # 🔴 The fallback interpolates NOTHING from `status.problem`, and that is the
+    # rule this whole function exists to hold rather than an omission. The
+    # problem sentence for this state is `str(exc)` from the store layer, and
+    # those exceptions carry absolute paths by design -- "could not probe the
+    # writer lock at <path>", "no datastore at <path>". Passing it through would
+    # put the operator's account name on the wire through the one branch that
+    # looked too generic to check, which is exactly where it got back in once.
+    # `_tool_error` performs no redaction; the log does, and that is where the
+    # detail belongs.
+    # The claim below has to be made true HERE. `query` logs nowhere else, and
+    # `cmd_mcp` writes `status.problem` only at startup -- so for the state this
+    # branch exists for, a store that goes bad while a long-lived server runs,
+    # nothing had ever written the detail the sentence promises.
+    logger.warning("%s datastore could not be opened: %s", status.environment, status.problem)
+    return (
+        f"the {status.environment} datastore exists but could not be opened. Nothing was read and "
+        f"nothing was changed. {remedy_for(status.reason)} — it is also in the log, where "
+        f"redaction applies"
+    )
+
+
 def _readable(config: Config) -> str | None:
-    """The reason the datastore cannot be read, or None when it can.
+    """The reason a MISSING datastore cannot be read, or None when it can be.
 
     Checked per call rather than once at startup: a datastore can be created,
     moved or corrupted while a long-lived server is running, and an answer must
     describe the store as it is at the moment of answering.
+
+    🔴 Returns for exactly one unhealthy state and RAISES for every other.
+    AC-ARCH.3's carve-out -- *the MCP server starts successfully when the
+    datastore is empty or missing, and reports that state through
+    `get_pipeline_health` rather than crashing* -- is scoped to a store that is
+    not there, which is what its words say and what both go-red cases enforcing
+    it anchor to. A store that IS there and cannot be served holds data, and
+    answering zero about data that exists is the failure `api-contract.md`
+    § Hard errors and `architecture.md` § Direction both forbid.
+
+    This function used to collapse all five of `inspect`'s states into one
+    string, which applied the missing-store carve-out to a populated store.
+    Ruled 2026-09-09: honour the norm.
     """
     status = inspect(config)
-    return None if status.healthy else (status.problem or "it is missing or unreadable")
+    if status.healthy:
+        return None
+    if status.reason is DatastoreProblem.MISSING:
+        return status.problem or "it is missing or unreadable"
+    raise DatastoreUnservableError(_unservable_remedy(status))
 
 
 def list_accounts(config: Config) -> Answer:

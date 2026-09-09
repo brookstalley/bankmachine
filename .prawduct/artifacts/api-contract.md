@@ -995,6 +995,32 @@ looks right is not.
 No stack traces, internal identifiers, or PII cross the boundary. Log redaction is separate and
 applies regardless (`security-model.md`).
 
+#### The error codes
+
+| Code | Means | Worth retrying? |
+|---|---|---|
+| `invalid_argument` | The call named an argument this tool does not take, or a value it cannot use | Yes, with a corrected call |
+| `datastore_unservable` | This build cannot serve this datastore, and data is in it. The message names the state and the operator's remedy | Not until the operator acts |
+| `internal_error` | Something failed and was logged. No detail crosses the boundary | No |
+
+🔴 **`datastore_unservable` exists so a fixable state does not wear the label that means "retry is
+pointless".** The distinction the vocabulary carries is whether the caller can do anything, and
+folding this into `internal_error` — whose remedy sentence is *the failure has been logged* — buries
+a state the operator clears with one command under one they cannot act on at all.
+
+🔴 **A datastore that is simply NOT THERE is the one unhealthy state that answers rather than
+refuses**, carrying zeroed coverage and a `partial` warning. AC-ARCH.3 asks for that state to be
+*reported* — *"the MCP server starts successfully when the datastore is empty or missing, and
+reports that state through `get_pipeline_health` rather than crashing"* — and a store with no data in
+it has nothing to misreport. Every other unservable state means data exists and could not be read.
+
+**Measured 2026-09-09, and the reason this section grew a table.** A store holding 14 accounts and
+388 transactions, at schema version 2 against a build serving 4, answered *every* tool with
+`isError: false`, `rows: []` and every coverage figure zero — because one line applied the
+missing-store carve-out to all five states `connection.inspect` distinguishes. An agent that does
+not parse `warnings` reported that the household owned nothing. Both halves are now pinned by go-red
+cases: one breaks the carve-out, the other removes the refusal.
+
 ### CLI exit codes — a stable contract, already shipped
 
 | Code | Name | Meaning |

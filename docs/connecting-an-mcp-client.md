@@ -86,6 +86,13 @@ The server also starts against a **missing or empty datastore** and reports that
 `get_pipeline_health` rather than refusing (AC-ARCH.3) — so a tool that returns nothing tells you
 whether it found nothing or could read nothing.
 
+🔴 **A missing store is the only unservable state that answers.** Every other one — a schema this
+build cannot serve in either direction, a datastore key that is not in the keychain, a file that
+cannot be opened — makes each tool return `isError: true` with the stable code
+`datastore_unservable` and a remedy chosen for that state. Answering with zeroes over a store that
+exists and cannot be read is indistinguishable from a genuine zero, which is the failure this
+product exists to prevent. The server still **starts**, so the tools are there to tell you so.
+
 ## 🔴 Reading the answers
 
 `build` says which code answered you. The server is a subprocess your client launches, so it runs
