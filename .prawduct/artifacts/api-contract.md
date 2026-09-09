@@ -34,7 +34,8 @@ is a breaking change.
 ## Direction
 
 Norms. These bind future work; departure is a recorded decision, never silent
-(`/prawduct:methodology norms`). Ratified 2026-09-07 by the owner.
+(`/prawduct:methodology norms`). The first three ratified 2026-09-07 by the owner; the
+fourth born 2026-09-09, and it is the only one carrying a migration.
 
 🔴 **Two of the three are born before the surface they govern exists** — the MCP tool layer is build
 step 7. That is deliberate and has direct precedent here: `architecture.md`'s four norms were also
@@ -72,6 +73,30 @@ migrate or grandfather.
   ergonomics. Collapsing them makes **a broken scheduler indistinguishable from a degraded feed** —
   which is this product's primary failure mode arriving through the operational door, and the one
   place where an ops shortcut reproduces the exact bug the product exists to prevent.
+  Status: steady-state.
+
+- **A tool's boundary is drawn where the answer *shape* changes — never where the question changes.**
+  Two guardrails carry it: a merge is permitted only when **one strict row schema covers every
+  parameter value with no optional fields** (nullable is fine — a null field is present and null,
+  never dropped; *absent* is not), and within one shape, **merge only across questions that share a
+  domain**. Verification and analysis are different domains, as this document already declares them.
+  Why: the owner directed "minimize tools, use actions to cover related capabilities", and applied
+  literally that destroys what the per-tool `outputSchema` buys — MCP allows one schema per tool, and
+  the schemas are per-tool precisely so a key's ABSENCE is information. Both the tool-per-question and
+  the action-parameter extremes assume a boundary tracks the *question*; that shared premise is what
+  fails. Factoring on answer shape satisfies the directive in substance while making the schema
+  property a **consequence** of the rule rather than something defended against it: a tool defined by
+  its answer shape has one answer shape by construction, and two tools can never become near-twins,
+  because if they were they would share a shape and already be one tool. Capabilities grow fast; row
+  entities do not. The first guardrail is checkable at registration, so the norm enforces itself
+  rather than resting on the judgment of whoever adds the next tool.
+  🔴 **Retroactive, and it has one migration to pay:** `spending_summary` ships today as its own tool
+  and merges into the grouped-aggregate tool, which is chunk C4 of `discovery-mcp-answer-scope.md`.
+  Every MCP tool is `experimental` (§ Surface Inventory), where "removing one is the policy working,
+  not a violation", so the migration costs no version bump and opens no deprecation window. The other
+  three shipped tools are unaffected.
+  Born 2026-09-09, from #30. Derivation, the alternatives priced against it, and the rule applied to
+  all ten specified tools: `discovery-mcp-tool-surface.md`.
   Status: steady-state.
 
 ---
@@ -151,6 +176,22 @@ Every tool is safe and idempotent, trivially — nothing writes.
 🔴 **Two of these ten are the verification surface, not the analysis surface.** `get_pipeline_health`
 and `get_coverage_report` exist so the analyst agent can **establish completeness *before* answering**.
 The product's headline goal is not "answer the question" but "answer it, or say why you should not."
+
+> **Amendment (2026-09-09, #30 — the table above is superseded but deliberately not yet rewritten).**
+> § Direction's fourth norm draws a tool boundary where the answer *shape* changes, and applying it
+> re-factors this specification from ten tools to eight: `cashflow_summary` merges into a grouped
+> aggregate tool alongside `spending_summary`, and `net_worth` merges into the time series alongside
+> `balance_history`. Neither merge costs a published `outputSchema`; both eliminate a near-twin pair.
+> `discovery-mcp-tool-surface.md` carries the derivation and the row shape that permits each merge.
+>
+> 🔴 **The table still lists ten because the table is a load-bearing input, not prose.**
+> `test_the_documented_tool_surface_is_the_built_one.py` derives the *specified* set from these rows
+> and the *built* set from `_tool_definitions()`, then asserts built ⊆ specified. Rewriting the rows
+> ahead of the code would drop `spending_summary` from the specification while it is still on the
+> wire, and the guard would fail — correctly. **The table, the counts every surface spells, and the
+> "two of these ten" sentence above all move in the same commit as the merge**, which is chunk C4 of
+> `discovery-mcp-answer-scope.md`. That commit owes the claim-site sweep across this document, the
+> README and the client guide; the guard names each site it reads.
 
 ### CLI — the operator surface
 
