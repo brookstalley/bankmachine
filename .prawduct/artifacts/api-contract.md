@@ -739,6 +739,21 @@ here.
 | `last_seen_in_roster` | string, nullable | the date this account was last listed by its institution; null for an import-only account, which has no roster behind it. A DIFFERENT fact from `last_transaction_date` and often a much later one — neither may be derived from the other |
 | `roster_last_observed` | string, nullable | the date this account's institution's roster was last successfully observed; null for an import-only account. Read against `last_seen_in_roster`: the two being equal is what makes an account `active`, and the earlier one is the whole derivation of `no_longer_reported`, so the verdict can be re-derived from the row without a second call |
 
+**Fields — `rows[]`** *(`query_transactions`)*.
+
+| Field | Type | Means |
+|---|---|---|
+| `transaction_id` | integer | this store's own id for the transaction. Opaque, and the id `get_coverage_report`'s `oldest_stranded_hold` names when it points at one |
+| `account` | string | the NAME of the account the transaction is on, not its id. 🔴 It is display text and not a key — filter with the `account_id` argument, which is what selects rows; two accounts can carry the same name and this field would not tell them apart |
+| `date` | string | the transaction's posted date, `YYYY-MM-DD`. A CALENDAR FACT and never an instant (§ Conventions), and the field the effective window is applied to. Every returned row's `date` lies inside `effective_window.effective` |
+| `description` | string | the institution's own string for the transaction, and 🔴 **the authoritative one.** When it and `merchant` disagree, this is the one that came from the bank |
+| `merchant` | string, nullable | the aggregator's guess at a merchant name, 🔴 **unvalidated** — it is a normalisation the aggregator performed and this product did not check. Null when it offered none. Grouping `money_summary` by merchant falls back to `description` where this is null |
+| `amount_minor_units` | integer | the amount in MINOR UNITS, signed from the account holder's point of view: negative is money out |
+| `currency` | string | the currency the amount is in |
+| `pending` | boolean | this row is an authorisation hold that has not settled. A pending amount can settle at a different figure or expire without settling, so a total computed over these rows can move with no new activity — which is what `includes_pending_rows` warns about |
+| `category` | string, nullable | the category this transaction is filed under: 🔴 **the operator's override where one exists, and the source's category otherwise.** Read `category_is_override` beside it to know which you are looking at. Null when neither exists |
+| `category_is_override` | boolean | whether `category` came from the operator rather than from the source. It matters beyond provenance: `flow_class` on `money_summary` is fixed to read the SOURCE category only, so an overridden row can be grouped under one category and classed as though it were under another — and that is deliberate, because a re-categorisation must not be able to reclassify a transfer as spending |
+
 ### Pagination and caps
 
 | | Value |

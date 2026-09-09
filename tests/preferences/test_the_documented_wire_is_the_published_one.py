@@ -87,13 +87,8 @@ def _published_field_names() -> set[str]:
 #: not an entry.
 UNDOCUMENTED_AT_FREEZE: frozenset[str] = frozenset(
     {
-        "account",
         "aggregator",
-        "category",
-        "category_is_override",
-        "date",
         "debt_service_outflow_minor_units",
-        "description",
         "group_key",
         "group_label",
         "history_starts",
@@ -102,7 +97,6 @@ UNDOCUMENTED_AT_FREEZE: frozenset[str] = frozenset(
         "last_error_code",
         "last_success_at",
         "manual",
-        "merchant",
         "net_minor_units",
         "outflow_minor_units",
         "requested_history_days",
