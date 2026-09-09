@@ -100,27 +100,33 @@ _INTERNAL_ERROR = -32603
 #: because two tools describing one mechanism in two sentences is how the two
 #: sentences stop agreeing -- and this text is the only place a caller is told
 #: the field exists before they have seen one.
+#: 🔴 Deliberately short. The mechanism is spelled out once in the handshake
+#: instructions and again, in full, in the envelope reference this server serves
+#: by URI -- so a third telling here would be the third copy to drift, and it
+#: would cost every session the tokens whether the window mattered or not. What
+#: survives is what a caller cannot act correctly without: that an empty result
+#: outside coverage is not a zero.
 _WINDOW_NOTE = (
-    "The window you ask for is CLAMPED to what the store can answer over, and the result "
-    "says so: `effective_window` carries the window requested beside the window actually "
-    "covered, and a `window_starts_before_coverage` or `window_extends_past_coverage` warning "
-    "names the boundary crossed. Absent those warnings, the window you asked for is the "
-    "window you got. Read it before treating an empty result as a zero -- outside coverage, "
-    "data is ABSENT rather than zero."
+    "WINDOWED: the window is CLAMPED to what the store covers. `effective_window` says what "
+    "was actually answered over, and a `window_starts_before_coverage` or "
+    "`window_extends_past_coverage` warning names the boundary crossed; absent those, you got "
+    "the window you asked for. Outside coverage, data is ABSENT rather than zero, so an empty "
+    "result there is not a zero."
 )
 
 #: 🔴 On `query_transactions` alone. `spending_summary` is an aggregate, fixed
 #: unpaginated by `api-contract.md` and bounded by its grouping, so saying this
 #: there would describe a cap it does not have.
+#: Shortened for the reason `_WINDOW_NOTE` is, and kept longer than it because
+#: the failure it prevents is silent arithmetic on a partial page rather than a
+#: misread empty one. The field-by-field detail is in the envelope reference.
 _TRUNCATION_NOTE = (
-    "This tool is CAPPED. `truncation` carries `matching` (how many rows the request "
-    "selects), `returned` (how many came back) and `truncated`. 🔴 When `truncated` is true "
-    "the rows are the NEWEST ones only, so summing or counting them describes what came "
-    "back rather than the window you asked about -- a `rows_truncated` warning says by how "
-    "much. To read the rest, pass the answer's `next_cursor` straight back as `cursor` with "
-    "the SAME window and account, and keep going until `truncated` is false -- that is the "
-    "only route that reaches every matching row. Narrowing the window or raising `limit` "
-    "moves the cap; paging removes it."
+    "CAPPED: `truncation` carries `matching`, `returned` and `truncated`. 🔴 When `truncated` "
+    "is true the rows are the NEWEST ones only, so summing or counting them describes what "
+    "came back rather than the window you asked about. Pass `next_cursor` back as `cursor` "
+    "with the SAME window and account until `truncated` is false -- that is the only route "
+    "reaching every matching row. Narrowing the window or raising `limit` moves the cap; "
+    "paging removes it."
 )
 
 
@@ -726,54 +732,88 @@ def _build_meta() -> dict[str, Any]:
 
 
 def _instructions(config: Config) -> str:
+    """What a consuming agent reads once, at handshake, before it calls anything.
+
+    🔴 **Tables, not paragraphs, and the right-hand column is the deliverable.**
+    This text is read by a model rather than a person, and its job is not to
+    describe the envelope -- `_reference_documents()` does that, by URI, at no
+    per-session cost. Its job is to say what to DO when a field says something.
+    A vocabulary an agent can recite and cannot act on is the half of this
+    product that was missing: every kind was defined here and not one of them
+    said whether the answer could still be quoted.
+
+    🔴 **Every envelope field and every warning kind is still NAMED here**, and
+    two tests hold this text to that. That is deliberate and it is the reason
+    the tables are dense rather than short: the names cannot leave, so the
+    paragraphs around them are what had to. Cutting a name to save room would
+    make the one document the agent reads deny that a field exists.
+    """
     return (
         f"This server reads a local {config.environment} finance datastore. It is READ-ONLY "
-        f"and never moves money.\n\n"
-        f"Every response carries `environment`, `as_of`, `build`, `coverage`, `warnings` and "
-        f"`rows`. `build` carries `version`, `commit` and `dirty`, and says which code answered "
-        f"you -- this server is a subprocess launched "
-        f"at connect time, so it runs whatever existed then, and `commit` is captured once at "
-        f"start rather than re-read (a null `commit` means the build could not be identified, "
-        f"and `dirty` is then null too, never false).\n\n"
-        f"🔴 A WINDOWED tool also carries `effective_window`, holding `requested` (the window "
-        f"you asked for) beside `effective` (the one the data could answer over), each a "
-        f"`since` and an `until`. A CAPPED tool also carries `truncation` "
-        f"(`matching`, `returned`, `truncated`). Absence of either key means that tool has no "
-        f"window, or returns every row it finds. 🔴 **If `truncated` is true the rows are the "
-        f"NEWEST ones only, so summing or counting them describes what came back rather than "
-        f"the window you asked about.** A truncated answer also carries "
-        f"a `next_cursor` inside `truncation`: pass it straight back as the tool's `cursor` "
-        f"argument, "
-        f"with the same window and account, to read the next page, and keep going until "
-        f"`truncated` is false. The cursor is OPAQUE -- never build or edit one -- and it is "
-        f"present when and only when there is more to read.\n\n"
-        f"🔴 `coverage` says what the store HOLDS, which is how an empty answer is told from an "
-        f"empty world: `connections`, `accounts`, `transactions`, and `earliest_transaction` / "
-        f"`latest_transaction`, the first and last dates any transaction carries. 🔴 "
-        f"`transactions` is ALWAYS store-wide and never narrows with your question. A windowed "
-        f"answer adds `transactions_in_effective_window` — how many rows the window it actually "
-        f"covered holds — and that is the one to read against a windowed question. It is not "
-        f"narrowed by `account_id` either, so it is a fact about the window rather than about "
-        f"your filters; compare it against `truncation.matching`, which is.\n\n"
-        f"🔴 Read `warnings` before drawing a conclusion: an answer can be perfectly "
-        f"well-formed and still be computed over incomplete data. Some warnings describe the "
-        f"PIPELINE and ride every response: `stale` means a connection has not synced "
-        f"recently; `degraded` means one is failing; `gapped` means the institution granted "
-        f"less history than was asked for, so older data is ABSENT rather than zero; "
-        f"`partial` means something is not yet known; `rule-applied` means an account rule "
-        f"filtered rows out of an aggregate, so the total excludes them on purpose. The rest "
-        f"describe THIS REQUEST and "
-        f"appear only when it crosses the boundary they name, so their absence is information "
-        f"too: `window_starts_before_coverage` and `window_extends_past_coverage` mean the "
-        f"window you asked for reaches outside what the store holds; `rows_truncated` means "
-        f"rows were left behind; `counted_during_change` means a write landed while the "
-        f"answer was being assembled.\n\n"
-        f"The detail behind all of this is SERVED rather than repeated here, as MCP resources "
-        f"you read by URI when you need them: `{mcp_resources.ENVELOPE_URI}` is every field of "
-        f"the envelope and which tools carry it, and `{mcp_resources.WARNINGS_URI}` is every "
-        f"warning kind with what it implies and what to do about it.\n\n"
-        f"All amounts are integer minor units (cents for USD) and signed from the account "
-        f"holder's point of view: negative is money out, positive is money in."
+        f"and never moves money. Amounts are integer minor units (cents for USD), signed from "
+        f"the account holder's point of view: negative is money out, positive is money in.\n\n"
+        f"🔴 **An answer can be perfectly well-formed and still be computed over incomplete "
+        f"data.** Read `warnings` BEFORE drawing a conclusion, and say what you found. Nothing "
+        f"here throws; the numbers simply stop being true.\n\n"
+        f"WHAT A WARNING MEANS, AND WHAT TO DO ABOUT IT\n"
+        f"These ride every response and describe the PIPELINE:\n"
+        f"| kind | what it means | what to do |\n"
+        f"|---|---|---|\n"
+        f"| `stale` | a connection has not synced recently | quote the figure, say it may be "
+        f"out of date, and name `as_of` |\n"
+        f"| `degraded` | a connection is failing | treat totals as a FLOOR; the missing "
+        f"institution's rows are absent, not zero |\n"
+        f"| `gapped` | the institution granted less history than was asked for | do not answer "
+        f"about the ungranted period at all -- older data is ABSENT, and an empty result there "
+        f"is not a zero |\n"
+        f"| `partial` | something is not yet known | never read it as 'no shortfall'; say the "
+        f"measurement has not happened |\n"
+        f"| `rule-applied` | an account rule filtered rows out of an aggregate | the total "
+        f"excludes them ON PURPOSE; say so when you quote it |\n\n"
+        f"These describe THIS REQUEST and appear only when it crosses the boundary they name, "
+        f"so their ABSENCE is information too:\n"
+        f"| kind | what it means | what to do |\n"
+        f"|---|---|---|\n"
+        f"| `window_starts_before_coverage` | your window reaches back past what the store "
+        f"holds | re-ask inside `effective_window.effective`, or qualify the answer to it |\n"
+        f"| `window_extends_past_coverage` | your window reaches past the last data | the tail "
+        f"is unanswered, not quiet |\n"
+        f"| `rows_truncated` | rows were left behind | do NOT sum or count these rows; page "
+        f"with `next_cursor` until `truncated` is false, or ask `spending_summary` instead |\n"
+        f"| `counted_during_change` | a write landed while the answer was assembled | rows and "
+        f"counts are from adjacent moments; re-ask if the two must reconcile exactly |\n\n"
+        f"WHAT EVERY ANSWER CARRIES\n"
+        f"| field | read it for |\n"
+        f"|---|---|\n"
+        f"| `environment` | whether this is real money or a fixture |\n"
+        f"| `as_of` | how fresh the answer is |\n"
+        f"| `build` (`version`, `commit`, `dirty`) | which code answered; this server is a "
+        f"subprocess started at connect time, so it runs whatever existed then. A null "
+        f"`commit` means the build could not be identified, and `dirty` is then null too, "
+        f"never false |\n"
+        f"| `coverage` | what the store HOLDS -- `connections`, `accounts`, `transactions`, "
+        f"`earliest_transaction`, `latest_transaction`. 🔴 `transactions` is ALWAYS store-wide "
+        f"and never narrows with your question |\n"
+        f"| `warnings` | the tables above |\n"
+        f"| `rows` | the answer itself |\n\n"
+        f"A WINDOWED tool adds `effective_window` — `requested` (what you asked for) beside "
+        f"`effective` (what the data could answer over), each a `since` and an `until` — and "
+        f"adds `transactions_in_effective_window` inside `coverage`, the count to read against "
+        f"a windowed question. That count ignores `account_id`, so it is a fact about the "
+        f"window rather than about your filters; `matching` is the one narrowed by them.\n\n"
+        f"A CAPPED tool adds `truncation` (`matching`, `returned`, `truncated`). 🔴 **When "
+        f"`truncated` is true the rows are the NEWEST ones only**, so summing them describes "
+        f"what came back rather than the window you asked about. Pass `next_cursor` back as "
+        f"`cursor` with the SAME window and account, and keep going until `truncated` is "
+        f"false. The cursor is OPAQUE -- never build or edit one -- and it is present when and "
+        f"only when there is more to read.\n\n"
+        f"🔴 **Absence of `effective_window` or `truncation` is a fact, not a gap**: that tool "
+        f"takes no window, or returns every row it found. Each tool publishes an "
+        f"`outputSchema` saying which it carries.\n\n"
+        f"The full detail is SERVED rather than repeated here — read it by URI when you need "
+        f"it, at no cost when you do not: `{mcp_resources.ENVELOPE_URI}` is every field and "
+        f"which tools carry it; `{mcp_resources.WARNINGS_URI}` is every warning kind with what "
+        f"it implies and what to do."
     )
 
 
