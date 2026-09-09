@@ -27,6 +27,7 @@ change. A hand-written row would assert the state, not the change.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import timedelta
 from typing import Any
 
@@ -1094,3 +1095,51 @@ def test_asking_for_a_declared_closed_accounts_transactions_says_so_too(
         "a transaction query about an account the OPERATOR declared closed said nothing about "
         f"it; warnings were {_kinds(wire)}"
     )
+
+
+def test_one_answer_derives_the_lifecycle_once_even_when_a_second_walk_would_differ(
+    initialized_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 The envelope's figures and the rows they qualify are ONE observation.
+
+    `_coverage` states `accounts_not_active`, and the rows beside it state each
+    account's `lifecycle`. Derived separately over an autocommit reader -- which
+    releases its snapshot per statement -- those are two observations of one
+    fact, and the answer can contradict itself about the same account.
+
+    Pinned the way the sign check's twin is pinned, and for the same reason a
+    static store cannot pin it: `_account_lifecycle` is replaced with one whose
+    ANSWER CHANGES between calls. If the walk is done once and passed through,
+    the count matches the rows; if `_coverage` walks again it sees the second
+    answer and reports a figure the rows contradict.
+    """
+    connection_id = _enroll(initialized_config)
+    _observe(initialized_config, connection_id, ["one", "two"], at=now_utc())
+
+    real = query._account_lifecycle
+    calls = {"n": 0}
+
+    def _drifting(conn: Any) -> dict[int, Any]:
+        calls["n"] += 1
+        entries = real(conn)
+        if calls["n"] == 1:
+            return entries
+        # A second walk "sees" everything retired -- the shape of a snapshot
+        # taken after a sync landed between two statements.
+        return {
+            account_id: replace(entry, lifecycle="closed") for account_id, entry in entries.items()
+        }
+
+    monkeypatch.setattr(query, "_account_lifecycle", _drifting)
+
+    wire = _wire(initialized_config)
+    rows = {row["name"]: row for row in wire["rows"]}
+
+    assert calls["n"] == 1, (
+        f"one answer walked the lifecycle {calls['n']} times; the envelope's figures and the "
+        f"rows they qualify are then two observations of the same fact"
+    )
+    assert wire["coverage"]["accounts_not_active"] == 0, (
+        "the envelope reported non-active accounts that none of its own rows agree with"
+    )
+    assert all(row["lifecycle"] == "active" for row in rows.values()), rows

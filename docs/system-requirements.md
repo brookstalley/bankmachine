@@ -387,7 +387,8 @@ roster derivation records, per account, the date that account was last listed, a
 maximum** — the mirror of `first_seen_date`'s minimum. *Why:* this is the requirement #40 says does
 not exist. Without a recorded observation there is no non-`active` state for the read path to read,
 and a min/max pair is what makes the record order-independent under archive replay, which
-`derivers.py:86–94` names as the reason retirement was deferred rather than half-built.
+the accounts deriver's `_OPERATOR_OWNED` note gave as the reason retirement was deferred rather
+than half-built.
 
 **AC-12.5 · Absence is measured within one connection, against a successful observation, and never
 against silence.** A connection whose roster could not be fetched marks nothing absent. A connection
@@ -417,9 +418,9 @@ what they contributed.** 🔴 *Ruled by the owner 2026-09-09: include and flag.*
 count or a sum over accounts includes non-active accounts in the figure, states that it did, and
 states the magnitude they contributed — a count and a signed sum, both always present and zero
 rather than absent when none qualify. The answer also carries `account_no_longer_active`. The
-envelope's own `coverage.accounts` count — today an unfiltered `COUNT(*)` over `accounts`
-(`query.py:184`) — is covered by this clause: it keeps counting every account and gains the
-non-active figure beside it.
+envelope's own `coverage.accounts` count — an unfiltered `COUNT(*)` over `accounts` in
+`query._coverage` when this was written — is covered by this clause: it keeps counting every account
+and gains the non-active figure beside it.
 *Why:* both failure modes are quiet. Silently including a frozen balance is #40's filed bug; silently
 excluding one is a net worth that drops with no visible cause, which is #18's ruling arriving from
 the other side. Stating the treatment is what both rulings have in common, and it is why this

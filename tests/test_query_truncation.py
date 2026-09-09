@@ -418,10 +418,15 @@ def test_every_reader_of_transactions_shares_the_one_predicate_list(
     ]
     # The row query, its count, one coverage count per windowed call, the
     # aggregate, and the two hold tallies. Asserted as a floor so an added reader
-    # cannot slip past.
-    assert len(windowed) >= 5, (
-        f"expected at least 5 windowed reads of `transactions` across the two calls; "
-        f"saw {len(windowed)} — a reader is missing, or one short-circuited"
+    # cannot slip past — and the floor is RAISED when a reader is added, which is
+    # the half that was missed when the hold tallies arrived: the comment above
+    # gained them and the number below did not, so two readers could have stopped
+    # running, or stopped being windowed, with the floor still satisfied.
+    expected_windowed_readers = 7
+    assert len(windowed) >= expected_windowed_readers, (
+        f"expected at least {expected_windowed_readers} windowed reads of `transactions` "
+        f"across the two calls; saw {len(windowed)} — a reader is missing, or one "
+        f"short-circuited"
     )
     for sql in windowed:
         where = _where_of(sql)

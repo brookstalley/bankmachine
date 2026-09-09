@@ -555,12 +555,20 @@ wrong number. Absence is equally consistent with closure, with the account being
 sharing, and with the institution changing what it shares — and the schema field's own description
 says so, in the payload.
 
-🔴 **AC-12.5 holds by construction, not by three guards.** `roster_last_observed` is a maximum over
-the connection's *own* accounts, so a connection that could not be fetched moves no date and marks
-nothing absent; a connection whose *entire* roster vanishes moves the maximum with it, so nothing is
-ever older than it; and an import-only account has no connection, so both dates are null and the
-comparison is never reached. A `connections.roster_observed_at` column would have needed each of
-those three written in by hand.
+🔴 **AC-12.5's clauses follow from how the maximum is computed**, rather than from three guards
+written by hand. `roster_last_observed` is a maximum over the connection's *own* accounts, so a
+connection that could not be fetched moves no date and marks nothing absent; a connection whose
+*entire* roster vanishes moves the maximum with it, so nothing is ever older than it; and an
+import-only account has no connection, so both dates are null and the comparison is never reached. A
+`connections.roster_observed_at` column would have needed each of those written in by hand.
+
+⚠️ **"By construction" was withdrawn for the middle clause on 2026-09-09, and this section said it
+until then.** The arithmetic is a consequence of the maximum; whether the resulting silence is
+*right* is not. AC-12.5 justifies it by scale — fourteen simultaneous closures is a pipeline failure
+rather than fourteen closures — and at a connection holding **one** account that argument does not
+hold: one account closing is ordinary, and it is the whole roster, so such an account reports
+`active` indefinitely. The behaviour still obeys the ratified criterion, deliberately; the gap is the
+criterion's and is filed as **#51**. `query._account_lifecycle` carries the same correction.
 
 🔴 **The operator's declaration outranks the derived signal, and a rebuild never undoes it
 (AC-12.6).** `_OPERATOR_OWNED` keeps the accounts deriver out of `lifecycle_status`, and `accounts`

@@ -131,9 +131,13 @@ the balance-lifecycle norm names one unmigrated emitter it does not grandfather.
   🔴 **Retroactivity: one debt, and it is named.** `query._coverage`'s `accounts` count is an
   unfiltered `COUNT(*)` sitting between two counts that both filter, and it is the one shipped
   emitter this norm already governs. It is not grandfathered; AC-12.8 covers it by name.
-  Status: in-transition — the norm binds now, and the mechanism arrives with FR-9. It flips to
-  steady-state when every emitter named in AC-12.8 carries the figure and the guard for it has been
-  seen red.
+  Status: steady-state since 2026-09-09, on the condition this entry set for itself. Every emitter
+  AC-12.8 names carries the figure — `list_accounts`, `get_coverage_report`, `query_transactions`,
+  `money_summary` and `get_pipeline_health` all reach it through one `_coverage`, and the unreadable
+  store path carries it present-and-zero — and the guard has been seen red **with the magnitude
+  removed**, not merely with the flag flipped. Those are two cases in `verify_norms_go_red.py`
+  deliberately, because a flag with no figure passes the norm's letter and fails the reason it was
+  born: a consumer told something is included and handed nothing to subtract.
 
 ---
 
@@ -505,7 +509,13 @@ while a row that settled and was later withdrawn left as a settled row, and coun
 the first would tell a consumer a hold dropped off when a real transaction was retracted.
 
 🔴 **`get_coverage_report` rows carry `stranded_holds` and `oldest_stranded_hold` (AC-13.5), and
-`get_pipeline_health` rows carry `sign_convention` with the counts it was judged on (AC-14.2).**
+`get_pipeline_health` rows carry `sign_convention` with the counts it was judged on —
+`sign_convention_rows_judged` and `sign_convention_rows_positive` (AC-14.2).** The counts ride beside
+the verdict for the `silence_ratio` reason: a verdict with no evidence under it is a claim the reader
+must take on faith, and this check's whole subject is a claim that was taken on faith once already.
+`oldest_stranded_hold`, where present, names `transaction_id`, `posted_date`, `days_pending`,
+`amount_minor_units` and `currency` — the id and the age together, because the operator's next move
+is to go and look at the transaction.
 Both sit on the verification surface rather than on an analysis answer, which is this document's own
 per-account ruling below rather than a placement chosen here — and putting the stranded finding on
 the analysis answers as well was tried and withdrawn, because it produced a count scoped to the

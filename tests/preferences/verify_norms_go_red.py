@@ -1216,6 +1216,19 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "            extra_caveats=signs.caveats(conn),",
         f"{SIGN_TESTS}::test_pipeline_health_measures_once_even_when_a_second_scan_would_differ",
     ),
+    (
+        # 🔴 The same property one surface over: the envelope's non-active
+        # figures and the rows they qualify have to be ONE observation. The
+        # reader releases its snapshot per statement, so a second walk is a
+        # second observation and the answer can contradict itself about one
+        # account. Anchors on the CALL, for the reason the two above it do.
+        "AC-12.8: an answer derives the lifecycle once, not once per consumer",
+        QUERY,
+        "    coverage = _coverage(conn, lifecycle=lifecycle)",
+        "    coverage = _coverage(conn)",
+        f"{LIFECYCLE_TESTS}::"
+        "test_one_answer_derives_the_lifecycle_once_even_when_a_second_walk_would_differ",
+    ),
     # -- FR-9 (#40): account lifecycle -------------------------------------
     #
     # 🔴 Four cases rather than one, because #40 is a population path, a read
@@ -1260,6 +1273,21 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         '        "accounts_not_active": 0,',
         f"{LIFECYCLE_TESTS}::"
         "test_the_envelope_counts_every_account_and_says_how_many_are_not_active",
+    ),
+    (
+        # 🔴 The MAGNITUDE, not the flag -- and it is a separate case because the
+        # norm it certifies names it separately. `api-contract.md` § Direction's
+        # fifth norm flips to steady-state only once "the guard must assert the
+        # FIGURE and not only the flag, and be seen red with the magnitude
+        # removed". The count case above mutates the flag and leaves the figure
+        # untouched, so on its own it cannot discharge that condition. Emptying
+        # the figure is the failure the norm actually fears: a consumer told
+        # something is included and handed nothing to subtract.
+        "AC-12.8: the flagged magnitude is reported, not just the flag",
+        QUERY,
+        "    if not account_ids:\n        return []",
+        "    if True:\n        return []",
+        f"{LIFECYCLE_TESTS}::test_the_magnitude_is_signed_and_grouped_by_currency",
     ),
     # ----------------------------------------------------------------------
     # Pending-transaction semantics on the read path (#22, AC-13.1-13.7). No

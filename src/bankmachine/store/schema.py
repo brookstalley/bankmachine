@@ -121,8 +121,11 @@ accounts = Table(
     # AC-12.4: the date this account was last listed on a successful roster
     # observation, taken as a monotone MAXIMUM the way `first_seen_date` is taken
     # as a minimum -- which is what makes an archive replay order-independent.
-    # Nullable because migration 003 backfilled nothing; `query._account_lifecycle`
-    # carries the transitional rule that reads a null as `first_seen_date`.
+    # 🔴 Nullable, and the null MEANS "no roster observation is recorded for this
+    # account" -- `query._account_lifecycle` reads it as exactly that, never as a
+    # date. Migration 003 backfilled nothing because there is nothing honest to
+    # backfill with: the correct value is the connection's last successful roster
+    # observation, which is the record this column exists because nothing kept.
     Column("last_seen_date", CalendarDateColumn, nullable=True),
 )
 

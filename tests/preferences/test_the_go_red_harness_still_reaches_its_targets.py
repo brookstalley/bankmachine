@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -49,43 +50,30 @@ def _harness() -> Any:
     return module
 
 
-def test_every_case_can_still_find_the_text_it_breaks() -> None:
-    """The anchor is present, so the mutation can be applied at all."""
-    cases = _harness().CASES
-    assert cases, "the harness declares no cases, so this asserts nothing"
+Case = tuple[str, Any, str, str, str]
 
-    stale = [
-        (name, str(path), old)
+
+def stale_anchors(cases: Sequence[Case], root: Path) -> list[str]:
+    """Cases whose anchor is no longer in the file, so the harness would SKIP them."""
+    return [
+        f"{name}\n      {path}: {old!r}"
         for name, path, old, _new, _test in cases
-        if old not in (REPO_ROOT / path).read_text(encoding="utf-8")
+        if old not in (root / path).read_text(encoding="utf-8")
     ]
 
-    assert not stale, (
-        "these go-red cases can no longer find the code they break, so the harness SKIPS "
-        "them and the norms they cover are unproven:\n"
-        + "\n".join(f"  - {name}\n      {path}: {old!r}" for name, path, old in stale)
-    )
 
+def inert_or_unparsable(cases: Sequence[Case], root: Path) -> tuple[list[str], list[str]]:
+    """Cases whose mutation changes nothing, or does not parse.
 
-def test_every_mutation_still_changes_the_file_and_still_parses() -> None:
-    """A mutation that changes nothing, or breaks the parse, reports a false RED.
-
-    The harness checks both at run time and reports them as `SKIP`/`INVALID`.
-    Checking here too is not duplication -- it is the difference between finding
-    out now and finding out during the run you were hoping to trust.
-
-    A mutation that does not parse is the worse of the two: pytest exits
-    non-zero on a COLLECTION error exactly as it does on a failure, so the case
-    prints RED without ever exercising the guarantee.
+    A drifted anchor is skipped here rather than double-reported: `stale_anchors`
+    owns that failure.
     """
-    cases = _harness().CASES
-
-    inert = []
-    unparsable = []
+    inert: list[str] = []
+    unparsable: list[str] = []
     for name, path, old, new, _test in cases:
-        source = (REPO_ROOT / path).read_text(encoding="utf-8")
+        source = (root / path).read_text(encoding="utf-8")
         if old not in source:
-            continue  # the test above owns this failure; do not report it twice
+            continue
         mutated = source.replace(old, new, 1)
         if mutated == source:
             inert.append(name)
@@ -94,32 +82,20 @@ def test_every_mutation_still_changes_the_file_and_still_parses() -> None:
                 ast.parse(mutated)
             except SyntaxError as exc:
                 unparsable.append(f"{name} ({exc.msg} at line {exc.lineno})")
-
-    assert not inert, f"these mutations leave the file unchanged, so nothing is broken: {inert}"
-    assert not unparsable, (
-        "these mutations do not parse, so pytest would fail to COLLECT and the case would "
-        f"report RED without testing anything: {unparsable}"
-    )
+    return inert, unparsable
 
 
-def test_every_case_names_a_test_that_exists() -> None:
-    """A case pointing at a renamed test reports RED for the wrong reason.
+def missing_tests(cases: Sequence[Case], root: Path) -> list[str]:
+    """Cases naming a test that no longer exists.
 
-    pytest exits non-zero when a node id does not resolve, which the harness
-    reads as "the norm was caught" -- so a case whose test was renamed goes on
-    passing while covering nothing at all. This is the quietest of the three
-    failures, because unlike a drifted anchor it never prints a SKIP.
-
-    Checks the file and, where the id names one, the test function -- by parsing
-    rather than importing, since importing every test module here would be a
-    second collection pass for no gain.
+    The quietest of the three failures: pytest exits non-zero on an unresolvable
+    node id, which the harness reads as the norm being caught, so unlike a
+    drifted anchor it never even prints a SKIP.
     """
-    cases = _harness().CASES
-
-    missing = []
+    missing: list[str] = []
     for name, _path, _old, _new, node_id in cases:
         file_part, _, test_part = node_id.partition("::")
-        target = REPO_ROOT / file_part
+        target = root / file_part
         if not target.is_file():
             missing.append(f"{name}: no such file {file_part}")
             continue
@@ -133,6 +109,45 @@ def test_every_case_names_a_test_that_exists() -> None:
         }
         if wanted not in defined:
             missing.append(f"{name}: {file_part} defines no {wanted}")
+    return missing
+
+
+def test_every_case_can_still_find_the_text_it_breaks() -> None:
+    """The anchor is present, so the mutation can be applied at all."""
+    cases = _harness().CASES
+    assert cases, "the harness declares no cases, so this asserts nothing"
+
+    stale = stale_anchors(cases, REPO_ROOT)
+
+    assert not stale, (
+        "these go-red cases can no longer find the code they break, so the harness SKIPS "
+        "them and the norms they cover are unproven:\n" + "\n".join(f"  - {e}" for e in stale)
+    )
+
+
+def test_every_mutation_still_changes_the_file_and_still_parses() -> None:
+    """A mutation that changes nothing, or breaks the parse, reports a false RED.
+
+    The harness checks both at run time and reports them as `SKIP`/`INVALID`.
+    Checking here too is the difference between finding out now and finding out
+    during the run you were hoping to trust.
+
+    A mutation that does not parse is the worse of the two: pytest exits non-zero
+    on a COLLECTION error exactly as it does on a failure, so the case prints RED
+    without ever exercising the guarantee.
+    """
+    inert, unparsable = inert_or_unparsable(_harness().CASES, REPO_ROOT)
+
+    assert not inert, f"these mutations leave the file unchanged, so nothing is broken: {inert}"
+    assert not unparsable, (
+        "these mutations do not parse, so pytest would fail to COLLECT and the case would "
+        f"report RED without testing anything: {unparsable}"
+    )
+
+
+def test_every_case_names_a_test_that_exists() -> None:
+    """A case pointing at a renamed test reports RED for the wrong reason."""
+    missing = missing_tests(_harness().CASES, REPO_ROOT)
 
     assert not missing, (
         "these go-red cases name a test that no longer exists; pytest exits non-zero on an "
@@ -141,22 +156,37 @@ def test_every_case_names_a_test_that_exists() -> None:
     )
 
 
-def test_the_reader_reports_a_case_aimed_at_nothing() -> None:
-    """The positive control: proof these checks fail on a bad case.
+def test_the_detectors_report_a_case_broken_in_each_of_the_three_ways(tmp_path: Path) -> None:
+    """🔴 The positive control, DRIVING the detectors rather than restating them.
 
-    Every assertion above is of the form "no bad entries found", which is what a
-    reader returning nothing would also produce. So the detectors are driven
-    over a case that is broken in each of the three ways.
+    The first version of this control re-implemented the three detections inline
+    -- an `in` test, a no-op `replace`, an `ast.parse` of a broken string -- and
+    so proved that Python's operators work rather than that the three tests above
+    use them correctly. That is this file's own subject one level up, and it is
+    what its two sibling guards were careful to avoid: each drives its real
+    reader over a known-bad input.
+
+    Extracting the detectors is what makes that possible here. The tests above
+    and this control now run the same three functions; nothing is asserted twice
+    in two spellings that can drift apart.
     """
-    source = "value = 1\n"
-    anchor_drifted = "value = 2" not in source
-    mutation_inert = source.replace("value = 1", "value = 1", 1) == source
-    mutation_unparsable = False
-    try:
-        ast.parse(source.replace("value = 1", "value = (1", 1))
-    except SyntaxError:
-        mutation_unparsable = True
+    (tmp_path / "subject.py").write_text("value = 1\n", encoding="utf-8")
+    (tmp_path / "t.py").write_text("def test_x() -> None:\n    pass\n", encoding="utf-8")
+    subject = Path("subject.py")
 
-    assert anchor_drifted, "a missing anchor was not detected as missing"
-    assert mutation_inert, "a no-op mutation was not detected as inert"
-    assert mutation_unparsable, "an unparsable mutation was not detected"
+    drifted: list[Case] = [("drifted", subject, "value = 2", "value = 3", "t.py::test_x")]
+    inert_case: list[Case] = [("inert", subject, "value = 1", "value = 1", "t.py::test_x")]
+    broken: list[Case] = [("bad", subject, "value = 1", "value = (1", "t.py::test_x")]
+    renamed: list[Case] = [("renamed", subject, "value = 1", "value = 2", "t.py::test_gone")]
+
+    assert stale_anchors(drifted, tmp_path), "a drifted anchor was not reported"
+    assert not stale_anchors(inert_case, tmp_path), "a present anchor was reported as drifted"
+
+    inert, unparsable = inert_or_unparsable(inert_case, tmp_path)
+    assert inert and not unparsable, f"a no-op mutation was not reported: {inert}, {unparsable}"
+
+    inert, unparsable = inert_or_unparsable(broken, tmp_path)
+    assert unparsable and not inert, f"an unparsable mutation was not reported: {unparsable}"
+
+    assert missing_tests(renamed, tmp_path), "a case naming a nonexistent test was not reported"
+    assert not missing_tests(inert_case, tmp_path), "a case naming a real test was reported"

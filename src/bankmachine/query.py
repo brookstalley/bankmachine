@@ -172,7 +172,9 @@ def _pipeline_warnings(conn: SAConnection, now: UtcInstant) -> list[Caveat]:
     return warnings
 
 
-def _coverage(conn: SAConnection) -> dict[str, Any]:
+def _coverage(
+    conn: SAConnection, *, lifecycle: dict[int, AccountLifecycle] | None = None
+) -> dict[str, Any]:
     """What the datastore actually holds, so an empty answer can be told from an empty world.
 
     🔴 **`accounts` keeps counting every account, and states what the non-active
@@ -196,7 +198,17 @@ def _coverage(conn: SAConnection) -> dict[str, Any]:
             transactions.c.removed_at.is_(None)
         )
     ).one()
-    not_active = [entry for entry in _account_lifecycle(conn).values() if not entry.active]
+    # 🔴 Reuses the lifecycle the caller already derived for its ROWS, and does
+    # not re-derive one. The reader is autocommit and releases its snapshot per
+    # statement, so a second walk is a second observation -- and this figure
+    # qualifies the very rows beside it, so the two disagreeing is not a rare
+    # race, it is one answer contradicting itself about the same account. Same
+    # property, same remedy, as `signs.caveats(..., measured=...)` one surface
+    # over: the parameter is what makes "one production per answer" expressible.
+    # An unwindowed caller with no rows to qualify passes nothing and pays for
+    # one walk, which is still one.
+    entries = _account_lifecycle(conn) if lifecycle is None else lifecycle
+    not_active = [entry for entry in entries.values() if not entry.active]
     return {
         "connections": conn.execute(
             select(func.count()).select_from(connections).where(connections.c.retired_at.is_(None))
@@ -502,7 +514,8 @@ def _account_lifecycle(conn: SAConnection) -> dict[int, AccountLifecycle]:
         # 🔴 A null `last_seen_date` means NO ROSTER OBSERVATION IS RECORDED for
         # this account, and it is left null rather than read as anything else.
         #
-        # Reading it as `first_seen_date` was tried and is wrong. It looks true
+        # Reading it as `first_seen_date` is the obvious simplification and it is
+        # wrong -- recorded here so it is not re-proposed. It looks true
         # -- the account was listed at least once, on that date -- but the
         # comparison below is between accounts on one connection, and first-seen
         # dates legitimately differ across them: a second card, a savings account
@@ -700,6 +713,7 @@ def _answer(
     truncation: Truncation | None,
     totals: list[dict[str, Any]] | None = None,
     extra_caveats: list[Caveat] | None = None,
+    lifecycle: dict[int, AccountLifecycle] | None = None,
 ) -> Answer:
     """One answer, and the one place a window is reconciled against coverage.
 
@@ -722,7 +736,7 @@ def _answer(
     from the caller's own returned rows and cannot disagree with them.
     """
     now = now_utc()
-    coverage = _coverage(conn)
+    coverage = _coverage(conn, lifecycle=lifecycle)
     window = (
         None
         if requested_window is None
@@ -950,6 +964,7 @@ def list_accounts(config: Config) -> Answer:
             requested_window=None,
             truncation=None,
             extra_caveats=_uncovered_caveat(uncovered) + _not_active_caveat(not_active),
+            lifecycle=lifecycle,
         )
 
 
@@ -1100,14 +1115,14 @@ def _stranded_holds(conn: SAConnection, *, today: CalendarDate) -> list[Stranded
 
     Ordered oldest first, so the caller naming one names the worst.
 
-    🔴 **Takes no caller-supplied filters, and that removal is the fix for a real
-    defect rather than a tidy-up.** It used to accept a `filters` list, and its
-    one surviving caller is a surface that scopes to the whole store -- but the
-    parameter is what let a caller assemble a predicate set that omitted the
-    soft-delete exclusion, which published every long-expired hold as still
-    outstanding. Both invariants now live here: a stranded hold is `pending`, is
-    not removed, and is older than the cutoff. None of the three is a caller's to
-    choose, so none of them is a caller's to forget.
+    🔴 **Takes no caller-supplied predicates, deliberately.** A stranded hold is
+    `pending`, is not removed, and is older than the cutoff. None of the three is
+    a caller's to choose, so none of them is a caller's to forget -- and the
+    soft-delete clause is the one that matters most, because an expired hold is
+    RETAINED with `removed_at` set and `pending` left at 1. That retention is what
+    the `expired` tally reads, so a query that omits the clause reports every
+    long-expired hold as still outstanding and sends the operator after money the
+    institution already took back.
     """
     cutoff = _stranded_cutoff(today)
     rows = conn.execute(
@@ -1398,7 +1413,7 @@ def list_transactions(
             else []
         )
         # 🔴 Same scoping, same reason, on the lifecycle axis (AC-12.1's
-        # rationale, reaching the surface chunk 01 left open). An agent asking
+        # rationale). An agent asking
         # "what did I spend on this card" about an account the institution
         # stopped reporting is the consumer AC-12.1 names: it never thought to
         # call the verification surface, and the rows it gets back end on the day
@@ -1406,12 +1421,12 @@ def list_transactions(
         # ASKED ABOUT for the reason directly above -- naming every closed
         # account in the store on every page of every walk is the noise the
         # request scope exists to refuse.
+        # One walk, used twice: the scoped caveat below and the envelope's
+        # non-active figures, which `_answer` would otherwise derive from a
+        # second observation of the same fact.
+        lifecycle = _account_lifecycle(conn)
         not_active = (
-            [
-                e
-                for e in (_account_lifecycle(conn).get(account_id),)
-                if e is not None and not e.active
-            ]
+            [e for e in (lifecycle.get(account_id),) if e is not None and not e.active]
             if account_id is not None
             else []
         )
@@ -1446,6 +1461,7 @@ def list_transactions(
                 + _not_active_caveat(not_active)
                 + _pending_caveat(pending)
             ),
+            lifecycle=lifecycle,
         )
 
 
@@ -1685,6 +1701,7 @@ def coverage_report(config: Config) -> Answer:
                 # and neither suppresses the other.
                 + _not_active_caveat([e for e in lifecycle.values() if not e.active])
             ),
+            lifecycle=lifecycle,
         )
 
 
