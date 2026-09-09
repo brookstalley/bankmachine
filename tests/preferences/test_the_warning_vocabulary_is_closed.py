@@ -25,6 +25,7 @@ test's premise is what breaks first.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 from bankmachine import envelope
@@ -145,6 +146,118 @@ def test_the_scan_catches_a_kind_the_vocabulary_does_not_declare() -> None:
         "the scan did not report the computed kind as unreadable"
     )
     assert "rate_limited" not in vocabulary, (
+        "this control has to name a kind the vocabulary does NOT declare; if the "
+        "vocabulary grew to include it, pick another"
+    )
+
+
+#: The contract's own table of warning codes. `api-contract.md` is the canonical
+#: description of the wire, and the table is the half a consumer's author reads
+#: before writing a branch on `kind`.
+CONTRACT = Path(__file__).resolve().parents[2] / ".prawduct" / "artifacts" / "api-contract.md"
+
+#: The heading the table sits under. Matched rather than the table's own shape,
+#: because `api-contract.md` holds several tables and a row-shape match would
+#: silently start reading a different one if this section moved.
+_VOCABULARY_HEADING = "### The warning vocabulary"
+
+
+def _kinds_in_the_contract_table(document: str) -> list[str]:
+    """The code named in the first cell of each row of the vocabulary table.
+
+    Takes the document text rather than reading the file, so the control below
+    can drive THIS function over a known-bad document instead of asserting
+    something adjacent to it -- the same reason `_kinds_in` above takes source.
+
+    Reads the FIRST backticked token per row and ignores the rest of the cell,
+    which is what lets a row carry an annotation (`*(declared; no emitter yet)*`)
+    without the reconciliation having an opinion about its wording. The kind's
+    NAME is the contract; how far along it is is bookkeeping.
+    """
+    lines = document.splitlines()
+    try:
+        start = next(i for i, line in enumerate(lines) if line.startswith(_VOCABULARY_HEADING))
+    except StopIteration:
+        return []
+
+    found: list[str] = []
+    for line in lines[start:]:
+        if not line.startswith("|"):
+            if found:
+                break  # past the table
+            continue
+        cell = line.split("|")[1]
+        match = re.search(r"`([a-z_-]+)`", cell)
+        if match:
+            found.append(match.group(1))
+    return found
+
+
+def test_the_contract_table_lists_every_kind_the_vocabulary_defines() -> None:
+    """🔴 The table and `WARNING_KINDS` are two descriptions of one thing.
+
+    The scan above closes one direction: no module emits a kind the vocabulary
+    does not declare. NOTHING closed the other -- a kind could enter the
+    vocabulary and never reach the document a consumer's author actually reads,
+    and twice now one did. `accounts_without_coverage` was absent from the table
+    for a full work cycle after it shipped, and the three kinds added for the
+    production-blocker items went stale in their annotations within one commit.
+
+    Both directions are asserted, because they fail differently. A kind missing
+    from the TABLE is a consumer told to branch on something nobody documented.
+    A kind in the table and not in the vocabulary is worse: it reads as shipped,
+    and a consumer that branches on it waits for a warning that can never arrive.
+    """
+    documented = _kinds_in_the_contract_table(CONTRACT.read_text(encoding="utf-8"))
+    vocabulary = set(envelope.WARNING_KINDS)
+
+    assert documented, (
+        f"no rows were read from {CONTRACT.name} under {_VOCABULARY_HEADING!r} -- the section "
+        f"was renamed or moved, and this check is now reconciling nothing"
+    )
+
+    undocumented = sorted(vocabulary - set(documented))
+    assert not undocumented, (
+        f"{undocumented} are in `envelope.WARNING_KINDS` but not in the contract's warning "
+        f"table; a consumer's author reads that table, so a kind absent from it is one nobody "
+        f"was told to branch on"
+    )
+
+    phantom = sorted(set(documented) - vocabulary)
+    assert not phantom, (
+        f"the contract's warning table lists {phantom}, which `envelope.WARNING_KINDS` does not "
+        f"declare; a documented kind that cannot be emitted is worse than an undocumented one, "
+        f"because a consumer will branch on it and wait forever"
+    )
+
+
+def test_the_table_reader_reports_a_kind_the_vocabulary_does_not_declare() -> None:
+    """The positive control: proof the table is PARSED rather than assumed empty.
+
+    A reader that returned `[]` on every input would satisfy the `phantom` half
+    above forever and would report every real kind as undocumented -- so it
+    would be caught. A reader that dropped only ANNOTATED rows would not be:
+    it would silently stop reconciling exactly the rows most likely to drift,
+    which is the shape of the defect this file exists to catch. So the fixture
+    annotates one row and expects it read anyway.
+    """
+    known_bad = (
+        f"{_VOCABULARY_HEADING} — stable, machine-readable\n"
+        "\n"
+        "| Code | Means |\n"
+        "|---|---|\n"
+        "| `stale` | Last sync older than expected |\n"
+        "| `rate_limited` *(declared; no emitter yet)* | The aggregator asked us to slow down |\n"
+        "\n"
+        "Prose after the table, holding a `gapped` mention that must NOT be read as a row.\n"
+    )
+
+    documented = _kinds_in_the_contract_table(known_bad)
+
+    assert documented == ["stale", "rate_limited"], (
+        f"the reader did not return the table's rows in order: {documented}"
+    )
+    assert "rate_limited" not in set(envelope.WARNING_KINDS), (
         "this control has to name a kind the vocabulary does NOT declare; if the "
         "vocabulary grew to include it, pick another"
     )

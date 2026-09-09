@@ -600,9 +600,9 @@ three-week-old hole in the data and answer confidently.
 | `rows_truncated` | The request matched more rows than the cap returned, and the answer holds only the newest of them |
 | `counted_during_change` | A write landed between the row read and the count read, so the two describe moments a fraction apart |
 | `accounts_without_coverage` | An account in the scope of THIS request has never had a transaction recorded, so its empty result means data not present, never no activity |
-| `account_no_longer_active` *(specified, not built)* | An account in the scope of THIS request is closed or is no longer listed by its institution, so its balance is frozen as of the date beside it and is not a fact about today |
-| `includes_pending_rows` *(specified, not built)* | This answer's rows include authorisation holds that have not settled, so a figure computed from it may change without any new activity |
-| `sign_convention_unverified` *(specified, not built)* | This answer draws on a connection whose sign convention has not been observed against a known inflow, so its direction is assumed rather than confirmed |
+| `account_no_longer_active` *(declared; no emitter yet)* | An account in the scope of THIS request is closed or is no longer listed by its institution, so its balance is frozen as of the date beside it and is not a fact about today |
+| `includes_pending_rows` *(declared; no emitter yet)* | This answer's rows include authorisation holds that have not settled, so a figure computed from it may change without any new activity |
+| `sign_convention_unverified` *(declared; no emitter yet)* | This answer draws on a connection whose sign convention has not been observed against a known inflow, so its direction is assumed rather than confirmed |
 
 🔴 **The window/row/account kinds below the line are REQUEST-scoped; the connection kinds above them
 are CONNECTION-scoped, and the distinction is the reason they exist.** A connection-scoped warning describes the standing state of the pipeline,
@@ -620,17 +620,22 @@ defect the paragraph above records. It fires only when *this* request's scope ac
 uncovered account: on `list_accounts` when the listing holds one, and on
 `query_transactions(account_id=N)` when the account asked about has none.
 
-🔴 **This table is prose and `envelope.WARNING_KINDS` is the code; nothing holds them together.**
-`test_the_warning_vocabulary_is_closed.py` scans source only, so a kind added to the vocabulary
-without being added here goes unnoticed — which is how `accounts_without_coverage` was missing from
-this table for a full work cycle after it shipped. Adding a kind means editing both until something
-derives one from the other.
+🔴 **This table is prose and `envelope.WARNING_KINDS` is the code, and since 2026-09-09 something
+does hold them together:** `test_the_warning_vocabulary_is_closed.py::test_the_contract_table_lists_every_kind_the_vocabulary_defines`
+reconciles the two in both directions. Before it existed the drift was one-directional and silent —
+a kind added to the vocabulary but not to this table went unnoticed, which is how
+`accounts_without_coverage` was missing here for a full work cycle after it shipped, and how these
+three rows went stale within one commit of being written. The guard matches on the kind NAME only, so
+a row's annotation is free to change as its kind acquires an emitter without the guard having an
+opinion about it.
 
-🔴 **The three kinds marked *specified, not built* were proposed by two separate discovery
+🔴 **The three kinds annotated *declared; no emitter yet* were proposed by two separate discovery
 passes that could not see each other, and each registered only its own.** They are recorded here
-together for that reason. Whichever ships first must add **all three** to
-`envelope.REQUEST_SCOPED_KINDS` in the same change, or the closed-vocabulary test fails and a
-schema-validating client rejects the whole answer rather than the unknown code. Sources:
+together for that reason, and they entered `envelope.REQUEST_SCOPED_KINDS` **as a set, in one
+commit, before any of the three items was built** — because a kind emitted but not declared does not
+degrade to an unrecognized warning, it takes the whole answer down through the schema validator.
+Doing that up front is also what let the three items be built in parallel at all: one closed tuple
+cannot absorb three simultaneous additions from agents that cannot see each other. Sources:
 `.prawduct/artifacts/discovery-account-lifecycle.md` (AC-12.x) and
 `.prawduct/artifacts/discovery-production-data-semantics.md` (AC-13.x, AC-14.x). The two names
 the second document left to the builder are fixed here so the three are chosen as a set.
