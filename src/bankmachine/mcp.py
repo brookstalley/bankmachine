@@ -10,7 +10,7 @@ datastore holding this class of data.
 
 🔴 **Every answer carries its own caveats and its own environment.** The
 consumer is an analyst agent that cannot see a caveat which is not in the
-payload. `query.Answer` cannot be constructed without warnings, and the
+payload. `envelope.Answer` cannot be constructed without warnings, and the
 environment leads the envelope — a flag selects sandbox or production, the
 envelope is what confesses which one answered.
 
@@ -31,7 +31,7 @@ from collections.abc import Callable, Iterator
 from datetime import date
 from typing import IO, Any
 
-from bankmachine import mcp_resources, query
+from bankmachine import envelope, mcp_resources, query
 from bankmachine.build_id import build_identity
 from bankmachine.cli.exit_codes import EXIT_ERROR, EXIT_OK
 from bankmachine.config import Config
@@ -169,7 +169,7 @@ def _output_schema(
     the same statement in a form nothing thins out, and a client that speaks it
     checks every answer against what was published rather than trusting it.
 
-    🔴 **Per-tool, because the envelope is per-tool.** `query.Answer` emits
+    🔴 **Per-tool, because the envelope is per-tool.** `envelope.Answer` emits
     `effective_window` and `truncation` only where they are true of the tool
     that answered, and `api-contract.md` fixes their ABSENCE as information: no
     `effective_window` says this tool takes no window, no `truncation` says it
@@ -257,7 +257,7 @@ def _output_schema(
                     # consumer is told to branch on is one the published schema
                     # has to admit, and a list retyped here would start refusing
                     # answers this server sends the first time a kind is added.
-                    "kind": {"type": "string", "enum": list(query.WARNING_KINDS)},
+                    "kind": {"type": "string", "enum": list(envelope.WARNING_KINDS)},
                     "detail": {"type": "string"},
                     # Both carried only by a warning about one connection: an
                     # operator with ten institutions needs to know which went quiet.
@@ -566,10 +566,10 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "type": "integer",
                         "default": 100,
                         "minimum": 1,
-                        "maximum": query.MAX_ROWS,
+                        "maximum": envelope.MAX_ROWS,
                         "description": (
                             "rows returned, at most "
-                            f"{query.MAX_ROWS}; asking for more is refused, not trimmed"
+                            f"{envelope.MAX_ROWS}; asking for more is refused, not trimmed"
                         ),
                     },
                     "cursor": {
@@ -928,7 +928,7 @@ def _cursor(
     since: date | None,
     until: date | None,
     account_id: int | None,
-) -> query.Cursor | None:
+) -> envelope.Cursor | None:
     """The `cursor` argument, narrowed to the position type the query layer accepts.
 
     🔴 Narrowed HERE, like every other argument, so no raw string reaches the
@@ -944,10 +944,10 @@ def _cursor(
             f"cursor must be the `next_cursor` string from a previous answer, "
             f"got {type(raw).__name__}"
         )
-    return query.parse_cursor(raw, since=since, until=until, account_id=account_id)
+    return envelope.parse_cursor(raw, since=since, until=until, account_id=account_id)
 
 
-def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> query.Answer:
+def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> envelope.Answer:
     """🔴 `arguments` is `dict[str, object]`, not `dict[str, Any]`, and that is load-bearing.
 
     Under `Any` every value here flows into the query layer unchallenged and
@@ -969,14 +969,14 @@ def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> q
     # Narrowed once, ahead of the handler table: referenced inside the lambdas
     # these would re-parse on every call, and a refusal would be raised twice.
     since, until = _window(arguments)
-    limit = _whole_number(arguments, "limit", 100, minimum=1, maximum=query.MAX_ROWS)
+    limit = _whole_number(arguments, "limit", 100, minimum=1, maximum=envelope.MAX_ROWS)
     account_id = _whole_number(arguments, "account_id", None, minimum=1)
     # 🔴 After the window and the account, because a cursor is only meaningful
     # against the request it accompanies and this is the call that compares the
     # two. A cursor narrowed first would have nothing to be checked against.
     cursor = _cursor(arguments, since=since, until=until, account_id=account_id)
     grouping = _text(arguments, "group_by", "category")
-    handlers: dict[str, Callable[..., query.Answer]] = {
+    handlers: dict[str, Callable[..., envelope.Answer]] = {
         "list_accounts": lambda: query.list_accounts(config),
         "query_transactions": lambda: query.list_transactions(
             config,
@@ -1318,8 +1318,8 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
         except (
             BadArgumentError,
             query.UnknownAccountError,
-            query.InvertedWindowError,
-            query.MalformedCursorError,
+            envelope.InvertedWindowError,
+            envelope.MalformedCursorError,
             query.BadGroupingError,
         ) as exc:
             # Ahead of the broad catch. The message is the caller's to act on,

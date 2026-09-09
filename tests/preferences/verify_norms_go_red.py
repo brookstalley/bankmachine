@@ -475,8 +475,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "the MCP boundary: the argument bag is typed object, so narrowing cannot be skipped",
         MCP,
-        "arguments: dict[str, object]) -> query.Answer:",
-        "arguments: dict[str, Any]) -> query.Answer:",
+        "arguments: dict[str, object]) -> envelope.Answer:",
+        "arguments: dict[str, Any]) -> envelope.Answer:",
         f"{MCP_TESTS}::test_the_dispatch_bag_is_typed_object_so_narrowing_cannot_be_skipped",
     ),
     (

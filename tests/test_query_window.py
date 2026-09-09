@@ -20,7 +20,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from bankmachine.query import InvertedWindowError, Window, resolve_window
+from bankmachine.envelope import InvertedWindowError, Window, resolve_window
 from bankmachine.store.types import UtcInstant, utc_instant
 
 #: Coverage running 2024-09-16 .. 2026-08-27, the shape the sandbox actually

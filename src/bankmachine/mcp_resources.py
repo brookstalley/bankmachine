@@ -7,7 +7,7 @@ reference belongs here rather than in the handshake `instructions`, where every
 session pays for it whether or not the question in front of it needs it.
 
 🔴 **The list of warning kinds is DERIVED here, never restated.**
-`query.WARNING_KINDS` already has consumers kept in agreement by machinery: the
+`envelope.WARNING_KINDS` already has consumers kept in agreement by machinery: the
 published `outputSchema` closes `warnings[].kind` to it, a scan refuses any
 `Caveat` naming a kind outside it, and a guard holds the handshake text to
 naming every one. A hand-written list in this module would be the copy none of
@@ -33,7 +33,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from typing import Any
 
-from bankmachine import query
+from bankmachine import envelope
 
 #: The scheme is this product's own. A resource URI is an identifier rather than
 #: a location -- the client hands it straight back to `resources/read` -- and a
@@ -87,7 +87,7 @@ class _Guidance:
 
 
 #: Guidance per kind, keyed rather than listed: the roster comes from
-#: `query.WARNING_KINDS`, and this map only answers for a kind that roster
+#: `envelope.WARNING_KINDS`, and this map only answers for a kind that roster
 #: already named. A kind missing from here is reported to the reader, not
 #: dropped.
 _GUIDANCE: dict[str, _Guidance] = {
@@ -319,14 +319,14 @@ def _warning_reference() -> str:
         _CONNECTION_SCOPE_NOTE,
         "",
     ]
-    parts += [_kind_section(kind) for kind in query.CONNECTION_SCOPED_KINDS]
+    parts += [_kind_section(kind) for kind in envelope.CONNECTION_SCOPED_KINDS]
     parts += [
         "## Request-scoped — about this request",
         "",
         _REQUEST_SCOPE_NOTE,
         "",
     ]
-    parts += [_kind_section(kind) for kind in query.REQUEST_SCOPED_KINDS]
+    parts += [_kind_section(kind) for kind in envelope.REQUEST_SCOPED_KINDS]
     return "\n".join(parts).rstrip() + "\n"
 
 

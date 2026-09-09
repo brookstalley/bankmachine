@@ -32,11 +32,11 @@ from sqlalchemy import and_, event, func, or_, select
 from sqlalchemy.dialects.sqlite import dialect as sqlite_dialect
 from sqlalchemy.engine import Engine
 
-from bankmachine import query
+from bankmachine import envelope, query
 from bankmachine.config import Config
 from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS
-from bankmachine.query import MAX_ROWS, Cursor, Truncation
+from bankmachine.envelope import MAX_ROWS, Cursor, Truncation
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
 from bankmachine.store.schema import connections, institutions, transactions
@@ -675,7 +675,9 @@ def test_the_truncation_invariant_holds_over_every_request_this_store_can_answer
                         )
 
                         kinds = [
-                            w.kind for w in answer.warnings if w.kind in query.REQUEST_SCOPED_KINDS
+                            w.kind
+                            for w in answer.warnings
+                            if w.kind in envelope.REQUEST_SCOPED_KINDS
                         ]
                         assert ("rows_truncated" in kinds) == truncation.truncated, where
                         # A cursor is offered exactly when there is a next page
@@ -714,7 +716,7 @@ def test_an_untruncated_answer_reports_false_and_equal_counts(seeded_config: Con
 
     assert answer.truncation.truncated is False
     assert answer.truncation.returned == answer.truncation.matching == _TOTAL
-    assert [w.kind for w in answer.warnings if w.kind in query.REQUEST_SCOPED_KINDS] == []
+    assert [w.kind for w in answer.warnings if w.kind in envelope.REQUEST_SCOPED_KINDS] == []
 
 
 def test_a_narrow_window_stops_truncating_what_a_wide_one_truncated(
@@ -828,7 +830,7 @@ def test_a_window_covering_nothing_counts_nothing_and_says_why(seeded_config: Co
     assert answer.effective_window is not None
     assert answer.effective_window.covers_nothing
     assert answer.coverage["transactions_in_effective_window"] == 0
-    assert [w.kind for w in answer.warnings if w.kind in query.REQUEST_SCOPED_KINDS] == [
+    assert [w.kind for w in answer.warnings if w.kind in envelope.REQUEST_SCOPED_KINDS] == [
         "window_starts_before_coverage"
     ]
 
@@ -1015,7 +1017,7 @@ def test_a_cursor_survives_its_wire_form_unchanged(
 #: bool guard and removing the scheme check both left this test green until the
 #: fingerprints were made to match — a check that cannot fail hides every
 #: problem in its blast radius, not one.
-_UNFILTERED = query._request_fingerprint(since=None, until=None, account_id=None)
+_UNFILTERED = envelope._request_fingerprint(since=None, until=None, account_id=None)
 
 
 def _forged(payload: object) -> str:
@@ -1080,8 +1082,8 @@ def test_a_cursor_this_server_did_not_issue_is_refused_rather_than_read(
     wire, and a decoder's internals are the least actionable thing a caller
     could be handed.
     """
-    with pytest.raises(query.MalformedCursorError) as caught:
-        query.parse_cursor(presented, since=None, until=None, account_id=None)
+    with pytest.raises(envelope.MalformedCursorError) as caught:
+        envelope.parse_cursor(presented, since=None, until=None, account_id=None)
 
     detail = str(caught.value)
     assert detail.startswith("cursor "), f"{why}: the refusal does not name the argument"
@@ -1092,7 +1094,7 @@ def test_a_cursor_this_server_did_not_issue_is_refused_rather_than_read(
 
 def test_an_absent_cursor_is_the_first_page_rather_than_a_refusal() -> None:
     """The reverse half. A parser that refused `None` would make `cursor` mandatory."""
-    assert query.parse_cursor(None, since=None, until=None, account_id=None) is None
+    assert envelope.parse_cursor(None, since=None, until=None, account_id=None) is None
 
 
 #: Four requests selecting four different result sets. A cursor is a position
@@ -1131,7 +1133,7 @@ def test_a_cursor_is_usable_only_against_the_request_that_issued_it(
     ).encode()
 
     def _resume() -> Cursor | None:
-        return query.parse_cursor(
+        return envelope.parse_cursor(
             wire,
             since=presented_with[0],
             until=presented_with[1],
@@ -1144,7 +1146,7 @@ def test_a_cursor_is_usable_only_against_the_request_that_issued_it(
         assert (resumed.posted_date, resumed.transaction_id) == (date(2026, 5, 4), 7)
         return
 
-    with pytest.raises(query.MalformedCursorError):
+    with pytest.raises(envelope.MalformedCursorError):
         _resume()
 
 
@@ -1213,7 +1215,7 @@ def _walk(
     until: date | None = None,
     account_id: int | None = None,
     page_size: int,
-) -> tuple[list[int], list[query.Answer]]:
+) -> tuple[list[int], list[envelope.Answer]]:
     """Page until the answer stops offering a next one, the way a consumer would.
 
     🔴 Drives the loop a caller actually writes: read `next_cursor` off the WIRE
@@ -1222,7 +1224,7 @@ def _walk(
     keep passing if the key never reached the payload.
     """
     seen: list[int] = []
-    pages: list[query.Answer] = []
+    pages: list[envelope.Answer] = []
     cursor: Cursor | None = None
     while True:
         answer = query.list_transactions(
@@ -1239,7 +1241,7 @@ def _walk(
         wire = answer.truncation.to_wire()
         if "next_cursor" not in wire:
             break
-        cursor = query.parse_cursor(
+        cursor = envelope.parse_cursor(
             wire["next_cursor"], since=since, until=until, account_id=account_id
         )
         # A cursor that fails to advance produces a hung test rather than a red
@@ -1299,7 +1301,7 @@ def test_only_the_last_page_of_a_walk_reads_as_complete(
     carried = ["next_cursor" in block.to_wire() for block in blocks if block is not None]
     assert carried == truncated, "a cursor and a next page have to arrive together"
 
-    assert [w.kind for w in pages[-1].warnings if w.kind in query.REQUEST_SCOPED_KINDS] == []
+    assert [w.kind for w in pages[-1].warnings if w.kind in envelope.REQUEST_SCOPED_KINDS] == []
 
 
 def test_a_cursor_narrows_matching_to_the_rows_still_ahead(seeded_config: Config) -> None:
@@ -1319,7 +1321,7 @@ def test_a_cursor_narrows_matching_to_the_rows_still_ahead(seeded_config: Config
     second = query.list_transactions(
         seeded_config,
         limit=10,
-        after=query.parse_cursor(
+        after=envelope.parse_cursor(
             first.truncation.next_cursor, since=None, until=None, account_id=None
         ),
     )

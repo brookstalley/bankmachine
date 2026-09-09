@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from bankmachine import mcp, mcp_resources, query
+from bankmachine import envelope, mcp, mcp_resources
 
 #: A kind heading as `_kind_section` writes it.
 _KIND_HEADING = re.compile(r"^### `([^`]+)`$")
@@ -96,7 +96,7 @@ def test_the_warning_reference_names_every_kind_the_vocabulary_defines() -> None
     """
     sections = _kind_sections(_warnings_text())
 
-    missing = sorted(kind for kind in query.WARNING_KINDS if kind not in sections)
+    missing = sorted(kind for kind in envelope.WARNING_KINDS if kind not in sections)
 
     assert not missing, (
         f"the vocabulary defines {missing} but the reference never names them; an agent sent "
@@ -111,7 +111,7 @@ def test_the_warning_reference_names_no_kind_the_vocabulary_does_not() -> None:
     branch on something no answer can carry -- and, worse, reads as evidence
     that the roster here is maintained by hand.
     """
-    strays = sorted(set(_kind_sections(_warnings_text())) - set(query.WARNING_KINDS))
+    strays = sorted(set(_kind_sections(_warnings_text())) - set(envelope.WARNING_KINDS))
 
     assert not strays, f"the reference names {strays}, which the vocabulary does not define"
 
@@ -151,9 +151,9 @@ def test_each_kind_is_filed_under_the_scope_the_vocabulary_puts_it_in() -> None:
     """
     scopes = _scope_of(_warnings_text())
 
-    for kind in query.CONNECTION_SCOPED_KINDS:
+    for kind in envelope.CONNECTION_SCOPED_KINDS:
         assert _CONNECTION_SCOPE in scopes[kind], f"{kind} is not filed as connection-scoped"
-    for kind in query.REQUEST_SCOPED_KINDS:
+    for kind in envelope.REQUEST_SCOPED_KINDS:
         assert _REQUEST_SCOPE in scopes[kind], f"{kind} is not filed as request-scoped"
 
 
@@ -168,9 +168,9 @@ def test_a_kind_added_to_the_vocabulary_reaches_the_reference_by_itself(
     guidance yet, which is the state the guard above then refuses to ship.
     """
     invented = "rate_limited"
-    assert invented not in query.WARNING_KINDS, "pick a kind the vocabulary does not define"
+    assert invented not in envelope.WARNING_KINDS, "pick a kind the vocabulary does not define"
     monkeypatch.setattr(
-        query, "CONNECTION_SCOPED_KINDS", (*query.CONNECTION_SCOPED_KINDS, invented)
+        envelope, "CONNECTION_SCOPED_KINDS", (*envelope.CONNECTION_SCOPED_KINDS, invented)
     )
 
     sections = _kind_sections(_warnings_text())
