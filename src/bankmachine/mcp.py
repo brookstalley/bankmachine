@@ -31,7 +31,7 @@ from collections.abc import Callable, Iterator
 from datetime import date
 from typing import IO, Any
 
-from bankmachine import query
+from bankmachine import mcp_resources, query
 from bankmachine.build_id import build_identity
 from bankmachine.cli.exit_codes import EXIT_OK
 from bankmachine.config import Config
@@ -87,6 +87,12 @@ SUPPORTED_PROTOCOL_VERSIONS: tuple[str, ...] = (
 _PARSE_ERROR = -32700
 _INVALID_REQUEST = -32600
 _METHOD_NOT_FOUND = -32601
+#: 🔴 What a resource this server does not serve is refused with, read from the
+#: SDK rather than recalled: its own server maps `ResourceNotFoundError` to
+#: `INVALID_PARAMS` per SEP-2164, and `mcp_types.jsonrpc` records `-32002` --
+#: the code an older spec used for exactly this -- as reserved and never
+#: reused. A retired code would be a refusal a current client cannot classify.
+_INVALID_PARAMS = -32602
 _INTERNAL_ERROR = -32603
 
 
@@ -762,8 +768,97 @@ def _instructions(config: Config) -> str:
         f"window you asked for reaches outside what the store holds; `rows_truncated` means "
         f"rows were left behind; `counted_during_change` means a write landed while the "
         f"answer was being assembled.\n\n"
+        f"The detail behind all of this is SERVED rather than repeated here, as MCP resources "
+        f"you read by URI when you need them: `{mcp_resources.ENVELOPE_URI}` is every field of "
+        f"the envelope and which tools carry it, and `{mcp_resources.WARNINGS_URI}` is every "
+        f"warning kind with what it implies and what to do about it.\n\n"
         f"All amounts are integer minor units (cents for USD) and signed from the account "
         f"holder's point of view: negative is money out, positive is money in."
+    )
+
+
+def _reference_documents() -> list[mcp_resources.Document]:
+    """The reference surface, assembled from the vocabulary and the tool schemas.
+
+    🔴 Reads nothing. AC-ARCH.3 makes every tool answer against a missing or
+    unreadable datastore, and a resource that could not would be a fresh way for
+    the operator's tool to fail on the one connection where they most need to
+    ask why -- so these documents are derived from what this process already
+    knows about itself, and there is nothing for a broken store to fail at.
+    """
+    return mcp_resources.documents(_tool_definitions())
+
+
+def _resource_entry(document: mcp_resources.Document) -> dict[str, Any]:
+    """One listing entry. `Resource`'s own fields, and no others.
+
+    `size` is offered because the type is explicit about what it is for -- a
+    host estimating context-window cost before it reads -- which is the whole
+    argument for serving this material as resources rather than as prose in the
+    handshake. Measured in bytes of the text itself, as the field specifies.
+    """
+    return {
+        "uri": document.uri,
+        "name": document.name,
+        "title": document.title,
+        "description": document.description,
+        "mimeType": document.mime_type,
+        "size": len(document.text.encode("utf-8")),
+    }
+
+
+def _handle_resource(method: str, message_id: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """The resource surface, refusing the way the tool surface refuses.
+
+    🔴 The broad catch is the same boundary argument `tools/call` makes: an
+    exception escaping here ends the read loop, and the operator sees their tool
+    disappear mid-session rather than fail. A resource has no `isError` channel
+    to report on -- `ReadResourceResult` carries only `contents` -- so a failure
+    is a protocol error, which is also what the SDK's own server does.
+    """
+    try:
+        documents = _reference_documents()
+    except Exception:  # prawduct:allow prawduct/broad-except -- boundary, see above
+        # 🔴 The exception never crosses the boundary: `api-contract.md`
+        # § Error Model keeps stack traces and internal identifiers off the
+        # wire. The detail goes to the log, where redaction applies.
+        logger.exception("the reference documents could not be assembled")
+        return _error(
+            message_id,
+            _INTERNAL_ERROR,
+            "the reference documents could not be assembled. The failure has been logged; "
+            "the tools are unaffected and answer as usual.",
+        )
+
+    if method == "resources/list":
+        return _result(message_id, {"resources": [_resource_entry(d) for d in documents]})
+
+    if method == "resources/templates/list":
+        # Every document here is served at a fixed URI, so there is no template
+        # to expand. Answered rather than refused because declaring `resources`
+        # is what invites the call, and an error to a call this server invited
+        # is the failure the capability declaration exists to avoid.
+        return _result(message_id, {"resourceTemplates": []})
+
+    uri = params.get("uri")
+    if not isinstance(uri, str):
+        return _error(message_id, _INVALID_PARAMS, "resources/read needs a uri")
+    for document in documents:
+        if document.uri == uri:
+            return _result(
+                message_id,
+                {
+                    "contents": [
+                        {"uri": document.uri, "mimeType": document.mime_type, "text": document.text}
+                    ]
+                },
+            )
+    # Refused the way an unknown tool is: a sentence naming what was asked for
+    # and what is on offer, so the caller's next call can be the right one. The
+    # roster is read back off the documents rather than restated.
+    served = ", ".join(document.uri for document in documents)
+    return _error(
+        message_id, _INVALID_PARAMS, f"no resource at {uri!r}. This server serves: {served}"
     )
 
 
@@ -787,6 +882,15 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
         # hang is the one failure the read loop exists to prevent.
         return None
 
+    if not isinstance(params, dict):
+        # 🔴 JSON-RPC 2.0 permits `params` to be an ARRAY -- by-position
+        # arguments -- and every branch below reads it as an object. An array
+        # from a conformant client would raise an `AttributeError` out of this
+        # function and out of `serve()`, which is the operator's tool
+        # disappearing mid-session. MCP itself only ever sends an object, so
+        # this is refused rather than interpreted.
+        return _error(message_id, _INVALID_REQUEST, "params must be an object")
+
     if method == "initialize":
         requested = params.get("protocolVersion")
         version = (
@@ -798,9 +902,20 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
             message_id,
             {
                 "protocolVersion": version,
-                # Only `tools`. Declaring a capability this server does not serve
-                # would have the client offer the operator something that fails.
-                "capabilities": {"tools": {"listChanged": False}},
+                # Both of these, and nothing else, because both are served.
+                # Declaring a capability this server does not serve would have
+                # the client offer the operator something that fails.
+                #
+                # Each sub-flag is the same claim one level down: nothing here
+                # emits a `listChanged` notification -- the tool list and the
+                # reference documents are both fixed for the life of the
+                # process -- and there is no subscription machinery, so a
+                # client that asked to be told about a change would wait
+                # forever on a promise never made.
+                "capabilities": {
+                    "tools": {"listChanged": False},
+                    "resources": {"subscribe": False, "listChanged": False},
+                },
                 "serverInfo": _server_info(config),
                 # Build identity rides here rather than on `serverInfo`, whose
                 # type declares no field for it and whose reader drops what it
@@ -814,6 +929,9 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
 
     if method == "tools/list":
         return _result(message_id, {"tools": _tool_definitions()})
+
+    if method in ("resources/list", "resources/templates/list", "resources/read"):
+        return _handle_resource(method, message_id, params)
 
     if method == "tools/call":
         name = params.get("name")

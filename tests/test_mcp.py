@@ -20,7 +20,7 @@ from unittest import mock
 
 import pytest
 
-from bankmachine import build_id, mcp, query
+from bankmachine import build_id, mcp, mcp_resources, query
 from bankmachine.config import Config
 from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS
@@ -297,13 +297,51 @@ def test_the_handshake_offers_only_revisions_it_can_reach(initialized_config: Co
     assert replies[0]["result"]["protocolVersion"] == mcp.FALLBACK_PROTOCOL_VERSION
 
 
-def test_the_server_declares_only_the_capability_it_serves(initialized_config: Config) -> None:
-    """Declaring one it does not would have the client offer the operator something that fails."""
-    result = _converse(
-        initialized_config, [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}]
-    )[0]["result"]
+#: How to prove a declared capability is actually served: the listing call a
+#: client makes first for each. A capability with no entry here fails the test
+#: below rather than passing unchecked -- the whole claim is that nothing is
+#: declared unserved, and a capability nothing knows how to probe is exactly the
+#: one that would slip through.
+_CAPABILITY_PROBES = {"tools": "tools/list", "resources": "resources/list"}
 
-    assert set(result["capabilities"]) == {"tools"}
+
+def test_the_server_declares_only_capabilities_it_serves(initialized_config: Config) -> None:
+    """Declaring one it does not would have the client offer the operator something that fails.
+
+    🔴 Asserted by CALLING each declared capability rather than by comparing the
+    set against a list written here. A second list agrees with the handshake
+    until someone adds a capability to both and implements neither, which is the
+    exact failure the declaration is supposed to prevent.
+    """
+    declared = _converse(
+        initialized_config, [{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}]
+    )[0]["result"]["capabilities"]
+
+    unprobeable = sorted(set(declared) - set(_CAPABILITY_PROBES))
+    assert not unprobeable, (
+        f"the handshake declares {unprobeable}, which this test does not know how to call; "
+        f"a capability nothing probes is one that can be declared without being served"
+    )
+
+    for capability, method in _CAPABILITY_PROBES.items():
+        reply = _converse(
+            initialized_config,
+            [
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                {"jsonrpc": "2.0", "id": 2, "method": method, "params": {}},
+            ],
+        )[1]
+        served = "result" in reply
+        if capability in declared:
+            assert served, (
+                f"the handshake declares {capability!r} but {method} answered "
+                f"{reply.get('error')}, so the client offers the operator something that fails"
+            )
+        else:
+            assert not served, (
+                f"{method} answers, but the handshake does not declare {capability!r} -- a "
+                f"client reading the handshake never offers it at all"
+            )
 
 
 def test_a_notification_is_not_answered(initialized_config: Config) -> None:
@@ -549,9 +587,14 @@ def test_a_frame_nested_too_deeply_is_answered_and_the_session_survives(
 
 
 def test_an_unknown_method_is_a_method_not_found(initialized_config: Config) -> None:
-    replies = _converse(
-        initialized_config, [{"jsonrpc": "2.0", "id": 1, "method": "resources/list"}]
-    )
+    """`prompts/list` is a real protocol method this server does not serve.
+
+    A method nobody has heard of would prove only that the fallback branch
+    exists. This is the case that actually happens: a client trying a surface
+    the handshake did not declare, which has to be refused in a way it can tell
+    apart from a failure of a surface that was declared.
+    """
+    replies = _converse(initialized_config, [{"jsonrpc": "2.0", "id": 1, "method": "prompts/list"}])
 
     assert replies[0]["error"]["code"] == -32601
 
@@ -2556,3 +2599,283 @@ def test_the_checking_rejects_the_shapes_the_schemas_forbid(initialized_config: 
 
     for label, payload, schema in mutants:
         assert _violations(payload, schema), f"{label} was accepted"
+
+
+# --------------------------------------------------------------------------
+# The reference surface — addressable content, read by URI rather than by turn
+# --------------------------------------------------------------------------
+
+
+def _list_resources(config: Config) -> list[dict[str, Any]]:
+    replies = _converse(
+        config,
+        [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "resources/list", "params": {}},
+        ],
+    )
+    resources: list[dict[str, Any]] = replies[1]["result"]["resources"]
+    return resources
+
+
+def _read_resource(config: Config, uri: str) -> dict[str, Any]:
+    replies = _converse(
+        config,
+        [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "resources/read", "params": {"uri": uri}},
+        ],
+    )
+    reply: dict[str, Any] = replies[1]
+    return reply
+
+
+def test_everything_the_server_lists_is_something_it_can_read(
+    initialized_config: Config,
+) -> None:
+    """🔴 A listing is a promise, and `resources/read` is where it is kept.
+
+    Two tables — one to list from and one to read from — is how a client comes
+    to offer the operator a document that then fails to open. Driven off the
+    listing itself rather than off URIs written here, because a URI written here
+    would prove only that this test and the server agree about one document.
+    """
+    listed = _list_resources(initialized_config)
+
+    assert listed, "the capability is declared and nothing is served"
+    for entry in listed:
+        reply = _read_resource(initialized_config, entry["uri"])
+        contents = reply["result"]["contents"]
+
+        assert len(contents) == 1, entry["uri"]
+        assert contents[0]["uri"] == entry["uri"]
+        assert contents[0]["mimeType"] == entry["mimeType"]
+        assert contents[0]["text"].strip(), f"{entry['uri']} is served empty"
+
+
+def test_the_listing_says_what_it_would_cost_a_host_to_read_it(
+    initialized_config: Config,
+) -> None:
+    """`size` is the field a host reads to estimate context before it fetches.
+
+    Which is the whole argument for serving this material as resources rather
+    than as prose in the handshake, so a wrong number here undoes the reason it
+    is here at all. Measured in bytes of the text, as the type specifies.
+    """
+    for entry in _list_resources(initialized_config):
+        text = _read_resource(initialized_config, entry["uri"])["result"]["contents"][0]["text"]
+
+        assert entry["size"] == len(text.encode("utf-8")), entry["uri"]
+        assert entry["name"] and entry["title"] and entry["description"], entry["uri"]
+
+
+def test_an_unknown_resource_uri_is_refused_with_the_route_to_a_real_one(
+    initialized_config: Config,
+) -> None:
+    """Refused the way an unknown tool is: a sentence the caller can act on.
+
+    🔴 Not a stack-shaped string and not an internal identifier — the same rule
+    `api-contract.md` § Error Model puts on every other refusal. The reply names
+    what is actually served, so the caller's next call can be the right one.
+    """
+    reply = _read_resource(initialized_config, "bankmachine://reference/nothing-here")
+
+    assert "result" not in reply, "an unknown URI was answered with a document"
+    message = reply["error"]["message"]
+    assert reply["error"]["code"] == mcp._INVALID_PARAMS
+    assert "bankmachine://reference/nothing-here" in message
+    for served in mcp_resources.documents(mcp._tool_definitions()):
+        assert served.uri in message, "the refusal does not say what the caller could read"
+    assert "Traceback" not in message and "Error" not in message
+
+
+def test_a_read_that_names_no_uri_is_refused_rather_than_guessed_at(
+    initialized_config: Config,
+) -> None:
+    """Serving the first document to a caller who named none answers a question nobody asked."""
+    replies = _converse(
+        initialized_config,
+        [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "resources/read", "params": {}},
+        ],
+    )
+
+    assert replies[1]["error"]["code"] == mcp._INVALID_PARAMS
+
+
+def test_the_resource_surface_answers_against_a_missing_datastore(config: Config) -> None:
+    """🔴 AC-ARCH.3 reaches this surface too, and for the same reason.
+
+    Every tool answers when the datastore is missing rather than failing, so the
+    operator can ask why instead of watching their tool vanish. A resource that
+    raised on the same connection would be a fresh way to lose the session — and
+    the connection where the store is unreadable is exactly the one where an
+    agent most needs to be told what a `partial` warning means.
+    """
+    assert not config.datastore_path.exists()
+
+    listed = _list_resources(config)
+
+    assert listed
+    for entry in listed:
+        contents = _read_resource(config, entry["uri"])["result"]["contents"]
+        assert contents[0]["text"].strip(), entry["uri"]
+
+
+def test_a_reference_that_cannot_be_assembled_reports_rather_than_ending_the_session(
+    initialized_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 The same boundary argument `tools/call` makes, on the surface next to it.
+
+    An exception escaping the handler ends the read loop, and the operator sees
+    their tool disappear mid-session rather than fail. A resource has no
+    `isError` channel to report on — `ReadResourceResult` carries only
+    `contents` — so the refusal is a protocol error, and the session goes on.
+    """
+
+    def boom(_definitions: list[dict[str, Any]]) -> list[mcp_resources.Document]:
+        raise RuntimeError("SELECT * FROM transactions WHERE account_id = 7")
+
+    monkeypatch.setattr(mcp_resources, "documents", boom)
+
+    replies = _converse(
+        initialized_config,
+        [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "resources/list", "params": {}},
+            {"jsonrpc": "2.0", "id": 3, "method": "ping", "params": {}},
+        ],
+    )
+
+    assert replies[1]["error"]["code"] == mcp._INTERNAL_ERROR
+    message = replies[1]["error"]["message"]
+    assert "SELECT" not in message, "the failure carried the operator's own data to the client"
+    assert "RuntimeError" not in message
+    assert replies[2]["id"] == 3, "the session ended, which is the tool disappearing mid-session"
+
+
+def test_resource_templates_are_answered_rather_than_refused(
+    initialized_config: Config,
+) -> None:
+    """Declaring `resources` is what invites this call, so it gets an answer.
+
+    Every document here sits at a fixed URI, so the honest answer is that there
+    are no templates — which is a different thing from the method not existing.
+    """
+    replies = _converse(
+        initialized_config,
+        [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "resources/templates/list", "params": {}},
+        ],
+    )
+
+    assert replies[1]["result"] == {"resourceTemplates": []}
+
+
+def test_the_instructions_name_every_resource_the_server_serves(
+    initialized_config: Config,
+) -> None:
+    """🔴 A document nobody is told about is one nobody reads.
+
+    The handshake text is the one thing a consuming agent reads before it calls
+    anything, and the reference documents exist so that text can stay short —
+    which only works if what is left points at where the rest went. Derived from
+    the registry, so trimming the prose cannot quietly orphan a document.
+    """
+    instructions = mcp._instructions(initialized_config)
+
+    missing = sorted(
+        document.uri
+        for document in mcp_resources.documents(mcp._tool_definitions())
+        if document.uri not in instructions
+    )
+
+    assert not missing, (
+        f"{missing} are served and the instructions never mention them; an agent that reads "
+        f"only the handshake never learns they exist"
+    )
+
+
+def _wire_paths(value: Any, prefix: tuple[str, ...] = ()) -> set[str]:
+    """Every key a payload actually carries, as a consumer reads it off the payload.
+
+    🔴 One level is not enough: `truncation.matching` is invisible to a scan of
+    the top level, and the blocks are where the numbers a consumer sums live.
+    `rows` is left alone because its shape is per tool and published per tool.
+    """
+    paths: set[str] = set()
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            path = (*prefix, key)
+            paths.add(mcp_resources._label(path))
+            if path != ("rows",):
+                paths |= _wire_paths(nested, path)
+    elif isinstance(value, list):
+        for item in value:
+            paths |= _wire_paths(item, (*prefix, "[]"))
+    return paths
+
+
+def test_the_envelope_reference_names_every_field_the_answers_actually_carry(
+    initialized_config: Config,
+) -> None:
+    """🔴 Read off real payloads, over the union of every tool, never one sample.
+
+    The reference is derived from the published `outputSchema`, and the schema is
+    held to the payload elsewhere in this file — so this is the third side of
+    that triangle, and the one that fails if either of the other two is quietly
+    describing something the wire does not send.
+
+    A tool carrying neither `effective_window` nor `truncation` cannot
+    discriminate a rule about them, which is why the union is taken rather than
+    one answer sampled.
+    """
+    _seed(initialized_config, degraded=True)
+    envelope: set[str] = set()
+    for definition in mcp._tool_definitions():
+        wire = _call(initialized_config, definition["name"])["structuredContent"]
+        envelope |= _wire_paths(wire)
+
+    assert {
+        "effective_window.effective.since",
+        "truncation.matching",
+        "coverage.transactions_in_effective_window",
+        "warnings[].institution",
+    } <= envelope, "the union lost the keys this guard exists for, so it is back to sampling"
+
+    text = next(
+        document.text
+        for document in mcp_resources.documents(mcp._tool_definitions())
+        if document.uri == mcp_resources.ENVELOPE_URI
+    )
+    missing = sorted(path for path in envelope if f"`{path}`" not in text)
+
+    assert not missing, (
+        f"the wire carries {missing} and the envelope reference never names them; an agent "
+        f"sent there to learn the envelope is told the field does not exist"
+    )
+
+
+def test_by_position_params_are_refused_rather_than_ending_the_session(
+    initialized_config: Config,
+) -> None:
+    """🔴 JSON-RPC 2.0 permits `params` as an ARRAY, and every branch here reads an object.
+
+    An array is a conformant client's request, not a malformed one — MCP simply
+    never sends it. Read as an object it raises out of the handler and out of
+    `serve()`, which is the operator's tool disappearing mid-session rather than
+    answering. Refused, and the session goes on.
+    """
+    replies = _converse(
+        initialized_config,
+        [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "resources/read", "params": ["a-uri"]},
+            {"jsonrpc": "2.0", "id": 3, "method": "ping", "params": {}},
+        ],
+    )
+
+    assert replies[1]["error"]["code"] == -32600
+    assert replies[2]["id"] == 3, "the session ended, which is the tool disappearing mid-session"
