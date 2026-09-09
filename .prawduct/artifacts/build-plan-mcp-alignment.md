@@ -273,6 +273,29 @@ conflict, the norm wins and the budget is missed with that recorded — hallucin
   came true. Record that against the decision, since it is the evidence the revisit
   clause asked for.
 
+### The `serverInfo` keys, and the norm that looks like it forbids them
+
+Chunk 01 removed `commit` and `dirty` from `serverInfo`. `api-contract.md`
+§ Deprecation & Compatibility carries 🔴 *"Never remove or repurpose an existing field."*
+Adjudicated rather than assumed, and written down so a reviewer can disagree:
+
+**Not a departure.** Two independent grounds. The Surface Inventory grades tools and CLI
+commands and does not list the handshake, and *"members not listed are internal and carry
+no promise."* And the norm's own rationale — *"a consumer that still reads it gets a wrong
+answer instead of an error"* — cannot bite, because no conforming consumer could ever read
+these keys: `Implementation` does not declare them and the SDK's wire base leaves
+`extra="ignore"` in force, so they were discarded before any client saw them.
+
+Read at the level of what a consumer can observe, this is not a removal at all. It is a
+relocation from a channel that dropped the value to one that delivers it, and the
+observable surface strictly grows: build identity at handshake time was previously
+unreachable and now is not.
+
+🔴 **This is not licence to treat the norm as soft.** The exception rests entirely on
+those keys being unobservable in principle. A field a consumer *can* read stays covered by
+the norm in full, and the fact that this one was invisible is the defect chunk 01 fixed —
+not a precedent for removing things.
+
 ---
 
 ## 5. Chunk 06 — The envelope is machine-checkable
