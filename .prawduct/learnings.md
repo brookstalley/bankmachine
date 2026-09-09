@@ -453,3 +453,42 @@ confidently.**
   drift detector, not overhead. **Measuring first would have prevented the recommendation, not
   just corrected it.** The revisit trigger is now the mechanism (tool count, near-twins) rather
   than a byte count.
+
+---
+
+## A repeated declaration is cheaper than the model standing in for it, until it is not
+
+**When one fact is declared at N sites with no shared model, the question is not "is this
+duplication" — it is "what is the Nth+1 site that changes the answer". Name the trigger, and the
+next builder inherits a decision instead of re-deriving one.**
+
+Collapsing a pattern into a model is not free: the model is fitted to the sites that exist, and
+sites that do not exist yet are the ones that misfit it. Collapsing too early produces an
+abstraction shaped by an unrepresentative sample, which is more expensive to undo than the
+duplication it replaced, because the duplication was at least honest about being duplication.
+
+The tell that it is still too early: the duplicated sites cannot currently disagree. If something
+downstream already validates them against each other, the duplication is checked rather than
+merely repeated — and a checked repetition is a weak defect, not an urgent one. The tell that it
+is time: a new site arrives that the existing check does *not* cover, or the check itself starts
+needing a case per site.
+
+**Instances:**
+
+- *2026-09-09, the envelope's conditional keys.* Which envelope keys a tool carries is declared at
+  three sites per tool — the tool's `_answer` call, its `_unusable` call, and `mcp._output_schema`'s
+  `windowed` / `capped` / `totals` flags — with no shared model. `totals` was the third such flag
+  and followed the pattern rather than replacing it. 🔴 **The ruling taken rather than the reflex:
+  collapse on the FOURTH conditional key, not on noticing the third.** Invalid combinations are
+  not silently reachable today because both branches are validated against the published schema,
+  which is exactly what holds this to a note rather than a defect. Three more tools are specified
+  and unbuilt, so a model built now would be fitted to five tools and meet eight. The trigger is
+  written down precisely because "we should unify this" recurs on every reading and the answer is
+  the same each time until the condition changes. See `build-plan-envelope-module.md` § Decisions.
+- *2026-09-09, the same split, in the other direction.* `GROUPINGS` and `FLOW_CLASSES` are read by
+  `mcp.py` to publish schema enums while living beside the SQL that builds them, which reads like
+  a layering violation worth fixing. It is not: `GROUPINGS` is a closed set *because* the grouping
+  is an expression the query module builds and never a column name a caller supplies, so moving it
+  away from that module would separate the constraint from the reason it exists. A duplication and
+  a deliberate adjacency look identical from the import graph alone — the why is what distinguishes
+  them, and only one of them is worth removing.
