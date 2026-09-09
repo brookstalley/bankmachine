@@ -43,8 +43,8 @@ owns the combined run at integration.
 - [x] **01 — The handshake tells the truth about itself** (delegated, parallel)
 - [x] **02 — Two structural guards** (delegated, parallel)
 - [x] **06 — The envelope is machine-checkable** (delegated, after 01)
-- [ ] **05 — A resources surface** (delegated, after 06)
-- [ ] **03 — The envelope tells the agent what to do about it** (coordinator, after 05)
+- [x] **05 — A resources surface** (delegated, after 06)
+- [x] **03 — The envelope tells the agent what to do about it** (coordinator, after 05)
 - [ ] **04 — The artifacts say what the code now does** (coordinator, last)
 - [ ] **07 — The go-red harness learns the two new guards** (coordinator, last)
 
