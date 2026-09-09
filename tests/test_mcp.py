@@ -222,6 +222,81 @@ def test_an_unknown_protocol_version_falls_back_rather_than_failing(
     assert replies[0]["result"]["protocolVersion"] == mcp.FALLBACK_PROTOCOL_VERSION
 
 
+def test_the_current_handshake_revision_is_not_downgraded(initialized_config: Config) -> None:
+    """🔴 A recognized version that is missing from the tuple is worse than an unknown one.
+
+    `2025-11-25` is the newest revision `initialize` can negotiate, so it is
+    what a current client offers. Absent from the supported set it matches
+    nothing and silently lands two revisions back on the fallback -- a session
+    that connects, works, and quietly speaks an older protocol than both halves
+    are capable of.
+    """
+    replies = _converse(
+        initialized_config,
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": mcp.LATEST_HANDSHAKE_VERSION},
+            }
+        ],
+    )
+
+    assert replies[0]["result"]["protocolVersion"] == "2025-11-25"
+
+
+def test_the_oldest_handshake_revision_is_answered_rather_than_out_offered(
+    initialized_config: Config,
+) -> None:
+    """🔴 The fallback only rescues a client that can speak something NEWER.
+
+    Counter-offering `2025-03-26` to a client pinned at `2024-11-05` names a
+    revision it cannot speak, and the spec has such a client disconnect rather
+    than downgrade -- so dropping the oldest handshake revision from the set
+    does not degrade that session, it ends it.
+    """
+    replies = _converse(
+        initialized_config,
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": "2024-11-05"},
+            }
+        ],
+    )
+
+    assert replies[0]["result"]["protocolVersion"] == "2024-11-05"
+
+
+def test_the_handshake_offers_only_revisions_it_can_reach(initialized_config: Config) -> None:
+    """🔴 `2026-07-28` is not reachable through `initialize` at all.
+
+    It is a per-request-envelope era entered by a `server/discover` probe, and
+    `InitializeResult` is documented as removed there -- so echoing it back
+    would be this server agreeing to a protocol it has no code for, at the one
+    moment a client takes the agreement at face value. It is not enough to
+    check the constant: what matters is that a client asking cannot be told yes.
+    """
+    assert "2026-07-28" not in mcp.SUPPORTED_PROTOCOL_VERSIONS
+
+    replies = _converse(
+        initialized_config,
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": "2026-07-28"},
+            }
+        ],
+    )
+
+    assert replies[0]["result"]["protocolVersion"] == mcp.FALLBACK_PROTOCOL_VERSION
+
+
 def test_the_server_declares_only_the_capability_it_serves(initialized_config: Config) -> None:
     """Declaring one it does not would have the client offer the operator something that fails."""
     result = _converse(
@@ -246,6 +321,31 @@ def test_a_notification_is_not_answered(initialized_config: Config) -> None:
     )
 
     assert len(replies) == 1
+
+
+def test_a_request_whose_id_is_explicitly_null_is_answered(initialized_config: Config) -> None:
+    """🔴 An absent `id` and a null `id` are different messages, and only one is a notification.
+
+    JSON-RPC 2.0 defines a Notification as a request object WITHOUT an `id`
+    member. An `id` present and null is an ordinary request, and its response
+    carries `"id": null`. Deciding notification-ness on the VALUE conflates the
+    two and leaves this client waiting for a reply the server chose not to
+    send -- the hang the read loop's other guards exist to rule out, arriving
+    through the one door they do not cover.
+    """
+    replies = _converse(
+        initialized_config,
+        [
+            {"jsonrpc": "2.0", "id": None, "method": "ping"},
+            # A second, ordinary request, so a reply count of one cannot be read
+            # as "it answered" when what happened is that it answered the wrong
+            # message.
+            {"jsonrpc": "2.0", "id": 7, "method": "ping"},
+        ],
+    )
+
+    assert [reply["id"] for reply in replies] == [None, 7]
+    assert replies[0]["result"] == {}
 
 
 def test_an_unparseable_line_is_answered_rather_than_ignored(initialized_config: Config) -> None:
@@ -478,6 +578,42 @@ def test_no_tool_mutates_anything(initialized_config: Config) -> None:
     forbidden = ("create", "update", "delete", "remove", "write", "set_", "transfer", "pay")
     for tool in tools:
         assert not any(word in tool["name"] for word in forbidden), tool["name"]
+
+
+def test_every_tool_says_on_the_wire_that_it_only_reads(initialized_config: Config) -> None:
+    """The ratified norm, in the field the protocol provides for stating it.
+
+    Read-only was true of this surface before it was sayable, and a client had
+    no way to ask. Derived from `_tool_definitions()` rather than checked
+    against a list of four names, because the property is "every tool", and a
+    fifth added tomorrow is exactly the one that would be missed.
+
+    Delivered through the real handshake as well as read off the definitions:
+    the annotations are attached after the list is built, and a construction
+    step is the kind of thing that can be right in the function and absent from
+    the reply.
+    """
+    advertised = {tool["name"]: tool["annotations"] for tool in mcp._tool_definitions()}
+    replies = _converse(
+        initialized_config,
+        [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        ],
+    )
+    on_the_wire = {tool["name"]: tool.get("annotations") for tool in replies[1]["result"]["tools"]}
+
+    assert on_the_wire == advertised
+    for name, hints in on_the_wire.items():
+        # An exact dict, not a subset: `destructiveHint` and `openWorldHint`
+        # both DEFAULT to the alarming answer, so a payload that dropped one
+        # would have a client assume the opposite of what is true here.
+        assert hints == {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }, name
 
 
 def test_a_write_through_the_read_handle_is_refused(initialized_config: Config) -> None:
@@ -1197,13 +1333,29 @@ def test_the_instructions_name_every_warning_kind_the_vocabulary_defines(
     )
 
 
+#: What `Implementation` -- the type of `serverInfo` -- declares, read from
+#: `mcp_types` 2.2.0. Written out rather than imported because this product has
+#: no `mcp` dependency and is not acquiring one to run a test; the list is the
+#: fact the test needs, and it moves only when the SDK's type does.
+_IMPLEMENTATION_FIELDS = frozenset(
+    {"name", "title", "version", "description", "websiteUrl", "icons"}
+)
+
+
 def test_the_handshake_reports_the_running_build(initialized_config: Config) -> None:
-    """🔴 `serverInfo` is what a client shows a human BEFORE any tool is called.
+    """🔴 The handshake is what a client shows a human BEFORE any tool is called.
 
     All three keys were untested, including `version` -- which stopped being the
     literal "0.1.0" and became package metadata, so it now reports "unknown"
     for a source tree that was never installed. An untested handshake is how a
     client-facing identity drifts from the code that serves it.
+
+    🔴 Read from `_meta`, and `serverInfo` is checked for the ABSENCE of the
+    same keys, because that is where the identity is actually readable.
+    `Implementation` declares six fields and the SDK's wire base leaves
+    pydantic's `extra="ignore"` in force, so a `commit` on `serverInfo` is
+    dropped in the client's parser -- present in the bytes, gone by the time
+    anything reads them, which no assertion over the raw reply would catch.
     """
     _seed(initialized_config)
     replies = _converse(
@@ -1221,21 +1373,29 @@ def test_the_handshake_reports_the_running_build(initialized_config: Config) -> 
             }
         ],
     )
-    server_info = replies[0]["result"]["serverInfo"]
+    result = replies[0]["result"]
+    server_info = result["serverInfo"]
+    build = result["_meta"][mcp.BUILD_META_KEY]
     identity = build_id.build_identity()
 
+    # Nothing rides `serverInfo` that a strict reading of `Implementation` would
+    # discard -- the test of survival, since a dropped key looks identical to a
+    # delivered one from this side of the pipe.
+    assert set(server_info) <= _IMPLEMENTATION_FIELDS, (
+        f"{sorted(set(server_info) - _IMPLEMENTATION_FIELDS)} would be dropped before any "
+        f"SDK-based client could read them"
+    )
     assert server_info["version"] == identity.version
-    assert server_info["commit"] == identity.commit
-    assert server_info["dirty"] == identity.dirty
+    assert build == {
+        "version": identity.version,
+        "commit": identity.commit,
+        "dirty": identity.dirty,
+    }
     # The handshake and the envelope must not be able to disagree about the
     # build: two readings of one process are one fact, and a client that showed
     # a human one commit while an agent read another would be unfalsifiable.
     envelope = _call(initialized_config, "list_accounts")["structuredContent"]["build"]
-    assert envelope == {
-        "version": server_info["version"],
-        "commit": server_info["commit"],
-        "dirty": server_info["dirty"],
-    }
+    assert envelope == build
 
 
 def test_a_build_that_is_not_a_git_checkout_still_serves(initialized_config: Config) -> None:

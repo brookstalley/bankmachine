@@ -40,22 +40,48 @@ from bankmachine.store.connection import inspect
 
 logger = get_logger("mcp")
 
-#: The newest protocol version this server has been written against, read from
-#: `mcp.types.LATEST_PROTOCOL_VERSION` at 2.2.0 rather than remembered.
-LATEST_PROTOCOL_VERSION = "2026-07-28"
+#: The newest protocol revision an `initialize` handshake can reach, read from
+#: `mcp_types.version.LATEST_HANDSHAKE_VERSION` at 2.2.0 rather than remembered.
+#:
+#: 🔴 Deliberately NOT the SDK's `LATEST_PROTOCOL_VERSION`, which is documented
+#: as the newest revision that SDK speaks *in any era*. The registry is
+#: partitioned, and the partition is the point: `HANDSHAKE_PROTOCOL_VERSIONS`
+#: ends here, while `2026-07-28` sits alone in `MODERN_PROTOCOL_VERSIONS`, whose
+#: sessions use a stateless per-request envelope reached by a `server/discover`
+#: probe. `InitializeRequestParams` and `InitializeResult` both read *"Removed
+#: in protocol 2026-07-28"*, so naming it here would agree, on the handshake, to
+#: an era this server has no code for.
+#:
+#: A second and independent reason, so nobody restores it on the grounds that
+#: the handshake now "works": on 2026-07-28 `ListToolsResult` is a
+#: `CacheableResult` and `ttlMs`/`cacheScope` are REQUIRED on the wire. This
+#: server sends neither, and `tools/list` is the first call every client makes.
+LATEST_HANDSHAKE_VERSION = "2025-11-25"
 
 #: What to answer a client that asks for a version this server does not know.
 #: The SDK's own `DEFAULT_NEGOTIATED_VERSION`, and the conservative choice: a
 #: client that speaks something newer can still speak this.
 FALLBACK_PROTOCOL_VERSION = "2025-03-26"
 
-#: Versions this server will echo back verbatim when a client asks for one.
+#: Versions this server will echo back verbatim when a client asks for one --
+#: the SDK's `HANDSHAKE_PROTOCOL_VERSIONS` entire, because every member of it is
+#: a revision `initialize` can actually negotiate.
 #: 🔴 The CLIENT's version is honoured when recognized rather than the server's
 #: newest being asserted, because the client is the half that cannot adapt.
+#:
+#: 🔴 `2024-11-05` is in the set on purpose, not by inertia. The fallback below
+#: only rescues a client that can speak something NEWER than it asked for;
+#: leaving the oldest revision out means counter-offering `2025-03-26` to a
+#: client pinned at `2024-11-05`, which names a revision it cannot speak, and
+#: the spec has such a client disconnect rather than downgrade. Nothing this
+#: server puts on the wire distinguishes the two anyway -- `structuredContent`
+#: post-dates both, which is why every answer also carries the same JSON as
+#: text -- so excluding it would buy a connection failure and nothing else.
 SUPPORTED_PROTOCOL_VERSIONS: tuple[str, ...] = (
-    LATEST_PROTOCOL_VERSION,
-    "2025-06-18",
+    "2024-11-05",
     FALLBACK_PROTOCOL_VERSION,
+    "2025-06-18",
+    LATEST_HANDSHAKE_VERSION,
 )
 
 _PARSE_ERROR = -32700
@@ -92,9 +118,36 @@ _TRUNCATION_NOTE = (
 )
 
 
+#: What every tool on this surface says about itself, on the wire.
+#: `api-contract.md` § Direction ratifies that *the MCP surface is read-only;
+#: there are no mutation tools, and adding one is not a decision this norm
+#: leaves open* -- and until this block existed that norm had no machine-readable
+#: expression anywhere a client could ask. `ToolAnnotations` is the field the
+#: protocol provides for saying it, and the norm is already true, so this
+#: describes a fact rather than making a promise.
+#:
+#: 🔴 A declaration, not an enforcement, and the SDK's own caveat is the reason
+#: to keep the two apart: annotations are *hints*, and "clients should never
+#: make tool use decisions based on ToolAnnotations received from untrusted
+#: servers." The enforcement stays where it already is -- in the `mode=ro` file
+#: handle every tool opens through, which refuses a write whatever a client
+#: believed about this dictionary.
+_READ_ONLY_ANNOTATIONS: dict[str, Any] = {
+    "readOnlyHint": True,
+    # Meaningful only when `readOnlyHint` is false, per the SDK's own note.
+    # Stated anyway, because a client reading one field and not the other still
+    # gets a true answer, and the default it would otherwise assume is `true`.
+    "destructiveHint": False,
+    "idempotentHint": True,
+    # Closed world: every answer is assembled from the local datastore. The
+    # aggregator is the sync path's business, and no tool here reaches it.
+    "openWorldHint": False,
+}
+
+
 def _tool_definitions() -> list[dict[str, Any]]:
     """The tool surface. 🔴 Every one of them reads; none of them writes."""
-    return [
+    definitions: list[dict[str, Any]] = [
         {
             "name": "list_accounts",
             "title": "List accounts",
@@ -182,6 +235,13 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
         },
     ]
+    for definition in definitions:
+        # Attached to the whole list rather than written into each entry: the
+        # claim is "every tool here is read-only", and four copies of one claim
+        # is how three of them stay right. A fresh dict per tool because these
+        # go out as part of a mutable structure a caller may edit.
+        definition["annotations"] = dict(_READ_ONLY_ANNOTATIONS)
+    return definitions
 
 
 def _tool_names() -> frozenset[str]:
@@ -360,7 +420,23 @@ def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> q
     return handler()
 
 
+#: Where the running build rides in the initialize result's `_meta`. Namespaced
+#: because `io.modelcontextprotocol/*` is reserved for the protocol's own keys
+#: and an unprefixed name is a collision waiting for a future revision to claim.
+BUILD_META_KEY = "bankmachine/build"
+
+
 def _server_info(config: Config) -> dict[str, Any]:
+    """Only the keys `Implementation` declares. Anything else is dropped in transit.
+
+    🔴 `Implementation` -- the type `serverInfo` is -- declares `name`, `title`,
+    `version`, `description`, `websiteUrl` and `icons`, and nothing more. The
+    SDK's wire base sets `populate_by_name=True` and leaves pydantic's default
+    `extra="ignore"` in force, so an undeclared key hung off `serverInfo` is
+    discarded silently before any SDK-based client can read it. Build identity
+    that a client is meant to SEE therefore travels in `_meta`, which is the
+    sanctioned extension point and is typed to hold anything.
+    """
     return {
         "name": "bankmachine",
         # 🔴 The environment is in the server's own identity as well as in every
@@ -371,11 +447,25 @@ def _server_info(config: Config) -> dict[str, Any]:
         # version is one that stops matching `pyproject.toml` the first time
         # either moves without the other.
         "version": build_identity().version,
-        # 🔴 The handshake carries it too, so a client can show which build it
-        # connected to before any tool is called. `null` means the build could
-        # not be identified -- it is never guessed at.
-        "commit": build_identity().commit,
-        "dirty": build_identity().dirty,
+    }
+
+
+def _build_meta() -> dict[str, Any]:
+    """The running build, in the one place on the handshake a client can read it.
+
+    So a client can show which build it connected to before any tool is called.
+    The same three keys as every answer's `build`, from the same capture: two
+    readings of one process are one fact, and a client showing a human one
+    commit while an agent read another would be unfalsifiable.
+    """
+    identity = build_identity()
+    return {
+        "version": identity.version,
+        # 🔴 `null` means the build could not be identified -- it is never
+        # guessed at, and `dirty` is then null too rather than a false claim
+        # that the tree was clean.
+        "commit": identity.commit,
+        "dirty": identity.dirty,
     }
 
 
@@ -433,10 +523,18 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
     message_id = message.get("id")
     params = message.get("params") or {}
 
-    if message_id is None:
+    if "id" not in message:
         # A notification. `notifications/initialized` is the expected one; any
         # other is ignored rather than answered, because replying to a
         # notification is a protocol error on this side.
+        #
+        # 🔴 Asked as "is there an `id` member", not "is the id None", because
+        # those are different questions and JSON-RPC 2.0 answers them
+        # differently: a Notification is a request object WITHOUT an `id`, so an
+        # `id` that is present and null is an ordinary request and gets an
+        # ordinary response carrying `"id": null`. Collapsing the two leaves
+        # that client waiting for a reply this server decided not to send, and a
+        # hang is the one failure the read loop exists to prevent.
         return None
 
     if method == "initialize":
@@ -454,6 +552,12 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
                 # would have the client offer the operator something that fails.
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": _server_info(config),
+                # Build identity rides here rather than on `serverInfo`, whose
+                # type declares no field for it and whose reader drops what it
+                # does not declare. `InitializeResult` inherits
+                # `meta: Meta | None = Field(alias="_meta")` from `Result`, and
+                # `Meta` is `dict[str, Any]`.
+                "_meta": {BUILD_META_KEY: _build_meta()},
                 "instructions": _instructions(config),
             },
         )
