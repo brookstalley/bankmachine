@@ -172,6 +172,34 @@ def _every_tool() -> tuple[str, ...]:
     return names
 
 
+def _tools_requiring(key: str) -> tuple[str, ...]:
+    """The tools whose published schema REQUIRES an envelope key.
+
+    🔴 Read from what each tool publishes, not listed here. `api-contract.md`
+    fixes a key's absence as information — no `effective_window` means the tool
+    takes no window, no `truncation` means it returns every row it found, no
+    `totals` means it does not classify money — and the tests below assert the
+    WIRE against exactly that claim. Derived, they hold every tool to its own
+    published contract and a new one is covered the day it registers; listed,
+    they hold whichever tools someone remembered.
+
+    Empty is a defect rather than a vacuous pass: every key this is asked about
+    is one some tool carries, so a derivation returning nothing means the schema
+    stopped saying what this file thinks it says.
+    """
+    names = tuple(
+        str(d["name"])
+        for d in mcp._tool_definitions()
+        if key in d["outputSchema"].get("required", [])
+    )
+    assert names, f"no tool requires {key!r}, so every loop keyed on it checks nothing"
+    return names
+
+
+#: A window wider than the seeded data, so a windowed tool actually clamps.
+_A_WINDOW: dict[str, Any] = {"since": "2024-01-01", "until": "2024-06-30"}
+
+
 def _every_tool_except(*excluded: str) -> tuple[str, ...]:
     """The complement, for the claims that are true of one tool and false of the rest.
 
@@ -986,10 +1014,12 @@ def test_every_tool_answers_against_a_missing_datastore(config: Config) -> None:
 @pytest.mark.parametrize(
     ("tool", "arguments", "expects_window"),
     [
-        ("query_transactions", {"since": "2024-01-01", "until": "2024-06-30"}, True),
-        ("money_summary", {"since": "2024-01-01", "until": "2024-06-30"}, True),
-        ("list_accounts", {}, False),
-        ("get_pipeline_health", {}, False),
+        (
+            name,
+            _A_WINDOW if name in _tools_requiring("effective_window") else {},
+            name in _tools_requiring("effective_window"),
+        )
+        for name in _every_tool()
     ],
 )
 def test_an_unreadable_store_still_reports_whether_the_tool_takes_a_window(
@@ -1932,7 +1962,7 @@ def test_an_empty_answer_outside_coverage_is_told_apart_from_a_zero(
     assert wire["effective_window"]["effective"] == {"since": None, "until": None}
 
 
-@pytest.mark.parametrize("tool", ["list_accounts", "get_pipeline_health"])
+@pytest.mark.parametrize("tool", _every_tool_except(*_tools_requiring("effective_window")))
 def test_an_unwindowed_tool_reports_no_window_at_all(initialized_config: Config, tool: str) -> None:
     """The key is ABSENT, not null.
 
@@ -2068,7 +2098,7 @@ def test_the_aggregate_carries_no_truncation_block_over_the_wire(
     assert _request_kinds(wire) == []
 
 
-@pytest.mark.parametrize("tool", ["list_accounts", "get_pipeline_health"])
+@pytest.mark.parametrize("tool", _every_tool_except(*_tools_requiring("truncation")))
 def test_an_uncapped_tool_carries_no_truncation_block_over_the_wire(
     initialized_config: Config, tool: str
 ) -> None:

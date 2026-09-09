@@ -79,6 +79,12 @@ indistinguishable from one that passed. The letters stay in the heading and in
 the boxes below because every commit message, the change-log and both handoffs
 already cite them; renumbering those would be rewriting history to match a
 parser.
+
+🔴 So the two vocabularies are BOTH live and they are not interchangeable at the
+command line: `--chunk 01` resolves and `--chunk D` does not, reproducing the
+"chunk 'D' not found" this comment exists to explain. The boxes below keep the
+letters because prose cites them; anything addressing a chunk by argument uses
+the number.
 -->
 
 - [x] **A — The per-account coverage signal, and the two tools that read it** (C2 · #19, #35)

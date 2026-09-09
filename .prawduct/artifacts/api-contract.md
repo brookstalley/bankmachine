@@ -98,13 +98,12 @@ migrate or grandfather.
   scoped to ROWS. The stronger rule — every declared property required, everywhere in the schema —
   refuses the shipped surface, because a warning carries `connection_id` only when it is about one
   connection; that is absence-as-information at the envelope level, which this norm does not govern.
-  🔴 **Retroactive, and it has one migration to pay:** `spending_summary` ships today as its own tool
-  and merges into the grouped-aggregate tool, which is chunk C4 of `discovery-mcp-answer-scope.md`.
-  Every MCP tool is `experimental` (§ Surface Inventory), where "removing one is the policy working,
-  not a violation", so the migration costs no version bump and opens no deprecation window. The other
-  three shipped tools are unaffected.
-  Born 2026-09-09, from #30. Derivation, the alternatives priced against it, and the rule applied to
-  all ten specified tools: `discovery-mcp-tool-surface.md`.
+  🔴 **Retroactive, and its one migration is PAID:** `spending_summary` was its own tool and is now
+  `money_summary`, the grouped aggregate. Every MCP tool is `experimental` (§ Surface Inventory),
+  where "removing one is the policy working, not a violation", so the migration cost no version bump
+  and opened no deprecation window. No other shipped tool changed shape.
+  Born 2026-09-09, from #30. Derivation and the alternatives priced against it:
+  `discovery-mcp-tool-surface.md`.
   Status: steady-state.
 
 ---
@@ -164,11 +163,11 @@ Every tool is safe and idempotent, trivially — nothing writes.
 > and not of *this* surface, and a reader comparing the two would have found the contract claiming
 > ten and the code answering four with nothing saying which was current.
 >
-> **Two of the six are not ordinary omissions.** `get_coverage_report` is half the verification
-> surface this document names two paragraphs above — the product's headline goal is "answer it, or
-> say why you should not", and the coverage half of that is missing. `list_holdings` waits on build
-> step 5, which has not started. The other four are analysis conveniences whose data is already in
-> the datastore.
+> **`get_coverage_report` was the sharpest of these omissions and is now BUILT.** It is half the
+> verification surface this document names two paragraphs above — the product's headline goal is
+> "answer it, or say why you should not", and the coverage half of that was missing. Of what
+> remains, `list_holdings` waits on build step 5, which has not started; `balance_history` and
+> `find_recurring` are analysis conveniences whose data is already in the datastore.
 >
 > **What the shipped tools do not yet carry**, also descoped rather than silently unimplemented:
 > `query_transactions` is specified paginated with category, amount-range and merchant filters and
@@ -191,13 +190,11 @@ The product's headline goal is not "answer the question" but "answer it, or say 
 > `outputSchema`; both eliminate a near-twin pair. `discovery-mcp-tool-surface.md` carries the
 > derivation and the row shape that permits each merge.
 >
-> 🔴 **The table could not move ahead of the code, and the guard is what enforced that.**
+> 🔴 **The table and the code move in the SAME commit, and the guard enforces it.**
 > `test_the_documented_tool_surface_is_the_built_one.py` derives the *specified* set from these rows
 > and the *built* set from `_tool_definitions()`, then asserts built ⊆ specified. Rewriting the rows
-> early would have dropped `spending_summary` from the specification while it was still on the wire,
-> and the guard would have failed — correctly. So the table, every spelled count and the "two of
-> these eight" sentence moved in the SAME commit as the merge. The plan had sequenced that sweep
-> last; the guard proved it had to be atomic, which is the guard doing its job rather than obstructing.
+> ahead of the code drops a tool from the specification while it is still on the wire, and the guard
+> fails — correctly. A rename is therefore never a two-commit job.
 >
 > 🔴 **`money_summary`'s parent requirement is `docs/system-requirements.md` §5**, amended the same
 > day. That section is the contract of record — `boundary-patterns.md` designates it so — and a
@@ -303,7 +300,8 @@ refusing "show me 2024" against a store beginning 2024-09-16 refuses an ordinary
 enrollment's cost — history that cannot be bought back — has no analogue here. Ruled 2026-09-08:
 clamp, and say so in band. `effective_window` plus its request-scoped warning is the saying so.
 
-**What it fixes.** `spending_summary` over a window preceding coverage returned no rows, and
+**What it fixes.** `spending_summary` — the tool `money_summary` replaced — over a window preceding
+coverage returned no rows, and
 "you spent nothing" and "this is not knowable" were the same payload — measured across four
 acceptance rounds as the most believable wrong answer this surface can produce.
 

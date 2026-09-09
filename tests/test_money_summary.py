@@ -22,7 +22,7 @@ from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
 from bankmachine.store.schema import transactions
 from bankmachine.store.types import minor_units, now_utc
-from test_mcp import _call, _seed
+from test_mcp import _call, _every_tool_except, _seed, _tools_requiring
 
 
 def _rows(config: Config, **arguments: Any) -> list[dict[str, Any]]:
@@ -414,7 +414,10 @@ def test_only_the_aggregate_carries_a_totals_block(initialized_config: Config) -
     """
     _seed(initialized_config)
     assert "totals" in _wire(initialized_config)
-    for tool in ("list_accounts", "query_transactions", "get_pipeline_health"):
+    # Derived, so a tool added later is held to this claim without anyone
+    # remembering to add it — the omission that left `get_coverage_report`
+    # outside five of these loops at once.
+    for tool in _every_tool_except(*_tools_requiring("totals")):
         wire = _call(initialized_config, tool, {})["structuredContent"]
         assert "totals" not in wire, tool
 
