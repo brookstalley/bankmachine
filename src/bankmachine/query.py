@@ -847,7 +847,7 @@ class Answer:
             **({} if self.truncation is None else {"truncation": self.truncation.to_wire()}),
             # Before `rows`, because it is what a reader should meet FIRST: the
             # headline this tool exists to correct is that a raw outflow total
-            # over this store reads nearly three times what was actually spent,
+            # can be several times the money that actually went out the door,
             # and a decomposition placed after several hundred rows is one
             # nobody reaches.
             **({} if self.totals is None else {"totals": self.totals}),

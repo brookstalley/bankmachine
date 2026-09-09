@@ -2917,3 +2917,108 @@ def test_by_position_params_are_refused_rather_than_ending_the_session(
 
     assert replies[1]["error"]["code"] == -32600
     assert replies[2]["id"] == 3, "the session ended, which is the tool disappearing mid-session"
+
+
+def _seed_second_connection(config: Config, *, degraded: bool) -> None:
+    """A second institution and connection, so two warnings can be told apart.
+
+    🔴 #24's defect is not that a warning lacks a field — it is that with one
+    connection the field can never be shown to DO anything. A single-connection
+    fixture attributes every warning correctly by having only one answer
+    available, which is the shape `learnings.md` names: a setup that cannot
+    trigger the thing it tests passes forever.
+    """
+    now = now_utc()
+    with writer_connection(config) as conn:
+        institution_pk = conn.execute(
+            institutions.insert().values(
+                source_institution_id="ins_222222",
+                name="Second Wombat Credit Union",
+                first_seen_at=now,
+                last_seen_at=now,
+            )
+        ).inserted_primary_key
+        assert institution_pk is not None
+        conn.execute(
+            connections.insert().values(
+                institution_id=int(institution_pk[0]),
+                source_connection_id="item-second",
+                credential_ref="connection:sandbox:item-second",
+                capabilities="[]",
+                requested_history_days=730,
+                granted_history_days=730,
+                status="degraded" if degraded else "active",
+                last_success_at=None if degraded else now,
+                last_error_code="TransportError" if degraded else None,
+                last_error_at=now if degraded else None,
+                enrolled_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+
+def test_a_warning_names_which_of_two_connections_it_describes(
+    initialized_config: Config,
+) -> None:
+    """🔴 #24, and the reason it could not be closed by the field alone.
+
+    The first connection is granted 90 of 730 requested days, so it warns
+    `gapped`; the second is granted its full window and fails instead, so it
+    warns `degraded`. A consumer facing five institutions has to answer "which
+    one is the gap in" — with one connection that question has a right answer by
+    default, which is why the field shipped unproven.
+
+    The assertion is that the two warnings are ATTRIBUTED, not merely that each
+    carries a key: same kind or not, they must name different connections, and
+    the names must be the ones that own the conditions.
+    """
+    _seed(initialized_config)
+    _seed_second_connection(initialized_config, degraded=True)
+
+    warnings = _call(initialized_config, "list_accounts")["structuredContent"]["warnings"]
+    # Grouped rather than keyed: one connection can be several things at once —
+    # a connection that has never synced AND is failing is truthfully both — and
+    # a dict keyed on institution would silently keep whichever came last.
+    attributed: dict[str, list[dict[str, Any]]] = {}
+    for warning in warnings:
+        if "institution" in warning:
+            attributed.setdefault(warning["institution"], []).append(warning)
+    assert set(attributed) == {"First Platypus Bank", "Second Wombat Credit Union"}, warnings
+
+    # The shortfall belongs to the connection that was short, and the failure to
+    # the connection that failed — swapped attribution would send a reader to
+    # the wrong institution with a plausible-looking sentence.
+    assert "gapped" in {w["kind"] for w in attributed["First Platypus Bank"]}
+    assert "degraded" in {w["kind"] for w in attributed["Second Wombat Credit Union"]}
+    assert "gapped" not in {w["kind"] for w in attributed["Second Wombat Credit Union"]}
+    assert {w["connection_id"] for w in attributed["First Platypus Bank"]} == {1}
+    assert {w["connection_id"] for w in attributed["Second Wombat Credit Union"]} == {2}
+    # 🔴 And no detail is byte-identical across the two, which is the failure
+    # round 3 named: a warning repeated verbatim trains a consumer to ignore it.
+    first = {w["detail"] for w in attributed["First Platypus Bank"]}
+    second = {w["detail"] for w in attributed["Second Wombat Credit Union"]}
+    assert not (first & second), "a detail reads the same for two institutions"
+
+
+def test_two_connections_in_the_same_state_are_still_told_apart(
+    initialized_config: Config,
+) -> None:
+    """The harder half: same kind, same condition, two institutions.
+
+    Different kinds could be distinguished by kind alone, so a guard that only
+    ever saw `gapped` beside `degraded` would pass while attribution was broken.
+    Two connections failing the same way is where the identifying fields are the
+    only thing that separates them.
+    """
+    _seed(initialized_config, degraded=True)
+    _seed_second_connection(initialized_config, degraded=True)
+
+    warnings = _call(initialized_config, "list_accounts")["structuredContent"]["warnings"]
+    degraded = [w for w in warnings if w["kind"] == "degraded"]
+    assert len(degraded) == 2, warnings
+    assert {w["institution"] for w in degraded} == {
+        "First Platypus Bank",
+        "Second Wombat Credit Union",
+    }
+    assert {w["connection_id"] for w in degraded} == {1, 2}

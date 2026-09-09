@@ -1107,6 +1107,26 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         f"{AGGREGATE_TESTS}::test_an_unrecognised_category_falls_to_external_spend",
     ),
     (
+        # 🔴 #24's whole point: with ONE connection the field cannot be shown to
+        # do anything, so a mutation that hard-codes the name has to be caught by
+        # a fixture holding two. The anchor ends at the next branch, which is what
+        # makes it the degraded warning's own rather than any of the four
+        # identical attribution lines below it.
+        "#24: a warning names WHICH connection it describes, not a fixed one",
+        QUERY,
+        "                    connection_id=connection_id,\n"
+        "                    institution=name,\n"
+        "                )\n"
+        "            )\n"
+        "        if last_success is None:",
+        "                    connection_id=connection_id,\n"
+        '                    institution="First Platypus Bank",\n'
+        "                )\n"
+        "            )\n"
+        "        if last_success is None:",
+        f"{MCP_TESTS}::test_two_connections_in_the_same_state_are_still_told_apart",
+    ),
+    (
         "backup destination: an existing file is never overwritten",
         BACKUP,
         "    if destination.exists():",
