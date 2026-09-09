@@ -208,7 +208,47 @@ def _output_schema(
 
     coverage: dict[str, Any] = {
         "connections": {"type": "integer"},
-        "accounts": {"type": "integer"},
+        "accounts": {
+            "type": "integer",
+            "description": (
+                "every account, INCLUDING the ones no longer active -- read "
+                "`accounts_not_active` beside it rather than assuming this figure was filtered"
+            ),
+        },
+        # 🔴 AC-12.8's figure, on every answer because `accounts` is on every
+        # answer. The treatment is include-and-flag: the count above keeps
+        # counting everything, and these two say what the non-active accounts
+        # contributed, so a reader can perform the subtraction this server
+        # refuses to perform for them. Both are present and zero rather than
+        # absent, because the magnitude is the load-bearing half -- a flag with
+        # no figure tells a consumer something is wrong and leaves it unable to
+        # act.
+        "accounts_not_active": {
+            "type": "integer",
+            "description": (
+                "how many of `accounts` are closed or no longer reported; their balances are "
+                "frozen as of the date each row names. 0 means every account is still being "
+                "reported"
+            ),
+        },
+        "not_active_balance_minor_units": {
+            "type": "array",
+            "description": (
+                "what those accounts contribute to any total over balances, in MINOR UNITS and "
+                "signed from the account holder's point of view. Per currency, never one "
+                "integer across currencies. Empty means they contribute nothing -- quote this "
+                "beside any balance total you report"
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "currency": {"type": "string"},
+                    "current_minor_units": {"type": "integer"},
+                },
+                "required": ["currency", "current_minor_units"],
+                "additionalProperties": False,
+            },
+        },
         "transactions": {
             "type": "integer",
             "description": "store-wide, and never narrowed by the question asked",
@@ -386,6 +426,62 @@ def _coverage_row_fields() -> dict[str, dict[str, Any]]:
     }
 
 
+#: The per-account lifecycle facts, on the same axis and by the same rule as the
+#: coverage fragment above: spelled ONCE, produced once (`query._account_lifecycle`),
+#: carried by both tools that report an account. `list_accounts` carries them so
+#: an agent that never thought to ask the verification surface still learns a
+#: balance is frozen; `get_coverage_report` carries them because they are what
+#: tells a retired account's silence from a hole.
+def _lifecycle_row_fields() -> dict[str, dict[str, Any]]:
+    """A fresh dict per call, like every other schema fragment here."""
+    return {
+        "lifecycle": {
+            "type": "string",
+            # 🔴 The vocabulary itself, never a copy of it -- the same rule the
+            # warning `kind` enum follows two functions up, and the `FLOW_CLASSES`
+            # precedent. A list retyped here would start refusing answers this
+            # server sends the first time a fourth value is classified.
+            "enum": list(query.LIFECYCLE_VALUES),
+            "description": (
+                "🔴 `no_longer_reported` names an OBSERVATION, not a closure: the institution's "
+                "most recent successful roster no longer lists this account, which is "
+                "consistent with closure and equally consistent with the account being "
+                "de-selected from sharing or the institution changing what it shares. The "
+                "balance beside it is FROZEN as of `last_seen_in_roster` and is not a fact "
+                "about today. `closed` is the operator's own declaration and is the only value "
+                "that asserts a closure"
+            ),
+        },
+        "closed_date": {
+            "type": ["string", "null"],
+            "description": (
+                "when the operator recorded this account as closed; null when none has been "
+                "recorded, including for an account that is merely no longer reported"
+            ),
+        },
+        "last_seen_in_roster": {
+            "type": ["string", "null"],
+            "description": (
+                "the date this account was last listed by its institution; null for an "
+                "import-only account, which has no roster behind it. A DIFFERENT fact from "
+                "`last_transaction_date` and often a much later one -- an account can be "
+                "listed for months after its last transaction, and neither may be derived "
+                "from the other"
+            ),
+        },
+        "roster_last_observed": {
+            "type": ["string", "null"],
+            "description": (
+                "the date this account's institution's roster was last successfully observed; "
+                "null for an import-only account. Read it against `last_seen_in_roster`: the "
+                "two being equal is what makes an account `active`, and the earlier one is the "
+                "whole derivation of `no_longer_reported`, so the verdict can be re-derived "
+                "from this row without a second call"
+            ),
+        },
+    }
+
+
 class ToolRegistrationError(RuntimeError):
     """A surface that cannot be described strictly, refused before it is advertised.
 
@@ -510,7 +606,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "recorded balance. Amounts are INTEGER MINOR UNITS (cents for USD) and the "
                 "field name says so. Signed from the account holder's point of view: a "
                 "positive balance is value held, a negative one is value owed, so a credit "
-                "card balance is negative."
+                "card balance is negative. 🔴 Every row carries `lifecycle`: a balance on a "
+                "row that is not `active` FROZE on `last_seen_in_roster` and is not a fact "
+                "about today, so read it before summing anything into a net worth."
             ),
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
             "outputSchema": _output_schema(
@@ -534,6 +632,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     # 🔴 On every row, never behind a parameter: the failure this
                     # closes is an agent that never thought to ask.
                     **_coverage_row_fields(),
+                    **_lifecycle_row_fields(),
                 },
                 windowed=False,
                 capped=False,
@@ -737,7 +836,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "`transaction_count` of 0 means NO DATA WAS EVER RECORDED for it, which is a "
                 "different answer from 'nothing happened' and the two are indistinguishable "
                 "anywhere else. `silence_ratio` above 1 means a full posting cycle has been "
-                "missed; a ratio near 1 is worth a second look even when the flag is false."
+                "missed; a ratio near 1 is worth a second look even when the flag is false. "
+                "🔴 A non-active account's trailing silence is CLOSURE, not a hole: the flag "
+                "stays false for it and `lifecycle` on the row is what says why."
             ),
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
             "outputSchema": _output_schema(
@@ -745,6 +846,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "account_id": {"type": "integer"},
                     "account": {"type": ["string", "null"]},
                     **_coverage_row_fields(),
+                    **_lifecycle_row_fields(),
                     "median_interval_days": {
                         "type": ["number", "null"],
                         "description": (
@@ -769,7 +871,12 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                     "silence_exceeds_cadence": {
                         "type": "boolean",
-                        "description": "a full posting cycle has been missed (ratio above 1)",
+                        "description": (
+                            "a full posting cycle has been missed (ratio above 1) by an account "
+                            "still being reported. 🔴 Always false for a non-active account: its "
+                            "silence is closure rather than a hole, and `silence_ratio` beside "
+                            "this still carries the measurement so nothing is hidden"
+                        ),
                     },
                     "source_breakdown": {
                         "type": "object",
@@ -1125,6 +1232,12 @@ def _instructions(config: Config) -> str:
         f"| `coverage` | what the store HOLDS -- `connections`, `accounts`, `transactions`, "
         f"`earliest_transaction`, `latest_transaction`. 🔴 `transactions` is ALWAYS store-wide "
         f"and never narrows with your question |\n"
+        f"| `accounts_not_active` (inside `coverage`) | how many of `accounts` are closed or "
+        f"no longer reported. 🔴 `accounts` COUNTS them; it is not a filtered figure |\n"
+        f"| `not_active_balance_minor_units` (inside `coverage`) | per currency, what those "
+        f"accounts contribute to any total over balances -- signed, in minor units. Quote it "
+        f"beside any balance total you report, because the total includes them on purpose and "
+        f"only the reader can decide whether to subtract |\n"
         f"| `warnings` | the tables above |\n"
         f"| `rows` | the answer itself |\n\n"
         f"A WINDOWED tool adds `effective_window` — `requested` (what you asked for) beside "
