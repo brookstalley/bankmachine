@@ -670,9 +670,11 @@ def test_the_last_listed_date_is_the_maximum_side_twin_of_the_first(
 ) -> None:
     """AC-12.4. Nullable, because migration 003 backfilled nothing.
 
-    A null is not "never listed" — it is a row this build's migration reached
-    before any sync did, and `query._account_lifecycle` reads it as
-    `first_seen_date`, which is true by construction.
+    🔴 A null is not "never listed" — it is a row this build's migration reached
+    before any sync did, and `query._account_lifecycle` reads it as exactly
+    that: no roster observation is recorded for this account. It is never read
+    as `first_seen_date`, which looks true for one account and fabricates
+    closures across a connection.
     """
     s = seed(writer)
 
@@ -683,6 +685,56 @@ def test_the_last_listed_date_is_the_maximum_side_twin_of_the_first(
         update(accounts).where(accounts.c.account_id == s.account_id).values(last_seen_date=TODAY)
     )
     assert writer.execute(select(accounts.c.last_seen_date)).scalar_one() == date(2026, 9, 6)
+
+
+def test_the_database_refuses_an_instant_in_the_roster_observation_column(
+    writer: SAConnection,
+) -> None:
+    """Migration 004's column keeps AC-6.4 the way migrations 002 and 003 do.
+
+    🔴 `roster_observed_at` was the rejected spelling and an instant is the
+    rejected type: this column's only use is a comparison against
+    `accounts.last_seen_date`, which is a calendar date, and a comparison across
+    the two types is a defect rather than a conversion. The CHECK is what makes
+    that a property of the file rather than of the code in front of it —
+    `sync shell` ships an operator a prompt that reaches the database with no
+    type decorator anywhere in between, and `ALTER TABLE` is the one path where
+    a constraint is easiest to leave off.
+    """
+    s = seed(writer)
+    with pytest.raises(IntegrityError):
+        writer.execute(
+            text("UPDATE connections SET roster_observed_date = :value WHERE connection_id = :id"),
+            {"value": "2026-09-06T00:00:00+00:00", "id": s.connection_id},
+        )
+
+
+def test_the_roster_observation_is_nullable_and_migration_004_invented_none(
+    writer: SAConnection,
+) -> None:
+    """AC-12.4's per-connection half, and the null that carries the upgrade window.
+
+    🔴 There is nothing honest to backfill with: the correct value is when this
+    connection's roster was last read, which is the record nothing ever kept —
+    that absence is the whole reason the column exists. So the null MEANS "never
+    observed", and `query._account_lifecycle` marks nothing on such a connection
+    absent. Between this migration and a connection's next successful sync,
+    which for a failing connection never arrives, no account can be called
+    closed.
+    """
+    s = seed(writer)
+
+    connection = writer.execute(select(connections)).one()
+    assert connection.roster_observed_date is None, "migration 004 must not have invented a date"
+
+    writer.execute(
+        update(connections)
+        .where(connections.c.connection_id == s.connection_id)
+        .values(roster_observed_date=TODAY)
+    )
+    assert writer.execute(select(connections.c.roster_observed_date)).scalar_one() == date(
+        2026, 9, 6
+    )
 
 
 def test_a_closed_date_before_the_account_was_first_seen_is_refused(
