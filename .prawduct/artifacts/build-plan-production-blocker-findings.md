@@ -1,0 +1,265 @@
+---
+artifact: build-plan
+version: 1
+scope: production-blocker-findings
+branch: feat/production-blocker-findings
+partition: |
+  delegated, three ways, in isolated worktrees the coordinator creates. The partition is by ITEM
+  this time rather than by requirement block, because the three items are genuinely independent in
+  subject matter -- a lifecycle observation, a contract-completeness sweep, and a discovery that
+  writes no code. What is NOT independent is `api-contract.md`, which C1's norm work and C2's field
+  descriptions would both edit, and `query.py`, which C1 edits and C3 reads. Chunk 00 removes the
+  first collision by landing every norm and vocabulary edit in advance, so C2 is left owning the
+  field-description sections alone; the second is a read/write pair rather than a write/write pair
+  and is handled by naming what C3 may assume.
+  🔴 Two requirements cross the map and are NOT delegated, named here so neither can be read as
+  dropped: (a) any field chunk 01 adds to the wire must be described in `api-contract.md` and must
+  NOT be added to `UNDOCUMENTED_AT_FREEZE`, which chunk 02 is emptying -- the two chunks would each
+  do half and neither would own the seam; (b) the `_stranded_holds` narrating comment, whose backlog
+  carrier is #53, has no code chunk here because #53 is discovery-only. Chunk 00 deletes it.
+critic_mode: cumulative-final
+depends_on:
+  - artifact: build-plan-production-blockers
+    file_path: .prawduct/artifacts/build-plan-production-blockers.md
+  - artifact: discovery-account-lifecycle
+    file_path: .prawduct/artifacts/discovery-account-lifecycle.md
+  - artifact: api-contract
+    file_path: .prawduct/artifacts/api-contract.md
+  - artifact: data-model
+    file_path: .prawduct/artifacts/data-model.md
+governed_by:
+  - artifact: api-contract
+    dispositions:
+      - "the MCP surface is read-only, no mutation tools → conforms; no chunk adds a tool, a parameter or a write path. C1 adds a stored column written by the SYNC path, which is the CLI's, not the MCP surface's"
+      - "🔴 every response carries a freshness stamp, and incompleteness rides the success path as a warning → AMENDMENT PROPOSED, and it is chunk 00's. C1's empty-roster case is a NEW kind of incompleteness -- a roster observed successfully and found empty -- and the vocabulary is closed, so the kind is born in chunk 00 before any delegate can invent one. Landing it in advance is the one move that made the previous cycle's three-way parallelism conflict-free"
+      - "🔴 a tool's boundary is drawn where the answer shape changes → conforms, and it constrains C1 rather than merely permitting it: every row field C1 adds is REQUIRED and nullable, never optional. `mcp._refuse_optional_row_fields` enforces this inside `_tool_definitions()`, so a delegate cannot route around it -- but the guard fires at registration, not at review, so the acceptance line names it"
+      - "🔴 a stored balance is reported with its lifecycle, and no total over balances states no treatment of non-active accounts → conforms, and C1 makes it MORE true rather than departing: an account at a one-account connection that today reports `active` forever is exactly a stored balance reported with the wrong lifecycle. The flagged magnitude's population changes as a result, which is the norm working. C1 owes a go-red case proving the newly-absent account reaches the magnitude"
+      - "the CLI's three-way exit code → inapplicable; no chunk changes a CLI exit path"
+  - artifact: data-model
+    dispositions:
+      - "a migration's DDL is frozen once written → conforms; C1 adds migration 004 and does not edit 003, which shipped eight commits ago"
+      - "🔴 calendar dates and UTC instants are distinct types and never mix → THIS IS THE DECISION CHUNK 00 OWES, not a check to tick. `accounts.last_seen_date` is a calendar date and `roster_observed_at` is named as an instant; a column whose name and type disagree is how this norm gets broken quietly. Chunk 00 fixes the type AND the name together, and a delegate must never settle it"
+      - "a source value is never overwritten in place → conforms. `roster_observed_at` is rewritten on every sync, which reads like a departure and is not: the norm protects a value the SOURCE reported from being clobbered by local interpretation. This is our own record of when we looked, which is not a source value at all -- and no aggregator field is overwritten to store it"
+      - "every silver row carries exclusive provenance and its derivation version → recorded rather than assumed: `connections` is not one of the silver row types this norm enumerates, and `accounts` deliberately carries no `derivation_version_id` -- AC-12.6 rests on exactly that. C1 must not add one"
+      - "all monetary values are integer minor units → inapplicable; no chunk here touches an amount"
+      - "a transaction is never hard-deleted; removal is a soft delete → inapplicable to C1 and C2. C3 is a discovery ABOUT this norm's columns and must not propose weakening it"
+      - "the daily balance and holdings series are append-only → inapplicable; nothing writes `balances_daily` or `holdings`"
+      - "every stored amount is signed from the operator's point of view → inapplicable; no chunk changes a stored sign"
+---
+
+# Build Plan — The Three Findings the Blocker Cycle Produced
+
+**Backlog items:** `brookstalley/bankmachine#51`, `#52`, `#53`
+**Type:** mixed — one feature (#51), one documentation sweep (#52), one discovery (#53)
+**Size:** large — a ratified-criterion amendment, a migration, a contract sweep, and a design discovery
+
+These three are not new product ideas. Each is a finding the `production-blockers` cycle produced
+and deliberately did not fix in place, and each was filed with the reason it was deferred. The plan
+exists because two of them are at `stage: requirements` and one is not, so they are not three
+instances of the same kind of work and must not be planned as if they were.
+
+## Requirements Confidence
+
+**Mixed, and the mix is the whole reason for chunk 00.**
+
+- **#52 is `stage: ready` and needs nothing from this plan** — the guard already ships and holds the
+  line; the work is the shrinking it exposed. High confidence.
+- **#51 is `stage: requirements`, and the owner has ruled the OPTION but not written the CRITERION.**
+  The ruling (2026-09-09): record the roster observation per connection, so that "the roster was
+  observed, and this account was absent" is expressible at any N. AC-12.4 and AC-12.5 still say
+  something else. **Chunk 00 writes the amendment; no delegate touches a criterion.**
+- **#53 is `stage: requirements` and its design is deliberately unchosen.** The owner ruled that it
+  goes to discovery with both shapes genuinely open, rather than being handed a decision to
+  implement. Chunk 03 produces a discovery marked **proposed**; ratifying it is a separate cycle.
+
+- *Problem:* one shipped answer is knowably wrong at a real shape (a one-account connection reports
+  `active` forever with a frozen balance); one canonical document describes less than it publishes;
+  and one five-state model is rebuilt by hand at six call sites and has already failed once.
+- *Success:* the wrong answer is right at every N and the criterion says so in its own text; the
+  contract's undocumented set is empty and the ratchet that held it is deleted; and the hold-state
+  model has a written, priced recommendation nobody has yet built.
+- *Out of scope:* the operator-declaration path (`#48`), the `sign_convention_unverified` rename
+  (`#50`), VRF-005/VRF-006, and building #53's chosen shape. **None is descoped by silence — each is
+  named here because it is adjacent enough to be picked up by accident.**
+
+### The ruling this plan was unblocked by
+
+🔴 **#51's option was ruled by the owner on 2026-09-09: record the observation per connection.** The
+two options not taken are in the issue — putting shrink-to-zero on `get_pipeline_health`, and
+accepting the N=1 blind spot in AC-12.5's text. The second was rejected on the ground that it leaves
+the failure FR-9 removes alive inside FR-9; the first because it moves the signal to the
+verification surface, so an agent reading `list_accounts` still sees `active` beside a frozen
+balance — which is precisely what AC-12.1 exists to prevent.
+
+🔴 **This ruling REVERSES a deliberate earlier choice, and that is what makes it a criterion
+amendment rather than a bug fix.** AC-12.4 chose to derive the roster observation rather than store
+it. The amendment must say why the earlier choice is being reversed, and the argument for it must
+survive the reversal rather than being deleted with it.
+
+## Status
+
+- [ ] **00 · The amendment, the column's type, the new warning kind, and one deletion** *(coordinator)*
+- [ ] **01 · The roster observation, recorded — #51** *(delegate, worktree)*
+- [ ] **02 · The contract describes everything it publishes — #52** *(delegate, worktree)*
+- [ ] **03 · Hold state: two shapes, priced — #53** *(delegate, worktree, discovery only)*
+- [ ] **04 · Integration** *(coordinator)*
+
+---
+
+## Chunk 00: The amendment, the column's type, the new warning kind, and one deletion
+
+*(coordinator · lands in ONE commit BEFORE any delegate is dispatched)*
+
+**This chunk exists because worktree-isolated delegates read HEAD.** Anything uncommitted is
+invisible to them, and any surface two of them would edit at once is a merge conflict bought in
+advance. The previous cycle spent one commit on exactly this and had zero conflicts across three
+agents editing the same three files; that is the precedent being followed, not a general tidiness
+argument.
+
+Delivers:
+
+1. **AC-12.4 and AC-12.5 amended in `docs/system-requirements.md`** to the ruled option, stating what
+   each means at **any** N rather than at a scale where the argument happens to hold. AC-12.5's
+   whole-roster clause is replaced, not annotated. The scale argument that justified it is preserved
+   as the reasoning that was superseded, with the date and the ruling that superseded it.
+2. **The empty-roster response gets a stated meaning** — `derive_accounts` receiving `"accounts": []`
+   is today a successful observation of nothing, which is truthful when an operator de-selected every
+   account and a lie when the feed broke. The criterion says which it is treated as; chunk 01
+   implements what the criterion says.
+3. 🔴 **The column's type and name, settled together.** `accounts.last_seen_date` is a calendar date;
+   an instant named `_at` beside it either mixes the two types or misnames one. Chunk 00 decides
+   which this is and names it accordingly, because `data-model.md`'s date/instant norm is broken
+   quietly by exactly this and a delegate would settle it in passing.
+4. **The new warning kind born in `envelope.REQUEST_SCOPED_KINDS`**, with its `_GUIDANCE` entry and
+   its row in the server instructions — the vocabulary is closed, so an observed-and-empty roster
+   has no way to be reported until this lands. Landing it here is what stops chunk 01 from inventing
+   one and chunk 02 from documenting one that does not exist.
+5. **The `_stranded_holds` narrating comment deleted** (`query.py`, the words "One caller did.").
+   Its backlog carrier is `#53`, and `#53` is discovery-only in this plan, so it would otherwise have
+   no code chunk anywhere and would be carried a third cycle. This is the cross-partition
+   requirement (b) named in `partition:`.
+
+**Done when:** AC-12.4 and AC-12.5 state the ruled behaviour at any N and carry the superseded
+argument; the empty-roster meaning is stated; the column's type and name agree and the decision is
+recorded against the date/instant norm; the new warning kind is in the closed vocabulary with
+guidance and an instruction row; the narrating comment is gone; `tests/preferences` and
+`tests/test_mcp*.py` are green; and **nothing a delegate needs is uncommitted.**
+
+---
+
+## Chunk 01: The roster observation, recorded (#51)
+
+*(delegate · isolated worktree)*
+
+Delivers the ruled option: migration 004 adding the per-connection roster-observation column, the
+sync path recording it (including on an empty roster, per chunk 00's stated meaning), and
+`_account_lifecycle` reading the recorded observation instead of deriving a maximum over the
+connection's own accounts.
+
+**The two comments at `query.py:421` and `:483` are rewritten by this chunk, not merely deleted.**
+They describe behaviour this chunk changes. Only the *narration of a retraction* goes; the statement
+of what the code now does stays, in the present tense, without the history.
+
+**Owns:** `src/bankmachine/store/migrations/`, `src/bankmachine/store/schema.py`,
+`src/bankmachine/connector/plaid/derivers.py` (`derive_accounts` only),
+`src/bankmachine/query.py` (`AccountLifecycle` and `_account_lifecycle` only),
+`tests/test_account_lifecycle.py`, `tests/connector/test_derivers.py`, `tests/store/test_schema.py`.
+
+**Must not touch:** any `## Direction` section, `docs/system-requirements.md`, `envelope.py`,
+`api-contract.md`, `_stranded_holds`, or any other function in `query.py`.
+
+**Done when:** a single-account connection whose only account stops being listed reports it absent,
+and **that assertion has been seen red** against the pre-change derivation; the empty-roster case
+behaves as chunk 00's criterion states; every added row field is required-and-nullable; and a go-red
+case proves the newly-absent account reaches AC-12.8's flagged magnitude.
+
+---
+
+## Chunk 02: The contract describes everything it publishes (#52)
+
+*(delegate · isolated worktree)*
+
+Delivers the shrinking the guard exposed: describe the **34** currently-undocumented published fields
+in `api-contract.md`, deleting each name from `UNDOCUMENTED_AT_FREEZE` as its description lands,
+until the set is empty and the constant — with the test guarding its staleness — is deleted and the
+remaining assertion runs unconditionally.
+
+🔴 **The item body says 41; the measured set is 34.** It fell during the previous cycle without
+anyone working on it. Re-derive the count before starting rather than trusting either number.
+
+**Owns:** `.prawduct/artifacts/api-contract.md` — **field-description sections only, never the
+`## Direction` section** — and `tests/preferences/test_the_documented_wire_is_the_published_one.py`.
+
+**Must not touch:** any norm, any source file, or `docs/connecting-an-mcp-client.md` (explicitly a
+copy that may lag; the contract is the canonical document and the only one held to completeness).
+
+🔴 **One deliverable is added to the item's own acceptance, and it is added out loud rather than
+absorbed.** `#52` does not ask for it; `#47` needs it and cannot start without it. Describing 34
+fields across `api-contract.md`'s row tables means DECIDING which tables are authoritative for row
+shape, which column of them holds the field name, and how a nested block's fields are spelled --
+the delegate makes that call whether or not anyone asks, and today it would be made in passing and
+left unwritten. **Record it as an explicit extraction contract in `api-contract.md`.** The reason it
+is worth a paragraph: `#47`'s remaining half must extract documented field names from these tables,
+and unlike the delivered half it gets no free input from `outputSchema` -- the document backticks
+tool names, warning kinds, column names and prose terms as well as fields, so a substring sweep is
+unavailable. This is not scope creep onto `#52`; it is refusing to throw away a decision `#52` makes
+anyway.
+
+**Done when:** `UNDOCUMENTED_AT_FREEZE` is empty, the constant and its staleness test are deleted, the
+remaining assertion is unconditional and passing, no name was removed without a description landing
+for it, and the extraction contract above is written down where `#47` can build against it.
+
+---
+
+## Chunk 03: Hold state — two shapes, priced (#53)
+
+*(delegate · isolated worktree · **discovery only, no code**)*
+
+Delivers `new .prawduct/artifacts/discovery-hold-state.md`: the five states enumerated against the
+**six actual call sites** rather than against the issue's description of them, both candidate shapes
+priced against that evidence, and a recommendation with its reasoning.
+
+**Both shapes stay genuinely open.** The owner ruled that this goes to discovery *because* #53 has
+already failed once and the last cycle's lesson was that designing against a just-landed sample is
+what produced the failure. A delegate that arrives with a preference and prices the other shape to
+lose has done the opposite of the task.
+
+The prior session's recorded opinion — that these conditions are aggregated rather than iterated, so
+a per-row enum would move aggregation out of SQL — is **an input to be tested, not a conclusion to
+be confirmed.** Check whether it is actually true at all six sites.
+
+**Owns:** `.prawduct/artifacts/discovery-hold-state.md` (new). **Writes nothing else at all.**
+
+**Done when:** all five states are enumerated with their real call sites, both shapes are priced
+against that evidence, a recommendation is made with its reasoning, and the artifact is marked
+**proposed** — it is not ratified by having been written, and no code implements it in this cycle.
+
+---
+
+## Chunk 04: Integration
+
+*(coordinator)*
+
+Merges the three worktrees, then pays the cross-partition requirements that no delegate owns:
+
+- 🔴 **(a) The seam between 01 and 02.** Any field chunk 01 added to the wire must be described in
+  `api-contract.md` and must **not** be in `UNDOCUMENTED_AT_FREEZE` — chunk 02 is emptying that set
+  and chunk 01 does not know it exists. Each chunk would do half of this correctly and the result
+  would be a newly-published, undocumented field with a guard that no longer looks for it. **This is
+  the shape that dropped two requirements last cycle, and naming it is the only reason they were
+  caught.** It gets its own acceptance line below.
+- The full suite, `verify_norms_go_red.py` in full (~10 min; **never piped to `tail`** — that returns
+  tail's exit code, not its), and `/prawduct:critic cumulative`.
+
+**Done when:** the suite is green and recorded; every go-red case is RED; requirement (a) is
+verified by re-derivation rather than by a delegate's report; chunk 03's discovery is marked proposed
+and its ratification is filed rather than assumed; and the cumulative review has no unresolved
+blocking findings.
+
+## What this plan does NOT close
+
+- **`#53` does not close.** It ends this cycle with a written recommendation and nothing built.
+- **`#47` does not close.** Its published→documented half shipped last cycle; the documented→wire
+  half is unguarded and its Expected is being narrowed to that. Chunk 02 works the same surface and
+  will surface how hard the extraction is, but it is not scoped to do it.
+- **`#48` and `#50` are untouched.**
