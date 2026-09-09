@@ -73,6 +73,8 @@ TXN_TESTS = "tests/connector/test_transaction_derivers.py"
 SYNC_RUN = pathlib.Path("src/bankmachine/cli/sync_run.py")
 SYNC_RUN_TESTS = "tests/cli/test_sync_run.py"
 QUERY = pathlib.Path("src/bankmachine/query.py")
+SIGNS = pathlib.Path("src/bankmachine/signs.py")
+SIGN_TESTS = "tests/test_sign_convention.py"
 ENVELOPE = pathlib.Path("src/bankmachine/envelope.py")
 MCP = pathlib.Path("src/bankmachine/mcp.py")
 CLIENT_GUIDE = pathlib.Path("docs/connecting-an-mcp-client.md")
@@ -85,6 +87,8 @@ TRUNCATION_TESTS = "tests/test_query_truncation.py"
 WINDOW_TESTS = "tests/test_query_window.py"
 AGGREGATE_TESTS = "tests/test_money_summary.py"
 COVERAGE_TESTS = "tests/test_account_coverage.py"
+LIFECYCLE_TESTS = "tests/test_account_lifecycle.py"
+PENDING_TESTS = "tests/test_pending_semantics.py"
 BACKUP = pathlib.Path("src/bankmachine/store/backup.py")
 BACKUP_TESTS = "tests/store/test_backup.py"
 CREDENTIALS_TESTS = "tests/preferences/test_no_credentials_tracked.py"
@@ -1169,6 +1173,232 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "    if destination.exists():",
         "    if False:",
         f"{BACKUP_TESTS}::test_it_refuses_an_existing_destination",
+    ),
+    (
+        # 🔴 AC-14.3's positive control, carried here so it stops depending on
+        # anyone re-running it by hand. The break pushes the threshold past 1.0,
+        # which no share can exceed, so a wholly inverted feed comes back
+        # `consistent` -- the check still runs, still publishes a verdict, and
+        # is simply never able to say the one thing it exists to say. That is
+        # the shape of the two checks this repo has already shipped covering
+        # nothing (#46, #47), which is why the go-red is a requirement here
+        # rather than a formality.
+        "sign convention: an inverted connection is reported",
+        SIGNS,
+        "INVERTED_ABOVE_SHARE: float = 0.5",
+        "INVERTED_ABOVE_SHARE: float = 1.5",
+        f"{SIGN_TESTS}::test_the_positive_control_is_reported",
+    ),
+    (
+        # 🔴 One measurement per answer. The reader is autocommit and pins no
+        # snapshot, so a second scan is a second observation -- and this answer
+        # publishes a verdict per row while warning from the same data. Ignoring
+        # the handed-in measurement leaves every other test green, which is why
+        # this case anchors on the parameter being USED rather than on the caller
+        # passing it.
+        "sign convention: caveats honour the measurement they were handed",
+        SIGNS,
+        "    for measurement in measure(conn) if measured is None else measured:",
+        "    for measurement in measure(conn):",
+        f"{SIGN_TESTS}::test_caveats_uses_the_measurement_it_was_handed_rather_than_re_reading",
+    ),
+    (
+        # 🔴 The CALLER half, and it needs its own case: mutating the call site
+        # cannot redden a test that calls `caveats` directly, so the producer
+        # case above is blind to a surface that stops passing the measurement
+        # through. This is the rule the build plan set for the other two
+        # boundary crossings -- anchor on the call, because a producer that
+        # works and a surface that never invokes it look identical from the
+        # producer's own tests.
+        "sign convention: pipeline_health passes its measurement rather than re-reading",
+        QUERY,
+        "            extra_caveats=signs.caveats(conn, measured=measured),",
+        "            extra_caveats=signs.caveats(conn),",
+        f"{SIGN_TESTS}::test_pipeline_health_measures_once_even_when_a_second_scan_would_differ",
+    ),
+    (
+        # 🔴 The same property one surface over: the envelope's non-active
+        # figures and the rows they qualify have to be ONE observation. The
+        # reader releases its snapshot per statement, so a second walk is a
+        # second observation and the answer can contradict itself about one
+        # account. Anchors on the CALL, for the reason the two above it do.
+        "AC-12.8: an answer derives the lifecycle once, not once per consumer",
+        QUERY,
+        "    coverage = _coverage(conn, lifecycle=lifecycle)",
+        "    coverage = _coverage(conn)",
+        f"{LIFECYCLE_TESTS}::"
+        "test_one_answer_derives_the_lifecycle_once_even_when_a_second_walk_would_differ",
+    ),
+    # -- FR-9 (#40): account lifecycle -------------------------------------
+    #
+    # 🔴 Four cases rather than one, because #40 is a population path, a read
+    # path and a treatment ruling, and each fails silently in its own direction.
+    # A break in the deriver leaves every account permanently current; a break in
+    # the read path leaves the state unreachable; a break in the coverage report
+    # turns a closure back into a permanent finding; a break in the envelope
+    # figure leaves the count legible to nobody. All four look finished.
+    (
+        # 🔴 Anchored on the ORDER-INDEPENDENCE property, not on the drop test
+        # beside it. The drop case never reaches the update arm for the account
+        # that dropped -- nothing writes its row, which is the whole mechanism --
+        # so it stays green with the maximum deleted. Measured: it did.
+        "AC-12.4: when an account was last listed is a maximum, not the latest replay",
+        CONNECTOR_DERIVERS,
+        "                seen_date if last_seen_date is None else max(last_seen_date, seen_date)",
+        "                seen_date",
+        f"{DERIVER_TESTS}::"
+        "test_when_an_account_was_last_listed_is_a_maximum_so_order_cannot_matter",
+    ),
+    (
+        "AC-12.9: an account absent from the latest roster is no_longer_reported",
+        QUERY,
+        "        elif last_seen is None or last_seen < roster:",
+        "        elif False:",
+        f"{LIFECYCLE_TESTS}::"
+        "test_an_account_the_roster_stopped_listing_is_reported_no_longer_reported",
+    ),
+    (
+        "AC-12.7: a non-active account's silence is closure, not a coverage finding",
+        QUERY,
+        "                        False if ratio is None or not lifecycle[account_id].active "
+        "else ratio > 1.0",
+        "                        False if ratio is None else ratio > 1.0",
+        f"{LIFECYCLE_TESTS}::"
+        "test_a_non_active_accounts_silence_is_not_reported_as_a_coverage_finding",
+    ),
+    (
+        "AC-12.8: the account count says how many of itself are not active",
+        QUERY,
+        '        "accounts_not_active": len(not_active),',
+        '        "accounts_not_active": 0,',
+        f"{LIFECYCLE_TESTS}::"
+        "test_the_envelope_counts_every_account_and_says_how_many_are_not_active",
+    ),
+    (
+        # 🔴 The MAGNITUDE, not the flag -- and it is a separate case because the
+        # norm it certifies names it separately. `api-contract.md` § Direction's
+        # fifth norm flips to steady-state only once "the guard must assert the
+        # FIGURE and not only the flag, and be seen red with the magnitude
+        # removed". The count case above mutates the flag and leaves the figure
+        # untouched, so on its own it cannot discharge that condition. Emptying
+        # the figure is the failure the norm actually fears: a consumer told
+        # something is included and handed nothing to subtract.
+        "AC-12.8: the flagged magnitude is reported, not just the flag",
+        QUERY,
+        "    if not account_ids:\n        return []",
+        "    if True:\n        return []",
+        f"{LIFECYCLE_TESTS}::test_the_magnitude_is_signed_and_grouped_by_currency",
+    ),
+    # ----------------------------------------------------------------------
+    # Pending-transaction semantics on the read path (#22, AC-13.1-13.7). No
+    # pending row had ever reached `query.py`, so every guarantee below is one
+    # nothing could previously have gone red on.
+    # ----------------------------------------------------------------------
+    (
+        # The break reads the SETTLED half instead, so the disclosure is a real
+        # number computed the wrong way round rather than an obvious zero -- a
+        # constant would be caught by inspection, a mirrored predicate would not.
+        "AC-13.1: an aggregate states how much of itself is an unsettled hold",
+        QUERY,
+        "                        case((transactions.c.pending == 1, "
+        "transactions.c.amount_minor), else_=0)",
+        "                        case((transactions.c.pending == 0, "
+        "transactions.c.amount_minor), else_=0)",
+        f"{PENDING_TESTS}::test_a_hold_is_counted_and_its_magnitude_stated",
+    ),
+    (
+        "AC-13.1: an answer that drew on a hold says so on the success path",
+        QUERY,
+        "    if total == 0:\n        return []",
+        "    if True:\n        return []",
+        f"{PENDING_TESTS}::test_a_transaction_page_holding_a_hold_says_so",
+    ),
+    (
+        # Without the `pending` half, an ordinary withdrawal of a row that had
+        # already settled is reported as a hold that expired -- the total is
+        # explained by the wrong cause, which is worse than unexplained.
+        "AC-13.4: an expired hold is one that never posted, not any removed row",
+        QUERY,
+        "            [transactions.c.removed_at.is_not(None), transactions.c.pending == 1],",
+        "            [transactions.c.removed_at.is_not(None)],",
+        f"{PENDING_TESTS}"
+        "::test_a_settled_row_that_was_later_withdrawn_is_not_reported_as_an_expired_hold",
+    ),
+    (
+        # The reader still returns the right rows without the null test -- it is
+        # the PLAN that changes, which is the whole of AC-13.6: an index nothing
+        # plans against is the dead weight the criterion exists to remove.
+        "AC-13.6: the pending-link reader asks in the shape the index serves",
+        QUERY,
+        "                transactions.c.source_pending_transaction_id.is_not(None),\n"
+        "                transactions.c.pending == 0,",
+        "                transactions.c.pending == 0,",
+        f"{PENDING_TESTS}::test_the_pending_link_index_serves_the_reader_that_exists",
+    ),
+    (
+        "AC-13.5: a hold past the declared threshold is reported as maybe stranded",
+        QUERY,
+        "    return calendar_date(today - timedelta(days=STRANDED_HOLD_AFTER_DAYS))",
+        "    return calendar_date(today - timedelta(days=100 * STRANDED_HOLD_AFTER_DAYS))",
+        f"{PENDING_TESTS}::test_a_hold_older_than_the_declared_threshold_is_reported",
+    ),
+    (
+        # The identity survives and the amount does not, which is exactly the
+        # settlement the two older dedup cases cannot see: they send the same
+        # figure on the hold and on the posting, so both stay green here.
+        "AC-13.2: a settlement carries the settled amount, not the hold's",
+        CONNECTOR_DERIVERS,
+        "            removed_at=None,\n            **values,",
+        "            removed_at=None,\n"
+        '            **{k: v for k, v in values.items() if k != "amount_minor"},',
+        f"{TXN_TESTS}::test_a_settlement_that_changes_the_amount_updates_it_in_place",
+    ),
+    (
+        # Matching a removal on the hold id would soft-delete the row that just
+        # posted, so the purchase leaves every total: an UNDERCOUNT, which is the
+        # direction that gets believed.
+        "AC-13.3: a removal names a row's own id, never the hold it replaced",
+        CONNECTOR_DERIVERS,
+        "            transactions.c.source_transaction_id == source_transaction_id,\n"
+        "            transactions.c.removed_at.is_(None),",
+        "            transactions.c.source_pending_transaction_id == source_transaction_id,\n"
+        "            transactions.c.removed_at.is_(None),",
+        f"{TXN_TESTS}::test_a_hold_removed_in_the_same_page_as_its_posting_leaves_one_row",
+    ),
+    # ----------------------------------------------------------------------
+    # 🔴 The two criteria that crossed a delegation boundary.
+    #
+    # Both producers were built by one agent and both call sites live in
+    # functions another owned, so the call between them was written by neither
+    # and had no test on either side of it. A producer returning the right
+    # answer and a surface that never calls it are indistinguishable from the
+    # producer's own tests -- which is the state the tree was actually in --
+    # so these anchor on the CALL, not on the producer.
+    # ----------------------------------------------------------------------
+    (
+        "AC-14.5: an aggregate over an inverted connection says so",
+        QUERY,
+        "                _pending_caveat(pending) + signs.caveats(conn, since=since, until=until)",
+        "                _pending_caveat(pending)",
+        f"{SIGN_TESTS}::test_an_aggregate_over_a_flagged_connection_says_so",
+    ),
+    (
+        "AC-13.5: a stranded hold reaches the verification surface",
+        QUERY,
+        '                    "stranded_holds": len(stranded_by_account.get(account_id, ())),',
+        '                    "stranded_holds": 0,',
+        f"{PENDING_TESTS}::"
+        "test_the_coverage_report_names_a_stranded_hold_on_the_account_holding_it",
+    ),
+    (
+        # The suppression is a separate failure from the wiring: this one leaves
+        # the feature working and hands a closed account a hold nobody can clear.
+        "AC-13.5/AC-12.7: a closed account is not asked to pursue a hold",
+        QUERY,
+        "                        active=lifecycle[account_id].active,",
+        "                        active=True,",
+        f"{PENDING_TESTS}::"
+        "test_a_stranded_hold_on_a_non_active_account_is_counted_but_not_asked_about",
     ),
 ]
 

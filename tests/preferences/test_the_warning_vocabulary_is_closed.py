@@ -25,6 +25,7 @@ test's premise is what breaks first.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 from bankmachine import envelope
@@ -147,4 +148,182 @@ def test_the_scan_catches_a_kind_the_vocabulary_does_not_declare() -> None:
     assert "rate_limited" not in vocabulary, (
         "this control has to name a kind the vocabulary does NOT declare; if the "
         "vocabulary grew to include it, pick another"
+    )
+
+
+#: The contract's own table of warning codes. `api-contract.md` is the canonical
+#: description of the wire, and the table is the half a consumer's author reads
+#: before writing a branch on `kind`.
+CONTRACT = Path(__file__).resolve().parents[2] / ".prawduct" / "artifacts" / "api-contract.md"
+
+#: The heading the table sits under. Matched rather than the table's own shape,
+#: because `api-contract.md` holds several tables and a row-shape match would
+#: silently start reading a different one if this section moved.
+_VOCABULARY_HEADING = "### The warning vocabulary"
+
+
+def _kinds_in_the_contract_table(document: str) -> list[str]:
+    """The code named in the first cell of each row of the vocabulary table.
+
+    Takes the document text rather than reading the file, so the control below
+    can drive THIS function over a known-bad document instead of asserting
+    something adjacent to it -- the same reason `_kinds_in` above takes source.
+
+    Reads the FIRST backticked token per row and ignores the rest of the cell,
+    which is what lets a row carry an annotation (`*(declared; no emitter yet)*`)
+    without the reconciliation having an opinion about its wording. The kind's
+    NAME is the contract; how far along it is is bookkeeping.
+    """
+    lines = document.splitlines()
+    try:
+        start = next(i for i, line in enumerate(lines) if line.startswith(_VOCABULARY_HEADING))
+    except StopIteration:
+        return []
+
+    found: list[str] = []
+    for line in lines[start:]:
+        if not line.startswith("|"):
+            if found:
+                break  # past the table
+            continue
+        cell = line.split("|")[1]
+        match = re.search(r"`([a-z_-]+)`", cell)
+        if match:
+            found.append(match.group(1))
+    return found
+
+
+def test_the_contract_table_lists_every_kind_the_vocabulary_defines() -> None:
+    """🔴 The table and `WARNING_KINDS` are two descriptions of one thing.
+
+    The scan above closes one direction: no module emits a kind the vocabulary
+    does not declare. NOTHING closed the other -- a kind could enter the
+    vocabulary and never reach the document a consumer's author actually reads,
+    and twice now one did. `accounts_without_coverage` was absent from the table
+    for a full work cycle after it shipped, and the three kinds added for the
+    production-blocker items went stale in their annotations within one commit.
+
+    Both directions are asserted, because they fail differently. A kind missing
+    from the TABLE is a consumer told to branch on something nobody documented.
+    A kind in the table and not in the vocabulary is worse: it reads as shipped,
+    and a consumer that branches on it waits for a warning that can never arrive.
+    """
+    documented = _kinds_in_the_contract_table(CONTRACT.read_text(encoding="utf-8"))
+    vocabulary = set(envelope.WARNING_KINDS)
+
+    assert documented, (
+        f"no rows were read from {CONTRACT.name} under {_VOCABULARY_HEADING!r} -- the section "
+        f"was renamed or moved, and this check is now reconciling nothing"
+    )
+
+    undocumented = sorted(vocabulary - set(documented))
+    assert not undocumented, (
+        f"{undocumented} are in `envelope.WARNING_KINDS` but not in the contract's warning "
+        f"table; a consumer's author reads that table, so a kind absent from it is one nobody "
+        f"was told to branch on"
+    )
+
+    phantom = sorted(set(documented) - vocabulary)
+    assert not phantom, (
+        f"the contract's warning table lists {phantom}, which `envelope.WARNING_KINDS` does not "
+        f"declare; a documented kind that cannot be emitted is worse than an undocumented one, "
+        f"because a consumer will branch on it and wait forever"
+    )
+
+
+def test_the_table_reader_reports_a_kind_the_vocabulary_does_not_declare() -> None:
+    """The positive control: proof the table is PARSED rather than assumed empty.
+
+    A reader that returned `[]` on every input would satisfy the `phantom` half
+    above forever and would report every real kind as undocumented -- so it
+    would be caught. A reader that dropped only ANNOTATED rows would not be:
+    it would silently stop reconciling exactly the rows most likely to drift,
+    which is the shape of the defect this file exists to catch. So the fixture
+    annotates one row and expects it read anyway.
+    """
+    known_bad = (
+        f"{_VOCABULARY_HEADING} — stable, machine-readable\n"
+        "\n"
+        "| Code | Means |\n"
+        "|---|---|\n"
+        "| `stale` | Last sync older than expected |\n"
+        "| `rate_limited` *(declared; no emitter yet)* | The aggregator asked us to slow down |\n"
+        "\n"
+        "Prose after the table, holding a `gapped` mention that must NOT be read as a row.\n"
+    )
+
+    documented = _kinds_in_the_contract_table(known_bad)
+
+    assert documented == ["stale", "rate_limited"], (
+        f"the reader did not return the table's rows in order: {documented}"
+    )
+    assert "rate_limited" not in set(envelope.WARNING_KINDS), (
+        "this control has to name a kind the vocabulary does NOT declare; if the "
+        "vocabulary grew to include it, pick another"
+    )
+
+
+#: The document a person setting this server up actually reads. It describes
+#: the same vocabulary a third time, in its own words, for a human rather than
+#: for an agent -- and drifted four kinds behind before anything read it.
+CLIENT_GUIDE = Path(__file__).resolve().parents[2] / "docs" / "connecting-an-mcp-client.md"
+
+#: A kind DEFINED in the guide's own list, as opposed to one mentioned in
+#: passing. The distinction is the whole point: `accounts_without_coverage` was
+#: named in the guide's prose while being absent from the list of kinds, so a
+#: reader looking for what to branch on never found it and a bare substring
+#: search would have called that documented.
+_DEFINITION = re.compile(r"^- `([a-z_-]+)` — ")
+
+
+def _kinds_defined_in(guide: str) -> list[str]:
+    """Every kind the guide gives a definition line to, in order."""
+    return [m.group(1) for line in guide.splitlines() if (m := _DEFINITION.match(line))]
+
+
+def test_the_client_guide_defines_every_kind_the_vocabulary_declares() -> None:
+    """🔴 The third description of one vocabulary, and the one nothing watched.
+
+    The server instructions are checked by `test_mcp.py`, the contract table by
+    the test above, and this guide by nothing -- so it fell four kinds behind:
+    `accounts_without_coverage` from the cycle that shipped it, and all three
+    kinds the production-blocker items added.
+
+    Only the DEFINITION list counts. The guide mentioned
+    `accounts_without_coverage` in a paragraph while omitting it from the list,
+    which is precisely the state a substring check would have blessed -- and the
+    reader this guide is written for is skimming the list, not the prose.
+    """
+    defined = set(_kinds_defined_in(CLIENT_GUIDE.read_text(encoding="utf-8")))
+
+    assert defined, (
+        f"no kind definitions were found in {CLIENT_GUIDE.name}; the list was reformatted "
+        f"and this check is now reconciling nothing"
+    )
+
+    missing = sorted(set(envelope.WARNING_KINDS) - defined)
+    assert not missing, (
+        f"{missing} are in the vocabulary but the client guide never defines them; the "
+        f"person wiring up a client reads that list to learn what to branch on"
+    )
+
+
+def test_the_guide_reader_ignores_a_kind_merely_mentioned_in_prose() -> None:
+    """The positive control, aimed at the exact way this check could go soft.
+
+    A reader that matched anywhere in the line would pass on a guide that only
+    talks ABOUT a kind, which is the failure this test was written from. So the
+    fixture puts one kind in a definition and another in a sentence, and the
+    sentence must not count.
+    """
+    known_bad = (
+        "- `stale` — a connection has not synced recently.\n"
+        "\n"
+        "An account like that now carries an `accounts_without_coverage` warning naming it.\n"
+        "  - `gapped` — indented, so not a top-level definition either.\n"
+    )
+
+    assert _kinds_defined_in(known_bad) == ["stale"], (
+        "the reader counted a kind that the guide only mentions, which is how the drift "
+        "this check exists for stayed invisible"
     )

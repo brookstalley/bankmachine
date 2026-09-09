@@ -21,6 +21,7 @@ from bankmachine.store.connection import (
     read_schema_version,
     stamp_schema_version,
 )
+from bankmachine.store.migrations.account_last_seen import apply_account_last_seen
 from bankmachine.store.migrations.core_schema import apply_core_schema
 
 logger = get_logger("store.migrations")
@@ -49,6 +50,11 @@ def _create_schema_version(conn: Connection) -> None:
 MIGRATIONS: Sequence[Migration] = (
     Migration(version=1, name="create schema_version", apply=_create_schema_version),
     Migration(version=2, name="create the core schema", apply=apply_core_schema),
+    Migration(
+        version=3,
+        name="record when an account was last listed",
+        apply=apply_account_last_seen,
+    ),
 )
 
 

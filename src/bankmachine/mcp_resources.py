@@ -248,6 +248,67 @@ _GUIDANCE: dict[str, _Guidance] = {
             "the call resolves it."
         ),
     ),
+    "account_no_longer_active": _Guidance(
+        means=(
+            "an account inside the scope of this request is declared closed, or its "
+            "institution's most recent successful roster observation no longer lists it"
+        ),
+        for_this_answer=(
+            "that account's balance froze on the date the row names and is not a fact about "
+            "today. A liability that was paid off still reads as debt owed; an asset that was "
+            "emptied into another enrolled account still reads as money held, and is counted "
+            "twice. Any total over balances carrying this warning states how much of itself "
+            "came from such accounts"
+        ),
+        act=(
+            "quote the total as given AND quote the flagged magnitude beside it -- the total "
+            "includes those accounts on purpose, so the reader can subtract them and you "
+            "cannot. Never present a net worth carrying this warning without naming what it "
+            "includes. Read `lifecycle`, `last_seen_in_roster` and `roster_last_observed` on "
+            "the row to see which it is: `closed` is the operator's own declaration, while "
+            "`no_longer_reported` only means the institution stopped listing it, which is "
+            "equally consistent with the account being de-selected from sharing."
+        ),
+    ),
+    "includes_pending_rows": _Guidance(
+        means=(
+            "some rows this answer drew on are authorisation holds that have not settled; "
+            "`detail` carries how many and what they come to"
+        ),
+        for_this_answer=(
+            "a hold is a claim on the account, not a completed amount. It can settle at a "
+            "different figure, and it can expire without ever settling -- so this figure can "
+            "change with no new activity whatsoever, which is the one way a total moves that "
+            "re-asking will not explain"
+        ),
+        act=(
+            "say the figure includes unsettled holds and name their magnitude. For a "
+            "'what did I spend' question, quote the settled part as the answer and the "
+            "pending part as a separate outstanding figure; never present the sum of the two "
+            "as money spent."
+        ),
+    ),
+    "sign_convention_unverified": _Guidance(
+        means=(
+            "a connection this answer draws on has been MEASURED against the sign convention "
+            "and its stored amounts run the wrong way -- most of its never-plausibly-inflow "
+            "spending is stored as money coming in; `detail` names the connection"
+        ),
+        for_this_answer=(
+            "on that connection income reads as spending and spending reads as income, so a "
+            "signed figure drawing on it can be wrong in both directions at once. The failure "
+            "is not noisy: an inverted feed produces a perfectly well-formed total, and a "
+            "spending answer that is really a deposit looks exactly like a large purchase"
+        ),
+        act=(
+            "name the connection and say its stored direction contradicts the convention, "
+            "before quoting any signed figure that draws on it. Do NOT correct the sign "
+            "yourself -- inverting a suspect feed is a heuristic whose failure direction "
+            "UNDERSTATES spending -- and do not infer direction from a transaction's "
+            "description, since a payroll credit can arrive categorised as a transfer out. "
+            "Resolving it is the operator's, against a known deposit."
+        ),
+    ),
 }
 
 

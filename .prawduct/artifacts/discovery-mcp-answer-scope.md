@@ -251,6 +251,13 @@ merchant-population figures on **both** bases (by row and by value — measureme
 by nearly 2×, and the row figure is the flattering one).
 The gap threshold is **per-account, from the median interval** (ruled; AC-9.1 and AC-11.1 amended),
 so C2 is unblocked. Category population is out: measured 0.00% null. → closes #19.
+🔴 **C2's lifecycle half did not ship. Verified 2026-09-09.** C2 closed #19 and delivered the
+per-account coverage axis; "Account lifecycle onto `list_accounts`" did not land, and neither
+`list_accounts` nor `get_coverage_report` reads `lifecycle_status` or `closed_date` today. The
+entanglement's stated consequence therefore still stands: a retired account's silence reports as a
+permanent coverage gap. Nothing failed at the time, because no guard covers a *row field* — the
+surface guard compares tool **names** only. Carried by #40; see
+`.prawduct/artifacts/discovery-account-lifecycle.md`.
 
 **C3 — classification.** `flow_class` of `external_spend` / `internal_transfer` / `debt_service` on
 every `spending_summary` row, plus `total_external_spend`. Precedent to follow: `balance_class` on

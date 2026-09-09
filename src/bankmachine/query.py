@@ -24,14 +24,16 @@ write whatever SQL reaches it.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from sqlalchemy import Text, and_, case, cast, func, or_, select
 from sqlalchemy.engine import Connection as SAConnection
 from sqlalchemy.sql import ColumnElement
 
+from bankmachine import signs
 from bankmachine.config import Config
 from bankmachine.envelope import (
     MAX_ROWS,
@@ -170,18 +172,55 @@ def _pipeline_warnings(conn: SAConnection, now: UtcInstant) -> list[Caveat]:
     return warnings
 
 
-def _coverage(conn: SAConnection) -> dict[str, Any]:
-    """What the datastore actually holds, so an empty answer can be told from an empty world."""
+def _coverage(
+    conn: SAConnection, *, lifecycle: dict[int, AccountLifecycle] | None = None
+) -> dict[str, Any]:
+    """What the datastore actually holds, so an empty answer can be told from an empty world.
+
+    🔴 **`accounts` keeps counting every account, and states what the non-active
+    ones contributed** (AC-12.8, and `api-contract.md` § Direction's fifth norm,
+    whose one named retroactivity debt this is). It was an unfiltered `COUNT(*)`
+    sitting between two counts that both filter, which is the norm's failure mode
+    exactly: the figure was neither wrong nor legible, because nothing beside it
+    said whether a frozen balance was in it.
+
+    The treatment was ruled **include and flag**, over exclude-and-state, on the
+    asymmetry in detectability: an included frozen balance is correctable by any
+    reader handed the flag and the figure, while an exclusion is invisible by
+    construction -- the total is simply smaller, and no field can point at what
+    is not there. 🔴 **The magnitude is the load-bearing half, not the flag**, so
+    both figures are present and zero rather than absent when nothing qualifies.
+    A warning without the figure tells a consumer something is wrong and leaves
+    it unable to do anything about it.
+    """
     span = conn.execute(
         select(func.min(transactions.c.posted_date), func.max(transactions.c.posted_date)).where(
             transactions.c.removed_at.is_(None)
         )
     ).one()
+    # 🔴 Reuses the lifecycle the caller already derived for its ROWS, and does
+    # not re-derive one. The reader is autocommit and releases its snapshot per
+    # statement, so a second walk is a second observation -- and this figure
+    # qualifies the very rows beside it, so the two disagreeing is not a rare
+    # race, it is one answer contradicting itself about the same account. Same
+    # property, same remedy, as `signs.caveats(..., measured=...)` one surface
+    # over: the parameter is what makes "one production per answer" expressible.
+    # An unwindowed caller with no rows to qualify passes nothing and pays for
+    # one walk, which is still one.
+    entries = _account_lifecycle(conn) if lifecycle is None else lifecycle
+    not_active = [entry for entry in entries.values() if not entry.active]
     return {
         "connections": conn.execute(
             select(func.count()).select_from(connections).where(connections.c.retired_at.is_(None))
         ).scalar_one(),
         "accounts": conn.execute(select(func.count()).select_from(accounts)).scalar_one(),
+        # A count, so the reader can perform the subtraction this system refuses
+        # to perform for them. 0 is a real answer and means every account is
+        # still being reported.
+        "accounts_not_active": len(not_active),
+        "not_active_balance_minor_units": _not_active_balances(
+            conn, [entry.account_id for entry in not_active]
+        ),
         "transactions": conn.execute(
             select(func.count())
             .select_from(transactions)
@@ -190,6 +229,57 @@ def _coverage(conn: SAConnection) -> dict[str, Any]:
         "earliest_transaction": None if span[0] is None else str(span[0]),
         "latest_transaction": None if span[1] is None else str(span[1]),
     }
+
+
+def _not_active_balances(conn: SAConnection, account_ids: list[int]) -> list[dict[str, Any]]:
+    """The signed magnitude the non-active accounts contribute to a balance total.
+
+    🔴 **Per currency, never one integer across currencies**, by the ruling that
+    governs every aggregate on this surface: a summed integer over two currencies
+    is not a wrong number, it is not a number. An empty list is the "and zero
+    rather than absent" case -- the key is always present, exactly as
+    `money_summary`'s `totals` is present and empty when there is nothing to put
+    in it, so the key set a consumer branches on never depends on the store's
+    contents.
+
+    🔴 **Signed from the operator's point of view**, like every stored amount, so
+    a frozen credit-card balance subtracts and a frozen deposit balance adds. A
+    reader handed a magnitude with the sign stripped could not tell whether
+    removing these accounts would raise or lower the figure, which is the whole
+    use the flag exists for.
+
+    The latest recorded balance per account, which is the same figure
+    `list_accounts` puts on the row -- the account stopped being reported, so its
+    last capture is all there is and there will not be another.
+    """
+    if not account_ids:
+        return []
+    latest = (
+        select(
+            balances_daily.c.account_id,
+            func.max(balances_daily.c.as_of_date).label("as_of_date"),
+        )
+        .where(balances_daily.c.account_id.in_(account_ids))
+        .group_by(balances_daily.c.account_id)
+        .subquery()
+    )
+    rows = conn.execute(
+        select(balances_daily.c.currency, func.sum(balances_daily.c.current_minor))
+        .select_from(
+            balances_daily.join(
+                latest,
+                (balances_daily.c.account_id == latest.c.account_id)
+                & (balances_daily.c.as_of_date == latest.c.as_of_date),
+            )
+        )
+        .group_by(balances_daily.c.currency)
+    ).all()
+    # Sorted so two identical stores answer identically; the wire order of an
+    # array is information a consumer may rely on even when it should not.
+    return [
+        {"currency": str(row[0]), "current_minor_units": int(row[1])}
+        for row in sorted(rows, key=lambda r: str(r[0]))
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,6 +385,256 @@ def _account_coverage(conn: SAConnection) -> dict[int, AccountCoverage]:
     }
 
 
+#: 🔴 The lifecycle vocabulary, spelled ONCE. Every value names an OBSERVATION
+#: and none of them names a conclusion the aggregator did not report (AC-12.2).
+#:
+#: `mcp.py` publishes this tuple as the row field's `enum` rather than retyping
+#: it, on the `FLOW_CLASSES` and `GROUPINGS` precedent: a copy over there would
+#: start refusing answers this server sends the first time a fourth value is
+#: classified here.
+#:
+#: A fourth value -- `unknown` -- was considered and rejected as unreachable. An
+#: aggregator account exists only because a roster listed it, so it always has a
+#: roster basis; an import-only account is fully operator-owned and is honestly
+#: `active` until the operator says otherwise. The null on `roster_last_observed`
+#: carries "no roster basis" instead, which is a fact the row can state rather
+#: than a state it would have to invent.
+LIFECYCLE_VALUES: tuple[str, ...] = ("active", "closed", "no_longer_reported")
+
+
+@dataclass(frozen=True, slots=True)
+class AccountLifecycle:
+    """Whether ONE account's balance is still a fact about today. FR-9.
+
+    🔴 The failure this describes is the quietest one on this surface. A closed
+    card's last recorded balance keeps arriving as a current balance forever:
+    nothing throws, the number is well-formed, and the only thing wrong with it
+    is that it stopped being true on a date nobody published. A liability that
+    was paid off still reads as debt owed; an asset emptied into another enrolled
+    account is counted twice.
+
+    🔴 **The dates ride beside the verdict** (AC-12.3), so `no_longer_reported`
+    is re-derivable from the row without a second call. The derivation reads both
+    nulls as well as the comparison: a null `roster_last_observed` means this
+    connection has never been observed, so nothing on it is absent; otherwise the
+    account is absent when its own `last_seen_in_roster` is null or is behind
+    that maximum. Stated in full because the comparison alone was once written
+    here as "the whole derivation", and it is the null cases that carry the
+    upgrade window and the newly-vanished account. That is the `silence_ratio`
+    ruling applied again: a number lets a reader see a borderline case, and a
+    bare flag is what destroys that.
+    """
+
+    account_id: int
+    lifecycle: str
+    closed_date: CalendarDate | None
+    last_seen_in_roster: CalendarDate | None
+    roster_last_observed: CalendarDate | None
+
+    @property
+    def active(self) -> bool:
+        """Whether this account's balance and silence still describe today.
+
+        A property rather than a comparison written at each site, for the reason
+        `AccountCoverage.uncovered` is one: "counts as non-active" is a rule, and
+        a rule spelled four times is a rule that stops agreeing with itself.
+        """
+        return self.lifecycle == "active"
+
+    def to_wire(self) -> dict[str, Any]:
+        """The four fields every account row carries, in every tool that carries them."""
+        return {
+            "lifecycle": self.lifecycle,
+            "closed_date": iso_or_none(self.closed_date),
+            "last_seen_in_roster": iso_or_none(self.last_seen_in_roster),
+            "roster_last_observed": iso_or_none(self.roster_last_observed),
+        }
+
+
+def _account_lifecycle(conn: SAConnection) -> dict[int, AccountLifecycle]:
+    """The per-account lifecycle facts, for EVERY account, computed once.
+
+    🔴 One producer with two readers, exactly as `_account_coverage` is, and for
+    the recorded reason rather than for tidiness: `list_accounts` needs these
+    facts so an agent that never thought to call the verification surface still
+    learns a balance is frozen (AC-12.1), and `get_coverage_report` needs the
+    same facts to tell a retired account's silence from a hole (AC-12.7). Built
+    twice they can disagree, and a verification surface that contradicts the
+    analysis surface is worse than one that is absent.
+
+    🔴 **`no_longer_reported` is derived here and never stored.** Storing it
+    would make it a claim this system had written down, and the next replay of
+    the archive could contradict it; derived, it is a statement about the
+    observations the store currently holds, which is the only thing that is
+    actually known.
+
+    **AC-12.5's three clauses follow from how the maximum is computed**, rather
+    than from three guards written by hand. `roster_last_observed` for a
+    connection is the maximum of its own accounts' `last_seen_in_roster`, so:
+
+    * a connection whose roster could not be fetched moves no date at all, and
+      nothing becomes older than a maximum that did not move;
+    * a connection whose *entire* roster vanishes at once moves the maximum with
+      it, so nothing is ever older than it; and
+    * an account with no connection (the FR-7 import path) has no roster to be
+      absent from, so both dates are null and the comparison is never reached.
+
+    🔴 **The second clause is a REQUIREMENT being obeyed, not a property being
+    proved, and calling it "by construction" overstated it.** The arithmetic is
+    a consequence of the maximum; whether the resulting silence is *right* is
+    not. AC-12.5 sanctions it with an argument about scale -- fourteen
+    simultaneous closures is not a thing that happens, so a whole roster
+    vanishing is a pipeline failure and belongs to `get_pipeline_health`. At a
+    connection holding ONE account that argument does not hold: one account
+    closing is entirely ordinary, and it is indistinguishable here from the feed
+    breaking, so such an account reports `active` indefinitely with nothing
+    saying otherwise. That gap is real, it is the requirement's and not this
+    function's, and it is filed rather than papered over here -- changing the
+    behaviour would be departing from a ratified criterion silently, which is the
+    worse of the two errors.
+
+    `learnings.md` § *Guarantees by construction* is about the first and third
+    clauses. The second borrows the phrase and should not.
+    """
+    result = conn.execute(
+        select(
+            accounts.c.account_id,
+            accounts.c.connection_id,
+            accounts.c.lifecycle_status,
+            accounts.c.closed_date,
+            accounts.c.first_seen_date,
+            accounts.c.last_seen_date,
+        )
+    ).all()
+
+    observed: dict[int, CalendarDate | None] = {}
+    seen: dict[int, CalendarDate | None] = {}
+    for row in result:
+        connection_id = None if row[1] is None else int(row[1])
+        # 🔴 A null `last_seen_date` means NO ROSTER OBSERVATION IS RECORDED for
+        # this account, and it is left null rather than read as anything else.
+        #
+        # Reading it as `first_seen_date` is the obvious simplification and it is
+        # wrong -- recorded here so it is not re-proposed. It looks true
+        # -- the account was listed at least once, on that date -- but the
+        # comparison below is between accounts on one connection, and first-seen
+        # dates legitimately differ across them: a second card, a savings account
+        # opened later. So every account on a connection whose siblings arrived
+        # later fell behind a maximum assembled out of first-seen dates and was
+        # reported CLOSED, for the whole window between migration 003 and that
+        # connection's next successful sync -- indefinitely, for a connection
+        # that is failing. A fabricated closure on the balance sheet is the exact
+        # failure this feature exists to refuse.
+        #
+        # A backfill cannot rescue it either: the honest backfill value is the
+        # connection's last successful roster date, which is the observation
+        # AC-12.4 exists because nothing ever recorded.
+        #
+        # Null is therefore load-bearing, and AC-12.5 is what makes it safe:
+        # absence is measured against a successful observation and never against
+        # silence. A pre-migration null IS silence.
+        last_seen = None if connection_id is None or row[5] is None else calendar_date(row[5])
+        seen[int(row[0])] = last_seen
+        if connection_id is not None and last_seen is not None:
+            current = observed.get(connection_id)
+            observed[connection_id] = last_seen if current is None else max(current, last_seen)
+
+    lifecycle: dict[int, AccountLifecycle] = {}
+    for row in result:
+        account_id = int(row[0])
+        connection_id = None if row[1] is None else int(row[1])
+        last_seen = seen[account_id]
+        roster = None if connection_id is None else observed.get(connection_id)
+        # 🔴 AC-12.6: the operator's declaration outranks the derived signal, and
+        # it is checked FIRST rather than merged with it. `_OPERATOR_OWNED` keeps
+        # the accounts deriver from writing this column, and `accounts` carries no
+        # `derivation_version_id`, so `store.rebuild` classifies it as a dimension
+        # and never empties it -- the declaration survives a rebuild because of
+        # what the table is, not because of a rule someone remembered. The
+        # observation still rides the row beside it as evidence.
+        if str(row[2]) != "active":
+            value = "closed"
+        elif roster is None:
+            # No account on this connection carries a roster observation, so the
+            # connection has never been observed since migration 003 and nothing
+            # here can be called absent. AC-12.5's first clause, which says a
+            # connection whose roster could not be fetched marks nothing absent,
+            # reaching the case where it has not been fetched YET.
+            value = "active"
+        elif last_seen is None or last_seen < roster:
+            # `roster` is not None, so this connection HAS been observed. An
+            # account still carrying no observation was not in that roster --
+            # which is the steady-state detection this whole item is for, and it
+            # keeps working precisely because null was not filled in with a
+            # guess.
+            value = "no_longer_reported"
+        else:
+            value = "active"
+        lifecycle[account_id] = AccountLifecycle(
+            account_id=account_id,
+            lifecycle=value,
+            # Narrowed rather than passed through, for the reason
+            # `_account_coverage` narrows: these come back as plain `date`
+            # objects and the wire renderer beside them takes the typed one.
+            closed_date=None if row[3] is None else calendar_date(row[3]),
+            last_seen_in_roster=last_seen,
+            roster_last_observed=roster,
+        )
+    return lifecycle
+
+
+def _not_active_caveat(lifecycle: list[AccountLifecycle]) -> list[Caveat]:
+    """The warning that names the accounts whose balances stopped being facts.
+
+    🔴 Request-scoped, and deliberately not connection-scoped even though "this
+    account is closed" is standing state of the store. `api-contract.md` records
+    the defect a fifth always-on kind would reproduce: the `gapped` notice
+    arrived character-for-character identical on four unrelated questions, true
+    and useless for telling a caller whether THIS answer was the degraded one.
+    So it fires only where this request's scope actually holds such an account --
+    the same rule, and the same two call sites, as `_uncovered_caveat`.
+
+    Names the ids and splits them by which value they carry, because the two
+    mean different things to a reader: `closed` is the operator's own
+    declaration, and `no_longer_reported` is only the institution having stopped
+    listing the account, which is equally consistent with de-selection from
+    sharing. A caller told "some accounts are inactive" can act on neither.
+    """
+    if not lifecycle:
+        return []
+
+    def ids(value: str) -> str:
+        return ", ".join(
+            str(entry.account_id)
+            for entry in sorted(lifecycle, key=lambda e: e.account_id)
+            if entry.lifecycle == value
+        )
+
+    declared = ids("closed")
+    unreported = ids("no_longer_reported")
+    parts = []
+    if declared:
+        parts.append(f"account(s) {declared} are declared closed by the operator")
+    if unreported:
+        parts.append(
+            f"account(s) {unreported} are no longer listed by their institution's most recent "
+            f"successful roster observation, which is consistent with closure and equally "
+            f"consistent with de-selection from sharing"
+        )
+    return [
+        Caveat(
+            kind="account_no_longer_active",
+            detail=(
+                "; ".join(parts) + ". Their balances froze on the date each row names and are "
+                "not facts about today. Any total over balances INCLUDES them on purpose -- "
+                "`coverage.accounts_not_active` and "
+                "`coverage.not_active_balance_minor_units` are what they contributed, so quote "
+                "that magnitude beside the total rather than presenting the total alone"
+            ),
+        )
+    ]
+
+
 def _uncovered_caveat(uncovered: list[AccountCoverage]) -> list[Caveat]:
     """The warning that names the accounts an answer could not have data for.
 
@@ -373,6 +713,7 @@ def _answer(
     truncation: Truncation | None,
     totals: list[dict[str, Any]] | None = None,
     extra_caveats: list[Caveat] | None = None,
+    lifecycle: dict[int, AccountLifecycle] | None = None,
 ) -> Answer:
     """One answer, and the one place a window is reconciled against coverage.
 
@@ -395,7 +736,7 @@ def _answer(
     from the caller's own returned rows and cannot disagree with them.
     """
     now = now_utc()
-    coverage = _coverage(conn)
+    coverage = _coverage(conn, lifecycle=lifecycle)
     window = (
         None
         if requested_window is None
@@ -508,6 +849,14 @@ def _unusable(
         coverage={
             "connections": 0,
             "accounts": 0,
+            # 🔴 Present and zero for the reason every other figure here is:
+            # AC-12.8 fixes these two as always-present, and a store that cannot
+            # be read is precisely when a consumer branching on a key's presence
+            # would take the wrong branch. The empty list is the honest zero for
+            # a per-currency figure -- no currency held anything, because nothing
+            # was readable, and the `partial` warning above is what says so.
+            "accounts_not_active": 0,
+            "not_active_balance_minor_units": [],
             "transactions": 0,
             "earliest_transaction": None,
             "latest_transaction": None,
@@ -572,6 +921,7 @@ def list_accounts(config: Config) -> Answer:
             .order_by(institutions.c.name, accounts.c.name)
         ).all()
         coverage = _account_coverage(conn)
+        lifecycle = _account_lifecycle(conn)
         rows = [
             {
                 "account_id": int(r[0]),
@@ -595,17 +945,26 @@ def list_accounts(config: Config) -> Answer:
                 # account: incompleteness rides the answer, not a channel
                 # nobody reads.
                 **coverage[int(r[0])].to_wire(),
+                # 🔴 On EVERY row too, and for the same argument #19 settled for
+                # coverage (AC-12.1). The balance two fields up is the field this
+                # one qualifies: a caller who has to opt into the lifecycle is a
+                # caller who still sums a frozen balance into net worth. The
+                # dates ride with the verdict so the verdict is re-derivable
+                # from the row (AC-12.3).
+                **lifecycle[int(r[0])].to_wire(),
             }
             for r in result
         ]
         uncovered = [c for c in coverage.values() if c.uncovered]
+        not_active = [entry for entry in lifecycle.values() if not entry.active]
         return _answer(
             config,
             conn,
             rows,
             requested_window=None,
             truncation=None,
-            extra_caveats=_uncovered_caveat(uncovered),
+            extra_caveats=_uncovered_caveat(uncovered) + _not_active_caveat(not_active),
+            lifecycle=lifecycle,
         )
 
 
@@ -647,6 +1006,7 @@ def _transaction_filters(
     until: date | None,
     account_id: int | None,
     after: Cursor | None,
+    include_removed: bool = False,
 ) -> list[Any]:
     """🔴 The predicates of a transaction query, built once for both statements.
 
@@ -657,8 +1017,15 @@ def _transaction_filters(
     which is worse than the vague one this chunk exists to remove. Built here,
     a filter added later reaches both by construction because there is only one
     place to add it.
+
+    🔴 `include_removed` is for the ONE question that has to look at rows every
+    answer excludes: an authorisation hold that expired without ever posting
+    left the totals by being soft-deleted, and AC-13.4 requires that exit to be
+    attributable rather than silent. It defaults to False and every row-and-count
+    caller leaves it there, so the pair that must agree still cannot drift; a
+    caller asking for removed rows is asking a different question and says so.
     """
-    filters: list[Any] = [transactions.c.removed_at.is_(None)]
+    filters: list[Any] = [] if include_removed else [transactions.c.removed_at.is_(None)]
     if since is not None:
         filters.append(transactions.c.posted_date >= since)
     if until is not None:
@@ -685,6 +1052,254 @@ def _transaction_filters(
             )
         )
     return filters
+
+
+#: How long a transaction may stay `pending` before the hold behind it stops
+#: being explicable as an ordinary authorisation. AC-13.5.
+#:
+#: 🔴 **A declared constant rather than a figure derived from the account's own
+#: cadence, and the departure from AC-9.1's precedent is deliberate.** A coverage
+#: gap is silence in a feed, so the only non-arbitrary yardstick for it is that
+#: feed's own rhythm. A hold's lifetime is a property of the CARD NETWORK that
+#: placed it: the same authorisation expires on the same day whether the account
+#: it sits on posts twice a day or once a month. Measuring it against cadence
+#: would make one hold stranded on a busy card and unremarkable on a quiet one,
+#: which states something about the account rather than about the hold.
+#:
+#: 🔴 **30 days is the OUTER end of the ordinary range, not the typical one.**
+#: Most merchants' authorisations release within a few days, but lodging, vehicle
+#: rental and fuel routinely hold for weeks -- so a threshold set at the typical
+#: value would fire on every hotel stay, which is the ~146-findings-and-no-signal
+#: outcome AC-11.1's amendment records and AC-13.5 explicitly cites. At the outer
+#: end, a row that is still pending has no ordinary hold lifetime left to explain
+#: it.
+#:
+#: 🔴 **This is a claim about the card network, not a measurement taken here.**
+#: No pending row has ever reached this datastore, so there is nothing local to
+#: derive it from, and saying so is the honest half of "declared with its
+#: derivation". AC-13.8's observation against a real settlement is what would let
+#: it be re-derived from data rather than from documented network behaviour.
+STRANDED_HOLD_AFTER_DAYS = 30
+
+
+def _stranded_cutoff(today: CalendarDate) -> CalendarDate:
+    """The newest `posted_date` a still-pending row may carry and not be stranded.
+
+    🔴 One definition of the boundary for two evaluators. The producer below
+    tests it in SQL and a caller may test it against rows already in hand; two
+    hand-written spellings of "older than the threshold" is how the SQL and the
+    Python answers start disagreeing about the same row, and this file already
+    carries the rule that two producers of one fact can contradict each other.
+    """
+    return calendar_date(today - timedelta(days=STRANDED_HOLD_AFTER_DAYS))
+
+
+@dataclass(frozen=True, slots=True)
+class StrandedHold:
+    """One row that is still an authorisation hold long after it should have settled."""
+
+    account_id: int
+    transaction_id: int
+    posted_date: CalendarDate
+    days_pending: int
+    amount_minor: int
+    currency: str
+
+
+def _stranded_holds(conn: SAConnection, *, today: CalendarDate) -> list[StrandedHold]:
+    """Every hold in the STORE that is past any ordinary authorisation lifetime. AC-13.5.
+
+    Row-level rather than a count, because "three accounts have stranded holds"
+    is a finding nobody can act on: the operator's next move is to look at the
+    transaction, so the id has to travel with the number.
+
+    Ordered oldest first, so the caller naming one names the worst.
+
+    🔴 **Takes no caller-supplied predicates, deliberately.** A stranded hold is
+    `pending`, is not removed, and is older than the cutoff. None of the three is
+    a caller's to choose, so none of them is a caller's to forget -- and the
+    soft-delete clause is the one that matters most, because an expired hold is
+    RETAINED with `removed_at` set and `pending` left at 1. That retention is what
+    the `expired` tally reads, so a query that omits the clause reports every
+    long-expired hold as still outstanding and sends the operator after money the
+    institution already took back.
+    """
+    cutoff = _stranded_cutoff(today)
+    rows = conn.execute(
+        select(
+            transactions.c.account_id,
+            transactions.c.transaction_id,
+            transactions.c.posted_date,
+            transactions.c.amount_minor,
+            transactions.c.currency,
+        )
+        .select_from(transactions.join(accounts))
+        .where(
+            transactions.c.pending == 1,
+            # 🔴 Declared HERE rather than left to `filters`, because it is a
+            # property of the question and not of the caller. `_transaction_filters`
+            # takes `include_removed`, so a caller is entitled to ask for removed
+            # rows -- but a withdrawn hold is not a stranded one, it is a finished
+            # one. An expired hold is retained with `removed_at` set and `pending`
+            # left at 1, which is exactly what the `expired` tally reads, so a
+            # caller who merely FORGOT this predicate would publish every
+            # long-expired hold as stranded and send the operator after money the
+            # institution already took back. One caller did. The guarantee belongs
+            # where it cannot be forgotten.
+            transactions.c.removed_at.is_(None),
+            transactions.c.posted_date < cutoff,
+        )
+        .order_by(transactions.c.posted_date, transactions.c.transaction_id)
+    ).all()
+    return [
+        StrandedHold(
+            account_id=int(row[0]),
+            transaction_id=int(row[1]),
+            posted_date=calendar_date(row[2]),
+            days_pending=(today - calendar_date(row[2])).days,
+            amount_minor=int(row[3]),
+            currency=str(row[4]),
+        )
+        for row in rows
+    ]
+
+
+@dataclass(frozen=True, slots=True)
+class HoldTally:
+    """How many rows, and what they come to signed as stored."""
+
+    transactions: int = 0
+    net_minor: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class HoldTransitions:
+    """The two ways a hold stops being one, per currency. AC-13.4, AC-13.6.
+
+    🔴 **Both halves exist so a total that MOVED is attributable.** A figure over
+    a window holding authorisation holds can change with no new activity
+    whatsoever, and it changes in exactly two ways: a hold expires and its whole
+    amount leaves the total, or a hold settles and its amount is replaced by the
+    settled one. Neither is visible in the rows an answer returns -- an expired
+    hold is soft-deleted and therefore excluded by construction, and a settled
+    row looks like any other posted row -- so a consumer watching a number drift
+    has nothing in the payload to explain it. That is the same defect class as a
+    total that does not state its own scope, arriving one step later in time.
+
+    🔴 Per currency, because every aggregate on this surface groups by currency
+    and never sums across it.
+    """
+
+    expired: dict[str, HoldTally]
+    settled: dict[str, HoldTally]
+
+    def currencies(self) -> set[str]:
+        return set(self.expired) | set(self.settled)
+
+    def expired_for(self, currency: str) -> HoldTally:
+        return self.expired.get(currency, HoldTally())
+
+    def settled_for(self, currency: str) -> HoldTally:
+        return self.settled.get(currency, HoldTally())
+
+
+def _hold_transitions(
+    conn: SAConnection, *, since: date | None, until: date | None
+) -> HoldTransitions:
+    """Holds that left this window, and rows in it that settled out of one.
+
+    🔴 **Two reads rather than a projection off the answer's rows, and each for
+    its own reason.** The expired half counts rows every other statement here
+    excludes, so no arithmetic over the returned rows could reach it. The settled
+    half could in principle be summed alongside the aggregate, but asking for it
+    as `source_pending_transaction_id IS NOT NULL` is what lets SQLite answer
+    from `transactions_pending_link` -- a partial index holding only the rows
+    that carry a link, rather than a scan of every row in the window (AC-13.6;
+    measured with `EXPLAIN QUERY PLAN` in `tests/test_pending_semantics.py`).
+
+    🔴 These are NOT totals over the answer's rows and must never be summed with
+    them. `_flow_class_totals`' identity -- the three classes add to the window's
+    outflow -- holds over the returned rows alone; these two describe rows that
+    left the answer and rows whose amount arrived by replacement.
+    """
+
+    def tally(where: list[Any], extra: list[Any]) -> dict[str, HoldTally]:
+        rows = conn.execute(
+            select(
+                transactions.c.currency,
+                func.count(),
+                func.coalesce(func.sum(transactions.c.amount_minor), 0),
+            )
+            .select_from(transactions.join(accounts))
+            .where(*where, *extra)
+            .group_by(transactions.c.currency)
+        ).all()
+        return {
+            str(row[0]): HoldTally(transactions=int(row[1]), net_minor=int(row[2])) for row in rows
+        }
+
+    return HoldTransitions(
+        # 🔴 `pending = 1` AND removed, which is precisely "expired without ever
+        # posting". A hold that settled is no longer pending -- its own row was
+        # updated in place -- so a later removal of the settled row carries
+        # `pending = 0` and is an ordinary withdrawal rather than a hold that
+        # never became anything.
+        expired=tally(
+            _transaction_filters(
+                since=since, until=until, account_id=None, after=None, include_removed=True
+            ),
+            [transactions.c.removed_at.is_not(None), transactions.c.pending == 1],
+        ),
+        settled=tally(
+            _transaction_filters(since=since, until=until, account_id=None, after=None),
+            [
+                transactions.c.source_pending_transaction_id.is_not(None),
+                transactions.c.pending == 0,
+            ],
+        ),
+    )
+
+
+def _pending_caveat(pending: dict[str, HoldTally]) -> list[Caveat]:
+    """The notice that an answer's figures include unsettled holds. AC-13.1.
+
+    🔴 Request-scoped, so its ABSENCE is information too: an answer over rows
+    that are all settled carries no such warning, and a consumer can therefore
+    read a total with no `includes_pending_rows` beside it as a total of settled
+    money. That only works because the disclosure is computed on every answer
+    rather than when someone remembers to ask -- the always-present count in
+    `totals` is the other half of the same statement, and it is what makes a
+    zero distinguishable from a question nobody asked.
+
+    Names the magnitude, not just the count: "some rows are pending" leaves a
+    reader unable to tell a $4 coffee hold from a $2,000 hotel authorisation, and
+    the whole point is whether the figure beside it can move enough to matter.
+
+    🔴 **Says nothing about STRANDED holds, and that is AC-13.5 being obeyed
+    rather than skipped.** The criterion puts a hold past its ordinary lifetime
+    on the verification surface, and `api-contract.md` rules that a per-account
+    finding belongs on `get_coverage_report`. Naming it here as well cost two
+    real defects before it was removed: this caveat counts the rows THIS ANSWER
+    drew on while a stranded query is scoped to the whole request, so a truncated
+    walk claimed more stranded holds than the page contained -- a precise false
+    statement about the payload beside it -- and the analysis path escaped the
+    non-active suppression its sibling on the coverage report applies, offering a
+    closed account's unclearable hold as a call to action forever. Both followed
+    from putting the finding where no criterion asked for it.
+    """
+    total = sum(tally.transactions for tally in pending.values())
+    if total == 0:
+        return []
+    magnitude = ", ".join(
+        f"{tally.net_minor} {currency}" for currency, tally in sorted(pending.items())
+    )
+    detail = (
+        f"{total} of the rows this answer drew on are authorisation holds that have not "
+        f"settled, netting {magnitude} in minor units. A hold can settle at a different figure "
+        f"or expire without settling at all, so a figure computed from this answer can change "
+        f"with no new activity whatsoever"
+    )
+    return [Caveat(kind="includes_pending_rows", detail=detail)]
 
 
 def list_transactions(
@@ -797,6 +1412,40 @@ def list_transactions(
             if account_id is not None
             else []
         )
+        # 🔴 Same scoping, same reason, on the lifecycle axis (AC-12.1's
+        # rationale). An agent asking
+        # "what did I spend on this card" about an account the institution
+        # stopped reporting is the consumer AC-12.1 names: it never thought to
+        # call the verification surface, and the rows it gets back end on the day
+        # the account went quiet with nothing saying why. Scoped to the account
+        # ASKED ABOUT for the reason directly above -- naming every closed
+        # account in the store on every page of every walk is the noise the
+        # request scope exists to refuse.
+        # One walk, used twice: the scoped caveat below and the envelope's
+        # non-active figures, which `_answer` would otherwise derive from a
+        # second observation of the same fact.
+        lifecycle = _account_lifecycle(conn)
+        not_active = (
+            [e for e in (lifecycle.get(account_id),) if e is not None and not e.active]
+            if account_id is not None
+            else []
+        )
+        # 🔴 Tallied from the rows THIS PAGE returned, not from `matching`.
+        # AC-13.1's disclosure is about the rows an answer drew on, and a walk's
+        # later page may hold no holds at all -- a caveat counting the whole
+        # result set would then say this page mixes in holds it does not
+        # contain, which is a precise false statement about the payload beside
+        # it.
+        pending: dict[str, HoldTally] = {}
+        for row in rows:
+            if not row["pending"]:
+                continue
+            currency = str(row["currency"])
+            seen = pending.get(currency, HoldTally())
+            pending[currency] = HoldTally(
+                transactions=seen.transactions + 1,
+                net_minor=seen.net_minor + int(row["amount_minor_units"]),
+            )
         return _answer(
             config,
             conn,
@@ -807,7 +1456,12 @@ def list_transactions(
             truncation=Truncation.over(
                 returned=len(rows), counted=matching, resume_from=resume_from
             ),
-            extra_caveats=_uncovered_caveat(uncovered),
+            extra_caveats=(
+                _uncovered_caveat(uncovered)
+                + _not_active_caveat(not_active)
+                + _pending_caveat(pending)
+            ),
+            lifecycle=lifecycle,
         )
 
 
@@ -837,6 +1491,30 @@ def _median_interval(days: list[int]) -> float | None:
     if len(ordered) % 2 == 1:
         return float(ordered[middle])
     return (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def _oldest_stranded(holds: Sequence[StrandedHold], *, active: bool) -> dict[str, Any] | None:
+    """The worst stranded hold on one account, or null. AC-13.5.
+
+    `_stranded_holds` orders oldest first, so the caller naming one names the
+    worst; this reads that order rather than re-deriving it.
+
+    Null rather than absent when there is nothing to report, and null for a
+    non-active account whose holds can never settle. The count beside this field
+    still reports what was measured, so nothing is concealed -- what is withheld
+    is the CALL TO ACTION, which is the one thing a finding on a closed account
+    cannot be.
+    """
+    if not active or not holds:
+        return None
+    worst = holds[0]
+    return {
+        "transaction_id": worst.transaction_id,
+        "posted_date": iso_or_none(worst.posted_date),
+        "days_pending": worst.days_pending,
+        "amount_minor_units": worst.amount_minor,
+        "currency": worst.currency,
+    }
 
 
 def coverage_report(config: Config) -> Answer:
@@ -870,6 +1548,22 @@ def coverage_report(config: Config) -> Answer:
         return _unusable(config, problem, requested_window=None, truncation=None)
     with reader_connection(config) as conn:
         coverage = _account_coverage(conn)
+        # 🔴 The same producer `list_accounts` reads, for the reason the line
+        # above shares one: two producers can disagree, and a verification
+        # surface that contradicts the analysis surface is worse than one that
+        # is absent (AC-12.7).
+        lifecycle = _account_lifecycle(conn)
+        # 🔴 Unwindowed, unlike every other caller: this surface answers about
+        # the store rather than about a window, and a hold stranded outside
+        # whatever window a caller happened to ask about is precisely the one
+        # nobody has noticed.
+        #
+        # The soft-delete exclusion a windowed caller would get from
+        # `_transaction_filters` is declared inside `_stranded_holds` instead, so
+        # passing no filters here narrows nothing it should not.
+        stranded_by_account: dict[int, list[StrandedHold]] = {}
+        for hold in _stranded_holds(conn, today=calendar_date(now_utc().date())):
+            stranded_by_account.setdefault(hold.account_id, []).append(hold)
         named = {
             int(account_id): name
             for account_id, name in conn.execute(
@@ -939,6 +1633,31 @@ def coverage_report(config: Config) -> Answer:
                     "account_id": account_id,
                     "account": named.get(account_id),
                     **facts.to_wire(),
+                    **lifecycle[account_id].to_wire(),
+                    # 🔴 AC-13.5, on the surface the contract puts it: a hold past
+                    # any ordinary lifetime is a per-account finding, and
+                    # `api-contract.md` rules a per-account finding belongs here
+                    # rather than on an analysis answer. Present and zero on every
+                    # row -- an account with no stranded hold is stating a fact,
+                    # and a missing key would make a consumer guess whether it
+                    # meant zero or unknown. The oldest is named because the
+                    # operator's next move is to look at the transaction, so the
+                    # id has to travel with the count.
+                    "stranded_holds": len(stranded_by_account.get(account_id, ())),
+                    "oldest_stranded_hold": _oldest_stranded(
+                        stranded_by_account.get(account_id, ()),
+                        # 🔴 Withheld for a non-active account, on AC-12.7's
+                        # reasoning applied to the sibling criterion: a closed
+                        # account's hold can never settle and can never be
+                        # cleared, so naming it is the finding no operator can
+                        # action -- the exact shape AC-12.7 removed from
+                        # `silence_exceeds_cadence` a few lines below. The COUNT
+                        # stays as measured, for the reason `silence_ratio` is
+                        # left as measured: the number is the evidence, and the
+                        # lifecycle fields on this row say why nothing is being
+                        # asked of it.
+                        active=lifecycle[account_id].active,
+                    ),
                     "median_interval_days": median,
                     "days_silent": days_silent,
                     "silence_ratio": ratio,
@@ -946,7 +1665,20 @@ def coverage_report(config: Config) -> Answer:
                     # non-arbitrary unit. Choosing 0.9 so the borderline pair
                     # flags would reinvent the constant the ruling removed;
                     # `silence_ratio` is what surfaces them instead.
-                    "silence_exceeds_cadence": (False if ratio is None else ratio > 1.0),
+                    #
+                    # 🔴 **AC-12.7: a non-active account's trailing silence is
+                    # identified as closure, not reported as a coverage finding.**
+                    # The account stopped being reported, so its silence is the
+                    # expected consequence of that rather than a hole in the
+                    # data, and today the flag grows permanently true and can
+                    # never go back. The RATIO is left as measured rather than
+                    # nulled: it is the evidence, and `silence_ratio`'s own
+                    # ruling is that a number lets a reader see what a boolean
+                    # destroys. The lifecycle fields on this row are what say
+                    # why the flag is false.
+                    "silence_exceeds_cadence": (
+                        False if ratio is None or not lifecycle[account_id].active else ratio > 1.0
+                    ),
                     # Present and zeroed rather than omitted: a source with no
                     # rows for this account is a fact, and a missing key would
                     # make a consumer guess whether it meant zero or unknown.
@@ -962,7 +1694,14 @@ def coverage_report(config: Config) -> Answer:
             rows,
             requested_window=None,
             truncation=None,
-            extra_caveats=_uncovered_caveat([c for c in coverage.values() if c.uncovered]),
+            extra_caveats=(
+                _uncovered_caveat([c for c in coverage.values() if c.uncovered])
+                # Both fire together on a closed account that never had a
+                # transaction. They are both true and they say different things,
+                # and neither suppresses the other.
+                + _not_active_caveat([e for e in lifecycle.values() if not e.active])
+            ),
+            lifecycle=lifecycle,
         )
 
 
@@ -1061,33 +1800,69 @@ def _flow_class() -> ColumnElement[str]:
     )
 
 
-def _flow_class_totals(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The window's OUTFLOW split three ways, per currency.
+def _flow_class_totals(
+    rows: list[dict[str, Any]], transitions: HoldTransitions
+) -> list[dict[str, Any]]:
+    """The window's OUTFLOW split three ways, per currency, and how much is a hold.
 
-    🔴 **Summed from the rows this answer returns, never from a second query.**
-    A second read against a live store is taken at a different instant from the
-    rows beside it, and a total that contradicts the rows under it is worse than
-    no total at all -- a reader has no way to tell which of the two is wrong.
-    Summed here, the three classes add to the window's total outflow by
-    construction, and that identity is also the proof the classification
-    PARTITIONS the rows rather than quietly dropping some.
+    🔴 **The three flow classes are summed from the rows this answer returns,
+    never from a second query.** A second read against a live store is taken at a
+    different instant from the rows beside it, and a total that contradicts the
+    rows under it is worse than no total at all -- a reader has no way to tell
+    which of the two is wrong. Summed here, the three classes add to the window's
+    total outflow by construction, and that identity is also the proof the
+    classification PARTITIONS the rows rather than quietly dropping some. The
+    pending pair follows the same rule for the same reason: it is summed from
+    row fields the aggregate already computed, so it cannot disagree with them.
+
+    🔴 **The two hold-transition pairs are the deliberate exception, and they are
+    a different kind of figure rather than a relaxation of the rule.** They do
+    not participate in the outflow identity above and must never be added to it:
+    `expired_holds` counts rows this answer EXCLUDES -- a hold that was
+    soft-deleted without ever posting -- so no arithmetic over the returned rows
+    could reach it, and `settled_from_hold` counts rows whose amount arrived by
+    replacing an earlier hold's. Both exist because AC-13.4 requires a total that
+    moved to be attributable: the two are the only ways a figure over this window
+    changes without any new activity.
 
     🔴 **Per currency, because the ruling on aggregates is that currency groups
     and never sums.** One integer spanning two currencies is not a wrong number,
     it is not a number.
 
-    Every currency present carries all three keys, zero where a class did not
-    appear: a zero is a real answer -- "nothing serviced a debt this window" --
-    and a missing key would leave a reader unable to tell that from a class this
-    tool forgot to compute.
+    Every currency carries every key, zero where nothing appeared: a zero is a
+    real answer -- "nothing serviced a debt this window", "no hold expired" --
+    and a missing key would leave a reader unable to tell that from a figure this
+    tool forgot to compute. AC-13.1 fixes that as the contract for the pending
+    pair: present and zero, never absent.
+
+    🔴 A currency that appears ONLY in an expired hold still gets an entry. Its
+    rows are all excluded from the answer, so summing the returned rows would
+    find no such currency at all -- and dropping the entry would hide the one
+    fact that explains why a previous answer's figure is gone.
     """
     totals: dict[str, dict[str, int]] = {}
-    for row in rows:
-        entry = totals.setdefault(
-            str(row["currency"]),
-            {f"{flow}_outflow_minor_units": 0 for flow in FLOW_CLASSES},
+
+    def entry_for(currency: str) -> dict[str, int]:
+        return totals.setdefault(
+            currency,
+            {f"{flow}_outflow_minor_units": 0 for flow in FLOW_CLASSES}
+            | {"pending_transactions": 0, "pending_net_minor_units": 0},
         )
+
+    for row in rows:
+        entry = entry_for(str(row["currency"]))
         entry[f"{row['flow_class']}_outflow_minor_units"] += int(row["outflow_minor_units"])
+        entry["pending_transactions"] += int(row["pending_transactions"])
+        entry["pending_net_minor_units"] += int(row["pending_net_minor_units"])
+    for currency in transitions.currencies():
+        entry_for(currency)
+    for currency, entry in totals.items():
+        expired = transitions.expired_for(currency)
+        settled = transitions.settled_for(currency)
+        entry["expired_holds"] = expired.transactions
+        entry["expired_holds_net_minor_units"] = expired.net_minor
+        entry["settled_from_hold"] = settled.transactions
+        entry["settled_from_hold_net_minor_units"] = settled.net_minor
     # Sorted so two identical stores answer identically; the wire order of an
     # array is information a consumer may rely on even when it should not.
     return [{"currency": currency, **entry} for currency, entry in sorted(totals.items())]
@@ -1128,6 +1903,19 @@ def money_summary(
     explicitly not chosen — it needs a rate source, a rate date policy, and
     somewhere to record that decision, which is a different scope from carrying
     a field.
+
+    🔴 **Every figure here states how much of itself is an unsettled hold, and
+    the statement is always present** (AC-13.1). An authorisation hold is a claim
+    on the account rather than a completed amount: it can settle at a different
+    figure, and it can expire without settling at all. So a total that mixes
+    holds with settled money is the one kind of figure that changes when nothing
+    happened, and re-asking will not explain it. `pending_transactions` and
+    `pending_net_minor_units` ride every row and every totals entry, zero where
+    nothing is pending, and `includes_pending_rows` fires only when something is
+    — so its absence is a statement too. AC-13.4's other half rides `totals`
+    beside them: `expired_holds` for the holds that dropped out of this window
+    without ever posting, and `settled_from_hold` for the rows whose amount got
+    here by replacing an earlier hold's.
     """
     if group_by not in GROUPINGS:
         raise BadGroupingError(f"group_by must be one of {', '.join(GROUPINGS)}, not {group_by!r}")
@@ -1216,6 +2004,24 @@ def money_summary(
                     0,
                 ).label("outflow"),
                 func.coalesce(func.sum(transactions.c.amount_minor), 0).label("net"),
+                # 🔴 AC-13.1, computed in the SAME pass as the figures it
+                # qualifies. A hold is not a settled amount, and a total that
+                # mixes the two moves without any new activity -- so how much of
+                # this row is a hold has to be a property OF this row rather than
+                # a second count taken a moment later, which could disagree with
+                # the very number it is supposed to qualify.
+                func.coalesce(func.sum(case((transactions.c.pending == 1, 1), else_=0)), 0).label(
+                    "pending_transactions"
+                ),
+                # Signed as stored, like `net` and unlike the two magnitudes
+                # above: the question a reader has is which direction the figure
+                # beside it can move when these holds settle or expire.
+                func.coalesce(
+                    func.sum(
+                        case((transactions.c.pending == 1, transactions.c.amount_minor), else_=0)
+                    ),
+                    0,
+                ).label("pending_net"),
             )
             .select_from(transactions.join(accounts))
             # 🔴 The shared predicates and NOTHING else -- in particular no
@@ -1237,16 +2043,39 @@ def money_summary(
                 "inflow_minor_units": int(r[5]),
                 "outflow_minor_units": int(r[6]),
                 "net_minor_units": int(r[7]),
+                "pending_transactions": int(r[8]),
+                "pending_net_minor_units": int(r[9]),
             }
             for r in conn.execute(statement).all()
         ]
+        pending = {
+            currency: HoldTally(
+                transactions=sum(
+                    int(row["pending_transactions"]) for row in rows if row["currency"] == currency
+                ),
+                net_minor=sum(
+                    int(row["pending_net_minor_units"])
+                    for row in rows
+                    if row["currency"] == currency
+                ),
+            )
+            for currency in {str(row["currency"]) for row in rows}
+        }
         return _answer(
             config,
             conn,
             rows,
             requested_window=(since, until),
             truncation=None,
-            totals=_flow_class_totals(rows),
+            totals=_flow_class_totals(rows, _hold_transitions(conn, since=since, until=until)),
+            # 🔴 AC-14.5. The two producers are independent and both belong here:
+            # the pending caveat says this figure may still move, the sign caveat
+            # says its DIRECTION may be wrong. A total can be wrong in both ways
+            # at once, and a reader given only one of them would treat the other
+            # as settled.
+            extra_caveats=(
+                _pending_caveat(pending) + signs.caveats(conn, since=since, until=until)
+            ),
         )
 
 
@@ -1287,6 +2116,13 @@ def pipeline_health(config: Config) -> Answer:
             )
             .order_by(connections.c.connection_id)
         ).all()
+        # 🔴 The sign-convention measurement belongs on THIS surface, per
+        # connection, because "we could not tell" is an answer only a
+        # verification tool has room for. `signs.measure` returns one entry per
+        # connection including the ones with nothing to judge, so every row here
+        # carries the three fields and none of them is conditional.
+        measured = signs.measure(conn)
+        conventions = {m.connection_id: m for m in measured}
         rows = [
             {
                 "connection_id": int(r[0]),
@@ -1299,7 +2135,27 @@ def pipeline_health(config: Config) -> Answer:
                 "granted_history_days": None if r[6] is None else int(r[6]),
                 "history_starts": None if r[8] is None else str(r[8]),
                 "retired": r[7] is not None,
+                "sign_convention": conventions[int(r[0])].verdict,
+                "sign_convention_rows_judged": conventions[int(r[0])].rows_judged,
+                "sign_convention_rows_positive": conventions[int(r[0])].rows_positive,
             }
             for r in result
         ]
-        return _answer(config, conn, rows, requested_window=None, truncation=None)
+        return _answer(
+            config,
+            conn,
+            rows,
+            requested_window=None,
+            truncation=None,
+            # An inverted connection is reported here as well as on the
+            # aggregates, because a health tool that showed the measurement in a
+            # row and stayed silent in `warnings` would leave the one surface
+            # built for this question quieter about it than every other.
+            #
+            # 🔴 Handed the measurement the rows above were built from, never
+            # re-measured. The reader is autocommit and pins no snapshot, so a
+            # second scan is a second observation -- and this answer would then
+            # be able to publish `consistent` in a row while warning that the
+            # same connection is unverified.
+            extra_caveats=signs.caveats(conn, measured=measured),
+        )

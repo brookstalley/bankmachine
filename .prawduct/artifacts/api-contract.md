@@ -34,16 +34,17 @@ is a breaking change.
 ## Direction
 
 Norms. These bind future work; departure is a recorded decision, never silent
-(`/prawduct:methodology norms`). The first three ratified 2026-09-07 by the owner; the
-fourth born 2026-09-09, and it is the only one carrying a migration.
+(`/prawduct:methodology norms`). Each entry carries its own birth date and status; read those rather
+than any count here.
 
 🔴 **The norms ratified 2026-09-07 were born before the surface they govern existed** — the MCP tool
 layer was build step 7. That is deliberate and has direct precedent here: `architecture.md`'s norms
 were also born before any code, and the point of ratifying early is that the build gets **built to**
 them rather than discovering them afterwards. No retroactivity decision applied to those, because
-there was nothing yet to migrate or grandfather. **The fourth is the exception and says so in its
-own entry:** it was born against a surface that already shipped, and it carried one migration, now
-paid.
+there was nothing yet to migrate or grandfather. **The norms born later are the exception and each
+says so in its own entry**, because a norm born against a surface that already shipped has to state
+what it does with what is already there: the tool-boundary norm carried one migration, now paid, and
+the balance-lifecycle norm names one unmigrated emitter it does not grandfather.
 
 - **The MCP surface is read-only. There are no mutation tools, and adding one is not a decision this
   norm leaves open.**
@@ -107,6 +108,36 @@ paid.
   Born 2026-09-09, from #30. Derivation and the alternatives priced against it:
   `discovery-mcp-tool-surface.md`.
   Status: steady-state.
+
+- **A stored balance is reported with its lifecycle, and no total over balances is emitted without
+  stating its treatment of non-active accounts.** The treatment is **include and flag**: non-active
+  accounts stay in the figure, and the answer states how many they were and what they contributed.
+  Why: the second norm's thesis applied to the balance sheet. A closed card's last balance is a
+  plausible wrong number whose wrongness has no signal, and the direction of the error depends on
+  `balance_class` — including a closed liability overstates debt, and including a closed asset
+  double-counts money that already moved into another enrolled account. Neither treatment repairs
+  that arithmetic; what the norm forbids is applying either one silently. **Include-and-flag was
+  ruled over exclude-and-state on the asymmetry in detectability**: an included frozen balance is
+  correctable by any reader handed the flag and the figure, while an exclusion is invisible by
+  construction — the total is simply smaller, and no field can point at what is not there. That is
+  #18's *classify, do not filter* arriving on this surface, and the flagged magnitude is what keeps
+  it from being #18's failure mode instead. 🔴 **The magnitude is the load-bearing half, not the
+  flag** — a count and a signed sum, present and zero rather than absent, on the same
+  `total_external_spend` precedent that makes an exclusion legible elsewhere. A warning without the
+  figure tells a consumer something is wrong and leaves it unable to do anything about it.
+  Born 2026-09-09, from #40, on the owner's ruling of the same date. Derivation, and the argument
+  for the treatment that was not ruled: `discovery-account-lifecycle.md` § *The ruling the owner
+  owes*. Requirement: AC-12.8.
+  🔴 **Retroactivity: one debt, and it is named.** `query._coverage`'s `accounts` count is an
+  unfiltered `COUNT(*)` sitting between two counts that both filter, and it is the one shipped
+  emitter this norm already governs. It is not grandfathered; AC-12.8 covers it by name.
+  Status: steady-state since 2026-09-09, on the condition this entry set for itself. Every emitter
+  AC-12.8 names carries the figure — `list_accounts`, `get_coverage_report`, `query_transactions`,
+  `money_summary` and `get_pipeline_health` all reach it through one `_coverage`, and the unreadable
+  store path carries it present-and-zero — and the guard has been seen red **with the magnitude
+  removed**, not merely with the flag flipped. Those are two cases in `verify_norms_go_red.py`
+  deliberately, because a flag with no figure passes the norm's letter and fails the reason it was
+  born: a consumer told something is included and handed nothing to subtract.
 
 ---
 
@@ -466,6 +497,39 @@ line, and it is why the headline rides the envelope rather than waiting for a ca
 from rows they may never read. The ratio is a property of this fixture and not a constant; what the
 contract fixes is that the decomposition is always present, never the size of the gap.
 
+🔴 **The block also carries the hold decomposition (AC-13.1, AC-13.4), and those six keys are
+always present.** Beside the three outflow classes, each currency entry states
+`pending_transactions` and `pending_net_minor_units` — how much of this figure is authorisation
+holds that have not settled — plus `expired_holds` / `expired_holds_net_minor_units` and
+`settled_from_hold` / `settled_from_hold_net_minor_units`. Present and zero, never absent: a total
+that mixes holds into settled money without saying so is the defect this surface exists to refuse,
+and a key that appears only when it is non-zero cannot be branched on. The two exit paths are
+distinguished on purpose — an *expired* hold is one that never posted (`pending` with a removal),
+while a row that settled and was later withdrawn left as a settled row, and counting the second as
+the first would tell a consumer a hold dropped off when a real transaction was retracted.
+
+🔴 **`get_coverage_report` rows carry `stranded_holds` and `oldest_stranded_hold` (AC-13.5), and
+`get_pipeline_health` rows carry `sign_convention` with the counts it was judged on —
+`sign_convention_rows_judged` and `sign_convention_rows_positive` (AC-14.2).** The counts ride beside
+the verdict for the `silence_ratio` reason: a verdict with no evidence under it is a claim the reader
+must take on faith, and this check's whole subject is a claim that was taken on faith once already.
+`oldest_stranded_hold`, where present, names `transaction_id`, `posted_date`, `days_pending`,
+`amount_minor_units` and `currency` — the id and the age together, because the operator's next move
+is to go and look at the transaction.
+Both sit on the verification surface rather than on an analysis answer, which is this document's own
+per-account ruling below rather than a placement chosen here — and putting the stranded finding on
+the analysis answers as well was tried and withdrawn, because it produced a count scoped to the
+request beside a hold count scoped to the page, and escaped the non-active suppression its sibling
+applies. `oldest_stranded_hold` is null both when there is nothing to report and when the account is
+not active: a closed account's hold can never settle and can never be cleared, so the *call to
+action* is withheld while the *count* stays as measured.
+
+🔴 **Every `list_accounts` and `get_coverage_report` row carries the lifecycle block (FR-9)** —
+`lifecycle`, `closed_date`, `last_seen_in_roster`, `roster_last_observed` — and `coverage` carries
+`accounts_not_active` and `not_active_balance_minor_units` beside its `accounts` count, per AC-12.8's
+ruled include-and-flag treatment. The balance figure is per currency for the same reason every other
+figure here is.
+
 The three sum to the window's total outflow in that currency, and that identity is the contract:
 it is what proves the classification *partitions* the rows rather than quietly dropping some.
 🔴 **Per currency, never one integer across currencies**, by the ruling that governs every
@@ -474,6 +538,17 @@ The block is present and empty when the datastore cannot be read, exactly as `co
 and zero, so the key set a consumer branches on never depends on the store's health.
 
 ### Coverage is reported per account, never per institution (AC-9.5)
+
+🔴 **Ruling, 2026-09-09 — where the three new findings live.** Two discovery passes each asked
+whether their per-account and per-connection findings belong on `get_coverage_report` or
+`get_pipeline_health`, and both deferred it so it would be decided once. 🔴 **§ Direction's fourth
+norm already answers it: a tool's boundary is drawn where the answer *shape* changes, never where
+the question changes.** So the split is by the shape of the finding, not by its subject matter:
+a **per-account** finding goes to `get_coverage_report` (AC-12.7's retired-account silence,
+AC-13.5's stranded hold), and a **per-connection** finding goes to `get_pipeline_health`
+(AC-14.2's sign-convention check). This is an application of the existing norm, not a new one —
+no fifth norm is born here, and the candidate one proposed alongside AC-12.8 stays unborn until
+that ruling is taken.
 
 One institution may hold many accounts with different coverage windows, and an institution-level
 summary hides exactly that.
@@ -562,6 +637,9 @@ three-week-old hole in the data and answer confidently.
 | `rows_truncated` | The request matched more rows than the cap returned, and the answer holds only the newest of them |
 | `counted_during_change` | A write landed between the row read and the count read, so the two describe moments a fraction apart |
 | `accounts_without_coverage` | An account in the scope of THIS request has never had a transaction recorded, so its empty result means data not present, never no activity |
+| `account_no_longer_active` | An account in the scope of THIS request is closed or is no longer listed by its institution, so its balance is frozen as of the date beside it and is not a fact about today |
+| `includes_pending_rows` | This answer's rows include authorisation holds that have not settled, so a figure computed from it may change without any new activity |
+| `sign_convention_unverified` | This answer draws on a connection whose stored sign distribution was measured and found INVERTED relative to the operator-signed convention, so its amounts run the wrong way. 🔴 It does not fire for a merely unconfirmed connection — see the note below the table |
 
 🔴 **The window/row/account kinds below the line are REQUEST-scoped; the connection kinds above them
 are CONNECTION-scoped, and the distinction is the reason they exist.** A connection-scoped warning describes the standing state of the pipeline,
@@ -579,11 +657,52 @@ defect the paragraph above records. It fires only when *this* request's scope ac
 uncovered account: on `list_accounts` when the listing holds one, and on
 `query_transactions(account_id=N)` when the account asked about has none.
 
-🔴 **This table is prose and `envelope.WARNING_KINDS` is the code; nothing holds them together.**
-`test_the_warning_vocabulary_is_closed.py` scans source only, so a kind added to the vocabulary
-without being added here goes unnoticed — which is how `accounts_without_coverage` was missing from
-this table for a full work cycle after it shipped. Adding a kind means editing both until something
-derives one from the other.
+🔴 **`sign_convention_unverified` fires on a MEASURED inversion, not on the absence of a
+verification — and its name is the weaker of the two readings.** The name was fixed by a discovery
+pass before the check was designed, and the check that shipped is narrower than the name suggests:
+it reports a connection whose stored sign distribution was measured and found inverted, not every
+connection whose direction the operator has yet to confirm against a known deposit (AC-14.7). The
+narrow reading was chosen and the name kept, for three reasons worth recording so the tension is not
+rediscovered as a bug.
+
+First, the broad reading is the `gapped` failure again. Until AC-14.7 is performed no connection has
+been confirmed against a known inflow, so a warning on that condition would ride nearly every answer
+this product gives, character-for-character identical — true, and useless for telling a caller
+whether *this* answer is the affected one, which is the defect `envelope.py`'s two-tuple split exists
+to prevent.
+
+Second, the unconfirmed-but-not-inverted state **is** disclosed; it is disclosed on the right
+surface. Every connection's verdict — `consistent`, `inverted`, or `undetermined` where there is too
+little to judge — is published per connection on `get_pipeline_health`. That is the verification
+domain, and "we have not established this yet" is a verification answer. A warning riding an analysis
+aggregate is for something that changes how *this* figure should be read.
+
+Third, the name still tells a consumer the right thing to do, which is what a `kind` is for: do not
+trust this connection's direction. The measured specifics ride `detail`, and the guidance served at
+`warnings://reference` states the inversion explicitly. **Renaming remains open and is cheap** — no
+consumer exists, and new codes are additive under the evolution rule below — but it is a contract
+decision rather than a cleanup, and it should be taken with AC-14.7's result in hand rather than
+before it.
+
+🔴 **This table is prose and `envelope.WARNING_KINDS` is the code, and since 2026-09-09 something
+does hold them together:** `test_the_warning_vocabulary_is_closed.py::test_the_contract_table_lists_every_kind_the_vocabulary_defines`
+reconciles the two in both directions. Before it existed the drift was one-directional and silent —
+a kind added to the vocabulary but not to this table went unnoticed, which is how
+`accounts_without_coverage` was missing here for a full work cycle after it shipped, and how these
+three rows went stale within one commit of being written. The guard matches on the kind NAME only, so
+a row's annotation is free to change as its kind acquires an emitter without the guard having an
+opinion about it.
+
+🔴 **The last three kinds were proposed by two separate discovery passes that could not see each
+other, and each registered only its own.** They entered `envelope.REQUEST_SCOPED_KINDS` **as a set,
+in one commit, before any of the three items was built** — because a kind emitted but not declared
+does not degrade to an unrecognized warning, it takes the whole answer down through the schema
+validator. Doing that up front is also what let the three items be built in parallel at all: one
+closed tuple cannot absorb three simultaneous additions from agents that cannot see each other. All
+three now have emitters. Sources:
+`.prawduct/artifacts/discovery-account-lifecycle.md` (AC-12.x) and
+`.prawduct/artifacts/discovery-production-data-semantics.md` (AC-13.x, AC-14.x). The two names
+the second document left to the builder are fixed here so the three are chosen as a set.
 
 Added additively under the evolution rules below (new warning codes need no version bump; consumers
 must tolerate a code they do not recognize), so AC-9.3's list — itself a minimum — is unamended.

@@ -419,7 +419,16 @@ not settled here.
 
 ---
 
-### 17. 🔴 `has_more` is FALSE on a `NOT_READY` response, so it cannot terminate the loop
+### 17. `/transactions/sync` — the loop, the body, and the sign the whole product rests on
+
+🔴 **This section is cited for two unrelated things and the number is load-bearing for both.**
+It was headed for its first finding alone, which left the single most-cited measurement in
+this document — the sign of an outbound amount, §17.2 below — findable only by full-text
+search. That is how a sibling artifact came to cite §16 for it, caught as a Critic finding
+on 2026-09-09. The number is unchanged so existing citations still resolve; the subsections
+are what a new citation should name.
+
+#### 17.1 🔴 `has_more` is FALSE on a `NOT_READY` response, so it cannot terminate the loop
 
 Probed live 2026-09-07 against a freshly minted sandbox item
 (`POST /sandbox/public_token/create` → exchange → `POST /transactions/sync`). Two attempts, three
@@ -452,7 +461,15 @@ cursor with one. The cursor is written only from a response that carried one.
 and a dozen more. `personal_finance_category.primary`/`.detailed` are what
 `source_category_primary`/`_detailed` take.
 
-**A purchase arrives POSITIVE.** The sample row is `amount: 89.4` for a merchant purchase on a
+#### 17.2 🔴 A purchase arrives POSITIVE — the measurement the sign convention rests on
+
+**Cite this subsection, not §16 and not §17 bare.** `data-model.md` § Direction's sign norm,
+`connector/plaid/derivers.py::_operator_signed_amount`, `src/bankmachine/signs.py` and AC-14.1
+all rest on the two sentences below. 🔴 **It is one row, on one connection, at one
+aggregator** — which is exactly why AC-14.1 scopes the convention as a per-feed claim rather
+than a property of the world, and why `signs.py` exists to notice a feed that disagrees.
+
+The sample row is `amount: 89.4` for a merchant purchase on a
 depository account — money leaving. Under `data-model.md` § Direction's operator-POV convention that
 is stored **negative**, and a build that took it at face value would be wrong by twice the amount on
 every spend row.

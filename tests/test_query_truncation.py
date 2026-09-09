@@ -340,7 +340,9 @@ def test_the_count_and_the_row_query_select_from_the_same_predicates(
     )
 
 
-def _shared_predicate_texts(*, since: date, until: date) -> list[str]:
+def _shared_predicate_texts(
+    *, since: date, until: date, include_removed: bool = False
+) -> list[str]:
     """The predicate fragments every reader must carry, read off the one list itself.
 
     Derived from `_transaction_filters` rather than retyped, so a filter added
@@ -355,7 +357,7 @@ def _shared_predicate_texts(*, since: date, until: date) -> list[str]:
     return [
         str(clause.compile(dialect=sqlite_dialect()))
         for clause in query._transaction_filters(
-            since=since, until=until, account_id=None, after=None
+            since=since, until=until, account_id=None, after=None, include_removed=include_removed
         )
     ]
 
@@ -381,10 +383,30 @@ def test_every_reader_of_transactions_shares_the_one_predicate_list(
     store cannot cover makes `_covered_rows` short-circuit before it runs, so the
     reader this test exists to catch would never appear in the captured SQL and
     the test would pass while checking one fewer reader than it names.
+
+    🔴 **There are exactly TWO admissible treatments of the soft delete, and a
+    reader must take one of them explicitly** (AC-13.4). Almost every reader
+    excludes removed rows; the expired-hold tally deliberately reads only removed
+    rows, because a hold that was withdrawn without ever posting left the totals
+    by being soft-deleted and its exit has to stay attributable. That reader
+    still composes from `_transaction_filters` — with `include_removed=True`, so
+    a filter added at the one named place reaches it too — and the assertion
+    below names both treatments rather than admitting anything. A reader that
+    simply forgot the soft delete carries NEITHER fragment and still fails, which
+    is the case this test was written for.
     """
     today = now_utc().date()
     since, until = today - timedelta(days=_DAYS // 2), today
     fragments = _shared_predicate_texts(since=since, until=until)
+    shared = _shared_predicate_texts(since=since, until=until, include_removed=True)
+    # The one fragment the two lists differ by, derived rather than typed: it is
+    # what tells a reader that excludes removed rows from one that reads them.
+    (excludes_removed,) = [fragment for fragment in fragments if fragment not in shared]
+    reads_removed = excludes_removed.replace("IS NULL", "IS NOT NULL")
+    assert reads_removed != excludes_removed, (
+        f"the soft-delete predicate no longer spells IS NULL ({excludes_removed!r}), so the "
+        f"inversion below names a clause no reader can emit and would admit any reader"
+    )
 
     query.list_transactions(seeded_config, since=since, until=until, limit=MAX_ROWS)
     query.money_summary(seeded_config, since=since, until=until)
@@ -394,18 +416,28 @@ def test_every_reader_of_transactions_shares_the_one_predicate_list(
         for sql in captured_sql
         if "transactions" in sql and "posted_date >=" in sql and "posted_date <=" in sql
     ]
-    # The row query, its count, one coverage count per windowed call, and the
-    # aggregate. Asserted as a floor so an added reader cannot slip past.
-    assert len(windowed) >= 5, (
-        f"expected at least 5 windowed reads of `transactions` across the two calls; "
-        f"saw {len(windowed)} — a reader is missing, or one short-circuited"
+    # The row query, its count, one coverage count per windowed call, the
+    # aggregate, and the two hold tallies. Asserted as a floor so an added reader
+    # cannot slip past — and the floor is RAISED when a reader is added, which is
+    # the half that was missed when the hold tallies arrived: the comment above
+    # gained them and the number below did not, so two readers could have stopped
+    # running, or stopped being windowed, with the floor still satisfied.
+    expected_windowed_readers = 7
+    assert len(windowed) >= expected_windowed_readers, (
+        f"expected at least {expected_windowed_readers} windowed reads of `transactions` "
+        f"across the two calls; saw {len(windowed)} — a reader is missing, or one "
+        f"short-circuited"
     )
     for sql in windowed:
         where = _where_of(sql)
-        for fragment in fragments:
+        for fragment in shared:
             assert fragment in where, (
                 f"a reader rebuilt its predicates by hand: {fragment!r} missing from {where}"
             )
+        assert excludes_removed in where or reads_removed in where, (
+            f"a reader took no position on the soft delete: neither {excludes_removed!r} nor "
+            f"{reads_removed!r} in {where}"
+        )
 
 
 # --------------------------------------------------------------------------

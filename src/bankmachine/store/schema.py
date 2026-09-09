@@ -112,6 +112,21 @@ accounts = Table(
     Column("source", Text, nullable=False),
     Column("created_at", UtcInstantColumn, nullable=False),
     Column("updated_at", UtcInstantColumn, nullable=False),
+    # 🔴 Last, not beside `first_seen_date` where it reads better. It arrived in
+    # migration 003 through `ALTER TABLE ... ADD COLUMN`, which appends, and the
+    # drift guard compares this list against `PRAGMA table_info` *in order*.
+    # Moving it up would make two correct descriptions of one correct database
+    # disagree.
+    #
+    # AC-12.4: the date this account was last listed on a successful roster
+    # observation, taken as a monotone MAXIMUM the way `first_seen_date` is taken
+    # as a minimum -- which is what makes an archive replay order-independent.
+    # 🔴 Nullable, and the null MEANS "no roster observation is recorded for this
+    # account" -- `query._account_lifecycle` reads it as exactly that, never as a
+    # date. Migration 003 backfilled nothing because there is nothing honest to
+    # backfill with: the correct value is the connection's last successful roster
+    # observation, which is the record this column exists because nothing kept.
+    Column("last_seen_date", CalendarDateColumn, nullable=True),
 )
 
 Index(
@@ -211,6 +226,21 @@ Index(
     sqlite_where=transactions.c.import_fingerprint.is_not(None),
 )
 Index("transactions_by_account_date", transactions.c.account_id, transactions.c.posted_date)
+# 🔴 **This index serves the REVERSE lookup, and does not serve AC-2.3's match.**
+# The two are easy to confuse and the distinction is the whole of AC-13.6. A
+# posting transaction finds the hold it replaces by that hold's OWN identifier --
+# `_existing_transaction` compares the incoming `pending_transaction_id` against
+# the pending row's `source_transaction_id`, which is served by
+# `transactions_source_identity` -- because a hold answers to its own id right up
+# until it posts.
+#
+# What this index answers is the other direction: given a hold's id, which posted
+# row settled out of it, and more usefully in the aggregate, which rows in a
+# window arrived by replacing a hold. `query._hold_transitions` is that reader
+# (AC-13.4), and asking for it as `source_pending_transaction_id IS NOT NULL`
+# lets SQLite answer from this partial index, which holds only the small
+# minority of rows that carry a link, rather than scanning every row in the
+# window.
 Index(
     "transactions_pending_link",
     transactions.c.account_id,

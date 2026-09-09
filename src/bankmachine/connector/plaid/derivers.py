@@ -83,15 +83,16 @@ _log = get_logger(__name__)
 #: partitions a report rather than deciding an arithmetic sign, so the operator
 #: gets the last word. `lifecycle_status` belongs to whatever retires an account.
 #:
-#: 🔴 **Nothing retires one yet, and that is a real gap rather than an oversight
-#: this list closes.** An account that stops appearing in `/accounts/get` stays
-#: `active` with a frozen balance, and `data-model.md` § Account lifecycle notes
-#: that the coverage report reads exactly `lifecycle_status` and `closed_date` to
-#: tell a closure from a hole. Until the transition exists, a closed account will
-#: report as a permanent gap. The removal case *is* derivable here --
-#: `/accounts/get` returns the full list per connection -- but making it
-#: order-independent under replay needs the care `first_seen_at` got, so it is
-#: recorded as deferred in the build plan rather than half-built.
+#: 🔴 **`lifecycle_status` stays here now that absence IS derivable, and that is
+#: the point rather than an omission.** AC-12.2: the aggregator reports no closure
+#: signal, so an account dropping out of `/accounts/get` is equally consistent
+#: with closure, with de-selection from sharing, and with the institution changing
+#: what it shares. A deriver writing `inactive` from that would be recording a
+#: conclusion the response does not contain. What this deriver records instead is
+#: the *observation* -- `last_seen_date`, below -- and `query._account_lifecycle`
+#: derives `no_longer_reported` from it at read time, named for what was seen.
+#: `inactive` remains the operator's own declaration, which is what lets AC-12.6
+#: rank it above the derived signal.
 _OPERATOR_OWNED: Final[frozenset[str]] = frozenset({"balance_class", "lifecycle_status"})
 
 #: Aggregator account types whose balance is money the operator *owes*.
@@ -793,7 +794,11 @@ def _upsert_account(
     duplicate silently.
     """
     existing = conn.execute(
-        select(accounts.c.account_id, accounts.c.first_seen_date).where(
+        select(
+            accounts.c.account_id,
+            accounts.c.first_seen_date,
+            accounts.c.last_seen_date,
+        ).where(
             accounts.c.connection_id == response.connection_id,
             accounts.c.source_account_id == source_account_id,
         )
@@ -821,6 +826,10 @@ def _upsert_account(
             insert(accounts).values(
                 **values,
                 first_seen_date=seen_date,
+                # AC-12.4: the same date at both ends on the first observation.
+                # The pair only diverges once a later roster names the account
+                # again, or stops naming it.
+                last_seen_date=seen_date,
                 created_at=response.received_at,
             )
         )
@@ -828,7 +837,7 @@ def _upsert_account(
         assert primary_key is not None  # an INTEGER PRIMARY KEY insert always yields one
         return int(primary_key[0])
 
-    account_id, first_seen_date = existing
+    account_id, first_seen_date, last_seen_date = existing
     # 🔴 **An update owns fewer columns than an insert, and the difference is the
     # point.** Applying one `values` dict to both would make derivation the
     # permanent owner of every column it names -- so an operator's correction to
@@ -838,12 +847,28 @@ def _upsert_account(
     #
     # `first_seen_date` takes the earliest mention rather than the latest, so a
     # replay in any order converges on the same row.
+    #
+    # 🔴 `last_seen_date` is the same property from the other end (AC-12.4), and
+    # the pair is what makes account retirement derivable at all: a maximum that
+    # only ever moves forward means replaying the archive in any order lands on
+    # the same date, so "this account was last listed on X" is a fact about the
+    # responses rather than about the order they happened to be replayed in.
+    # That order-independence is the specific care this deriver recorded as the
+    # reason retirement was deferred rather than half-built.
+    #
+    # `None` is the pre-migration-003 row that no sync has touched since. Taking
+    # `seen_date` for it is right and is not a special case wearing a coalesce:
+    # this response IS the latest observation of the account, whatever was or
+    # was not recorded before it.
     conn.execute(
         update(accounts)
         .where(accounts.c.account_id == account_id)
         .values(
             **{k: v for k, v in values.items() if k not in _OPERATOR_OWNED},
             first_seen_date=min(first_seen_date, seen_date),
+            last_seen_date=(
+                seen_date if last_seen_date is None else max(last_seen_date, seen_date)
+            ),
         )
     )
     return int(account_id)

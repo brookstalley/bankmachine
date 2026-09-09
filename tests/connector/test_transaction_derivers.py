@@ -386,6 +386,167 @@ def test_replaying_a_posting_transaction_does_not_insert_a_second_row(synced: Co
     assert len(_rows(synced)) == 1
 
 
+def test_a_settlement_that_changes_the_amount_updates_it_in_place(synced: Config) -> None:
+    """🔴 AC-13.2 — the ORDINARY settlement, and the one nothing here reached.
+
+    Both cases above send `89.40` on the hold and `89.40` on the posting, so they
+    would pass over an UPDATE that copied every column except the amount. A tip,
+    a fuel hold and a hotel incidental all settle at a different figure from the
+    one they were authorised for, which makes the changing amount the common case
+    rather than the exotic one.
+
+    🔴 The hold's figure is NOT retained as a second amount. There is one row and
+    one amount, and it is the settled one: keeping the authorised figure beside
+    it would give every consumer two numbers and no rule for which is money.
+    """
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(added=[_txn(transaction_id="pending-1", amount="89.40", pending=True)]),
+    )
+    pending_row_id = _rows(synced)[0]["transaction_id"]
+    assert _rows(synced)[0]["amount_minor"] == -8940
+
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(
+            added=[
+                _txn(
+                    transaction_id="posted-1",
+                    amount="103.20",
+                    pending=False,
+                    pending_transaction_id="pending-1",
+                )
+            ],
+            next_cursor="cursor-2",
+        ),
+    )
+
+    rows = _rows(synced)
+    assert len(rows) == 1, "a settlement at a new amount inserted a second row"
+    assert rows[0]["transaction_id"] == pending_row_id, "the local id must survive the transition"
+    assert rows[0]["amount_minor"] == -10320, (
+        "the settled amount must replace the hold's; a row still holding -8940 means the "
+        "UPDATE carried the identity across and left the figure behind"
+    )
+    assert rows[0]["pending"] == 0
+
+
+def test_a_hold_removed_in_the_same_page_as_its_posting_leaves_one_row(synced: Config) -> None:
+    """🔴 AC-13.3 — the hold and its own posting arrive together.
+
+    The aggregator may report the settlement as an `added` posting and the hold's
+    disappearance as a `removed` entry in the SAME page. Applied in the wrong
+    order that is a row that posts and is then soft-deleted, so the purchase
+    vanishes from every total — an undercount, which is the direction that gets
+    believed.
+    """
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(added=[_txn(transaction_id="pending-1", amount="89.40", pending=True)]),
+    )
+
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(
+            added=[
+                _txn(
+                    transaction_id="posted-1",
+                    amount="103.20",
+                    pending_transaction_id="pending-1",
+                )
+            ],
+            removed=[{"account_id": SOURCE_ACCOUNT, "transaction_id": "pending-1"}],
+            next_cursor="cursor-2",
+        ),
+    )
+
+    live = [row for row in _rows(synced) if row["removed_at"] is None]
+    assert len(live) == 1, (
+        "the hold's removal took its own settlement with it: the row that posted was "
+        "soft-deleted, so the purchase left every total"
+    )
+    assert live[0]["source_transaction_id"] == "posted-1"
+    assert live[0]["amount_minor"] == -10320
+
+
+@pytest.mark.parametrize("removal_first", [True, False])
+def test_a_hold_and_its_posting_resolve_to_one_row_whichever_page_lands_first(
+    synced: Config, removal_first: bool
+) -> None:
+    """🔴 AC-13.3 across PAGES, both orders.
+
+    The three change lists are applied added → modified → removed within a page,
+    so page boundaries are the only place their relative order can vary — and it
+    varies in both directions: a hold's removal can be paged before its posting
+    or after it. Either way exactly one non-removed row must survive, carrying
+    the settled amount.
+    """
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(added=[_txn(transaction_id="pending-1", amount="89.40", pending=True)]),
+    )
+    removal = _sync_body(
+        removed=[{"account_id": SOURCE_ACCOUNT, "transaction_id": "pending-1"}],
+        next_cursor="cursor-removal",
+    )
+    posting = _sync_body(
+        added=[
+            _txn(transaction_id="posted-1", amount="103.20", pending_transaction_id="pending-1")
+        ],
+        next_cursor="cursor-posting",
+    )
+
+    for body in (removal, posting) if removal_first else (posting, removal):
+        _apply(synced, TRANSACTIONS_SYNC.path, body)
+
+    live = [row for row in _rows(synced) if row["removed_at"] is None]
+    assert len(live) == 1, f"removal_first={removal_first} left {len(live)} live rows, not one"
+    assert live[0]["source_transaction_id"] == "posted-1"
+    assert live[0]["amount_minor"] == -10320
+    assert live[0]["pending"] == 0
+
+
+def test_a_hold_that_expires_without_posting_is_retained_as_a_removed_pending_row(
+    synced: Config,
+) -> None:
+    """🔴 AC-13.4's datastore half — the disappearance that is not a duplication.
+
+    A hold can simply expire. The row is soft-deleted like any withdrawal
+    (AC-2.2, unchanged), and what makes it ATTRIBUTABLE later is that it is still
+    marked `pending`: a hold that settled had its own row updated, so it leaves
+    as `pending = 0`. The read path tells the two apart on exactly that, and it
+    is the only thing distinguishing "the number fell because a hold went away"
+    from "the number fell because rows are missing".
+    """
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(added=[_txn(transaction_id="pending-1", amount="89.40", pending=True)]),
+    )
+
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(
+            removed=[{"account_id": SOURCE_ACCOUNT, "transaction_id": "pending-1"}],
+            next_cursor="cursor-2",
+        ),
+    )
+
+    rows = _rows(synced)
+    assert len(rows) == 1, "the expired hold was hard-deleted"
+    assert rows[0]["removed_at"] is not None
+    assert rows[0]["pending"] == 1, (
+        "an expired hold must stay marked pending; flipped to 0 it is indistinguishable "
+        "from a settled row that was later withdrawn"
+    )
+
+
 # --------------------------------------------------------------------------
 # AC-2.4 — idempotency
 # --------------------------------------------------------------------------

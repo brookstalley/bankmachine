@@ -81,6 +81,30 @@ nothing to migrate or grandfather.
   time, with the exact original kept in the archive. Ledger amounts are still converted exactly or
   refused. Recorded here rather than left implicit because "valuation" is a distinction this norm
   did not previously draw.
+  Scope (2026-09-09, AC-14.1): 🔴 **this norm is a PER-FEED claim, and a second institution is a new
+  observation rather than a covered case.** The normalization it requires is an *unconditional*
+  negation — `connector/plaid/derivers.py::_operator_signed_amount` negates every amount with no
+  branch and no condition — and the premise that makes the negation right was measured on **one
+  aggregator, one connection, one row**: `api-notes-plaid.md` §17, a merchant purchase arriving with
+  a positive `amount`. The norm therefore holds where it was measured and is *assumed* everywhere
+  else. An institution that signs its feed the other way is stored inverted, silently, and its
+  spending reads as income in every aggregate over it.
+  This is recorded as scope rather than as a caveat on the statement because the statement is not
+  weakened: the convention is still what every stored amount means, and no consumer applies its own
+  sign. What is bounded is the *evidence* for the conversion that produces it.
+  Mechanism (AC-14.2): `src/bankmachine/signs.py` measures the stored sign distribution per
+  connection over five never-plausibly-inflow categories and **reports** a connection whose
+  distribution is inverted — it never corrects one, per AC-14.4, because inverting on suspicion
+  fails in the direction that understates spending. The verdict rides `get_pipeline_health` per
+  connection, and an inverted connection raises `sign_convention_unverified` on the success path.
+  The check's negative control is the sandbox baseline measured on 2026-09-09 (219 rows in those
+  categories on the single enrolled connection, **219 negative and none positive**); its positive
+  control is a synthetic inverted feed in `tests/test_sign_convention.py`, carried in
+  `verify_norms_go_red.py` so the go-red is re-proved rather than remembered.
+  🔴 **The check is meaningless on one connection, which is why this scope is still open.** Until it
+  has run across two institutions the norm remains verified for one feed only — AC-14.7 and AC-14.8,
+  enqueued as VRF-006 in `.prawduct/operator-verification.md`, are what close it, and they are the
+  operator's.
 
 - **All monetary values are stored as integer minor units. No floats anywhere in the schema or in
   aggregation code.**
@@ -254,12 +278,25 @@ exact failure AC-11.8 exists to prevent.
 | `lifecycle_status` | text | `active` \| `inactive` | |
 | `opened_date` | calendar date | nullable | |
 | `first_seen_date` | calendar date | required | |
-| `closed_date` | calendar date | nullable, `>= first_seen_date` | |
+| `closed_date` | calendar date | nullable, `>= first_seen_date` | Operator-owned, like `lifecycle_status` |
 | `source` | text | `aggregator` \| `manual` | Provenance, never lost (AC-7.4) |
 | `created_at` / `updated_at` | UTC instant | required | |
+| `last_seen_date` | calendar date | nullable | 🔴 The date this account was last listed on a successful roster observation, as a **monotone maximum** (AC-12.4). Migration 003; last in column order because `ALTER TABLE` appends |
 
 - `(source = 'aggregator') <= (source_account_id IS NOT NULL)`.
 - Partial unique index `accounts_source_identity ON (connection_id, source_account_id) WHERE source_account_id IS NOT NULL`.
+- 🔴 **`last_seen_date` is nullable and was not backfilled, and the null is load-bearing.** It means
+  *no roster observation is recorded for this account*, and `query._account_lifecycle` reads it as
+  exactly that — never as a date. The deeper reason there is no backfill is that there is nothing
+  honest to backfill with: the correct value is the connection's last successful roster observation,
+  and the absence of that record is the whole reason AC-12.4 exists.
+  ⚠️ **Reading a null as `first_seen_date` was tried and is wrong**, recorded so it is not
+  re-proposed as an obvious simplification. It looks true for one account and breaks across a
+  connection: the verdict compares an account against the maximum over its siblings, first-seen dates
+  legitimately differ between them (a second card, a later savings account), and every older account
+  then fell behind that maximum and was reported closed for the whole window until the connection's
+  next successful sync. A connection with no observation marks nothing absent; once any of its
+  accounts carries one, an account still null was genuinely not in that roster.
 
 🔴 **Why `balance_class` exists as data rather than being derived from `account_type`.** `net_worth`
 is an enumerated consumer of this schema and `account_type` cannot answer it: the types are the
@@ -339,8 +376,30 @@ Identity and access indexes:
 - `transactions_by_account_date ON (account_id, posted_date)` — the shape the coverage walk and every
   spending/cashflow aggregate reads in.
 - `transactions_pending_link ON (account_id, source_pending_transaction_id) WHERE source_pending_transaction_id IS NOT NULL`
-  — AC-2.3: a posting transaction finds its pending row **by the source's own pending identifier
-  rather than by guessing from amount and date.**
+  — the **reverse** lookup: given a hold, which row settled out of it, and in the aggregate, which
+  rows in a window arrived by replacing a hold. `query._hold_transitions` is the reader, and AC-13.4
+  is why it exists — a total that moved because a hold settled has to be attributable, and a settled
+  row is otherwise indistinguishable from any other posted row. Asking for it as
+  `source_pending_transaction_id IS NOT NULL` is what lets SQLite plan against this partial index,
+  which holds only the small minority of rows carrying a link; asserted by `EXPLAIN QUERY PLAN` in
+  `tests/test_pending_semantics.py`, over the statement the engine actually ran.
+
+  🔴 **This index does NOT serve AC-2.3's pending→posted match, and the line that said it did was
+  wrong** (found 2026-09-09, resolved under AC-13.6 by giving the index a reader rather than dropping
+  it). AC-2.3's match is served by `transactions_source_identity`: `_existing_transaction`
+  (`connector/plaid/derivers.py`) compares an incoming `pending_transaction_id` against the pending
+  row's **own** `source_transaction_id`, because a hold answers to its own id right up until it
+  posts. That is the correct lookup and it is unchanged. One account of the two directions, held
+  here, on the `Index` in `store/schema.py`, and in `_existing_transaction`'s docstring.
+
+  **Corrected in the DDL too, 2026-09-09.** The comment beside this index in
+  `store/migrations/core_schema.py` repeated the withdrawn claim, and it was left standing for one
+  commit on the belief that the frozen-DDL norm covered it. It does not: `CORE_SCHEMA_DDL` is a tuple
+  of statement *strings* and the hash is taken over those, so a Python comment between them is
+  outside the freeze. That distinction is worth keeping — "the DDL is frozen" is a rule about what
+  the database was told, not about the prose around it — and the comment beside an index is what the
+  next reader believes, so leaving it wrong while correcting only this document would have kept the
+  misleading half exactly where it does its damage.
 
 #### `balances_daily` (AC-3.1)
 
@@ -470,15 +529,62 @@ securities ──1:N──> holdings
 `retired` is terminal for *syncing*, not for data: retiring never deletes history, and a retired
 connection's accounts keep every row they had.
 
-### Account lifecycle (AC-6.5)
+### Account lifecycle (AC-6.5, FR-9)
+
+**Two axes, and keeping them apart is the design.** One is what the *operator declared*; the other
+is what the *institution last did*. They are stored separately, and only the read path combines them.
 
 ```
-  active ──── closed/retired ────> inactive   (closed_date set)
+  stored (operator's):   active ──── retire ────> inactive   (closed_date set)
+
+  observed (roster's):   last_seen_date, a monotone MAXIMUM per account
+                         roster_last_observed = MAX(last_seen_date) over the connection's accounts
 ```
 
-🔴 **A retired account's dormant period must not read as a permanent coverage gap.** The coverage
-report reads `lifecycle_status` and `closed_date` so a post-closure silence is *identified as
-closure*, not reported as a hole.
+The value on the wire is derived from both, at read time, and is **never stored**:
+
+| `lifecycle` | Means | Reached by |
+|---|---|---|
+| `active` | Declared active, and listed on this connection's most recent successful roster | the ordinary case |
+| `closed` | `lifecycle_status = 'inactive'` | 🔴 the **operator's declaration only** — the one value that asserts a closure |
+| `no_longer_reported` | Declared active, but `last_seen_date < roster_last_observed` | derived from the observations |
+
+🔴 **`no_longer_reported` names the observation, never the conclusion (AC-12.2).** The aggregator
+publishes no closure signal, so a value called `closed` computed from absence would be a confident
+wrong number. Absence is equally consistent with closure, with the account being de-selected from
+sharing, and with the institution changing what it shares — and the schema field's own description
+says so, in the payload.
+
+🔴 **AC-12.5's clauses follow from how the maximum is computed**, rather than from three guards
+written by hand. `roster_last_observed` is a maximum over the connection's *own* accounts, so a
+connection that could not be fetched moves no date and marks nothing absent; a connection whose
+*entire* roster vanishes moves the maximum with it, so nothing is ever older than it; and an
+import-only account has no connection, so both dates are null and the comparison is never reached. A
+`connections.roster_observed_at` column would have needed each of those written in by hand.
+
+⚠️ **"By construction" was withdrawn for the middle clause on 2026-09-09, and this section said it
+until then.** The arithmetic is a consequence of the maximum; whether the resulting silence is
+*right* is not. AC-12.5 justifies it by scale — fourteen simultaneous closures is a pipeline failure
+rather than fourteen closures — and at a connection holding **one** account that argument does not
+hold: one account closing is ordinary, and it is the whole roster, so such an account reports
+`active` indefinitely. The behaviour still obeys the ratified criterion, deliberately; the gap is the
+criterion's and is filed as **#51**. `query._account_lifecycle` carries the same correction.
+
+🔴 **The operator's declaration outranks the derived signal, and a rebuild never undoes it
+(AC-12.6).** `_OPERATOR_OWNED` keeps the accounts deriver out of `lifecycle_status`, and `accounts`
+carries no `derivation_version_id` — so `store.rebuild` classifies it as a dimension and never
+empties it. The observation still rides the row beside the declaration, as evidence.
+
+⚠️ **`closed` is reachable in the read path and unreachable in the product.** No CLI command and no
+MCP path can set `lifecycle_status` — the MCP surface is read-only by norm, and no `accounts retire`
+command exists. Until one does, the system can report what it suspects and the operator cannot
+confirm it.
+
+🔴 **A retired account's dormant period must not read as a permanent coverage gap (AC-12.7).**
+`get_coverage_report` reads the same producer `list_accounts` does (`query._account_lifecycle`) and
+leaves `silence_exceeds_cadence` false for a non-active account. The `silence_ratio` beside it is
+still reported as measured: it is the evidence, and nulling it would destroy the number the ruling
+on that field exists to preserve.
 
 ### Transaction lifecycle (AC-2.2, AC-2.3)
 

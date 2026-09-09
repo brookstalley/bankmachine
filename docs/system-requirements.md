@@ -297,6 +297,12 @@ timestamps. The two are never mixed.
 and a closed/retired date. A retired account's dormant period must not read as a permanent coverage
 gap, and retiring an account never deletes its history.
 
+> **Amendment (2026-09-09).** This lifecycle has never had a transition. `lifecycle_status`
+> is written once, to `active`, by the accounts deriver, and no code path and no operator
+> command has ever set it to `inactive`; `closed_date` has zero readers and zero writers in
+> `src/`, and the coverage report AC-11.1 audits reads neither column. **FR-9's AC-12.4–12.6
+> supply the transition.** See `.prawduct/artifacts/discovery-account-lifecycle.md`.
+
 **AC-6.6** — Institution identity is data. No table, column, enum, or code path encodes a specific
 institution's name or behavior.
 
@@ -341,6 +347,96 @@ surface via `get_pipeline_health`**, not something to silently classify.
 **AC-8.5** — The rule engine is extensible: adding a rule type is a code change, but applying any
 existing rule type to any account is configuration.
 
+
+### FR-9 · Account lifecycle, made visible
+
+*Derived in `.prawduct/artifacts/discovery-account-lifecycle.md` (#40). Every criterion below was derived in the cited discovery document, which records the evidence, the alternatives weighed, and its assumptions as **vetoable**. They are in force as requirements; an assumption the owner rejects retires the criteria that rest on it.*
+
+🔴 **The treatment ruling was taken by the owner on 2026-09-09: a total over account balances
+INCLUDES non-active accounts and flags them**, stating the magnitude they contributed. The
+alternative — excluding them and stating the excluded magnitude — was the recommendation on file
+and was not taken; the argument on both sides is preserved in the discovery document. The ruling
+follows #18's *classify, do not filter*: an overcount gets questioned and an undercount gets
+believed, and a net worth that drops with no visible cause is the quieter of the two errors. What
+makes the inclusion safe is the second half, which is not optional — the magnitude rides the
+payload, so the reader can perform the subtraction the system refuses to perform for them.
+
+**AC-12.1 · Lifecycle rides every account row.** 🔴 Every `list_accounts` row carries the lifecycle
+fields — always present, never behind a parameter, on every row. *Why:* the same argument #19 settled
+for coverage. The consumer this fails is the agent that never thought to ask the verification
+surface, and a field a caller must opt into is a field that caller still does not have. AC-9.5's
+per-account rule and `api-contract.md` § Direction's second norm both land here.
+
+**AC-12.2 · The vocabulary names the observation, never the conclusion.** The lifecycle value is
+drawn from a closed set published as an `enum` on the tool's `outputSchema`, and no value asserts a
+closure the aggregator did not report. The value meaning *"the institution stopped listing this
+account"* is named for that observation and its description says, in the payload, that it is
+consistent with closure, with de-selection from sharing, and with the institution changing what it
+shares. *Why:* the aggregator reports no closure signal (§ *What the connector can actually know*),
+so a value named `closed` computed from absence would be a confident wrong number of exactly the
+class this surface exists to refuse.
+
+**AC-12.3 · The evidence rides beside the verdict, as dates rather than as a flag.** Every row
+carries the dates the lifecycle value was computed from, present and nullable, never absent. *Why:*
+the `silence_ratio` precedent, ruled on this same surface — a number lets a reader see a borderline
+case and a boolean is what destroys that. A consumer must be able to re-derive the verdict from the
+row without a second call.
+
+**AC-12.4 · The roster observation is recorded, so the state is reachable at all.** Each successful
+roster derivation records, per account, the date that account was last listed, as a **monotone
+maximum** — the mirror of `first_seen_date`'s minimum. *Why:* this is the requirement #40 says does
+not exist. Without a recorded observation there is no non-`active` state for the read path to read,
+and a min/max pair is what makes the record order-independent under archive replay — which is why
+the accounts deriver could not retire an account without first recording an observation to retire it
+against, and why the gap was left open rather than half-built.
+
+**AC-12.5 · Absence is measured within one connection, against a successful observation, and never
+against silence.** A connection whose roster could not be fetched marks nothing absent. A connection
+whose *entire* roster is absent marks nothing absent. An account with no connection — the FR-7
+import-only path — is never marked absent. *Why:* each clause removes a way for a pipeline failure to
+be reported as a household event. The whole-roster clause is the important one: fourteen simultaneous
+closures is not a thing that happens, and the connection-level failure it really is already has a
+home in `get_pipeline_health`.
+
+**AC-12.6 · The operator's declaration outranks the derived signal, and a rebuild never undoes it.**
+Where a stored `lifecycle_status` and the derived observation disagree, the stored value is
+authoritative and the observation still rides the row as evidence. *Why:* `_OPERATOR_OWNED` already
+declares the intent and `accounts` is not a rebuildable table (it carries no `derivation_version_id`,
+so `rebuild.py`'s classification never empties it), so the property is nearly free — but it is only
+*true* once something can set the column, and it must be asserted rather than assumed.
+
+**AC-12.7 · A retired account's silence is identified as closure, not reported as a hole.**
+`get_coverage_report` reads the lifecycle state, and a non-active account's trailing silence is not
+reported as a coverage finding. *Why:* this is `data-model.md` § Account lifecycle's existing 🔴 rule,
+verified unmet in shipped code (§ *Premise verification*), and AC-11.1's *"a retired account's
+post-closure period is not a gap"* says the same thing from the verification gate's side. One
+producer serves both tools, as `_account_coverage` already does — built twice they can disagree, and
+a verification surface that contradicts the analysis surface is worse than one that is absent.
+
+**AC-12.8 · A total over account balances includes non-active accounts, and never without stating
+what they contributed.** 🔴 *Ruled by the owner 2026-09-09: include and flag.* A response carrying a
+count or a sum over accounts includes non-active accounts in the figure, states that it did, and
+states the magnitude they contributed — a count and a signed sum, both always present and zero
+rather than absent when none qualify. The answer also carries `account_no_longer_active`. The
+envelope's own `coverage.accounts` count — an unfiltered `COUNT(*)` over `accounts` in
+`query._coverage` when this was written — is covered by this clause: it keeps counting every account
+and gains the non-active figure beside it.
+*Why:* both failure modes are quiet. Silently including a frozen balance is #40's filed bug; silently
+excluding one is a net worth that drops with no visible cause, which is #18's ruling arriving from
+the other side. Stating the treatment is what both rulings have in common, and it is why this
+criterion can be ratified before the ruling is.
+
+**AC-12.9 · The transition is exercised by a fixture in which a roster shrinks, and the assertion is
+seen red.** A test replays two archived roster observations for one connection, the second listing
+one fewer account, and asserts the account's lifecycle changes and its evidence dates are what the
+observations imply. *Why:* two reasons, and the second is the one worth recording. First, this repo's
+`verify_norms_go_red.py` discipline — an assertion never seen fail is not evidence. Second, and
+unlike this document's sibling preconditions: 🔴 **#40 is testable in-repo.** #22 needs a real
+settlement cycle and #23 needs a real deposit, which is why both were deferred; a shrinking roster is
+just two archived responses, and the sandbox's inability to *produce* one is not an inability to
+*replay* one. This is what makes #40 the buildable member of the remaining three, and the claim
+should be pinned by a test rather than left as an assertion in a discovery document.
+
 ---
 
 ## 5. MCP tool surface
@@ -368,6 +464,13 @@ Required tools:
 `money_summary` and `get_coverage_report` are implemented; `balance_history`, `list_holdings` and
 `find_recurring` are not yet built, and the descope — including what the shipped tools do not yet
 carry — is recorded in `.prawduct/artifacts/api-contract.md`.)*
+
+> 🔴 **`list_accounts`'s "lifecycle state" has never been on the wire (2026-09-09).** It is
+> named in the row above and in `api-contract.md`'s equivalent table, and it was never built.
+> `test_the_documented_tool_surface_is_the_built_one.py` compares tool **name** sets only, so a row
+> *field* promised in two contracts and never delivered is invisible to every guard in this repo.
+> **FR-9's AC-12.1–12.3 build it.** The reusable lesson is the gap rather than the field: nothing
+> here checks the shape of a row against what the contracts say it carries.
 
 > **Amendment (2026-09-09, ratified by `api-contract.md` § Direction's fourth norm).** This table
 > went from ten tools to eight. 🔴 **A tool's boundary is drawn where the answer *shape* changes,
@@ -451,6 +554,12 @@ back to the full history window the institution actually supplied, with all gaps
 account's own cadence** enumerated and explained. Genuine no-activity periods are fine but must be
 identified as such; a retired account's post-closure period is not a gap.
 
+> **Note (2026-09-09).** This clause's *"a retired account's post-closure period is not a
+> gap"* is **not met by the shipped `get_coverage_report`**, which reads no lifecycle column
+> and so reports a closed account's silence as an ordinary and permanent coverage finding.
+> AC-12.7 closes it. Recorded here rather than only in the discovery document because the
+> gate is the thing that is currently claiming more than the code delivers.
+
 > **Amendment (2026-09-08, owner ruling).** This said "gaps >7 days"; the constant is amended here
 > for the reason recorded under AC-9.1, and the two must stay in step — this gate is what
 > `get_coverage_report` is checked against, so a gate holding one threshold and a tool computing
@@ -467,6 +576,17 @@ averaged away.**
 **AC-11.3 · Deduplication** — Zero duplicate transactions, tested across the pending→posted
 transition, across a re-sync, and across overlapping file imports.
 
+> **Amendment (2026-09-09).** AC-11.3 covers *duplication* across the pending→posted
+> transition, and that half is implemented and tested. It does **not** cover three things
+> #22 is about, each a different failure from a duplicate: a settlement that **changes the
+> amount** (the ordinary case — a tip, a fuel hold — which both existing dedup cases miss,
+> since they send the same amount on the hold and on the posting); a hold that **expires
+> without posting**, which is a disappearance rather than a duplication; and whether a total
+> **discloses** how much of itself is pending. Zero duplicates is compatible with all three
+> going wrong. They are covered by AC-13.2, AC-13.4 and AC-13.1 respectively, and all three
+> now have tests (`tests/connector/test_transaction_derivers.py`,
+> `tests/test_pending_semantics.py`); AC-11.3's own scope is unchanged by that.
+
 **AC-11.4 · Idempotency** — Two consecutive syncs produce zero net changes. Automated.
 
 **AC-11.5 · Rebuild** — Rebuild from raw responses reproduces the normalized tables
@@ -481,6 +601,100 @@ institution's own statement. Automation can be wrong in ways that are internally
 **AC-11.8 · Shortfall recording** — Where the aggregator returned **less history than requested**,
 the delta is recorded explicitly as a known gap rather than the returned window being treated as
 complete.
+
+
+### Pending-transaction semantics (#22)
+
+*Derived in `.prawduct/artifacts/discovery-production-data-semantics.md`. Every criterion below was derived in the cited discovery document, which records the evidence, the alternatives weighed, and its assumptions as **vetoable**. They are in force as requirements; an assumption the owner rejects retires the criteria that rest on it.*
+
+**Ordinary build requirements, gating on nothing: AC-13.1 through AC-13.7.** Only AC-13.8 and AC-13.9
+require production data, and § 7 is their home because they are operator-run gate checks of the
+kind AC-11.6 and AC-11.7 already are.
+
+**AC-13.1 · Pending is disclosed in the payload.** Every aggregate answer states how many of its
+contributing rows are `pending` and their signed magnitude, as an **always-present** field — present
+and zero, never absent. A total that mixes authorisation holds with settled amounts and does not say
+so is the defect class this surface exists to refuse.
+
+**AC-13.2 · Settlement may change the amount.** A posting entry whose amount differs from its
+pending row updates the amount in place; the row count stays one and the local `transaction_id`
+survives. The hold amount is not retained as a second figure.
+
+**AC-13.3 · Order-independence across the change lists.** A pending row delivered in `removed` in
+the same page as, or a later page than, its own posting resolves to exactly **one** non-removed row,
+whichever order the three change lists are applied in and however the pages are split.
+
+**AC-13.4 · An expired hold is attributable, not silent.** A pending row that is removed without ever
+posting is retained with `removed_at` (AC-2.2, unchanged) **and** its exit is visible: a total that
+shrank because a hold dropped off is distinguishable by the consumer from a total that shrank
+because the data is incomplete.
+
+**AC-13.5 · A stranded hold is reported.** A row still `pending` beyond a declared age threshold is
+surfaced on the verification surface. The threshold is declared with its derivation, per the
+precedent that a fixed constant against a variable cadence produces findings and no signal
+(AC-9.1/AC-11.1's amendment).
+
+**AC-13.6 · The pending link is described as it is implemented.** `transactions_pending_link` either
+serves a query that exists or is removed. Schema, `data-model.md` § Constraints, and the resolving
+query state **one** account of how a posting row finds its pending row.
+
+**AC-13.7 · The read path is exercised against pending rows.** At least one query-layer and one
+MCP-layer fixture carries `pending: true` rows. Every such fixture in the suite today hardcodes
+`pending: False`, so no read-path assertion can currently distinguish correct handling from none.
+
+**AC-13.8 · One real settlement is observed and recorded.** *(Production; gating — see § The gate.)*
+A pending row is noted while pending and re-queried after it posts: it appears exactly once, at the
+settled amount, with the local id preserved. Recorded in `.prawduct/operator-verification.md`.
+
+**AC-13.9 · The observed settlement becomes a regression fixture.** The raw
+`/transactions/sync` pages spanning that settlement are extracted from `raw_responses`, redacted,
+and committed, and AC-13.2 and AC-13.3 are re-asserted against them.
+
+### Sign convention on a real inflow (#23)
+
+*Derived in `.prawduct/artifacts/discovery-production-data-semantics.md`. Every criterion below was derived in the cited discovery document, which records the evidence, the alternatives weighed, and its assumptions as **vetoable**. They are in force as requirements; an assumption the owner rejects retires the criteria that rest on it.*
+
+**Ordinary build requirements, gating on nothing: AC-14.1 through AC-14.6.** AC-14.7–14.9 require
+production data across at least two institutions.
+
+**AC-14.1 · The convention is a per-feed claim and is stated as one.** The operator-signed
+convention rests on a measured premise about **one** aggregator on **one** connection
+(`api-notes-plaid.md` §17). `data-model.md` § Direction records it as a claim whose scope is
+per-connection, so a second institution is a new observation rather than a covered case.
+
+**AC-14.2 · Per-connection sign-convention check.** Over a declared set of never-plausibly-inflow
+categories, the stored sign distribution is computed **per connection**. A connection whose
+distribution is inverted relative to the convention is reported.
+
+**AC-14.3 · The check declares its category set, its threshold, and its controls.** The negative
+control is the measured sandbox baseline (219 of 219 negative on one connection, 2026-09-09); the
+positive control is a synthetic inverted feed. A check with no observed go-red is not coverage.
+
+**AC-14.4 · An inverted feed is reported, never silently corrected.** Auto-inverting a suspect
+connection is a heuristic that can be wrong in the direction that *understates* spending — the
+argument that decided #18 and #20. The system refuses and names the connection.
+
+**AC-14.5 · No aggregate is computed over a flagged connection without saying so.** The finding
+rides the success path as a warning kind, not the error channel and not a log line
+(`api-contract.md` § Direction).
+
+**AC-14.6 · Free-text description is never a sign oracle.** The sandbox's payroll row reads
+"ACH Electronic Credit" and is categorised `TRANSFER_OUT` in both structured fields. Round 2's
+adjudication — faithful passthrough — is settled, and this criterion exists so it is not re-derived
+from the description a fourth time.
+
+**AC-14.7 · One real deposit and one real debit are checked by eye and recorded.** *(Production;
+gating.)* A known paycheck reads positive and a known bill negative, against amounts the operator
+already knows. Recorded in `.prawduct/operator-verification.md`.
+
+**AC-14.8 · The check is exercised across at least two institutions.** *(Production; gating.)* The
+per-connection check is meaningless on one connection, which is exactly why the sandbox cannot
+exercise it. Two connections at different institutions is the minimum that makes AC-14.2 an
+observation rather than a tautology.
+
+**AC-14.9 · The observed deposit becomes a regression fixture.** Its raw page is extracted from
+`raw_responses`, redacted, and committed, so the inflow direction is machine-checked from that
+commit forward.
 
 ---
 

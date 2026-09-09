@@ -645,6 +645,46 @@ def test_retiring_an_account_keeps_its_history_and_dates_its_closure(
     assert len(writer.execute(select(transactions)).all()) == 1
 
 
+def test_the_database_refuses_an_instant_in_the_last_listed_column(
+    writer: SAConnection,
+) -> None:
+    """Migration 003's column keeps AC-6.4 the way migration 002's do.
+
+    🔴 Through raw SQL on purpose, like every other negative case in this file:
+    `CalendarDateColumn` already refuses this in Python, and asserting only that
+    would test the type decorator twice and the database not at all — while
+    `sync shell` ships an operator a prompt that reaches the file with no type
+    decorator anywhere in between. `last_seen_date` arrived by `ALTER TABLE`,
+    which is the one path where a constraint is easiest to leave off.
+    """
+    s = seed(writer)
+    with pytest.raises(IntegrityError):
+        writer.execute(
+            text("UPDATE accounts SET last_seen_date = :value WHERE account_id = :id"),
+            {"value": "2026-09-06T00:00:00+00:00", "id": s.account_id},
+        )
+
+
+def test_the_last_listed_date_is_the_maximum_side_twin_of_the_first(
+    writer: SAConnection,
+) -> None:
+    """AC-12.4. Nullable, because migration 003 backfilled nothing.
+
+    A null is not "never listed" — it is a row this build's migration reached
+    before any sync did, and `query._account_lifecycle` reads it as
+    `first_seen_date`, which is true by construction.
+    """
+    s = seed(writer)
+
+    account = writer.execute(select(accounts)).one()
+    assert account.last_seen_date is None, "migration 003 must not have invented a date"
+
+    writer.execute(
+        update(accounts).where(accounts.c.account_id == s.account_id).values(last_seen_date=TODAY)
+    )
+    assert writer.execute(select(accounts.c.last_seen_date)).scalar_one() == date(2026, 9, 6)
+
+
 def test_a_closed_date_before_the_account_was_first_seen_is_refused(
     writer: SAConnection,
 ) -> None:

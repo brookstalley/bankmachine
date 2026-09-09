@@ -31,7 +31,7 @@ from collections.abc import Callable, Iterator
 from datetime import date
 from typing import IO, Any
 
-from bankmachine import envelope, mcp_resources, query
+from bankmachine import envelope, mcp_resources, query, signs
 from bankmachine.build_id import build_identity
 from bankmachine.cli.exit_codes import EXIT_ERROR, EXIT_OK
 from bankmachine.config import Config
@@ -208,7 +208,47 @@ def _output_schema(
 
     coverage: dict[str, Any] = {
         "connections": {"type": "integer"},
-        "accounts": {"type": "integer"},
+        "accounts": {
+            "type": "integer",
+            "description": (
+                "every account, INCLUDING the ones no longer active -- read "
+                "`accounts_not_active` beside it rather than assuming this figure was filtered"
+            ),
+        },
+        # 🔴 AC-12.8's figure, on every answer because `accounts` is on every
+        # answer. The treatment is include-and-flag: the count above keeps
+        # counting everything, and these two say what the non-active accounts
+        # contributed, so a reader can perform the subtraction this server
+        # refuses to perform for them. Both are present and zero rather than
+        # absent, because the magnitude is the load-bearing half -- a flag with
+        # no figure tells a consumer something is wrong and leaves it unable to
+        # act.
+        "accounts_not_active": {
+            "type": "integer",
+            "description": (
+                "how many of `accounts` are closed or no longer reported; their balances are "
+                "frozen as of the date each row names. 0 means every account is still being "
+                "reported"
+            ),
+        },
+        "not_active_balance_minor_units": {
+            "type": "array",
+            "description": (
+                "what those accounts contribute to any total over balances, in MINOR UNITS and "
+                "signed from the account holder's point of view. Per currency, never one "
+                "integer across currencies. Empty means they contribute nothing -- quote this "
+                "beside any balance total you report"
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "currency": {"type": "string"},
+                    "current_minor_units": {"type": "integer"},
+                },
+                "required": ["currency", "current_minor_units"],
+                "additionalProperties": False,
+            },
+        },
         "transactions": {
             "type": "integer",
             "description": "store-wide, and never narrowed by the question asked",
@@ -350,9 +390,72 @@ def _output_schema(
                         }
                         for flow in query.FLOW_CLASSES
                     },
+                    # 🔴 AC-13.1: how much of the figures above is not settled
+                    # money. ALWAYS PRESENT, zero when nothing is pending -- a
+                    # key that appeared only when it was non-zero would leave a
+                    # reader unable to tell "no holds" from "this tool does not
+                    # say", and the whole reason the field exists is that a total
+                    # mixing holds with settled amounts changes without any new
+                    # activity.
+                    "pending_transactions": {
+                        "type": "integer",
+                        "description": (
+                            "how many of the rows behind these totals are authorisation "
+                            "holds that have not settled. 0 is a real answer"
+                        ),
+                    },
+                    "pending_net_minor_units": {
+                        "type": "integer",
+                        "description": (
+                            "what those holds come to, SIGNED from the account holder's "
+                            "point of view -- the amount these totals could move by when "
+                            "the holds settle or expire, with no new activity at all"
+                        ),
+                    },
+                    # 🔴 AC-13.4: the two ways a figure over this window moves
+                    # with no new activity, so a consumer watching one drift can
+                    # attribute the change instead of doubting the data. Neither
+                    # is part of the three-class outflow identity above, and
+                    # neither may be added to it.
+                    "expired_holds": {
+                        "type": "integer",
+                        "description": (
+                            "holds in this window that were withdrawn without ever posting. "
+                            "They are EXCLUDED from every figure here, so a total that "
+                            "shrank against an earlier answer is explained by this rather "
+                            "than by missing data"
+                        ),
+                    },
+                    "expired_holds_net_minor_units": {
+                        "type": "integer",
+                        "description": (
+                            "what those withdrawn holds came to, signed -- the amount that "
+                            "left these totals by expiring"
+                        ),
+                    },
+                    "settled_from_hold": {
+                        "type": "integer",
+                        "description": (
+                            "rows in this window whose amount arrived by settling an "
+                            "earlier hold. A settlement may differ from the hold, so these "
+                            "are the rows whose contribution changed rather than appeared"
+                        ),
+                    },
+                    "settled_from_hold_net_minor_units": {
+                        "type": "integer",
+                        "description": "what those settled rows come to, signed",
+                    },
                 },
                 "required": ["currency"]
-                + [f"{flow}_outflow_minor_units" for flow in query.FLOW_CLASSES],
+                + [f"{flow}_outflow_minor_units" for flow in query.FLOW_CLASSES]
+                + [
+                    "pending_transactions",
+                    "pending_net_minor_units",
+                    "expired_holds",
+                    "expired_holds_net_minor_units",
+                    "settled_from_hold",
+                    "settled_from_hold_net_minor_units",
+                ],
                 "additionalProperties": False,
             },
         }
@@ -382,6 +485,62 @@ def _coverage_row_fields() -> dict[str, dict[str, Any]]:
         "transaction_count": {
             "type": "integer",
             "description": "0 is a real answer: the account has no transaction data at all",
+        },
+    }
+
+
+#: The per-account lifecycle facts, on the same axis and by the same rule as the
+#: coverage fragment above: spelled ONCE, produced once (`query._account_lifecycle`),
+#: carried by both tools that report an account. `list_accounts` carries them so
+#: an agent that never thought to ask the verification surface still learns a
+#: balance is frozen; `get_coverage_report` carries them because they are what
+#: tells a retired account's silence from a hole.
+def _lifecycle_row_fields() -> dict[str, dict[str, Any]]:
+    """A fresh dict per call, like every other schema fragment here."""
+    return {
+        "lifecycle": {
+            "type": "string",
+            # 🔴 The vocabulary itself, never a copy of it -- the same rule the
+            # warning `kind` enum follows two functions up, and the `FLOW_CLASSES`
+            # precedent. A list retyped here would start refusing answers this
+            # server sends the first time a fourth value is classified.
+            "enum": list(query.LIFECYCLE_VALUES),
+            "description": (
+                "🔴 `no_longer_reported` names an OBSERVATION, not a closure: the institution's "
+                "most recent successful roster no longer lists this account, which is "
+                "consistent with closure and equally consistent with the account being "
+                "de-selected from sharing or the institution changing what it shares. The "
+                "balance beside it is FROZEN as of `last_seen_in_roster` and is not a fact "
+                "about today. `closed` is the operator's own declaration and is the only value "
+                "that asserts a closure"
+            ),
+        },
+        "closed_date": {
+            "type": ["string", "null"],
+            "description": (
+                "when the operator recorded this account as closed; null when none has been "
+                "recorded, including for an account that is merely no longer reported"
+            ),
+        },
+        "last_seen_in_roster": {
+            "type": ["string", "null"],
+            "description": (
+                "the date this account was last listed by its institution; null for an "
+                "import-only account, which has no roster behind it. A DIFFERENT fact from "
+                "`last_transaction_date` and often a much later one -- an account can be "
+                "listed for months after its last transaction, and neither may be derived "
+                "from the other"
+            ),
+        },
+        "roster_last_observed": {
+            "type": ["string", "null"],
+            "description": (
+                "the date this account's institution's roster was last successfully observed; "
+                "null for an import-only account. Read it against `last_seen_in_roster`: the "
+                "two being equal is what makes an account `active`, and the earlier one is the "
+                "whole derivation of `no_longer_reported`, so the verdict can be re-derived "
+                "from this row without a second call"
+            ),
         },
     }
 
@@ -510,7 +669,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "recorded balance. Amounts are INTEGER MINOR UNITS (cents for USD) and the "
                 "field name says so. Signed from the account holder's point of view: a "
                 "positive balance is value held, a negative one is value owed, so a credit "
-                "card balance is negative."
+                "card balance is negative. 🔴 Every row carries `lifecycle`: a balance on a "
+                "row that is not `active` FROZE on `last_seen_in_roster` and is not a fact "
+                "about today, so read it before summing anything into a net worth."
             ),
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
             "outputSchema": _output_schema(
@@ -534,6 +695,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     # 🔴 On every row, never behind a parameter: the failure this
                     # closes is an agent that never thought to ask.
                     **_coverage_row_fields(),
+                    **_lifecycle_row_fields(),
                 },
                 windowed=False,
                 capped=False,
@@ -552,6 +714,11 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "often absent or wrong -- it reads 'FUN' for a purchase whose description is "
                 "'SparkFun'. Do not roll up or match on `merchant` without saying it may be "
                 "wrong, and prefer `description` when the two disagree. "
+                "🔴 A row with `pending: true` is an AUTHORISATION HOLD, not a completed "
+                "amount: it can settle at a different figure and it can expire without "
+                "settling at all. Do not fold one into a figure you present as money spent "
+                "without saying so. When a page holds any, the answer carries an "
+                "`includes_pending_rows` warning naming how many and what they come to. "
                 + _WINDOW_NOTE
                 + " "
                 + _TRUNCATION_NOTE
@@ -633,7 +800,14 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "purchases already counted under the categories they were spent in. Neither "
                 "is spending, and both can dwarf it. Read `totals` before quoting any "
                 "spending figure, and quote `external_spend_outflow_minor_units` from it. "
-                + _WINDOW_NOTE
+                "🔴 EVERY row and every `totals` entry says how much of itself is an "
+                "unsettled authorisation hold (`pending_transactions`, "
+                "`pending_net_minor_units`, always present and 0 when none). A hold is not "
+                "money spent — it can settle at a different figure or expire without "
+                "settling — so quote the settled part as the answer and the pending part as "
+                "a separate outstanding figure. `totals` also carries `expired_holds` and "
+                "`settled_from_hold`, which are why a figure over this window can differ "
+                "from one you were given earlier with no new activity in between. " + _WINDOW_NOTE
             ),
             "inputSchema": {
                 "type": "object",
@@ -690,6 +864,24 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             "view: negative is money lost over the window"
                         ),
                     },
+                    "pending_transactions": {
+                        "type": "integer",
+                        "description": (
+                            "how many of this group's rows are authorisation holds that "
+                            "have not settled. 0 is a real answer, and the key is always "
+                            "present"
+                        ),
+                    },
+                    "pending_net_minor_units": {
+                        "type": "integer",
+                        "description": (
+                            "🔴 the part of `net_minor_units` that is NOT settled money, "
+                            "signed the same way. A hold can settle at a different figure "
+                            "or expire without settling, so this is how far this row can "
+                            "move with no new activity. Never quote a group as money spent "
+                            "without saying what part of it is this"
+                        ),
+                    },
                 },
                 windowed=True,
                 capped=False,
@@ -703,7 +895,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "Every connection, when it last synced, and what is wrong with it — including "
                 "when there is no datastore at all. 🔴 Call "
                 "this before trusting a total that looks surprising: a granted history "
-                "window of null means NOT YET MEASURED, never 'no shortfall'."
+                "window of null means NOT YET MEASURED, never 'no shortfall', and a "
+                "`sign_convention` of `inverted` means that connection's amounts may have "
+                "their direction backwards — they are reported as stored and never corrected."
             ),
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
             "outputSchema": _output_schema(
@@ -720,6 +914,46 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                     "history_starts": {"type": ["string", "null"]},
                     "retired": {"type": "boolean"},
+                    # 🔴 The check DECLARES itself here (AC-14.3): the category
+                    # set it judged over, the threshold it judged by, and the
+                    # counts behind the verdict. A verdict published without
+                    # them would be a claim a reader has to take on faith, which
+                    # is what the convention itself was until this check
+                    # existed.
+                    "sign_convention": {
+                        "type": "string",
+                        "enum": list(signs.VERDICTS),
+                        "description": (
+                            "whether this connection's stored amounts point the way the rest "
+                            "of the store's do. Measured over "
+                            f"{', '.join(signs.NEVER_INFLOW_CATEGORIES)} — categories that "
+                            "are never plausibly money arriving — across the connection's "
+                            "whole history: `inverted` when more than "
+                            f"{signs.INVERTED_ABOVE_SHARE:.0%} of its judged rows are stored "
+                            "POSITIVE, `consistent` when fewer are, and `undetermined` under "
+                            f"{signs.MINIMUM_JUDGEABLE_ROWS} judged rows or at an exact tie. "
+                            "🔴 `undetermined` means NOT CHECKED, never 'fine'. An "
+                            "`inverted` connection is reported and never corrected: its "
+                            "income may read as spending and its spending as income, and "
+                            "only a known debit checked against the institution's own "
+                            "statement settles it"
+                        ),
+                    },
+                    "sign_convention_rows_judged": {
+                        "type": "integer",
+                        "description": (
+                            "rows the verdict was computed over: this connection's non-removed "
+                            "transactions in those categories with a non-zero amount"
+                        ),
+                    },
+                    "sign_convention_rows_positive": {
+                        "type": "integer",
+                        "description": (
+                            "how many of those are stored positive. 0 is the conforming "
+                            "reading; equal to `sign_convention_rows_judged` is a wholly "
+                            "inverted feed"
+                        ),
+                    },
                 },
                 windowed=False,
                 capped=False,
@@ -737,7 +971,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "`transaction_count` of 0 means NO DATA WAS EVER RECORDED for it, which is a "
                 "different answer from 'nothing happened' and the two are indistinguishable "
                 "anywhere else. `silence_ratio` above 1 means a full posting cycle has been "
-                "missed; a ratio near 1 is worth a second look even when the flag is false."
+                "missed; a ratio near 1 is worth a second look even when the flag is false. "
+                "🔴 A non-active account's trailing silence is CLOSURE, not a hole: the flag "
+                "stays false for it and `lifecycle` on the row is what says why."
             ),
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
             "outputSchema": _output_schema(
@@ -745,6 +981,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "account_id": {"type": "integer"},
                     "account": {"type": ["string", "null"]},
                     **_coverage_row_fields(),
+                    **_lifecycle_row_fields(),
                     "median_interval_days": {
                         "type": ["number", "null"],
                         "description": (
@@ -769,7 +1006,46 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                     "silence_exceeds_cadence": {
                         "type": "boolean",
-                        "description": "a full posting cycle has been missed (ratio above 1)",
+                        "description": (
+                            "a full posting cycle has been missed (ratio above 1) by an account "
+                            "still being reported. 🔴 Always false for a non-active account: its "
+                            "silence is closure rather than a hole, and `silence_ratio` beside "
+                            "this still carries the measurement so nothing is hidden"
+                        ),
+                    },
+                    "stranded_holds": {
+                        "type": "integer",
+                        "description": (
+                            "authorisation holds on this account still unsettled past any "
+                            "ordinary hold lifetime. Present and 0, never omitted. A hold this "
+                            "old usually means the merchant never captured it, so the money is "
+                            "neither spent nor available"
+                        ),
+                    },
+                    "oldest_stranded_hold": {
+                        "type": ["object", "null"],
+                        "description": (
+                            "the worst of them, so the operator can go look at it; null when "
+                            "there are none. 🔴 Also null for a non-active account, whose holds "
+                            "can never settle and can never be cleared -- `stranded_holds` "
+                            "beside this still carries the count, so the measurement is not "
+                            "hidden, only the call to action nobody could answer"
+                        ),
+                        "properties": {
+                            "transaction_id": {"type": "integer"},
+                            "posted_date": {"type": ["string", "null"]},
+                            "days_pending": {"type": "integer"},
+                            "amount_minor_units": {"type": "integer"},
+                            "currency": {"type": "string"},
+                        },
+                        "required": [
+                            "transaction_id",
+                            "posted_date",
+                            "days_pending",
+                            "amount_minor_units",
+                            "currency",
+                        ],
+                        "additionalProperties": False,
                     },
                     "source_breakdown": {
                         "type": "object",
@@ -1101,7 +1377,19 @@ def _instructions(config: Config) -> str:
         f"| `accounts_without_coverage` | an account in scope has NEVER had a transaction "
         f"recorded | its empty result means DATA NOT PRESENT, never no activity. Do not answer "
         f"'no payments found' about it -- say the account has no transaction data at all, and "
-        f"call `get_coverage_report` for the per-account picture |\n\n"
+        f"call `get_coverage_report` for the per-account picture |\n"
+        f"| `account_no_longer_active` | an account in scope is closed, or its institution "
+        f"stopped listing it | its balance is FROZEN as of the date on the row, not a fact "
+        f"about today. Totals INCLUDE it and say by how much -- quote that magnitude beside "
+        f"the total so the reader can subtract it |\n"
+        f"| `includes_pending_rows` | some contributing rows are unsettled holds | the figure "
+        f"can change with NO new activity. Quote settled and pending separately; never present "
+        f"their sum as money spent |\n"
+        f"| `sign_convention_unverified` | a contributing connection was MEASURED against the "
+        f"sign convention and its amounts run the wrong way | on that feed income reads as "
+        f"spending and spending as income. Name the connection and say its direction "
+        f"contradicts the convention; do NOT correct it yourself and do not infer direction "
+        f"from a description |\n\n"
         f"WHAT EVERY ANSWER CARRIES\n"
         f"| field | read it for |\n"
         f"|---|---|\n"
@@ -1114,6 +1402,12 @@ def _instructions(config: Config) -> str:
         f"| `coverage` | what the store HOLDS -- `connections`, `accounts`, `transactions`, "
         f"`earliest_transaction`, `latest_transaction`. 🔴 `transactions` is ALWAYS store-wide "
         f"and never narrows with your question |\n"
+        f"| `accounts_not_active` (inside `coverage`) | how many of `accounts` are closed or "
+        f"no longer reported. 🔴 `accounts` COUNTS them; it is not a filtered figure |\n"
+        f"| `not_active_balance_minor_units` (inside `coverage`) | per currency, what those "
+        f"accounts contribute to any total over balances -- signed, in minor units. Quote it "
+        f"beside any balance total you report, because the total includes them on purpose and "
+        f"only the reader can decide whether to subtract |\n"
         f"| `warnings` | the tables above |\n"
         f"| `rows` | the answer itself |\n\n"
         f"A WINDOWED tool adds `effective_window` — `requested` (what you asked for) beside "

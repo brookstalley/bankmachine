@@ -719,6 +719,78 @@ def test_replaying_in_any_order_converges_on_the_same_identity_rows(
         assert row["last_seen_at"] == LATER
 
 
+@settings(
+    max_examples=25, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
+@given(order=st.permutations([EARLIER, RECEIVED, LATER]))
+def test_when_an_account_was_last_listed_is_a_maximum_so_order_cannot_matter(
+    store: Config, order: Sequence[UtcInstant]
+) -> None:
+    """🔴 AC-12.4, and the property retirement was actually waiting on.
+
+    `first_seen_date` is a minimum and `last_seen_date` a maximum over the roster
+    observations that mention an account, so replaying the archive in ANY order
+    converges on the same pair. That is what makes "this account was last listed
+    on X" a fact about the responses rather than about the order they were
+    replayed in — and it is the specific care this deriver's own note recorded as
+    the reason the removal case was deferred rather than half-built.
+
+    A property rather than one shuffled case, on the precedent above: the orders
+    that break it are the ones nobody thinks to write down, and a rebuild replays
+    by `received_at`, which two responses can share.
+    """
+    for received_at in order:
+        derive(store, str(ACCOUNTS_GET), fixture("accounts_get"), received_at=received_at)
+
+    derived = rows(store, accounts)
+    assert derived, "the fixture derived no account, so this proves nothing"
+    for row in derived:
+        assert row["first_seen_date"] == EARLIER.date()
+        assert row["last_seen_date"] == LATER.date()
+
+
+def test_the_first_roster_observation_records_both_ends_at_the_same_date(
+    store: Config,
+) -> None:
+    """The insert arm. The pair only diverges once a later roster is seen."""
+    derive(store, str(ACCOUNTS_GET), fixture("accounts_get"), received_at=RECEIVED)
+
+    derived = rows(store, accounts)
+    assert derived
+    for row in derived:
+        assert row["first_seen_date"] == RECEIVED.date()
+        assert row["last_seen_date"] == RECEIVED.date()
+
+
+def test_an_account_a_later_roster_does_not_list_keeps_the_date_it_had(
+    store: Config,
+) -> None:
+    """🔴 The whole population half of #40, at the deriver.
+
+    An institution that stops listing an account says so by not saying it, so
+    the mechanism is that nothing writes the row — and a `last_seen_date` that
+    the second observation moved anyway would make every account permanently
+    current, which is exactly the state #40 reported.
+    """
+    both = fixture("accounts_get")
+    payload = json.loads(both)
+    assert len(payload["accounts"]) > 1, "the fixture lists one account, so nothing can drop out"
+    kept = payload["accounts"][0]["account_id"]
+    dropped = payload["accounts"][1]["account_id"]
+
+    derive(store, str(ACCOUNTS_GET), both, received_at=EARLIER)
+    derive(
+        store,
+        str(ACCOUNTS_GET),
+        _with(both, lambda p: p.__setitem__("accounts", p["accounts"][:1])),
+        received_at=LATER,
+    )
+
+    seen = {row["source_account_id"]: row["last_seen_date"] for row in rows(store, accounts)}
+    assert seen[kept] == LATER.date()
+    assert seen[dropped] == EARLIER.date()
+
+
 def test_no_deriver_reads_the_clock(store: Config) -> None:
     """🔴 The seam's one rule with teeth, asserted on what reaches the columns.
 

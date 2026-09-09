@@ -182,6 +182,31 @@ closed.
 > once it is connected, and § "Day one in production" below is how they get discharged. **#40 is
 > the one that is buildable now**, and cheaper than this list knew: `accounts` already carries
 > `lifecycle_status` and `closed_date`, and `list_accounts` simply does not read them.
+>
+> 🔴 **Correction, 2026-09-09 — all three items were checked against the source tree, and all
+> three are misdescribed above.** Closability and buildability are separate axes and this block
+> conflated them.
+>
+> **Item 6 (#40) — "cheaper than this list knew" is wrong; the closability claim stands.**
+> The columns exist, but **nothing has ever written a non-`active` value to either.** The accounts
+> deriver hardcodes `"active"` at insert and excludes the column on update; no CLI command and no
+> tool can set it; `connections retire` does not touch `accounts`, and `closed_date` has zero
+> readers and zero writers in `src/`. So item 6 is a population path **plus** a read path **plus** a
+> migration, not a read-path change. It remains the only one of the three closable before
+> production data — more firmly than this list knew, since a shrinking roster replays from the
+> archive rather than needing a real closure.
+>
+> **Items 5 and 7 (#22, #23) — not closable before production data, but far from unbuildable.**
+> Item 5's pending→posted contract is implemented and unit-tested; what has never run is the
+> **read path**, which has never seen a pending row and does not disclose one. Item 7's
+> normalization is an *unconditional* negation with no branch, already exercised inflow-wards on 49
+> of the 388 sandbox rows; the genuinely blocked claim is narrower — the sandbox is
+> **single-connection**, so a per-connection sign check cannot run at all. Both carry substantial
+> criteria that gate on nothing and can ship as ordinary work; only a gating tail needs real data.
+>
+> Full derivation and proposed (**not ratified**) requirements:
+> `.prawduct/artifacts/discovery-account-lifecycle.md` and
+> `.prawduct/artifacts/discovery-production-data-semantics.md`.
 
 Ordered by what I would do first. Items 1–3 are the filed blockers; 4–7 are not
 currently filed and items 4 and 5 are the ones I would be most annoyed to
