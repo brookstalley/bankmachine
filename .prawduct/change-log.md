@@ -72,6 +72,15 @@ exists to prevent — incompleteness that looks like completeness — and each w
   A second test proves each case still reaches its target in about a second, which caught two
   anchors that `ruff format` had reflowed out from under.
 
+**Upgrading: this entry ships a schema migration, and the order is not the usual one.**
+Migration 003 (`accounts.last_seen_date`) is forward-only, and a build that does not recognize
+the datastore's version refuses to serve — so the datastore and every process that reads it move
+together, and `store backup` runs BEFORE the migration because the old build cannot back up a
+store it will no longer open. The procedure is `operational-spec.md` § *Upgrading across a schema
+migration*, which migration 003 is the first to have been written for. It backfills nothing: the
+first sync after the upgrade repopulates the column, and until then every account reads as
+still-reported — the pre-migration answer rather than a wrong one.
+
 **What this does NOT close.** None of `#40`, `#22` or `#23` closes here, and merging this does
 not take `blocks:production` off any of them. Each keeps a production-data tail — AC-13.8,
 AC-13.9, AC-14.7, AC-14.8, AC-14.9 — enqueued as VRF-005 and VRF-006, and those are performed
