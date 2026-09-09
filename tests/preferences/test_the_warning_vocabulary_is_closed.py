@@ -1,6 +1,6 @@
 """Every caveat this product can emit spells a kind the vocabulary declares.
 
-🔴 A published `outputSchema` closes the `kind` enum to `query.WARNING_KINDS`,
+🔴 A published `outputSchema` closes the `kind` enum to `envelope.WARNING_KINDS`,
 and a validating client rejects a payload whose enum does not match. So a
 construction site that invents a kind does not produce an unrecognized warning
 -- it produces a REJECTED ANSWER, and the warning takes the whole response down
@@ -27,7 +27,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from bankmachine import query
+from bankmachine import envelope
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "bankmachine"
 
@@ -76,7 +76,7 @@ def _constructed_kinds() -> list[tuple[Path, int, str | None]]:
 
 
 def test_every_caveat_names_a_kind_the_vocabulary_declares() -> None:
-    vocabulary = set(query.WARNING_KINDS)
+    vocabulary = set(envelope.WARNING_KINDS)
     strays = [
         f"{path.relative_to(SOURCE_ROOT.parents[1])}:{line} says {kind!r}"
         for path, line, kind in _constructed_kinds()
@@ -135,7 +135,7 @@ def test_the_scan_catches_a_kind_the_vocabulary_does_not_declare() -> None:
         'warnings.append(Caveat(kind="stale", detail="fine"))\n'
         'warnings.append(Caveat(kind=_computed(), detail="opaque"))\n'
     )
-    vocabulary = set(query.WARNING_KINDS)
+    vocabulary = set(envelope.WARNING_KINDS)
     found = _kinds_in(known_bad)
 
     assert len(found) == 3, f"the scan did not reach all three sites: {found}"

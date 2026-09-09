@@ -20,7 +20,7 @@ from unittest import mock
 
 import pytest
 
-from bankmachine import build_id, mcp, mcp_resources, query
+from bankmachine import build_id, envelope, mcp, mcp_resources, query
 from bankmachine.config import Config
 from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS
@@ -1264,22 +1264,22 @@ def test_an_argument_of_the_wrong_json_type_is_refused_by_name(
 # --------------------------------------------------------------------------
 
 _UNNARROWED = """
-from bankmachine import query
+from bankmachine import envelope, query
 from bankmachine.config import Config
 
 
-def dispatch(config: Config, arguments: dict[str, object]) -> query.Answer:
+def dispatch(config: Config, arguments: dict[str, object]) -> envelope.Answer:
     return query.list_transactions(config, since=arguments.get("since"))
 """
 
 _NARROWED = """
 from datetime import date
 
-from bankmachine import query
+from bankmachine import envelope, query
 from bankmachine.config import Config
 
 
-def dispatch(config: Config, arguments: dict[str, object]) -> query.Answer:
+def dispatch(config: Config, arguments: dict[str, object]) -> envelope.Answer:
     raw = arguments.get("since")
     since = date.fromisoformat(raw) if isinstance(raw, str) else None
     return query.list_transactions(config, since=since)
@@ -1467,7 +1467,7 @@ def test_the_instructions_name_every_warning_kind_the_vocabulary_defines(
     """
     instructions = mcp._instructions(initialized_config)
 
-    missing = sorted(k for k in query.WARNING_KINDS if f"`{k}`" not in instructions)
+    missing = sorted(k for k in envelope.WARNING_KINDS if f"`{k}`" not in instructions)
 
     assert not missing, (
         f"the vocabulary defines {missing} but the instructions never name them; "
@@ -1646,7 +1646,7 @@ def test_a_limit_outside_the_servable_range_is_refused_not_clamped(
     """
     _seed(initialized_config)
 
-    for value in (0, -5, query.MAX_ROWS + 1):
+    for value in (0, -5, envelope.MAX_ROWS + 1):
         result = _call(initialized_config, "query_transactions", {"limit": value})
 
         assert result["isError"] is True, f"limit={value} was answered rather than refused"
@@ -1839,7 +1839,7 @@ def test_the_row_ceiling_is_the_contracted_one() -> None:
     silently withdraws a declared security control, which is why this asserts
     the number rather than merely that some ceiling exists.
     """
-    assert query.MAX_ROWS == 500
+    assert envelope.MAX_ROWS == 500
 
 
 def test_the_advertised_bounds_match_the_enforced_ones() -> None:
@@ -1851,7 +1851,7 @@ def test_the_advertised_bounds_match_the_enforced_ones() -> None:
     )
 
     assert limit["minimum"] == 1
-    assert limit["maximum"] == query.MAX_ROWS
+    assert limit["maximum"] == envelope.MAX_ROWS
 
 
 # --------------------------------------------------------------------------
@@ -1876,7 +1876,7 @@ def _request_kinds(wire: dict[str, Any]) -> list[str]:
     silently exempted it from every absence assertion below — and absence is the
     half these assertions exist for.
     """
-    request_scoped = set(query.REQUEST_SCOPED_KINDS)
+    request_scoped = set(envelope.REQUEST_SCOPED_KINDS)
     assert request_scoped, "the request-scoped kinds vanished from the vocabulary"
     return [w["kind"] for w in wire["warnings"] if w["kind"] in request_scoped]
 
@@ -2125,7 +2125,7 @@ def test_the_window_scoped_count_rides_beside_the_store_wide_one(
     wire = _call(
         initialized_config,
         "query_transactions",
-        {"since": str(today - timedelta(days=4)), "limit": query.MAX_ROWS},
+        {"since": str(today - timedelta(days=4)), "limit": envelope.MAX_ROWS},
     )["structuredContent"]
 
     assert wire["coverage"]["transactions"] == 133

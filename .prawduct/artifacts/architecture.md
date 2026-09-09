@@ -152,6 +152,17 @@ contact.
 - **Owned state:** none. It is authoritative for nothing and persists nothing.
 - **Never:** writes to the datastore; triggers a sync; opens a network socket (AC-10.5); creates
   the datastore file; holds a read transaction across tool calls.
+- **Internal split, by direction rather than by subject.** `envelope.py` holds what an answer
+  *is* — `Answer`, `Caveat`, `Window`, `Truncation`, `Cursor` and the warning vocabulary — and
+  reaches no datastore. `query.py` holds how *this store* fills one: the per-tool SQL, and the
+  constructors that read while they build, since `_answer` reconciles a requested window against
+  coverage it queries in the same call. A tool's own vocabulary (`GROUPINGS`, `FLOW_CLASSES`)
+  stays beside the SQL that produces it, so `mcp.py` imports the envelope from one and the tool
+  vocabulary from the other — deliberately, not as leftover coupling.
+  🔴 The direction is the property, and it is enforced rather than described:
+  `tests/preferences/test_the_envelope_reaches_no_datastore.py` refuses a datastore import in
+  `envelope.py`. The envelope must not learn to read; the moment it can, the two concerns are
+  back in one place and the split survives as a file listing and nothing else.
 
 ### CLI — the operator's hands
 

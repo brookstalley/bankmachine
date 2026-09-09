@@ -34,6 +34,42 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-09: The wire envelope becomes its own module, before the next tool lands
+
+<!-- prawduct: scope=envelope-module-split -->
+
+**Why:** `query.py` had grown to 2101 lines owning two separable things — the envelope
+model every MCP answer is built from, and the SQL for all five tools. An envelope change
+was reviewed inside a thousand lines of unrelated statements, and three specified tools
+are still to land. The value is entirely in the ordering: doing this after the next tool
+means re-reading everything that tool added.
+
+**What shipped:**
+
+- **`envelope.py`** holds what an answer *is* — `Answer`, `Caveat`, `Window`,
+  `Truncation`, `Cursor`, the warning vocabulary, window resolution and cursor parsing.
+  `query.py` keeps how *this store* fills one: the per-tool SQL, and the constructors
+  that read while they build.
+- **The boundary is direction, not subject matter.** "Envelope vs SQL" does not survive
+  contact with the file, because `_answer` takes a live connection and reconciles the
+  requested window against coverage it queries in the same call. What is checkable is
+  that the envelope never reads.
+- **A guard enforces it, as an allowlist rather than a ban list.** The enumerated form
+  was written first and already had holes — `store.derivation`, `store.raw` and
+  `store.rebuild` all reach the database and would have passed it. The guard carries a
+  positive control too, because a containment scan passes trivially once there is
+  nothing left to contain.
+- **Per-tool vocabulary stays with its SQL.** `GROUPINGS` is a closed set *because* the
+  grouping is an expression `query.py` builds and never a caller-supplied column name;
+  moving it would separate the constraint from its reason. Collapsing the three-site
+  conditional-key declaration is deferred to the arrival of a fourth such key, recorded
+  as a trigger so it is not re-litigated on every reading.
+- **Nine go-red anchors re-pointed** at the new module, none dropped: 141 cases before
+  and after, all red.
+
+**No wire change, verified rather than intended:** the five published tool schemas and
+both reference documents are byte-identical to `develop`, diffed rather than eyeballed.
+
 ## 2026-09-09: One aggregate that answers spending, income and cashflow — and says which is which
 
 <!-- prawduct: scope=mcp-answer-scope-completion -->
