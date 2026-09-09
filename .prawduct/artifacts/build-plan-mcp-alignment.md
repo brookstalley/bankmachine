@@ -38,12 +38,13 @@ owns the combined run at integration.
 
 ## Status
 
-- [ ] **01 — The handshake tells the truth about itself** (delegated, parallel)
-- [ ] **02 — Two structural guards** (delegated, parallel)
+- [x] **01 — The handshake tells the truth about itself** (delegated, parallel)
+- [x] **02 — Two structural guards** (delegated, parallel)
 - [ ] **06 — The envelope is machine-checkable** (delegated, after 01)
 - [ ] **05 — A resources surface** (delegated, after 06)
 - [ ] **03 — The envelope tells the agent what to do about it** (coordinator, after 05)
 - [ ] **04 — The artifacts say what the code now does** (coordinator, last)
+- [ ] **07 — The go-red harness learns the two new guards** (coordinator, last)
 
 ---
 
@@ -390,6 +391,32 @@ Recorded here so the next session does not have to re-derive it: this does **not
 discharge `mcp-production-readiness.md`'s open blockers (#19, #20, #21, #22, #23, #24, and
 items 4–7 of its "what has to be true before yes" list). Those remain the gate on real
 accounts. The ruling sets the order of work, not the go/no-go.
+
+---
+
+## 7b. Chunk 07 — The go-red harness learns the two new guards
+
+`verify_norms_go_red.py` proves each norm test actually goes red by writing the broken
+version to disk, running the named test, and putting it back — fifty-five times. Chunk 02
+added two guards and, correctly, did not touch that harness: it is an existing file and was
+outside the delegate's boundary. So the two newest norm tests are currently the only ones
+with no proof they can fail.
+
+That is the exact gap `learnings.md` describes as this project's recurring shape — a check
+whose only bad-news channel is the absence of output.
+
+**Do:** add a case for each. A stdout write inside the server's import closure, and a tool
+renamed in the docs but not the code.
+
+🔴 **Two operational rules from `learnings.md`, both load-bearing.** The harness sabotages
+the working tree while it runs, so nothing else may read the tree during the window — no
+suite, no review, no commit. And it mutates by literal `str.replace`, so **prefer an anchor
+naming a whole expression or keyword argument over one spanning a formatter-chosen line
+break**; the latter is a hostage to the next reformat.
+
+Chunk 02's delegate left the existing 2026-07-28 anchor byte-identical and it still matches
+exactly once — verified at integration. Chunks 03 and 04 will move other anchors, so run
+this after them, not before.
 
 ---
 
