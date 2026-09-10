@@ -97,6 +97,18 @@ decision applies — there is nothing to migrate, contain, or grandfather.
   plausible, structurally valid, wrong answers. Refusing is recoverable; a wrong number that looks
   right is not.
   Status: steady-state.
+  Rulings:
+  - **2026-09-10 — "serve" means answering queries or writing derived data, and a page-level copy
+    is outside it.** `store backup` runs `VACUUM INTO` against a handle that takes the writer lock
+    and skips the schema check (`copying_writer`). It reads no table, interprets no column and
+    answers no question, so there is no answer for an unrecognized schema to make wrong — the
+    norm's why has no purchase on it. Refusing had a cost the norm was never meant to impose:
+    the only remaining way to copy such a datastore is `cp`, which drops whatever is still in the
+    WAL (measured at 300 rows), and the newest of `balances_daily` is what a dropped WAL takes.
+    The exemptions are held by discovery rather than by a list —
+    `test_connection_norms.py::test_only_the_two_named_roles_are_exempt_from_the_schema_check`
+    walks the module, so a third one cannot arrive quietly. The reader, the ordinary writer and
+    `store rebuild` are unchanged and tested to stay so.
 
 ---
 

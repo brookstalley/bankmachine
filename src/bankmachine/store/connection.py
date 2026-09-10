@@ -415,6 +415,33 @@ def initializing_writer(config: Config) -> Iterator[Connection]:
         yield conn
 
 
+@contextmanager
+def copying_writer(config: Config) -> Iterator[Connection]:
+    """The handle `store backup` takes: the writer lock, and no schema check.
+
+    🔴 The second and last exemption from the schema check, and the reasoning is
+    the norm's own. A process that does not recognize the schema version refuses
+    to *serve* -- because a reader that misreads a schema returns plausible,
+    structurally valid, wrong answers, and a writer writes them down. A backup
+    does neither. `VACUUM INTO` copies pages of ciphertext; it reads no table,
+    interprets no column and answers no question, so there is no answer for an
+    unrecognized schema to make wrong.
+
+    Refusing here costs something real: the only remaining way to copy such a
+    datastore is `cp`, which drops whatever is still in the WAL -- measured, at
+    300 rows -- and the newest of `balances_daily` is what a dropped WAL takes.
+
+    A named role rather than a `require_supported_schema=False` argument on
+    `writer`: an exemption within reach of every future caller is not an
+    exemption, and the norm it guards is correct for all of them.
+
+    The lock still applies. This goes through the one writer factory, so no sync
+    run can be committing while the copy is made.
+    """
+    with _writer(config, create=False) as conn:
+        yield conn
+
+
 def _open_read_role(config: Config, key: str) -> Connection:
     """The one place a read-role handle is constructed.
 

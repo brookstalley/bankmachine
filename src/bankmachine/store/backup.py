@@ -21,6 +21,17 @@ factory takes the exclusive lock before it returns, so no sync run can be
 committing while the copy is made. Consistency is a consequence of the lock
 rather than of timing.
 
+The handle is `copying_writer`, not `writer`: a copy runs at ANY schema version.
+`VACUUM INTO` interprets nothing, so the check that stops a process serving a
+schema it does not recognize has nothing to protect here -- while refusing would
+leave `cp` as the only way to copy such a store, and `cp` drops the WAL. The
+reasoning lives on `copying_writer` in `store/connection.py`, beside the norm it
+rules at the edge of.
+
+Verification reads the copy back with `require_supported_schema=False` for the
+same reason: a copy taken at an unservable version is a good backup, and the
+step that proves it is one must be able to open it.
+
 WHAT THE COPY IS
 
 A single file. `VACUUM INTO` folds the WAL's contents into it, so the copy needs
@@ -139,7 +150,7 @@ def back_up(config: Config, destination: Path) -> BackupReport:
         )
 
     logger.info("backup starting: %s -> %s", config.datastore_path, destination)
-    with connection.writer(config) as conn:
+    with connection.copying_writer(config) as conn:
         try:
             # A bound parameter, not an f-string: a destination path is operator
             # input and may contain a quote, and string-building the SQL would
@@ -177,7 +188,7 @@ def _verify(config: Config, destination: Path) -> BackupReport:
     """
     as_copy = dataclasses.replace(config, datastore_path=destination)
     try:
-        with connection.reader(as_copy) as conn:
+        with connection.reader(as_copy, require_supported_schema=False) as conn:
             version = connection.read_schema_version(conn)
             integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
     except StoreError as exc:

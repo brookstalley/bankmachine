@@ -8,6 +8,7 @@ never been red is a claim, not a check.
 
 from __future__ import annotations
 
+import inspect
 import os
 import subprocess
 import sys
@@ -389,6 +390,51 @@ def test_a_writer_refuses_an_unrecognized_schema_version(initialized_config: Con
         writer(initialized_config),
     ):
         pass
+
+
+def test_only_the_two_named_roles_are_exempt_from_the_schema_check(
+    initialized_config: Config,
+) -> None:
+    """🔴 The exemptions are discovered, not listed, so a third one cannot arrive quietly.
+
+    Two handles are permitted to open a version this build does not serve, and
+    each has a reason the norm's own why does not reach. `initializing_writer`
+    is the migration runner's: bringing an old datastore forward is the one job
+    that must open an old version. `copying_writer` is `store backup`'s:
+    `VACUUM INTO` copies pages of ciphertext and answers no question, so there
+    is no answer for an unrecognized schema to make wrong -- and refusing left
+    `cp`, which drops the WAL.
+
+    This walks the module rather than naming the handles it expects to refuse.
+    An enumeration would pass unchanged on the day someone adds a third handle,
+    which is the only day it matters.
+    """
+    exempt = {"initializing_writer", "copying_writer"}
+
+    handles = {
+        name
+        for name, value in vars(connection).items()
+        if not name.startswith("_")
+        and callable(value)
+        and hasattr(value, "__wrapped__")
+        and "config" in inspect.signature(value).parameters
+    }
+    assert exempt <= handles, f"a named exemption no longer exists: {exempt - handles}"
+
+    future = connection.SUPPORTED_SCHEMA_VERSION + 1
+    with writer(initialized_config) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        connection.stamp_schema_version(conn, future)
+        conn.execute("COMMIT")
+
+    for name in sorted(handles - exempt):
+        with pytest.raises(SchemaVersionUnsupportedError, match=str(future)):
+            with getattr(connection, name)(initialized_config):
+                pass
+
+    for name in sorted(exempt):
+        with getattr(connection, name)(initialized_config) as conn:
+            assert connection.read_schema_version(conn) == future
 
 
 def test_status_reports_an_unrecognized_schema_version_as_unhealthy(

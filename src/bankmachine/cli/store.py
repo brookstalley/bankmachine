@@ -357,6 +357,18 @@ def _print_backup(config: Config, report: BackupReport) -> None:
     print(f"bytes:           {report.bytes_written}")
     print(f"schema version:  {report.schema_version}")
     print("verified:        yes -- reopened with the datastore key, integrity_check ok")
+    if report.schema_version != connection.SUPPORTED_SCHEMA_VERSION:
+        # The copy is sound and this line is not a warning about it. It exists
+        # because a verified backup at a version this build cannot open is a
+        # restorable file that `store status` will call unhealthy the moment it
+        # is put back -- and an operator mid-recovery reading that, with no
+        # warning that it was expected, has every reason to think the restore
+        # failed.
+        print(
+            f"note:            this copy is at schema version {report.schema_version}; "
+            f"this build serves {connection.SUPPORTED_SCHEMA_VERSION}. Restoring it and "
+            f"running `bankmachine store init` migrates it forward"
+        )
     # Loud, every time, and not conditional on anything. The key is the half of
     # a backup that has no other source: an aggregator secret can be re-read
     # from the vendor's dashboard, a datastore key cannot be re-read from
