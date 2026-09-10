@@ -598,17 +598,29 @@ def test_available_and_limit_keep_the_magnitudes_the_source_reported(
     assert balance["limit_minor"] == 100000
 
 
-def test_a_liability_already_reported_negative_is_not_flipped_twice(
+def test_a_card_in_credit_is_stored_as_value_held_rather_than_as_debt(
     store: Config,
 ) -> None:
-    """Aggregators disagree with each other, so normalization has to be idempotent.
+    """🔴 The aggregator's negative `current` on a credit account means it owes YOU.
 
-    A rule written as "negate liabilities" rather than "make liabilities
-    negative" turns a correctly-signed source into a positive debt -- the same
-    error as the one it was written to prevent, arriving from the other side.
+    A refund on a paid-off card, or an overpayment, leaves an ordinary card in
+    credit, and this aggregator documents that state as a negative `current` --
+    the mirror of the positive `current` that means money owed. A rule written
+    as "make liabilities negative" maps both to the same stored value, so a $250
+    credit and a $250 debt become the same row and net worth is understated by
+    $500 with nothing on the row to tell them apart.
+
+    The rule is therefore "a liability's stored sign is the negation of the
+    aggregator's", applied unconditionally. This replaces the idempotence
+    argument the conditional rested on -- that a second aggregator might sign
+    liabilities the other way -- because that argument put a hypothetical feed's
+    convention inside the connector built for the one feed whose convention is
+    documented. A second aggregator gets its own connector, which declares its
+    own normalization. Recorded as a decision in
+    `.prawduct/artifacts/build-plan-production-cutover-hardening.md` § Decisions.
     """
     balance = _derive_account(store, _account(type="credit", current=-250.00))
-    assert balance["current_minor"] == -25000
+    assert balance["current_minor"] == 25000
 
 
 def test_an_account_type_this_build_cannot_classify_is_refused(store: Config) -> None:

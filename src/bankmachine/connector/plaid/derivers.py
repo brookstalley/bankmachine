@@ -931,12 +931,22 @@ def _write_balance(
 ) -> None:
     """One day's balance for one account, signed from the operator's point of view.
 
-    🔴 **A liability's `current_minor` is stored negative**, whatever sign the
-    aggregator used -- several report a card balance as a positive amount owed,
-    and a consumer taking that at face value is wrong by twice the debt,
-    silently and plausibly. One convention rather than one per account type is
-    what lets net worth be a plain sum and AC-11.2's reconciliation be "change
-    in balance equals sum of transactions" for every account.
+    🔴 **A liability's stored sign is the NEGATION of the aggregator's**, applied
+    unconditionally rather than only to a positive balance. This aggregator
+    documents a credit or loan `current` as positive when the money is owed and
+    negative when the lender owes the account holder -- the ordinary state of a
+    card after a refund on a paid-off balance. A rule that only flipped positives
+    would map $250 owed and $250 in credit onto the same stored value, so two
+    opposite states would be one row and net worth would be understated by twice
+    the credit, silently and plausibly.
+
+    **The sign convention belongs to the connector, not to the account type.**
+    A second aggregator that signed liabilities the other way would get its own
+    connector declaring its own normalization; sniffing the sign here would put a
+    hypothetical feed's convention inside the one built for a documented feed.
+    One stored convention is what lets net worth be a plain sum and AC-11.2's
+    reconciliation be "change in balance equals sum of transactions" for every
+    account.
 
     `available_minor` and `limit_minor` are the documented exceptions and keep
     the magnitudes the source reported: neither participates in net worth, and
@@ -947,7 +957,7 @@ def _write_balance(
     and re-linked, and history that pointed at it would detach.
     """
     current = to_minor(balances.get("current"), currency, "a current balance", response)
-    if balance_class == "liability" and current > 0:
+    if balance_class == "liability":
         current = negate(current)
 
     available_raw = balances.get("available")
