@@ -3,7 +3,8 @@
 **Work cycle:** operator-owned columns on the store · medium · requirement
 **Opened:** 2026-09-10
 **Closes (proposed):** brookstalley/bankmachine #48
-**Follows from:** #40 / FR-9, which shipped a `closed` lifecycle value the product cannot reach
+**Follows from:** #40 / FR-9, which shipped a `closed` lifecycle value reachable only by retiring a
+whole connection
 
 ---
 
@@ -22,11 +23,12 @@
 ## The questions this item has to answer
 
 **What problem are we solving?** `lifecycle_status` and `balance_class` are declared operator-owned
-and neither can be written by anything the product ships. FR-9 therefore publishes a three-value
-enum whose `closed` member is unreachable — the exact liability the same discovery document invoked
-when it rejected a fourth value (`unknown`) as unreachable. Before a write path can be built, the
-store has to say which columns an operator may write, what happens to a derivation-owned timestamp
-when they do, and what `content_digest` covers.
+and the product can properly write neither: `balance_class` has no writer at all, and
+`lifecycle_status` has one that retires an entire connection. So FR-9's `closed` is reachable only
+by an act that also stops syncing every sibling account — which is not a declaration path but a
+reason to avoid declaring. Before a per-account write path can be built, the store has to say which
+columns an operator may write, what happens to a derivation-owned timestamp when they do, and what
+`content_digest` covers.
 
 **What does success look like?** A new operator-writable column can be added by making a
 declaration, and the declaration is what protects it — not the accident of no deriver happening to
@@ -56,10 +58,13 @@ that agents may write; what changes is *who calls* the path, not what the store 
 
 #48's claims were checked against the tree rather than carried forward.
 
-**Claim — `closed` is unreachable. CONFIRMED.** `_OPERATOR_OWNED`
-(`src/bankmachine/connector/plaid/derivers.py`) holds `balance_class` and `lifecycle_status`; the
-accounts deriver hardcodes `"lifecycle_status": "active"` at insert and filters the column out of the
-update arm. There is no `bankmachine accounts` command module.
+**Claim — `closed` is unreachable. PARTLY WITHDRAWN, and the correction is F2.** The deriver half
+holds: `_OPERATOR_OWNED` (`src/bankmachine/connector/plaid/derivers.py`) carries `balance_class` and
+`lifecycle_status`, the accounts deriver hardcodes `"lifecycle_status": "active"` at insert and
+filters the column out of the update arm, and there is no `bankmachine accounts` command module. But
+`closed` is **not** unreachable — `connections retire` reaches it for every account on a connection
+at once. The defect is granularity, not absence, and #48's body predates the retirement path that
+made that true.
 
 **Claim — `connections retire` does not touch `accounts`. WITHDRAWN, and this is the useful
 correction.** It does now, and it establishes the precedent this contract generalizes.
@@ -118,10 +123,19 @@ silently overwritten and the guard named for preventing exactly that does not fi
 This is § *Guarantees by construction* verbatim: the rule matches on a **name** where it means a
 **relationship**.
 
-**F2 · Two of the two declared operator-owned columns on `accounts` are unreachable.**
-`lifecycle_status` is #48's subject; `balance_class` has the identical shape and is not fixed here.
-A declaration that has never been exercised is a claim, not a guarantee — the same standard
-`verify_norms_go_red.py` holds everything else in this repo to.
+**F2 · The two declared operator-owned columns on `accounts` fail in two different ways, and
+#48's own framing collapses them.** `balance_class` has **no writer at all** — declared
+operator-correctable, reachable by nothing. `lifecycle_status` **does** have one, and #48's claim
+that it does not is stale: `_mark_retired` writes it. But that writer acts at **connection**
+granularity, so the only way to declare one account closed is to retire the institution it belongs
+to, which also stops syncing every other account on that connection.
+
+🔴 **So `closed` is not unreachable — it is reachable only at a granularity that makes it the wrong
+instrument.** That is a materially different defect from the one #48 filed, and it changes what the
+build owes: not "give `lifecycle_status` a writer" but "give it one whose blast radius is the
+account the operator named." A declaration that has never been exercised is a claim rather than a
+guarantee (`verify_norms_go_red.py`'s standard); a declaration exercisable only by over-reaching is
+one an operator will decline to use.
 
 **F3 · `content_digest` is opt-out by restoration, not opt-in by declaration.** `digest_columns`
 covers every non-rowid column, so **a new operator column is inside the digest the moment it
@@ -168,11 +182,15 @@ confirms each is covered by the mechanism its table class requires. *Why:* § *T
 compared*. Both declarations are hand-maintained on purpose; hand-maintained and unchecked is a
 different thing, and F1 is what it looks like.
 
-**AC-15.5 · No column is declared operator-owned without a path that can write it.** A declaration
-with no writer is refused by the same check as AC-15.4. *Why:* this is the criterion that makes
-`closed` reachable and that would have caught FR-9 shipping an unreachable enum member. The
-discovery that rejected `unknown` for unreachability and then shipped an unreachable `closed` is one
-document contradicting itself within one build; a check is what stops the next one.
+**AC-15.5 · No column is declared operator-owned without a path that can write it, at the
+granularity the declaration is about.** A declaration with no writer is refused by the same check as
+AC-15.4; a declaration whose only writer acts on a coarser entity than the column's own row is
+recorded as unmet, not as satisfied. *Why:* the two instances on `accounts` fail differently and a
+criterion that only asked "is there a writer" would catch one and bless the other. `balance_class`
+has none. `lifecycle_status` has one that retires a whole connection, so an operator wanting to
+close one card must stop syncing every account at that institution — which is not a declaration
+path, it is a reason not to declare. The granularity clause is what makes this criterion say what
+#48 actually needs.
 
 **AC-15.6 · An operator declaration says when it was made, without borrowing a derivation-owned
 timestamp.** Where the time of an operator's declaration is worth keeping, it is kept in a column

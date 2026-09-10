@@ -567,10 +567,14 @@ hand-maintained deliberately — "the operator owns this" is a decision, not som
 can say — but hand-maintained and unchecked is a different thing, and AC-15.1's finding is what it
 looks like.
 
-**AC-15.5 · No column is declared operator-owned without a path that can write it.** A declaration
-with no writer is refused by the same check as AC-15.4. *Why:* this is what makes `closed` reachable,
-and what would have caught FR-9 publishing an unreachable enum member one section after rejecting a
-proposed value *for* unreachability.
+**AC-15.5 · No column is declared operator-owned without a path that can write it, at the
+granularity the declaration is about.** A declaration with no writer is refused by the same check as
+AC-15.4; a declaration whose only writer acts on a coarser entity than the column's own row is
+recorded as unmet, not as satisfied. *Why:* the two instances on `accounts` fail differently, and a
+criterion that asked only "is there a writer" would catch one and bless the other. `balance_class`
+has none. `lifecycle_status` has one that retires a whole connection, so an operator wanting to close
+one card must stop syncing every account at that institution — not a declaration path but a reason
+not to declare. The granularity clause is what makes this criterion say what #48 needs.
 
 **AC-15.6 · An operator declaration says when it was made, without borrowing a derivation-owned
 timestamp.** Where the time of a declaration is worth keeping, it is kept in a column the derivation
