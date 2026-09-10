@@ -96,7 +96,8 @@ the balance-lifecycle norm names one unmigrated emitter it does not grandfather.
   🔴 **Enforced structurally since 2026-09-09**, not merely checkable: `mcp._refuse_optional_row_fields`
   refuses a definition whose row schema declares a field it does not require, and it runs inside
   `_tool_definitions()` — the one function that hands out a definition — so no caller can route
-  around it. `mcp._refuse_colliding_parameters` sits beside it for #30's A3, because both fail for
+  around it. `mcp._refuse_colliding_parameters` sits beside it — two parameters sharing a name with
+  different types are a startup failure, not a runtime surprise — because both fail for
   one reason: a surface that cannot be described strictly should not be advertised. The check is
   scoped to ROWS. The stronger rule — every declared property required, everywhere in the schema —
   refuses the shipped surface, because a warning carries `connection_id` only when it is about one
@@ -105,7 +106,8 @@ the balance-lifecycle norm names one unmigrated emitter it does not grandfather.
   `money_summary`, the grouped aggregate. Every MCP tool is `experimental` (§ Surface Inventory),
   where "removing one is the policy working, not a violation", so the migration cost no version bump
   and opened no deprecation window. No other shipped tool changed shape.
-  Born 2026-09-09, from #30. Derivation and the alternatives priced against it:
+  Born 2026-09-09, from the tool-surface consolidation work
+  (`brookstalley/bankmachine#30`, since shipped). Derivation and the alternatives priced against it:
   `discovery-mcp-tool-surface.md`.
   Status: steady-state.
 
@@ -120,10 +122,13 @@ the balance-lifecycle norm names one unmigrated emitter it does not grandfather.
   ruled over exclude-and-state on the asymmetry in detectability**: an included frozen balance is
   correctable by any reader handed the flag and the figure, while an exclusion is invisible by
   construction — the total is simply smaller, and no field can point at what is not there. That is
-  #18's *classify, do not filter* arriving on this surface, and the flagged magnitude is what keeps
-  it from being #18's failure mode instead. 🔴 **The magnitude is the load-bearing half, not the
-  flag** — a count and a signed sum, present and zero rather than absent, on the same
-  `total_external_spend` precedent that makes an exclusion legible elsewhere. A warning without the
+  *classify, do not filter* arriving on this surface — the rule that made a spending total decompose
+  its internal transfers and debt service rather than drop them — and the flagged magnitude is what
+  keeps it from reproducing that rule's own failure mode instead: a total inflated by items that do
+  not belong to it, with nothing in the payload to net them out.
+  🔴 **The magnitude is the load-bearing half, not the flag** — a count and a signed sum, present
+  and zero rather than absent, on the same `total_external_spend` precedent that makes an exclusion
+  legible elsewhere. A warning without the
   figure tells a consumer something is wrong and leaves it unable to do anything about it.
   Born 2026-09-09, from #40, on the owner's ruling of the same date. Derivation, and the argument
   for the treatment that was not ruled: `discovery-account-lifecycle.md` § *The ruling the owner
