@@ -244,8 +244,10 @@ describes the **pipeline**, so it rides every response equally:
   2026-09-08: a sandbox connection to `ins_109511` granted 722 days against 730 requested.)*
 - `partial` — something is not yet known, such as a granted window that has not been measured. 🔴 A
   null granted window means *not yet measured*, never *no shortfall*.
-- `rule-applied` — an account rule filtered rows out of an aggregate, so the total excludes them on
-  purpose.
+- `rule-applied` — rows were excluded from an aggregate on purpose, so the total will not
+  reconcile against a raw sum over the same window. `detail` names which rows and why: an account
+  rule, a currency this store was never told, or an amount it cannot represent exactly in minor
+  units. 🔴 Say the exclusion out loud when you report the total.
 
 The second group describes **this request**, and fires only when the request actually crosses the
 boundary it names — so the *absence* of one is information too:

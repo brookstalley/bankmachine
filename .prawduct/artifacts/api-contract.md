@@ -59,7 +59,7 @@ the balance-lifecycle norm names one unmigrated emitter it does not grandfather.
 
 - **Every response carries a freshness stamp, and incompleteness rides the success path as a warning
   field rather than as an exception.** Warnings distinguish at minimum `stale`, `degraded`, `gapped`,
-  `partial`, and `rule-applied`; an aggregate that applied an account rule says so.
+  `partial`, and `rule-applied`; an aggregate that deliberately excluded rows says so.
   Why: this is the whole product thesis in one sentence. A hard error is the easy case; the dangerous
   case is a **successful** response computed over incomplete data, because nothing throws and the
   numbers simply stop being true (AC-4.4, AC-9.3). The consumer is an analyst agent that **cannot see
@@ -68,6 +68,20 @@ the balance-lifecycle norm names one unmigrated emitter it does not grandfather.
   channel would make it invisible exactly when it matters. AC-8.3's rule-applied clause is the same
   argument for exclusions: an exclusion that is not announced is one that gets silently forgotten
   during analysis.
+
+  > **Amendment, 2026-09-10 — `rule-applied` covers every deliberate exclusion, not only an
+  > account rule's.** *Statement:* the kind means "rows were excluded from this aggregate on
+  > purpose"; the excluding mechanism is named in `detail` rather than fixed by the kind.
+  > *Why:* as written, the kind named the one mechanism this build does not have. `account_rules`
+  > exists in the schema with no reader and no writer — the rule engine is FR-8 and is unbuilt —
+  > while two exclusions that DO happen had no way to announce themselves: a row whose currency is
+  > unknown (#86) and one whose amount cannot be represented exactly in minor units (#84). Both
+  > are excluded from minor-units aggregates for the same reason an account rule would be, and the
+  > vocabulary is closed, so the choice was to widen this kind's meaning or to leave real
+  > exclusions silent. Silent exclusion is the failure the kind was created to prevent.
+  > *Retroactivity:* none owed. The kind had no emitter to reinterpret — that absence is what #34
+  > filed — so nothing already on the wire changes meaning. When FR-8's rule engine lands it
+  > becomes a third emitter of the same kind, needing no further amendment.
   Status: steady-state.
 
 - **The CLI's three-way exit code is a contract: `0` success, `1` ran and found a problem, `2` could
@@ -921,7 +935,7 @@ three-week-old hole in the data and answer confidently.
 | `degraded` | A contributing connection is in error |
 | `gapped` | A known coverage hole in the queried window |
 | `partial` | A contributing account has bounded history |
-| `rule-applied` | An account rule filtered rows from this aggregate |
+| `rule-applied` | Rows were excluded from this aggregate ON PURPOSE, so the figure will not reconcile against a raw sum over the same window. `detail` names which rows and why |
 | `window_starts_before_coverage` | The window asked for reaches back past the first covered date |
 | `window_extends_past_coverage` | The window asked for reaches past the covered end — today, or the last transaction when that is later |
 | `rows_truncated` | The request matched more rows than the cap returned, and the answer holds only the newest of them |

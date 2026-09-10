@@ -158,7 +158,11 @@ _GUIDANCE: dict[str, _Guidance] = {
         ),
     ),
     "rule-applied": _Guidance(
-        means="an account rule filtered rows out of an aggregate, so the total excludes them",
+        means=(
+            "rows were deliberately excluded from an aggregate, so the total excludes them. "
+            "`detail` names which rows and why -- an account rule, a currency this store was "
+            "never told, or an amount it cannot represent exactly"
+        ),
         for_this_answer=(
             "the figure is smaller than the raw sum over the same window, and deliberately so; "
             "it will not reconcile against a total computed without the rule"
