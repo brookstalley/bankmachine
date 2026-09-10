@@ -923,13 +923,17 @@ at all. *Why:* three surfaces print the recipe and a fourth prints none, so whic
 meets depends on which command they happened to run. One instruction, one answer.
 
 **AC-17.8 · The round trip is covered by a test, and the human half stays owed.** A test exports a
-key, restores it into a keychain that does not hold it, and opens a datastore written under it. This
-does **not** discharge the operator rehearsal — a restore into the production path, against a key
-read back from wherever the operator stored it, remains unwalked and sandbox cannot rehearse it
-(`operational-spec.md` § Restore; #10). *Why:* the automated half and the human half fail
-differently. The test catches a broken round trip; only a person catches an instruction that reads
-clearly and cannot be followed under pressure. Claiming the first discharges the second is how the
-rehearsal quietly stops being owed.
+key, restores it into a keychain that does not hold it, and opens a datastore written under it.
+*Why:* the automated half and the human half fail differently. The test catches a broken round trip;
+only a person catches an instruction that reads clearly and cannot be followed under pressure.
+Claiming the first discharges the second is how the rehearsal quietly stops being owed.
+
+🔴 **What stays owed got narrower when these paths shipped, and the reason is worth keeping.** The
+keychain-loss drill was recorded as unrehearsable because it needs a store whose keychain entry is
+gone, and that state had no exit — restoring the entry was an instruction with no command behind it.
+It is now walkable against sandbox at zero cost (`docs/first-production-connection.md` § 2.3), and
+was walked 2026-09-10. What remains is a restore into the **production** path, and a round trip
+through the operator's own storage rather than a file the drill wrote.
 
 ---
 

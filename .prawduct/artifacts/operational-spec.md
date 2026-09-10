@@ -316,12 +316,24 @@ automating it is not yet specified.
 
 ### Restore
 
-Copy the backup to the configured datastore path, ensure the key is in the keychain under the right
-account **for that environment**, then `bankmachine store status`. A copy made by `store backup` is a
-single file, so there is no WAL or shm to keep with it and no way to restore a partial set.
+Copy the backup to the configured datastore path, put the key back in the keychain under the right
+account **for that environment**, then `bankmachine store status`:
+
+```
+cp <backup> <datastore path>          # the configured path for THIS environment
+bankmachine store key import          # prompts; refuses a key that does not open the copy
+bankmachine store status
+```
+
+A copy made by `store backup` is a single file, so there is no WAL or shm to keep with it and no way
+to restore a partial set.
 
 A wrong key **raises rather than returning garbage** *(verified)*, so a mismatched restore fails
-loudly instead of presenting an empty or corrupt store as a working one.
+loudly instead of presenting an empty or corrupt store as a working one. 🔴 **`store key import`
+makes that failure arrive one step earlier and one step safer**: it opens the copy with the
+candidate before it writes the keychain, so a mistyped key is refused rather than stored, and
+whatever key was already there is untouched. Before FR-12 this step was an instruction — *restore
+the keychain entry from your backup* — with no command behind it.
 
 **Walked against sandbox on 2026-09-10** (`docs/first-production-connection.md` § 2.3): backup
 verified, the copy opened at the configured path, `healthy: yes`. What that walk added to the
@@ -331,9 +343,18 @@ mode and the writer factory is what sets `PRAGMA journal_mode = WAL`. It flips o
 writer open. An operator mid-recovery who reads `delete` where the healthy-store description
 promises `wal` has not found a failed restore.
 
-🔴 **Still unwalked: a restore into the *production* path, and a restore against a key read back
-from wherever the operator stored it** rather than one already sitting in the keychain. The key
-half is the one that actually fails in an incident, and sandbox cannot rehearse it.
+**The key half is now rehearsable, and was rehearsed 2026-09-10.** It was recorded here as
+unrehearsable, and that was true while nothing could put a key back: the drill needs a store whose
+keychain entry is *gone*, and before FR-12 that state had no exit. `store key export` → delete the
+keychain entry → `store key verify` → `store key import` → `store status` walks it end to end
+against sandbox at zero cost, and does. A two-character transposition was also injected and caught,
+which is the failure the drill exists to prove is catchable.
+
+🔴 **Still unwalked, and narrower than the claim it replaces: a restore into the *production*
+path, and a round trip through the operator's OWN storage** — a password manager entry, a sheet of
+paper — rather than through a file the drill wrote. The first needs production. The second is about
+the operator's process rather than the product's mechanism, which is exactly why `store key verify`
+exists and why `docs/first-production-connection.md` § 3.3 ends in it.
 
 ### RPO / RTO
 

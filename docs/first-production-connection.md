@@ -98,6 +98,21 @@ key to check it (its `--help` says so). The restore direction — copy a backup 
 accumulating the one series no re-sync can rebuild, which is why it is worth having walked before
 then (`.prawduct/artifacts/operational-spec.md`, § Restore).
 
+🔴 **Rehearse the half that actually fails in an incident, too — losing the keychain entry.** It
+costs nothing here and there is no other time you will do it calmly:
+
+```sh
+uv run bankmachine store key export --to /tmp/rehearse.key
+security delete-generic-password -s bankmachine -a datastore:sandbox
+uv run bankmachine store status                 # unhealthy, and says exactly why
+uv run bankmachine store key import             # paste from /tmp/rehearse.key
+uv run bankmachine store status                 # healthy again
+rm /tmp/rehearse.key
+```
+
+`store init` will refuse to mint a new key over the existing datastore, which is correct and is the
+behaviour you want to have seen once before it happens for real.
+
 🔴 **A freshly restored copy reads `journal mode: delete`, not `wal`, and that is expected.** SQLite's
 backup API writes the destination in the default journal mode; the product's writer factory sets
 `PRAGMA journal_mode = WAL` on every writer open (`src/bankmachine/store/connection.py`), so the copy
