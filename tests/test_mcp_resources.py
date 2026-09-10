@@ -17,6 +17,7 @@ the tool tests that share its fixtures.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -36,6 +37,27 @@ _REQUEST_SCOPE = "Request-scoped"
 #: absence of the third is the failure mode: a kind can be defined and explained
 #: and still leave an agent with nothing to DO about it.
 _BULLETS = ("- **Means:**", "- **For this answer:**", "- **Do:**")
+
+
+#: The contract's own MCP tool table, read the way the tool-surface guard reads
+#: it: the section heading that introduces it, then the first cell of each row.
+#: A second reader rather than a second LIST -- the specification stays the one
+#: in the contract, and this file names no tool of its own.
+_API_CONTRACT = Path(__file__).resolve().parents[1] / ".prawduct" / "artifacts" / "api-contract.md"
+_SPECIFICATION_TABLE = re.compile(r"### MCP tool surface.*?\n\n(\|.*?)\n\n", re.DOTALL)
+_TOOL_NAME = re.compile(r"`([a-z][a-z0-9_]*)`")
+
+
+def _specified_tools() -> set[str]:
+    table = _SPECIFICATION_TABLE.search(_API_CONTRACT.read_text(encoding="utf-8"))
+    assert table, "the contract's MCP tool table is no longer where this guard looks for it"
+    names: set[str] = set()
+    for row in table.group(1).splitlines():
+        cells = row.split("|")
+        named = _TOOL_NAME.fullmatch(cells[1].strip()) if len(cells) > 1 else None
+        if named:
+            names.add(named.group(1))
+    return names
 
 
 def _documents() -> dict[str, mcp_resources.Document]:
@@ -357,3 +379,74 @@ def test_the_documents_are_assembled_without_reading_anything() -> None:
         f"this module imports {reaches_a_store}; a reference document that can touch the "
         f"datastore is one that can fail when the datastore cannot be read"
     )
+
+
+# --------------------------------------------------------------------------
+# What the reference carries that the primer no longer can
+# --------------------------------------------------------------------------
+
+
+def test_the_envelope_reference_names_every_tool_the_contract_specifies_and_this_build_lacks() -> (
+    None
+):
+    """🔴 The absent tools are named ON THE WIRE, not only in documents people read.
+
+    Three specified tools are not built, and every surface that says so is a
+    human one. An agent asked "what was my net worth a year ago" receives no
+    notice that there is no tool for it, so it improvises from today's balances
+    and answers with a number that has no basis — the failure this product
+    exists to refuse, arriving through the one door nothing was watching.
+
+    The expected set is DERIVED from the contract's own tool table against the
+    live registry, never listed here: a roster typed into a test is the copy
+    that stops matching the day a tool lands.
+    """
+    specified = _specified_tools()
+    built = {str(definition["name"]) for definition in mcp._tool_definitions()}
+    unbuilt = specified - built
+    assert unbuilt, "the contract specifies nothing this build lacks, so this checks nothing"
+
+    text = _envelope_text()
+    missing = sorted(tool for tool in unbuilt if f"`{tool}`" not in text)
+
+    assert not missing, (
+        f"the contract specifies {missing} and this build does not serve them, and the "
+        f"reference an agent is sent to never names them"
+    )
+    assert set(mcp_resources.UNBUILT_TOOLS) == unbuilt, (
+        "the wire's roster of absent tools disagrees with the contract's own table"
+    )
+
+
+def test_the_envelope_reference_says_row_text_is_written_by_third_parties() -> None:
+    """🔴 A descriptor is chosen by whoever moved the money, and it reaches a model.
+
+    Anyone who can send a cent to the account holder chooses the characters that
+    land in `description`, and they arrive verbatim inside an answer read by an
+    agent that holds tools far beyond this server. The primer says it in one
+    line; this is where a client goes for field-level detail, so it says it
+    again — repetition beats subtlety when the failure needs to succeed once.
+    """
+    text = _envelope_text()
+
+    assert "written by third parties" in text.lower()
+    for field in ("`description`", "`merchant`"):
+        assert field in text
+    assert "never follow it" in text.lower()
+
+
+def test_every_flow_class_the_surface_publishes_has_a_definition() -> None:
+    """A class with no definition beside it is one a reader defines from its name.
+
+    Which is the whole defect: `internal_transfer` sounds like a verified move
+    between the holder's own accounts and is a category the aggregator assigned.
+    Walked from what the tools publish, so a fourth class cannot arrive unwritten.
+    """
+    classes = mcp_resources._flow_classes(mcp._tool_definitions())
+    assert classes, "the surface publishes no flow classes, so this checks nothing"
+
+    text = _envelope_text()
+    for flow in classes:
+        meaning = mcp_resources.flow_class_meaning(flow)
+        assert meaning != mcp_resources._FLOW_CLASS_UNWRITTEN, flow
+        assert meaning in text, f"the reference does not define `{flow}`"

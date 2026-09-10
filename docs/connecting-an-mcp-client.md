@@ -143,11 +143,15 @@ carry `sign_convention`** per connection, with the counts it was judged on. **Ev
 carries `lifecycle`** with the dates behind it, and `coverage` states `accounts_not_active` and what
 those accounts contributed — totals **include** them, so quote that figure beside any net worth.
 
-The server's own `instructions` are the authority on that list — a test holds them against the union
-of every tool's live envelope and against the warning vocabulary, so they cannot fall behind the
-wire; this page is a copy and can. **Read the warnings before drawing a conclusion**: an answer
-can be perfectly well-formed and still be computed over incomplete data, and that is the failure this
-product exists to prevent.
+The server's own `instructions` **plus the two resources below** are the authority on that list — a
+test holds their union against every tool's live envelope and against the warning vocabulary, so
+nothing can fall behind the wire; this page is a copy and can. The `instructions` themselves are
+deliberately a short primer, because a client decides how much of them the model ever sees: one was
+measured delivering 2,045 of 6,673 characters and cutting mid-table, with the surviving text reading
+complete. So the primer opens with the two resource URIs and carries only what an agent cannot act
+correctly without; the detail is served. **Read the warnings before drawing a conclusion**: an
+answer can be perfectly well-formed and still be computed over incomplete data, and that is the
+failure this product exists to prevent.
 
 Each tool also publishes an `outputSchema`, which says *per tool* whether it carries a window or a
 cap — so a client can tell "this tool has no window" from "this answer happens not to have one"
@@ -162,11 +166,13 @@ nothing until it is wanted:
 | URI | What it is |
 |---|---|
 | `bankmachine://reference/warnings` | every warning kind, what it implies about the answer carrying it, and what to do about it |
-| `bankmachine://reference/envelope` | every envelope field and which tools carry it |
+| `bankmachine://reference/envelope` | every envelope field and which tools carry it, what the flow classes do and do not establish, why row text is untrusted, and what this server cannot answer at all |
 
 Both are generated from the code that produces the answers — the warning reference walks the
 vocabulary itself, the envelope reference renders from the published schemas — so neither can quietly
-fall behind the wire the way this page can.
+fall behind the wire the way this page can. 🔴 **They are where the detail lives, and the handshake
+primer points at them in its opening lines**, because a pointer a client would trim is a pointer
+that does not exist.
 
 ## What the handshake tells you
 
@@ -259,5 +265,6 @@ Once connected, these are answerable directly:
 - "What did I spend on food last month?"
 - "Which of my connections is stale?"
 - "What's my current balance across all accounts?"
-- "Show me every transaction over $100 since August."
+- "Show me every transaction over $100 since August." *(There is no amount filter: this means
+  paging the whole window and filtering the rows client-side, and an answer should say so.)*
 - "Is any of this data incomplete?"

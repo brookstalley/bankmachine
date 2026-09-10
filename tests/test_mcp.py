@@ -1688,31 +1688,50 @@ def test_an_argument_the_tool_does_not_advertise_is_refused(initialized_config: 
     assert result["structuredContent"]["error"]["code"] == "invalid_argument"
 
 
-def test_the_instructions_name_every_field_the_envelope_actually_carries(
+def _delivered_guidance(config: Config) -> str:
+    """Everything a client can put in front of the model: the primer AND the resources.
+
+    🔴 The union, because the primer alone is no longer the whole statement and
+    holding it to the whole vocabulary would force the vocabulary back into a
+    text a client TRUNCATES. Measured: one client delivered 2,045 of 6,673
+    characters and cut mid-table, so what a longer primer buys is not coverage
+    but the appearance of it. The resources are served by URI and arrive whole
+    when they are asked for, so a field or a kind that lives there is reachable
+    in a way a cut paragraph is not — and the union is what nothing may fall out
+    of.
+    """
+    return "\n".join(
+        [mcp._instructions(config), *(document.text for document in mcp._reference_documents())]
+    )
+
+
+def test_what_the_server_delivers_names_every_field_the_envelope_actually_carries(
     initialized_config: Config,
 ) -> None:
     """🔴 A closed list in prose is one that stops matching the payload it describes.
 
-    The instructions are the ONE text a consuming agent reads before it calls
-    anything, and they enumerated the envelope as a closed set. Adding `build`
-    to the wire without adding it here would leave the only document the agent
-    sees actively denying the field exists -- which is exactly how a stale-build
+    What a consuming agent can read about this envelope is the handshake primer
+    plus the reference documents this server serves by URI. Adding `build` to
+    the wire and to none of them would leave every text the agent can reach
+    actively denying the field exists -- which is exactly how a stale-build
     round happens again, since `build` is what would have prevented the last one.
 
     Asserted against the real envelope rather than a second hand-written list,
-    because a second list is one that stops matching the first.
+    because a second list is one that stops matching the first. A name counts as
+    delivered when it appears as its own leaf -- how the primer writes it -- or
+    as the dotted path the envelope reference renders.
 
     🔴 **Over the UNION of every tool's envelope, and one level into it, never
     one sample.** A tool that carries neither `effective_window` nor
     `truncation` cannot discriminate a rule about them, and a scan of top-level
     keys alone cannot see a key nested inside a block — so a guard written
-    either way passes while the only text a consuming agent reads at handshake
-    denies a field exists. A check that samples one instance of the thing it
-    generalises over is a check whose bad news never arrives, which is the trap
-    `learnings.md` records twice.
+    either way passes while the text a consuming agent reads denies a field
+    exists. A check that samples one instance of the thing it generalises over
+    is a check whose bad news never arrives, which is the trap `learnings.md`
+    records twice.
     """
     _seed(initialized_config)
-    instructions = mcp._instructions(initialized_config)
+    delivered = _delivered_guidance(initialized_config)
 
     envelope: set[str] = set()
     for definition in mcp._tool_definitions():
@@ -1732,36 +1751,63 @@ def test_the_instructions_name_every_field_the_envelope_actually_carries(
         "coverage.transactions_in_effective_window",
     } <= envelope, "the union lost the keys this guard exists for, so it is back to sampling"
 
-    # A nested key is named by its own leaf: the instructions say `matching`,
-    # not `truncation.matching`, which is also how a consumer reads it off the
-    # payload.
-    missing = sorted(key for key in envelope if f"`{key.rsplit('.', 1)[-1]}`" not in instructions)
+    missing = sorted(
+        key
+        for key in envelope
+        if f"`{key}`" not in delivered and f"`{key.rsplit('.', 1)[-1]}`" not in delivered
+    )
 
     assert not missing, (
-        f"the envelope carries {missing} but the instructions never name them; "
-        f"an agent reading only the instructions does not know they exist"
+        f"the envelope carries {missing} and nothing this server delivers names them; "
+        f"an agent reading the primer and both resources does not know they exist"
     )
 
 
-def test_the_instructions_name_every_warning_kind_the_vocabulary_defines(
+def test_what_the_server_delivers_names_every_warning_kind_the_vocabulary_defines(
     initialized_config: Config,
 ) -> None:
-    """🔴 The kinds are the half an agent is told to branch on, and they were short by four.
+    """🔴 The kinds are the half an agent is told to branch on, and nothing pinned them.
 
-    The envelope guard above pins FIELDS. Nothing pinned KINDS, so the four
-    request-scoped kinds this cycle added were absent from the handshake text
-    while `warnings` was the thing that text tells the reader to check first.
-    Derived from the vocabulary rather than from a second list here, for the
-    reason the vocabulary exists at all.
+    The envelope guard above pins FIELDS. This one pins KINDS, over the same
+    union: a kind the vocabulary declares and no delivered text names is one an
+    agent is told to branch on and was never given. Derived from the vocabulary
+    rather than from a second list here, for the reason the vocabulary exists at
+    all.
     """
-    instructions = mcp._instructions(initialized_config)
+    delivered = _delivered_guidance(initialized_config)
 
-    missing = sorted(k for k in envelope.WARNING_KINDS if f"`{k}`" not in instructions)
+    missing = sorted(k for k in envelope.WARNING_KINDS if f"`{k}`" not in delivered)
 
     assert not missing, (
-        f"the vocabulary defines {missing} but the instructions never name them; "
+        f"the vocabulary defines {missing} and nothing this server delivers names them; "
         f"an agent told to read `warnings` cannot act on a kind it was never given"
     )
+
+
+def test_the_primer_fits_inside_what_a_client_actually_delivers(
+    initialized_config: Config,
+) -> None:
+    """🔴 The measurement this budget exists for: a client cut it, and said nothing.
+
+    One client handed the model 2,045 of 6,673 characters and stopped mid-table.
+    Everything past the cut — six of the warning kinds, the whole envelope table,
+    and the pointer telling the agent the reference resources exist — was never
+    read, and the surviving text reads complete. A primer that fits is the only
+    version of this text that is actually delivered.
+
+    🔴 The two resource URIs are asserted to be in the FIRST lines rather than
+    merely present, because a pointer that would be cut is a pointer that does
+    not exist — and it is the pointer that makes everything else reachable.
+    """
+    primer = mcp._instructions(initialized_config)
+
+    assert len(primer) <= mcp.INSTRUCTIONS_BUDGET, (
+        f"the primer is {len(primer)} characters against a budget of "
+        f"{mcp.INSTRUCTIONS_BUDGET}; a client that trims will hand the model a prefix of it"
+    )
+    opening = "\n".join(primer.splitlines()[:3])
+    for uri in (mcp_resources.ENVELOPE_URI, mcp_resources.WARNINGS_URI):
+        assert uri in opening, f"{uri} is not in the first three lines, so it can be cut"
 
 
 #: What `Implementation` -- the type of `serverInfo` -- declares, read from
@@ -2649,7 +2695,7 @@ def test_the_cursor_is_advertised_on_the_capped_tool_and_nowhere_else() -> None:
         assert "cursor" not in mcp._permitted_arguments(name), name
 
 
-def test_the_instructions_say_how_to_reach_what_a_truncated_answer_left_behind(
+def test_the_way_past_the_cap_is_named_everywhere_an_agent_might_look(
     initialized_config: Config,
 ) -> None:
     """🔴 `next_cursor` is nested inside `truncation`, so the envelope guard cannot see it.
@@ -2657,13 +2703,18 @@ def test_the_instructions_say_how_to_reach_what_a_truncated_answer_left_behind(
     That guard walks the TOP-LEVEL keys of each tool's payload; a field one
     level down is invisible to it, and a field that appears only on a truncated
     answer is invisible to a call it makes with no arguments. Both gaps point the
-    same way — the only text a consuming agent reads before it calls anything
-    would not mention the one field that gets it past the cap.
-    """
-    instructions = mcp._instructions(initialized_config)
+    same way — the one field that gets a caller past the cap could go unmentioned
+    on every surface an agent reads.
 
-    assert "`next_cursor`" in instructions
-    assert "`cursor`" in instructions
+    The primer has to name the field, because paging is the instruction it gives.
+    What to pass it back AS is detail, so it is asserted over the union the
+    server delivers rather than forced into a text a client trims.
+    """
+    primer = mcp._instructions(initialized_config)
+    delivered = _delivered_guidance(initialized_config)
+
+    assert "`next_cursor`" in primer
+    assert "`cursor`" in delivered
     assert mcp._TRUNCATION_NOTE.count("`next_cursor`") >= 1
 
 
