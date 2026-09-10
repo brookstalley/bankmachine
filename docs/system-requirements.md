@@ -524,6 +524,84 @@ just two archived responses, and the sandbox's inability to *produce* one is not
 *replay* one. This is what makes #40 the buildable member of the remaining three, and the claim
 should be pinned by a test rather than left as an assertion in a discovery document.
 
+
+### FR-10 · Operator-owned columns
+
+*Derived in `.prawduct/artifacts/discovery-operator-owned-columns.md` (#48). Written for two known
+consumers — the account-retirement path #48 needs, and a per-row annotation field named as upcoming
+— because a contract derived from one consumer is a carve-out. Its assumptions are recorded as
+**vetoable** in that document; an assumption the owner rejects retires the criteria resting on it.*
+
+🔴 **One question is deliberately NOT answered here and is the owner's:** whether an *agent* may
+write. The MCP surface is read-only by norm (§ 5), and an agent reaches this store through no other
+surface, so an agent-authored value is a ruling on a red-line norm rather than a design choice.
+These criteria assume an operator-invoked CLI path and hold unchanged either way — what a ruling
+changes is who calls in, not what the store owes the value.
+
+**AC-15.1 · An operator-writable column is declared, and the declaration is what protects it.** Every
+column an operator may write appears in the declaration its table class requires — the dimension
+guard, or the rebuild's operator-state map — and no column is protected merely because no deriver
+currently emits it. *Why:* `closed_date` is called operator-owned in `data-model.md`, is written only
+by the retirement path, and is absent from `_OPERATOR_OWNED`; it survives today because the accounts
+deriver never puts that key in the dict the guard filters. A guard that holds only while an unrelated
+dict stays empty has been tested by nothing and fails on the change that fills it.
+
+**AC-15.2 · An operator write never moves a derivation-owned column.** A write on the operator's
+behalf sets the operator's own columns and nothing else; in particular it does not stamp
+`updated_at`, which is written from the archived response and is inside the content digest. *Why:*
+measured during the FR-9 build. The consequence is not a wrong field — it is the next
+`store rebuild` replaying the archived value, moving the digest, and refusing the whole rebuild,
+which the operator discovers when they most need it to work.
+
+**AC-15.3 · An operator's value survives a rebuild, by the mechanism its table class requires.** For a
+table the rebuild empties, the value is captured before the delete and restored before the digest is
+taken; for a table it does not empty, the deriver's update arm excludes the column. *Why:* both
+shipped instances already do this, so the property is currently a coincidence of two independent
+implementations rather than a stated contract — and the two known consumers do not share a
+mechanism, so a rule written from either alone does not cover the other.
+
+**AC-15.4 · The declarations and the schema are compared by something that fails.** A check
+enumerates the declared operator-owned columns, confirms each exists on the table it names, and
+confirms each is covered by the mechanism its table class requires. *Why:* both declarations are
+hand-maintained deliberately — "the operator owns this" is a decision, not something a column's type
+can say — but hand-maintained and unchecked is a different thing, and AC-15.1's finding is what it
+looks like.
+
+**AC-15.5 · No column is declared operator-owned without a path that can write it, at the
+granularity the declaration is about.** A declaration with no writer is refused by the same check as
+AC-15.4; a declaration whose only writer acts on a coarser entity than the column's own row is
+recorded as unmet, not as satisfied. *Why:* the two instances on `accounts` fail differently, and a
+criterion that asked only "is there a writer" would catch one and bless the other. `balance_class`
+has none. `lifecycle_status` has one that retires a whole connection, so an operator wanting to close
+one card must stop syncing every account at that institution — not a declaration path but a reason
+not to declare. The granularity clause is what makes this criterion say what #48 needs.
+
+**AC-15.6 · An operator declaration says when it was made, without borrowing a derivation-owned
+timestamp.** Where the time of a declaration is worth keeping, it is kept in a column the derivation
+does not write. *Why:* AC-15.2 forbids the obvious shortcut and the need is real — `closed_date`
+exists for exactly this reason on exactly this path. Stated as a rule so the next operator column
+does not rediscover it by breaking a rebuild.
+
+**AC-15.7 · An operator declaration is reversible by the same surface that made it.** Any path that
+records a declaration offers the way back. *Why:* the declaration is a human judgement about which of
+several indistinguishable causes applies (AC-12.2), and a judgement from ambiguous evidence is one a
+person will sometimes get wrong. A store that accepts a correction and refuses its withdrawal turns a
+typo into a permanent fact.
+
+**AC-15.8 · An operator value with nowhere to land is reported, never re-homed.** Where a rebuild
+cannot match a captured value back to a row, it is surfaced to the operator and applied to no other
+row. *Why:* already true in the restore path, stated here as contract rather than implementation —
+applying a correction to the wrong row is worse than losing it, and losing it silently is worse than
+either.
+
+**AC-15.9 · Operator-owned columns stay inside the content digest.** They are not excluded from it to
+avoid the capture-and-restore work. *Why:* the alternative was weighed and rejected — excluding them
+would let a rebuild drop every operator correction in the store and still certify itself as
+reproducing what it replaced, which is the one thing the digest exists to prevent. The cost is that a
+new operator column needs its mechanism entry, and AC-15.4 is what makes that a caught omission
+rather than a discovered one.
+
+
 ---
 
 ## 5. MCP tool surface
