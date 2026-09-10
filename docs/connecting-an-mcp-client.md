@@ -36,8 +36,8 @@ resolve its datastore — the same ones the CLI uses.
 {
   "mcpServers": {
     "bankmachine-sandbox": {
-      "command": "uv",
-      "args": ["run", "--directory", "/path/to/bankmachine", "bankmachine", "mcp"],
+      "command": "/absolute/path/to/uv",
+      "args": ["run", "--directory", "/absolute/path/to/bankmachine", "bankmachine", "mcp"],
       "env": {
         "BANKMACHINE_ENVIRONMENT": "sandbox"
       }
@@ -46,17 +46,41 @@ resolve its datastore — the same ones the CLI uses.
 }
 ```
 
+🔴 **Both paths absolute.** A GUI client (Claude Desktop, and most others) launches its servers
+with a minimal `PATH` that does not include Homebrew or `~/.local/bin`, so a bare `"uv"` fails
+before the server prints anything — the client reports a server that "did not start" and nothing
+in this product's log explains it, because nothing of this product ran. `which uv` prints the
+path to put in `command`. The `--directory` path pins which checkout is served regardless of the
+client's own working directory.
+
+Where that JSON goes depends on the client:
+
+| Client | Where |
+|---|---|
+| Claude Code | `claude mcp add bankmachine-sandbox --env BANKMACHINE_ENVIRONMENT=sandbox -- /absolute/path/to/uv run --directory /absolute/path/to/bankmachine bankmachine mcp` — writes the entry for you; `claude mcp list` shows it |
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS); restart the app after editing |
+| Other clients | their `mcpServers` config, same shape; consult the client's own docs |
+
 Add a second entry with `"BANKMACHINE_ENVIRONMENT": "production"` when you have real connections.
 Name them distinctly — the server's title carries the environment, but the key is what you will see
-first.
+first (measured: Claude Code lists the key you registered and never shows the title).
+
+The server needs no aggregator credential and never contacts the aggregator, so the entry carries
+only the environment. It does need the same datastore path resolution the CLI uses: if you set
+`BANKMACHINE_DATASTORE_PATH`, `BANKMACHINE_KEYCHAIN_SERVICE` or `BANKMACHINE_CONFIG` for the CLI,
+put the same values in `env` here, because the client does not inherit your shell's exports.
 
 ## Before connecting
 
+The datastore has to exist and hold data before the server has anything to answer with. From a
+shell where `BANKMACHINE_PLAID_CLIENT_ID` is exported (every aggregator-touching command needs it;
+`source .env` after filling in `.env.example`):
+
 ```sh
-bankmachine store init          # once per environment
-bankmachine connector set-secret
-bankmachine enroll              # opens a hosted URL; complete it in a browser
-bankmachine sync run            # fetches accounts and transactions
+uv run bankmachine store init          # once per environment
+uv run bankmachine connector set-secret
+uv run bankmachine enroll              # opens a hosted URL; complete it in a browser
+uv run bankmachine sync run            # fetches accounts and transactions
 ```
 
 `bankmachine mcp` starts even without a datastore and reports that state (AC-ARCH.3); it never
