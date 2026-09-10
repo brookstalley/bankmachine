@@ -188,10 +188,10 @@ Compare the log redactor, which is keyed to the same idea and is strictly wider
 
 | line fed to `_findings` | verdict |
 |---|---|
-| `secret = "5a1b2c3d4e5f60718293a4b5c6d7e8"` | **not caught** |
-| `plaid_secret = "5a1b2c3d4e5f60718293a4b5c6d7e8"` | **not caught** |
-| `BANKMACHINE_PLAID_SECRET=5a1b2c3d4e5f60718293a4b5c6d7e8` | **not caught** |
-| `token = "5a1b2c3d4e5f60718293a4b5c6d7e8"` | **not caught** |
+| `secret = "<30 hex chars>"` | **not caught** |
+| `plaid_secret = "<30 hex chars>"` | **not caught** |
+| `BANKMACHINE_PLAID_SECRET=<30 hex chars>` | **not caught** |
+| `token = "<30 hex chars>"` | **not caught** |
 | `client_secret = "<30 hex chars>"` | caught |
 
 The second safety net does not close it either: `_RAW_KEY` requires **exactly** 64 hex characters

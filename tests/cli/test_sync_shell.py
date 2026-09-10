@@ -224,7 +224,7 @@ def test_output_redacts_tokens_and_account_numbers_but_keeps_masks(
     that the function equals itself. These strings are what an operator should
     see, written independently of the code that produces them.
     """
-    token = "sbx-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
+    token = "sbx-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"  # credential-shape: test vector
     with writer(initialized_config) as w:
         w.execute("CREATE TABLE probe (note TEXT, mask TEXT, number TEXT)")
         w.execute(
@@ -245,7 +245,7 @@ def test_output_redacts_tokens_and_account_numbers_but_keeps_masks(
 
 def test_an_error_message_quoting_a_token_is_redacted_too(initialized_config: Config) -> None:
     """SQLite quotes the offending value back; a mistyped token is still a token."""
-    token = "sbx-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
+    token = "sbx-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"  # credential-shape: test vector
 
     out = _run(initialized_config, [f"SELECT {token};"])
 
@@ -262,7 +262,7 @@ def test_a_token_typed_into_the_shell_is_redacted_in_the_transcript(
     a bug report -- the operator-verification entry for this command is one --
     so a token typed into a query must not survive in it.
     """
-    token = "sbx-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
+    token = "sbx-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"  # credential-shape: test vector
 
     out = _run(initialized_config, [f"SELECT '{token}' AS t;"])
 

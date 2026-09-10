@@ -251,7 +251,17 @@ def _string_literal_lines(text: str, path: Path) -> frozenset[int]:
     lines: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            lines.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+            # 🔴 Only the CONTINUATION lines of a multi-line string. The line a
+            # string opens on is code -- `call(access_token=token, name="x")`
+            # forwards a reference beside a literal, and marking it "inside a
+            # string" strips the reference exemption from every call that
+            # happens to carry a string argument. A secret ON the opening line
+            # is quoted, so the quote check catches it without this set; a
+            # docstring's opening line is caught by the prose test. What only
+            # the parser can see is line four of a docstring, and that is all
+            # this set needs to hold.
+            end = node.end_lineno or node.lineno
+            lines.update(range(node.lineno + 1, end + 1))
     return frozenset(lines)
 
 
@@ -399,6 +409,12 @@ def test_a_variable_reference_is_exempt_but_only_in_python_and_only_unquoted() -
     call_site = "    ItemGetRequest(access_token=enrolled_item),"
     assert not _findings(forwarded, REPO_ROOT / "x.py")
     assert not _findings(call_site, REPO_ROOT / "x.py")
+    # A reference forwarded on the same line as an ordinary string literal is
+    # still code, not prose -- the parser marks lines INSIDE a string, never the
+    # line a one-line string sits on.
+    # credential-shape: test vector
+    beside_a_literal = '    Session(public_token=PUBLIC_TOKEN, session_id="session-1")'
+    assert not _findings(beside_a_literal, REPO_ROOT / "x.py")
     # 🔴 A line-by-line prose test cannot see that line four of a docstring is
     # still inside it, which left a secret in a multi-line string exempt.
     quotes = chr(34) * 3

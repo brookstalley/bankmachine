@@ -158,7 +158,7 @@ class FakeClient:
         self.requested_optional_products = optional_products
         self.hosted_lifetime = kwargs.get("hosted_url_lifetime_seconds")
         return LinkToken(
-            token="link-sandbox-fake",
+            token="link-sandbox-fake",  # credential-shape: test vector
             expires_at="2026-09-08T00:00:00Z",
             requested_history_days=history_days,
             hosted_link_url="https://secure.example/hl/session",
