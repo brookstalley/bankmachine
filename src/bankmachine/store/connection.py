@@ -22,7 +22,7 @@ from __future__ import annotations
 import fcntl
 import os
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -452,6 +452,54 @@ def reader(config: Config, *, require_supported_schema: bool = True) -> Iterator
         yield conn
     finally:
         conn.close()
+
+
+def opens_with(config: Config, key: str) -> bool:
+    """Whether `key` decrypts the datastore. The question key escrow is actually about.
+
+    🔴 Deliberately NOT built on `reader()`: that fetches the key from the
+    keychain, which is the one thing a candidate key must not do. The seam is
+    `_key_and_prepare`, which already takes an explicit key, and
+    `_diagnose_first_read`, which already tells a wrong key apart from a
+    datastore that cannot be read at all. Nothing here adds a diagnosis.
+
+    🔴 The schema version is deliberately NOT required. Restoring an older
+    backup onto a newer build is a real path, the key is correct there, and
+    refusing to say whether a key works because the schema is old fails the
+    operator in the exact scenario the command exists for.
+
+    Returns False ONLY for a key the datastore rejects. A missing or unreadable
+    datastore raises instead: neither is an answer about the key, and reporting
+    "no" for a hot WAL this process cannot open would send the operator to
+    restore a keychain entry that was never the problem.
+    """
+    if not config.datastore_path.exists():
+        raise DatastoreMissingError(
+            f"no datastore at {config.datastore_path} -- there is nothing to check a key against. "
+            f"A key can only be verified against the datastore it is supposed to open"
+        )
+    conn = dbapi2.connect(
+        _uri(config.datastore_path, READ_ROLE_MODE),
+        uri=True,
+        isolation_level=None,
+        check_same_thread=True,
+    )
+    opened = False
+    try:
+        try:
+            _key_and_prepare(conn, config, key)
+        except DatastoreKeyRejectedError:
+            return False
+        opened = True
+        return True
+    finally:
+        if opened:
+            conn.close()
+        else:
+            # `_key_and_prepare` closes the handle on the paths it diagnoses;
+            # closing twice is harmless and covers the paths it does not.
+            with suppress(dbapi2.Error):
+                conn.close()
 
 
 def read_schema_version(conn: Connection) -> int | None:

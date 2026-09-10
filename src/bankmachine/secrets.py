@@ -57,9 +57,49 @@ class AggregatorCredentialMissingError(SecretsError):
     """
 
 
+class KeyEscrowRefusedError(SecretsError):
+    """An escrow operation was refused because performing it would leak the key.
+
+    Its own type, and it lives here rather than in the CLI, because it is the
+    guard that keeps AC-10.1 true. The 2026-09-10 amendment permits a
+    *deliberate, operator-initiated* export; everything that would make an
+    export incidental instead -- a redirected stdout, a destination the operator
+    did not name -- is refused, and the refusal is part of the seam rather than
+    part of a command's argument handling.
+    """
+
+
 def generate_datastore_key() -> str:
     """A fresh 256-bit key as lowercase hex."""
     return token_hex(KEY_BYTES)
+
+
+def validate_candidate_key(key: str) -> str:
+    """Check a key the operator supplied, before anything tries to open a store with it.
+
+    Separate from `_validate` because the message is the whole point. `_validate`
+    names the keychain entry holding a bad value, which is right for a key
+    already stored and wrong for one being offered by hand.
+
+    🔴 And an unchecked candidate fails in a way that misleads. SQLCipher uses
+    the quoted value as a raw key ONLY when it is exactly the right number of hex
+    digits, and otherwise treats it as a passphrase to run through its KDF -- so
+    a candidate with a typo'd length does not report "that is not a key", it
+    reports that the datastore did not open. True, useless, and indistinguishable
+    from a correct key offered against the wrong datastore.
+    """
+    candidate = key.strip()
+    if len(candidate) != KEY_HEX_LENGTH:
+        raise SecretsError(
+            f"that is {len(candidate)} characters; a datastore key is exactly "
+            f"{KEY_HEX_LENGTH} hex characters. Nothing was checked against the datastore"
+        )
+    if not _HEX_KEY.fullmatch(candidate):
+        raise SecretsError(
+            "that is not hexadecimal; a datastore key is 64 characters of 0-9 and a-f. "
+            "Nothing was checked against the datastore"
+        )
+    return candidate.lower()
 
 
 def _validate(key: str, *, service: str, account: str) -> str:
