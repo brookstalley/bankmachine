@@ -142,16 +142,27 @@ def _seed(config: Config, *, degraded: bool = False, granted: int | None = 90) -
             )
 
 
-def _converse(config: Config, requests: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Drive the real server loop over string buffers.
+def _frames(config: Config, frames: list[Any]) -> list[Any]:
+    """Drive the real server loop over string buffers, one JSON value per line.
 
     Not a mock of the protocol: the same `serve` the CLI calls, reading the same
     line-delimited JSON a client writes.
+
+    Typed loosely on both halves because a frame is not always an object -- a
+    BATCH is an array going out and an array coming back, and a frame that is
+    neither is exactly what the refusal cases send. `_converse` is the narrower
+    door for the ordinary one-object-per-line case.
     """
-    stdin = io.StringIO("\n".join(json.dumps(r) for r in requests) + "\n")
+    stdin = io.StringIO("\n".join(json.dumps(frame) for frame in frames) + "\n")
     stdout = io.StringIO()
     mcp.serve(config, stdin=stdin, stdout=stdout)
     return [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
+
+
+def _converse(config: Config, requests: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One request object per line, one reply object per line."""
+    replies: list[dict[str, Any]] = _frames(config, list(requests))
+    return replies
 
 
 def _every_tool() -> tuple[str, ...]:
@@ -658,6 +669,190 @@ def test_an_unknown_method_is_a_method_not_found(initialized_config: Config) -> 
     replies = _converse(initialized_config, [{"jsonrpc": "2.0", "id": 1, "method": "prompts/list"}])
 
     assert replies[0]["error"]["code"] == -32601
+
+
+# --------------------------------------------------------------------------
+# Batches
+# --------------------------------------------------------------------------
+
+
+def test_every_id_in_a_batch_gets_exactly_one_reply(initialized_config: Config) -> None:
+    """🔴 The harm is a HANG, not a refusal.
+
+    Batching is base JSON-RPC 2.0 and is mandatory in the two oldest revisions
+    `SUPPORTED_PROTOCOL_VERSIONS` offers, so a conformant client may send an
+    array at any time. Answering the whole array with one `id: null` error
+    settles no promise the client is holding: every id inside it waits forever,
+    and the operator sees the tool stop responding rather than fail.
+
+    So the assertion is on the IDS, not on the absence of an error. A fix that
+    refuses more politely still hangs the client; only a reply per id does not.
+    """
+    sent = [1, 2, 3]
+    frames = _frames(
+        initialized_config,
+        [
+            {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {}},
+            [
+                {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {"name": "list_accounts", "arguments": {}},
+                },
+            ],
+        ],
+    )
+
+    assert len(frames) == 2, "the batch was not answered as a single frame"
+    batch = frames[1]
+    assert isinstance(batch, list), "a batch is answered with an array, not one object"
+    assert sorted(reply["id"] for reply in batch) == sent, "an id in the batch went unanswered"
+    # Dispatched for real rather than acknowledged: each element carries the
+    # answer its own method produces, so a batch is not a second, weaker surface.
+    by_id = {reply["id"]: reply for reply in batch}
+    assert by_id[1]["result"] == {}
+    assert by_id[2]["result"]["tools"]
+    assert by_id[3]["result"]["isError"] is False
+
+
+def test_an_empty_batch_is_refused_as_one_object_rather_than_an_empty_array(
+    initialized_config: Config,
+) -> None:
+    """`[]` is itself an Invalid Request, and the reply is NOT an array.
+
+    Answering an empty batch with `[]` is the shape the spec singles out as
+    wrong, and it is what a naive `[handle(m) for m in batch]` produces.
+    """
+    frames = _frames(initialized_config, [[]])
+
+    assert len(frames) == 1
+    reply = frames[0]
+    assert not isinstance(reply, list), "an empty batch is refused with one object, not an array"
+    assert reply["id"] is None
+    assert reply["error"]["code"] == mcp._INVALID_REQUEST
+
+
+def test_a_batch_of_only_notifications_is_answered_with_silence(
+    initialized_config: Config,
+) -> None:
+    """No response AT ALL -- not an empty array.
+
+    A notification carries no promise, so an empty array back is a frame the
+    client never asked for, arriving where its parser expects nothing.
+    """
+    frames = _frames(
+        initialized_config,
+        [
+            [
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {}},
+            ]
+        ],
+    )
+
+    assert frames == [], "a batch of notifications was answered"
+
+
+def test_a_bad_element_rides_inside_the_batch_rather_than_failing_it(
+    initialized_config: Config,
+) -> None:
+    """One malformed element does not cost its siblings their answers.
+
+    The per-element error is an object INSIDE the array under `id: null`, which
+    is the only place it can go: the bad element has no id to answer under, and
+    the good ones are still owed theirs.
+    """
+    frames = _frames(
+        initialized_config,
+        [
+            {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {}},
+            [
+                {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                42,
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                {"jsonrpc": "2.0", "id": 4, "method": "prompts/list"},
+            ],
+        ],
+    )
+
+    batch = frames[1]
+    assert isinstance(batch, list)
+    # Three replies for four elements: the notification is owed none.
+    assert len(batch) == 3
+    by_id = {reply["id"]: reply for reply in batch}
+    assert by_id[1]["result"] == {}
+    assert by_id[None]["error"]["code"] == mcp._INVALID_REQUEST
+    assert by_id[4]["error"]["code"] == mcp._METHOD_NOT_FOUND
+
+
+def test_a_lone_request_is_still_answered_as_one_object(initialized_config: Config) -> None:
+    """A non-batch reply is never wrapped in an array.
+
+    The mirror of the batch cases: a client that sent one object is parsing for
+    one object, and wrapping every reply uniformly would break every existing
+    client to serve the new shape.
+    """
+    frames = _frames(initialized_config, [{"jsonrpc": "2.0", "id": 1, "method": "ping"}])
+
+    assert frames == [{"jsonrpc": "2.0", "id": 1, "result": {}}]
+
+
+def test_a_frame_that_is_neither_an_object_nor_a_batch_is_refused(
+    initialized_config: Config,
+) -> None:
+    """A bare scalar is still an Invalid Request, and the session survives it.
+
+    Reading a frame's shape moved out of the read loop so a batch could be told
+    apart from a malformed request; this holds the case that move could have
+    dropped -- a line that parses as JSON and is not a request at all.
+    """
+    frames = _frames(
+        initialized_config,
+        ["not a request", {"jsonrpc": "2.0", "id": 2, "method": "ping"}],
+    )
+
+    assert len(frames) == 2, "the session ended instead of answering both frames"
+    assert frames[0]["id"] is None
+    assert frames[0]["error"]["code"] == mcp._INVALID_REQUEST
+    assert frames[1]["id"] == 2, "a refused frame took the session with it"
+
+
+def test_a_failing_element_does_not_cost_the_batch_its_other_answers(
+    initialized_config: Config,
+) -> None:
+    """An exception under one element is contained to that element's reply.
+
+    The boundary catch sits per-message rather than per-frame for this reason:
+    around the frame, one unexpected failure would swallow every sibling's
+    answer and hand the client back the same silence a refused batch does.
+    """
+    real_handle = mcp._handle
+
+    def _explode_on_ping(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
+        if message.get("method") == "ping":
+            raise RuntimeError("the reply could not be assembled")
+        return real_handle(config, message)
+
+    with mock.patch.object(mcp, "_handle", _explode_on_ping):
+        frames = _frames(
+            initialized_config,
+            [
+                [
+                    {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                    {"jsonrpc": "2.0", "id": 2, "method": "prompts/list"},
+                ]
+            ],
+        )
+
+    batch = frames[0]
+    assert isinstance(batch, list)
+    by_id = {reply["id"]: reply for reply in batch}
+    assert by_id[1]["error"]["code"] == mcp._INTERNAL_ERROR
+    assert "RuntimeError" not in json.dumps(by_id[1]), "the exception crossed the boundary"
+    assert by_id[2]["error"]["code"] == mcp._METHOD_NOT_FOUND
 
 
 # --------------------------------------------------------------------------

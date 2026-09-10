@@ -1778,6 +1778,79 @@ def _error(message_id: Any, code: int, detail: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": message_id, "error": {"code": code, "message": detail}}
 
 
+def _handle_guarded(config: Config, message: Any) -> dict[str, Any] | None:
+    """One message, answered or refused, with nothing allowed to escape.
+
+    Returns None where the message is owed no reply at all -- a notification, or
+    a notification whose handling failed.
+    """
+    if not isinstance(message, dict):
+        # 🔴 JSON-RPC 2.0: a frame that is not a Request object is an Invalid
+        # Request, and there is no `id` to answer under, so `null` carries it.
+        # Reached two ways -- a bare scalar on a line of its own, and an element
+        # inside a batch, where this refusal rides in the array alongside the
+        # real answers rather than replacing them.
+        return _error(None, _INVALID_REQUEST, "a message must be an object")
+    try:
+        return _handle(config, message)
+    except Exception:  # prawduct:allow prawduct/broad-except -- see below
+        # 🔴 The last resort under the WHOLE boundary, not just under a tool
+        # call. `initialize`, `tools/list` and the resource methods each
+        # assemble a reply from this process's own state, and an exception in
+        # any of them escapes to here -- where, uncaught, it ends the loop and
+        # the client sees its tool disappear rather than fail. That is the one
+        # outcome this module names as worse than any wrong answer.
+        #
+        # 🔴 The exception never crosses the boundary. `api-contract.md`
+        # § Error Model: no stack traces and no internal identifiers. The
+        # detail goes to the log, where redaction applies.
+        logger.exception("a request could not be handled")
+        if "id" not in message:
+            # A notification takes no reply at all, so a failure while handling
+            # one is logged and dropped. Answering it would put a frame on the
+            # wire the client has no promise waiting for.
+            return None
+        return _error(
+            message.get("id"),
+            _INTERNAL_ERROR,
+            "the request could not be handled. The failure has been logged",
+        )
+
+
+def _handle_frame(config: Config, frame: Any) -> dict[str, Any] | list[dict[str, Any]] | None:
+    """One frame off the wire: a lone message, or a BATCH of them.
+
+    🔴 **A batch is answered element by element, in one array.** Batching is
+    base JSON-RPC 2.0 and is mandatory in the two oldest revisions
+    `SUPPORTED_PROTOCOL_VERSIONS` offers, so a conformant client may send one at
+    any time. Refusing the whole array with a single `id: null` error leaves
+    every id inside it unanswered, and the client's promises never settle --
+    which is the hang the read loop exists to prevent, arriving one level up.
+
+    Three shapes the spec fixes, each of which a naive implementation gets
+    wrong:
+
+    - An EMPTY array is itself an Invalid Request, answered with one non-array
+      error under `id: null` -- not with an empty array.
+    - A batch of only notifications is owed NO response at all. An empty array
+      back would be a frame the client has no promise waiting for.
+    - A bad element is one error object INSIDE the array; it does not fail the
+      batch, because the sibling ids are still owed their answers.
+    """
+    if not isinstance(frame, list):
+        return _handle_guarded(config, frame)
+    if not frame:
+        return _error(None, _INVALID_REQUEST, "a batch must carry at least one message")
+    replies = [
+        reply
+        for reply in (_handle_guarded(config, message) for message in frame)
+        if reply is not None
+    ]
+    # Empty means every element was a notification, which is answered with
+    # silence rather than with `[]`.
+    return replies or None
+
+
 def serve(config: Config, *, stdin: IO[str], stdout: IO[str]) -> int:
     """Read requests until the client closes the pipe.
 
@@ -1787,34 +1860,8 @@ def serve(config: Config, *, stdin: IO[str], stdout: IO[str]) -> int:
     wrong, and it should be exercised by something that runs on every commit.
     """
     try:
-        for message in _read_messages(stdin, stdout):
-            try:
-                reply = _handle(config, message)
-            except Exception:  # prawduct:allow prawduct/broad-except -- see below
-                # 🔴 The last resort under the WHOLE boundary, not just under a
-                # tool call. `initialize`, `tools/list` and the resource methods
-                # each assemble a reply from this process's own state, and an
-                # exception in any of them escapes to here -- where, uncaught, it
-                # ends the loop and the client sees its tool disappear rather
-                # than fail. That is the one outcome this module names as worse
-                # than any wrong answer.
-                #
-                # 🔴 The exception never crosses the boundary. `api-contract.md`
-                # § Error Model: no stack traces and no internal identifiers. The
-                # detail goes to the log, where redaction applies.
-                logger.exception("a request could not be handled")
-                reply = (
-                    # A notification takes no reply at all, so a failure while
-                    # handling one is logged and dropped. Answering it would put
-                    # a frame on the wire the client has no promise waiting for.
-                    None
-                    if "id" not in message
-                    else _error(
-                        message.get("id"),
-                        _INTERNAL_ERROR,
-                        "the request could not be handled. The failure has been logged",
-                    )
-                )
+        for frame in _read_messages(stdin, stdout):
+            reply = _handle_frame(config, frame)
             if reply is not None:
                 _write(stdout, reply)
     except _PipeClosedError:
@@ -1837,7 +1884,7 @@ def serve(config: Config, *, stdin: IO[str], stdout: IO[str]) -> int:
 _MAX_UNDECODABLE_FRAMES = 3
 
 
-def _read_messages(stdin: IO[str], stdout: IO[str]) -> Iterator[dict[str, Any]]:
+def _read_messages(stdin: IO[str], stdout: IO[str]) -> Iterator[Any]:
     undecodable = 0
     while True:
         try:
@@ -1888,9 +1935,11 @@ def _read_messages(stdin: IO[str], stdout: IO[str]) -> Iterator[dict[str, Any]]:
                 _error(None, _PARSE_ERROR, "could not parse a message: it is nested too deeply"),
             )
             continue
-        if not isinstance(message, dict):
-            _write(stdout, _error(None, _INVALID_REQUEST, "a message must be an object"))
-            continue
+        # 🔴 Yielded whatever it decoded, object or not. Deciding what a frame
+        # IS belongs to `_handle_frame`, which is the one place that knows a
+        # top-level array is a batch rather than a malformed request -- refusing
+        # non-objects here would refuse every batch as one `id: null` error and
+        # leave the ids inside it with no reply.
         yield message
 
 
@@ -1904,7 +1953,7 @@ class _PipeClosedError(RuntimeError):
     """
 
 
-def _write(stdout: IO[str], payload: dict[str, Any]) -> None:
+def _write(stdout: IO[str], payload: dict[str, Any] | list[dict[str, Any]]) -> None:
     try:
         stdout.write(json.dumps(payload) + "\n")
         stdout.flush()
