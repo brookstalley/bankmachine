@@ -1328,7 +1328,8 @@ The `connector` commands are `experimental` because the connector is mid-build (
 command shape may still move; `store init`/`status`/`rebuild` and `sync shell` shipped in step 1 and
 are depended on. 🔴 **`store backup` is `experimental` despite being a `store` command**, because
 the inventory's criterion is *shipped and depended on*, not *which noun it starts with* — it was
-written on 2026-09-07, nothing schedules it yet, and its restore path has never been rehearsed. The
+written on 2026-09-07 and nothing schedules it yet; its restore path was rehearsed against sandbox
+on 2026-09-10 but never against production. The
 `Retention:` rule defers removal of a `stable` member to a major, so grading a day-old command
 `stable` would bind the surface to a shape nobody has used in anger.
 

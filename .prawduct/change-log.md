@@ -90,6 +90,28 @@ zero-length file. `opens_with` now requires positive evidence that a page was de
 a pageless file, because that is a fact about the file rather than an answer about the key. It also
 validates the candidate at the seam, so a malformed value cannot come back as a confident False.
 
+🔴 **A second Critic round found the same defect class on the surface a new operator reads first.**
+The README's quick start still carried the shell recipe *and* the sentence "Nothing in this product
+ever prints it" — a claim this very commit falsified. Three reviewers landed on it independently.
+The root cause is worth keeping: the surface census in the discovery document enumerated three
+surfaces (`store init`, `store status`, the operator guide) and never included the README, and the
+guard written for AC-17.7 reads command **output**, so it structurally could not see a tracked
+document. The fix is both — the README, and a guard that scans tracked markdown for the recipe
+inside a runnable code fence, with a positive control and prose deliberately left alone so the
+records can still describe what they replaced.
+
+**Four more from the same round, each a real gap rather than a style note.** The never-an-argument
+refusal was attached per-verb, so `store key <64-hex>`, `store key export <key>` and
+`store key import --key=<value>` all still echoed the secret through argparse's own error — onto a
+stderr a scheduled runner captures, *before* `configure_logging` installs the redaction. That is now
+a `RedactingParser` at the root of the whole CLI, reusing the formatter's shape-keyed `redact`, so
+the existing norm reaches a surface it had never covered and every future subcommand inherits it.
+`opens_with` was hand-building a read-role handle and silently dropping `PRAGMA query_only = ON` and
+the `OperationalError` translation. `import` reported a key mismatch as exit 2 while `verify`
+reported the identical fact as exit 1 — it is 1 in both places now, because the command ran and
+found a problem. And the escrow paths recorded nothing on success: a key leaving the keychain is the
+most consequential thing this product does to a secret, and only the failures were legible.
+
 **Known limit, stated so it is not mistaken for coverage:** AC-17.8's automated half is a round-trip
 test. The **operator** rehearsal — a restore into the production path, against a key read back from
 wherever the operator actually stored it — is still owed and sandbox cannot rehearse it

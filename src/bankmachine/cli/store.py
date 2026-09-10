@@ -9,6 +9,7 @@ from getpass import getpass
 from pathlib import Path
 
 from bankmachine.cli.exit_codes import EXIT_OK, EXIT_UNHEALTHY
+from bankmachine.cli.parser import RedactingParser
 from bankmachine.config import Config
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.logging_setup import get_logger
@@ -103,7 +104,15 @@ def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
             "nor the process table."
         ),
     )
-    key_commands = key.add_subparsers(dest="store_key_command", required=True)
+    # The group parser is created by the `store` subparsers action, whose
+    # `parser_class` is the ordinary one every other command wants -- so this is
+    # the one place the class is swapped after construction rather than chosen at
+    # it. `store key <64-hex>` reaches THIS parser's `error()` as an invalid
+    # choice, which is exactly an invocation whose text must not be repeated.
+    key.__class__ = _KeyParser
+    key_commands = key.add_subparsers(
+        dest="store_key_command", required=True, parser_class=_KeyParser
+    )
 
     key_export = key_commands.add_parser(
         "export",
@@ -135,7 +144,6 @@ def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
             "gone, which is the situation an operator is actually in when it matters."
         ),
     )
-    _forbid_key_arguments(key_verify)
     key_verify.set_defaults(handler=cmd_key_verify)
 
     key_import = key_commands.add_parser(
@@ -147,32 +155,39 @@ def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
             "a typo cannot replace a working entry."
         ),
     )
-    _forbid_key_arguments(key_import)
     key_import.set_defaults(handler=cmd_key_import)
 
 
-def _forbid_key_arguments(parser: argparse.ArgumentParser) -> None:
-    """Swallow any trailing arguments so argparse never echoes one back.
+class _KeyParser(RedactingParser):
+    """A parser that never repeats back what it was given.
 
-    🔴 Not belt-and-braces. These verbs take no argument at all, so an operator
-    who types the key on the command line has already put it in shell history --
-    and argparse's own `unrecognized arguments: <value>` would then print it a
-    second time, onto a stderr that a scheduled runner captures and a shared
-    terminal displays. The refusal has to come from here, where the text is ours
-    and the value can be left out of it.
+    🔴 Attached to the `key` GROUP, not to individual verbs, and that is the
+    whole point of the class. An earlier version guarded `verify` and `import`
+    one at a time, which left `store key <64-hex>`, `store key export <key>` and
+    `store key import --key=<value>` all echoing the secret through argparse's
+    own `unrecognized arguments: <value>` -- onto a stderr a scheduled runner
+    captures and a shared terminal displays, and before `configure_logging` runs,
+    so the formatter's redaction is not even loaded yet.
+
+    An operator who typed the key on the command line has already put it in
+    shell history; the product's job is not to print it a second time and to say
+    what they now have to go clean up. Inheriting the refusal also means the
+    next verb added to this group gets it without anyone remembering to ask.
     """
-    parser.add_argument("_offered", nargs="*", help=argparse.SUPPRESS)
 
-
-def _refuse_offered_arguments(args: argparse.Namespace) -> None:
-    offered = getattr(args, "_offered", [])
-    if offered:
+    def error(self, message: str) -> None:
+        # `from None` is load-bearing: argparse raises its own `ArgumentError`
+        # first -- "invalid choice: '<the key>'" -- and chaining it would carry
+        # the value into the `__context__` of anything that later renders a
+        # traceback. The refusal must not smuggle back what it declined to
+        # print.
         raise KeyEscrowRefusedError(
-            f"this command takes no arguments and reads the key by prompt -- "
-            f"{len(offered)} argument(s) were given and have been ignored. "
-            f"If one of them was the key, it is now in your shell history: "
-            f"rotate it out of that history, then run this command with no arguments"
-        )
+            f"{self.prog}: that is not a usable invocation, and the arguments are not "
+            f"repeated back here in case one of them was the key. These commands take no "
+            f"key as an argument -- they prompt for it. If you did type it, it is in your "
+            f"shell history now: clear it there, then run the command with no arguments. "
+            f"(`--help` on this command shows what it does accept.)"
+        ) from None
 
 
 def cmd_init(config: Config, _args: argparse.Namespace) -> int:
@@ -374,11 +389,13 @@ def cmd_key_export(config: Config, args: argparse.Namespace) -> int:
     key = get_datastore_key(config)
     if args.to is not None:
         _write_key_file(args.to, key, config)
+        _record("exported the datastore key to a file named by the operator")
         print(f"wrote {args.to}, readable only by you.")
         print("Put it in a password manager, check it with `bankmachine store key verify`,")
         print("then delete the file -- it is plaintext until you do.")
         return EXIT_OK
 
+    _record("rendered the datastore key to the operator's terminal")
     print(f"datastore key for keychain {config.keychain_service}/{config.keychain_account}")
     print(f"  {key}")
     print("Put it in a password manager, and ideally on paper.")
@@ -434,11 +451,11 @@ def _refuse_the_data_directory(destination: Path, config: Config) -> None:
         )
 
 
-def cmd_key_verify(config: Config, args: argparse.Namespace) -> int:
+def cmd_key_verify(config: Config, _args: argparse.Namespace) -> int:
     """Answer whether a candidate opens the datastore. Exit 1 means it does not."""
-    _refuse_offered_arguments(args)
     candidate = validate_candidate_key(_prompt_for_key("key to check"))
     if connection.opens_with(config, candidate):
+        _record("checked a candidate datastore key: it opens the datastore")
         print(f"MATCHES -- this key opens the datastore at {config.datastore_path}")
         return EXIT_OK
     # Ran, and found a problem. Not EXIT_ERROR: the command did exactly what it
@@ -450,9 +467,8 @@ def cmd_key_verify(config: Config, args: argparse.Namespace) -> int:
     return EXIT_UNHEALTHY
 
 
-def cmd_key_import(config: Config, args: argparse.Namespace) -> int:
+def cmd_key_import(config: Config, _args: argparse.Namespace) -> int:
     """Restore a key to the keychain, but only once it has proved it opens the store."""
-    _refuse_offered_arguments(args)
     candidate = validate_candidate_key(_prompt_for_key("key to restore"))
     # 🔴 Verify BEFORE writing. `store init` refuses to mint a key for an
     # existing datastore so that a fresh key cannot hide "no key in the keychain"
@@ -460,17 +476,41 @@ def cmd_key_import(config: Config, args: argparse.Namespace) -> int:
     # reintroduce exactly that from the other direction, and would additionally
     # overwrite a working entry with a typo.
     if not connection.opens_with(config, candidate):
-        raise KeyEscrowRefusedError(
-            f"that key does not open the datastore at {config.datastore_path}, so it was "
-            f"NOT written to the keychain. Any key already in "
-            f"{config.keychain_service}/{config.keychain_account} is untouched"
+        # 🔴 Exit 1, matching `verify` on the identical fact. The contract reads
+        # `1` as "ran and found a problem" and `2` as "could not run" -- and this
+        # command ran, tested the key, and found it wrong. Reporting it as `2`
+        # would put a correct refusal in the same bucket as a missing datastore,
+        # which is the collapse the exit-code norm exists to prevent.
+        print(
+            f"DOES NOT MATCH -- that key does not open the datastore at "
+            f"{config.datastore_path}, so it was NOT written to the keychain. Any key "
+            f"already in {config.keychain_service}/{config.keychain_account} is untouched",
+            file=sys.stderr,
         )
+        return EXIT_UNHEALTHY
+    _record("restored the datastore key to the keychain, verified against the datastore")
     set_datastore_key(config, candidate)
     print(
         f"restored the datastore key to keychain {config.keychain_service}/"
         f"{config.keychain_account}, verified against {config.datastore_path}."
     )
     return EXIT_OK
+
+
+def _record(what: str) -> None:
+    """Log that an escrow action happened. Never what the key was.
+
+    🔴 The success paths are the ones worth recording, and they were the ones
+    recording nothing. A key leaving the keychain is the single most consequential
+    thing this product does to a secret; an operator reconstructing "when did this
+    key get exported, and did anyone restore one" had only the failures to read,
+    because those went through the error path and the successes went nowhere.
+
+    The value is not interpolated here and there is nothing to redact -- the
+    sentence names the ACTION. That is what makes this safe to write at INFO to a
+    file the operator keeps.
+    """
+    logger.info("%s", what)
 
 
 def _prompt_for_key(what: str) -> str:

@@ -242,9 +242,19 @@ def test_verify_refuses_when_there_is_no_datastore_to_check_against(
 # --- AC-17.4: no verb takes a key as an argument ----------------------------------
 
 
-@pytest.mark.parametrize("verb", ["verify", "import"])
-def test_no_verb_accepts_a_key_on_the_command_line(
-    initialized: Config, verb: str, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["store", "key", "verify", "KEY"],
+        ["store", "key", "import", "KEY"],
+        ["store", "key", "KEY"],
+        ["store", "key", "export", "KEY"],
+        ["store", "key", "import", "--key=KEY"],
+    ],
+    ids=["verify-positional", "import-positional", "group-level", "export-positional", "as-option"],
+)
+def test_no_invocation_echoes_a_key_back(
+    initialized: Config, argv: list[str], capsys: pytest.CaptureFixture[str]
 ) -> None:
     """🔴 An argument lands in shell history and in the process table.
 
@@ -254,12 +264,19 @@ def test_no_verb_accepts_a_key_on_the_command_line(
     rather than close it.
     """
     key = get_datastore_key(initialized)
+    invocation = [part.replace("KEY", key) for part in argv]
 
-    assert run(["store", "key", verb, key]) == 2
+    # argparse's own usage failures exit rather than return, and always have in
+    # this CLI. Both routes are "could not run" and both are exit 2; what this
+    # test is about is what reaches stderr on the way out.
+    try:
+        exit_code = run(invocation)
+    except SystemExit as raised:
+        exit_code = raised.code
 
+    assert exit_code == 2
     err = capsys.readouterr().err
-    assert key not in err, "the product echoed the key back after refusing it"
-    assert "shell history" in err
+    assert key not in err, f"the product echoed the key back for {argv}"
 
 
 # --- AC-17.5: import verifies before it writes ------------------------------------
@@ -290,7 +307,10 @@ def test_import_refuses_a_key_that_does_not_open_the_datastore(
     working = get_datastore_key(initialized)
     _answer_prompt(monkeypatch, generate_datastore_key())
 
-    assert run(["store", "key", "import"]) == 2
+    # Exit 1, not 2: the command ran and found a problem. Exit 2 is reserved for
+    # "could not run" and would put a correct refusal in the same bucket as a
+    # missing datastore -- the collapse the exit-code contract forbids.
+    assert run(["store", "key", "import"]) == 1
 
     assert get_datastore_key(initialized) == working
     assert "NOT written to the keychain" in capsys.readouterr().err
@@ -611,3 +631,56 @@ def test_opens_with_rejects_a_malformed_candidate_at_the_seam(
 
     with pytest.raises(SecretsError):
         connection.opens_with(initialized, "not-a-key")
+
+
+def test_export_reports_an_unwritable_destination_rather_than_failing_silently(
+    initialized: Config, outside_the_data_directory: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The one refusal that had no test.
+
+    Every other `--to` refusal was covered; an unwritable path was not, which
+    made it the branch most likely to be wrong. A directory that does not exist
+    is the ordinary way to reach it -- a mistyped path.
+    """
+    destination = outside_the_data_directory / "no-such-directory" / "escrow.key"
+
+    assert run(["store", "key", "export", "--to", str(destination)]) == 2
+
+    assert not destination.exists()
+    err = capsys.readouterr().err
+    assert "could not write" in err
+    assert get_datastore_key(initialized) not in err
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["store", "key", "export"], "rendered the datastore key"),
+        (["store", "key", "verify"], "checked a candidate datastore key"),
+        (["store", "key", "import"], "restored the datastore key"),
+    ],
+    ids=["export", "verify", "import"],
+)
+def test_each_escrow_action_leaves_a_record_naming_the_action_and_not_the_key(
+    initialized: Config,
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    expected: str,
+) -> None:
+    """🔴 The success paths are the ones worth recording, and they recorded nothing.
+
+    A key leaving the keychain is the most consequential thing this product does
+    to a secret. An operator asking "when was this exported, and did anyone
+    restore one" could previously read only the failures, because those went
+    through the error path and the successes went nowhere.
+    """
+    key = get_datastore_key(initialized)
+    _stdout_is_a_terminal(monkeypatch, terminal=True)
+    _answer_prompt(monkeypatch, key)
+
+    assert run(argv) == 0
+
+    log_file = initialized.log_dir / "bankmachine.log"
+    contents = log_file.read_text(encoding="utf-8")
+    assert expected in contents, f"{argv} left no record of what it did"
+    assert key not in contents, "the record named the key itself"

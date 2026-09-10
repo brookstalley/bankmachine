@@ -916,11 +916,18 @@ key is ever emitted, and it is printed, never logged. *Why:* the guarantee is cu
 caller is the moment a structural guarantee becomes a rule somebody has to keep, and the moment to
 say so is before the caller exists.
 
-**AC-17.7 · The printed instruction names the product's own command.** Every surface that tells the
-operator to back the key up names the command rather than a shell recipe — `store init` at minting,
-`store status` as the standing line, and `store backup`, which today names the chore and no command
-at all. *Why:* three surfaces print the recipe and a fourth prints none, so which answer the operator
-meets depends on which command they happened to run. One instruction, one answer.
+**AC-17.7 · Every instruction about the key names the command that carries it out — in both
+directions.** Backing the key up: `store init` at minting, `store status` as the standing line,
+`store backup`, and the README's quick start. **Restoring it:** every diagnosis that tells an
+operator to put a key back names `store key import`. No surface hands out a shell recipe that would
+put the key in shell history, and that is checked over tracked documents as well as over command
+output. *Why:* the surfaces disagreed, so which answer the operator met depended on which command
+they happened to run. 🔴 **The restore direction is named explicitly because it was the half that
+got missed**: the export side was fixed first and "restore the keychain entry from your backup" was
+left standing with nothing behind it — the very defect this requirement exists to end, surviving
+inside its own fix. 🔴 **And the check has to read documents, not just output**: a guard that runs
+commands and inspects what they print structurally cannot see a README, which is where the recipe
+and a now-false "nothing in this product ever prints it" outlived the first pass.
 
 **AC-17.8 · The round trip is covered by a test, and the human half stays owed.** A test exports a
 key, restores it into a keychain that does not hold it, and opens a datastore written under it.

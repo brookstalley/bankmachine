@@ -503,12 +503,22 @@ def opens_with(config: Config, key: str) -> bool:
             f"copy or an interrupted restore, not a key problem: replace the file from a backup "
             f"taken with `bankmachine store backup`"
         )
-    conn = dbapi2.connect(
-        _uri(config.datastore_path, READ_ROLE_MODE),
-        uri=True,
-        isolation_level=None,
-        check_same_thread=True,
-    )
+    try:
+        conn = dbapi2.connect(
+            _uri(config.datastore_path, READ_ROLE_MODE),
+            uri=True,
+            isolation_level=None,
+            check_same_thread=True,
+        )
+    except dbapi2.OperationalError as exc:
+        # The same translation `reader()` performs. Without it a driver error
+        # escapes as a bare `OperationalError`, past the CLI arm that catches
+        # `StoreError` and into the unexpected-exception handler -- reported as
+        # a crash rather than as the environmental failure it is.
+        raise DatastoreUnreadableError(
+            f"{config.datastore_path} could not be opened read-only ({exc}). The key is not "
+            f"implicated: nothing has been checked against it"
+        ) from exc
     opened = False
     try:
         try:
@@ -516,6 +526,12 @@ def opens_with(config: Config, key: str) -> bool:
         except DatastoreKeyRejectedError:
             return False
         opened = True
+        # The read-role second layer, as `reader()` sets it. This handle is
+        # short-lived and never writes, but "read-role handles are opened
+        # `mode=ro` AND carry `query_only`" is the architecture norm, and a
+        # handle that quietly holds only half of it is the version a later
+        # reader copies.
+        conn.execute("PRAGMA query_only = ON")
         if conn.execute("SELECT count(*) FROM sqlite_master").fetchone()[0] == 0:
             raise DatastoreUnreadableError(
                 f"{config.datastore_path} has no schema -- no page was decrypted, so this run "

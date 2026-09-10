@@ -86,16 +86,22 @@ uv run bankmachine connector check          # smallest authenticated call, archi
 ```
 
 🔴 **Back the datastore key up now, before there is any data.** It is minted once, by `store init`,
-and it cannot be recovered from the datastore — a backup without it is a backup of noise. Nothing
-in this product ever prints it, so read it out of the keychain yourself and put it somewhere that
-survives this machine:
+and it cannot be recovered from the datastore — a backup without it is a backup of noise.
 
 ```sh
-security find-generic-password -s bankmachine -a datastore:sandbox -w
+uv run bankmachine store key export     # prints it; refuses a redirected or piped stdout
+uv run bankmachine store key verify     # confirms the copy you stored opens THIS datastore
 ```
 
-(`-a datastore:production` for the production store. The service is `BANKMACHINE_KEYCHAIN_SERVICE`,
-default `bankmachine`; the account name is `datastore:<environment>`.)
+Put it in a password manager, and ideally on paper. **Then run `verify`, and do not skip it:** a
+transposed pair of hex digits is still 64 characters of valid hex and is simply a different key, so
+a bad transcription looks exactly like a good one until the day the store will not open. `verify`
+is the only thing that closes that gap, and it costs ten seconds.
+
+If a machine's keychain ever loses the key, `store key import` puts it back — it opens the
+datastore with what you paste *before* it writes anything, so a typo cannot overwrite a working
+entry. These act on the environment you are pointed at (`BANKMACHINE_ENVIRONMENT`), so the sandbox
+and production keys are separate entries and separate exports.
 
 🔴 **`.env` is a file you `source`, not one the product loads.** There is no dotenv
 dependency, on purpose: a file that is silently read is a file whose contents are
