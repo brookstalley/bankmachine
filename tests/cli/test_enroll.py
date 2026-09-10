@@ -15,9 +15,11 @@ import contextlib
 import json
 import logging
 from collections.abc import Iterator
+from datetime import date
 from typing import Any
 
 import pytest
+from sqlalchemy import insert, update
 
 from bankmachine.cli import connections as connections_module
 from bankmachine.cli import run
@@ -33,6 +35,7 @@ from bankmachine.connector import (
     LinkToken,
     TransportError,
 )
+from bankmachine.connector.plaid.client import DEFAULT_HOSTED_URL_LIFETIME_SECONDS
 from bankmachine.secrets import (
     AccessTokenMissingError,
     SecretsError,
@@ -41,9 +44,16 @@ from bankmachine.secrets import (
     get_access_token,
     set_plaid_secret,
 )
-from bankmachine.store.engine import reader_connection
-from bankmachine.store.schema import connections, institutions, raw_responses
-from bankmachine.store.types import now_utc
+from bankmachine.store.engine import reader_connection, transaction, writer_connection
+from bankmachine.store.schema import (
+    TRANSACTIONS_DOMAIN,
+    accounts,
+    connections,
+    institutions,
+    raw_responses,
+    sync_state,
+)
+from bankmachine.store.types import calendar_date, now_utc
 
 # Declared per line, as any file must. These carry the aggregator's real token
 # SHAPES because the sweep below proves nothing against a value that could not
@@ -121,6 +131,7 @@ class FakeClient:
         self.config = config
         self.requested_history_days: int | None = None
         self.requested_products: list[str] | None = None
+        self.requested_optional_products: list[str] | None = None
         self.hosted_lifetime: int | None = None
         self.polls = 0
         self.exchanged: str | None = None
@@ -139,10 +150,12 @@ class FakeClient:
         client_user_id: str,
         country_codes: list[str],
         products: list[str],
+        optional_products: list[str] | None = None,
         **kwargs: Any,
     ) -> LinkToken:
         self.requested_history_days = history_days
         self.requested_products = products
+        self.requested_optional_products = optional_products
         self.hosted_lifetime = kwargs.get("hosted_url_lifetime_seconds")
         return LinkToken(
             token="link-sandbox-fake",
@@ -228,6 +241,73 @@ def _rows(config: Config, table: Any) -> list[Any]:
         return list(conn.execute(table.select()).all())
 
 
+def _seed_item_scoped_state(config: Config, *, connection_id: int) -> None:
+    """Put a connection into the state a first sync leaves behind.
+
+    Enrollment writes neither a cursor nor a granted window -- a sync does -- so a
+    test about clearing them has to create them first, or it would assert against
+    an absence that was never a presence.
+    """
+    now = now_utc()
+    with writer_connection(config) as conn, transaction(conn):
+        conn.execute(
+            insert(sync_state).values(
+                connection_id=connection_id,
+                domain=TRANSACTIONS_DOMAIN,
+                cursor="cursor-issued-by-the-old-item",
+                history_start_date=calendar_date(date(2024, 1, 1)),
+                updated_at=now,
+            )
+        )
+        conn.execute(
+            update(connections)
+            .where(connections.c.connection_id == connection_id)
+            .values(granted_history_days=180, updated_at=now)
+        )
+
+
+def _seed_account(
+    config: Config,
+    *,
+    connection_id: int,
+    source_account_id: str = "acct-1",
+    lifecycle_status: str = "active",
+    closed_date: date | None = None,
+) -> int:
+    """An account of the kind a sync would have derived for this connection.
+
+    Written directly because `enroll` never produces one: the roster arrives with
+    the first `sync run`, which these tests deliberately do not make.
+    """
+    now = now_utc()
+    institution_id = next(
+        int(row._mapping["institution_id"])
+        for row in _rows(config, connections)
+        if int(row._mapping["connection_id"]) == connection_id
+    )
+    with writer_connection(config) as conn, transaction(conn):
+        result = conn.execute(
+            insert(accounts).values(
+                institution_id=institution_id,
+                connection_id=connection_id,
+                source_account_id=source_account_id,
+                name="Everyday Checking",
+                account_type="depository",
+                balance_class="asset",
+                currency="USD",
+                lifecycle_status=lifecycle_status,
+                first_seen_date=calendar_date(date(2024, 1, 1)),
+                closed_date=None if closed_date is None else calendar_date(closed_date),
+                source="aggregator",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    primary_key = result.inserted_primary_key
+    assert primary_key is not None
+    return int(primary_key[0])
+
+
 # --------------------------------------------------------------------------
 # AC-1.3 / AC-1.3a — what one enrollment records
 # --------------------------------------------------------------------------
@@ -301,18 +381,29 @@ def test_the_configured_window_is_what_enrollment_asks_for(
     assert _rows(cli_env, connections)[0]._mapping["requested_history_days"] == 365
 
 
-def test_both_products_are_requested_at_enrollment(
+def test_only_transactions_is_required_and_investments_is_asked_for_optionally(
     cli_env: Config, offline_client: type[FakeClient]
 ) -> None:
-    """The owner's decision of 2026-09-07, against the recommendation.
+    """Both products are still asked for; only one of them narrows the picker.
 
-    Asserted because it is a billing consequence per connection and cannot be
-    changed for an existing one without re-linking -- so a silent drift back to
-    transactions-only would be both costly and invisible.
+    This expectation CHANGED: it previously asserted `investments` in the
+    REQUIRED set, per the operator's 2026-09-07 decision to have both. The
+    required set is what Link filters the institution list by -- it offers only
+    institutions supporting every member -- so most card issuers and credit
+    unions vanished from the picker with no error. `optional_products` keeps the
+    discovery that decision wanted and narrows nothing. See § Decisions,
+    "`investments` moves from `products` to `optional_products`" in
+    `.prawduct/artifacts/build-plan-production-cutover-hardening.md`.
+
+    Asserted on both lists rather than on one, because a product that fell out of
+    the request entirely and a product that moved into the required set are
+    different failures and each is invisible in the sandbox: the aggregator's
+    test bank supports everything, so it is filtered by nothing.
     """
     assert run(["enroll", "--yes"]) == 0
 
-    assert FakeClient.instances[0].requested_products == ["transactions", "investments"]
+    assert FakeClient.instances[0].requested_products == ["transactions"]
+    assert FakeClient.instances[0].requested_optional_products == ["investments"]
 
 
 # --------------------------------------------------------------------------
@@ -783,6 +874,99 @@ def test_a_converging_re_run_against_the_same_item_removes_nothing(
 
 
 # --------------------------------------------------------------------------
+# What a re-link invalidates: everything scoped to the item that went away
+# --------------------------------------------------------------------------
+
+
+def test_re_linking_to_a_new_item_clears_the_cursor_and_the_granted_window(
+    cli_env: Config, offline_client: type[FakeClient]
+) -> None:
+    """🔴 A cursor belongs to the item that issued it, and the row outlives the item.
+
+    Re-linking is the only remedy this product offers for an expired login, and it
+    mints a NEW item behind the SAME connection row. Keeping the old cursor sends
+    one item's bookmark with another item's credential, which the aggregator
+    refuses permanently -- so every later sync degrades the connection and no
+    command can clear it. The granted window goes for the same reason: it measures
+    what the retired item granted, and the `gapped` warning built on it would then
+    describe a connection that no longer exists.
+    """
+    assert run(["enroll", "--yes"]) == 0
+    _seed_item_scoped_state(cli_env, connection_id=1)
+
+    FakeClient.item_id = "item-relinked"
+    assert run(["enroll", "--yes"]) == 0
+
+    assert _rows(cli_env, sync_state) == [], (
+        "the new item's first sync must start from the beginning, not from a "
+        "bookmark the new item never issued"
+    )
+    row = _rows(cli_env, connections)[0]._mapping
+    assert row["source_connection_id"] == "item-relinked"
+    assert row["granted_history_days"] is None, (
+        "the recorded window belongs to the item that was replaced"
+    )
+
+
+def test_re_linking_to_a_new_item_says_so_in_the_log(
+    cli_env: Config, offline_client: type[FakeClient]
+) -> None:
+    """The re-fetch is expensive and surprising, so it is announced rather than found.
+
+    Without a line here the operator sees a sync that suddenly re-reads the whole
+    window and has nothing to attribute it to.
+    """
+    assert run(["enroll", "--yes"]) == 0
+    _seed_item_scoped_state(cli_env, connection_id=1)
+
+    FakeClient.item_id = "item-relinked"
+    assert run(["enroll", "--yes"]) == 0
+
+    written = _log_text(cli_env)
+    assert "re-linked" in written
+    assert "WARNING" in written
+
+
+def test_a_re_run_against_the_same_item_keeps_the_cursor_and_the_window(
+    cli_env: Config, offline_client: type[FakeClient]
+) -> None:
+    """🔴 The converging re-run must cost nothing.
+
+    Re-running against the SAME item -- which is what converging after a partial
+    enrollment does -- changes nothing item-scoped. Clearing the cursor here would
+    make an idempotent command re-fetch the entire history every time it was run.
+    """
+    assert run(["enroll", "--yes"]) == 0
+    _seed_item_scoped_state(cli_env, connection_id=1)
+
+    assert run(["enroll", "--yes"]) == 0
+
+    cursors = [row._mapping["cursor"] for row in _rows(cli_env, sync_state)]
+    assert cursors == ["cursor-issued-by-the-old-item"]
+    assert _rows(cli_env, connections)[0]._mapping["granted_history_days"] == 180
+
+
+def test_a_re_link_leaves_the_accounts_and_transactions_alone(
+    cli_env: Config, offline_client: type[FakeClient]
+) -> None:
+    """History survives a re-link; only the item-scoped bookkeeping is reset.
+
+    The accounts the retired item reported are the same real-world accounts, and
+    deleting them would discard the balances and rows they carry -- which is the
+    one thing AC-6.5 does not allow a connection's lifecycle to do.
+    """
+    assert run(["enroll", "--yes"]) == 0
+    account_id = _seed_account(cli_env, connection_id=1)
+
+    FakeClient.item_id = "item-relinked"
+    assert run(["enroll", "--yes"]) == 0
+
+    rows = _rows(cli_env, accounts)
+    assert [row._mapping["account_id"] for row in rows] == [account_id]
+    assert rows[0]._mapping["lifecycle_status"] == "active"
+
+
+# --------------------------------------------------------------------------
 # AC-1.5 / AC-1.6 — `connections list` and `connections retire`
 # --------------------------------------------------------------------------
 
@@ -823,6 +1007,97 @@ def test_retiring_keeps_every_row_the_connection_produced(
     assert rows[0]._mapping["status"] == "retired"
     assert len(_rows(cli_env, institutions)) == institutions_before
     assert len(_rows(cli_env, raw_responses)) == archive_before
+
+
+def test_retiring_closes_the_accounts_it_stops_reporting(
+    cli_env: Config, offline_client: type[FakeClient]
+) -> None:
+    """🔴 A retired connection's balances stop being current, and must stop reading so.
+
+    Nothing observes this connection's roster again, so every absence-based signal
+    stays silent: the accounts' last observation still matches the connection's,
+    and the read path goes on calling them active and summing their last captured
+    balance as a present-day one. A retirement is the operator declaring the
+    connection over, and the stored declaration is what the read path honours.
+    """
+    assert run(["enroll", "--yes"]) == 0
+    _seed_account(cli_env, connection_id=1)
+    retired_on = now_utc().date()
+
+    assert run(["connections", "retire", "1"]) == 0
+
+    row = _rows(cli_env, accounts)[0]._mapping
+    assert row["lifecycle_status"] == "inactive"
+    assert row["closed_date"] == retired_on
+
+
+def test_retiring_writes_the_accounts_in_the_retirement_transaction(
+    cli_env: Config, offline_client: type[FakeClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 One transaction, so no crash can leave a retired connection with live accounts.
+
+    The removal at the aggregator runs after the local commit, and it is the first
+    thing that can fail. Reading the accounts from inside it is what shows they
+    were already committed rather than pending a second write nobody would retry.
+    """
+    assert run(["enroll", "--yes"]) == 0
+    _seed_account(cli_env, connection_id=1)
+
+    observed: dict[str, object] = {}
+    real_release = connections_module.release_at_aggregator
+
+    def observing(config: Config, credential_ref: str, **kwargs: Any) -> bool:
+        observed["lifecycle_status"] = _rows(config, accounts)[0]._mapping["lifecycle_status"]
+        return real_release(config, credential_ref, **kwargs)
+
+    monkeypatch.setattr("bankmachine.cli.connections.release_at_aggregator", observing)
+
+    assert run(["connections", "retire", "1"]) == 0
+
+    assert observed["lifecycle_status"] == "inactive"
+
+
+def test_retiring_leaves_an_account_that_was_already_closed_alone(
+    cli_env: Config, offline_client: type[FakeClient]
+) -> None:
+    """An account closed earlier was closed on its own date, and that date is a fact.
+
+    Overwriting it with the retirement date would move a real-world event to the
+    day somebody happened to tidy up the connection.
+    """
+    assert run(["enroll", "--yes"]) == 0
+    _seed_account(
+        cli_env,
+        connection_id=1,
+        lifecycle_status="inactive",
+        closed_date=date(2025, 3, 4),
+    )
+
+    assert run(["connections", "retire", "1"]) == 0
+
+    row = _rows(cli_env, accounts)[0]._mapping
+    assert row["lifecycle_status"] == "inactive"
+    assert row["closed_date"] == date(2025, 3, 4)
+
+
+def test_retiring_touches_only_its_own_connections_accounts(
+    cli_env: Config, offline_client: type[FakeClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other institution is still being synced, and its accounts are still current."""
+    monkeypatch.setenv("BANKMACHINE_CONNECTION_CAP", "2")
+    assert run(["enroll", "--yes"]) == 0
+    _seed_account(cli_env, connection_id=1)
+    FakeClient.item_id, FakeClient.institution_id = "item-two", "ins_second"
+    assert run(["enroll", "--yes"]) == 0
+    other = _seed_account(cli_env, connection_id=2, source_account_id="acct-2")
+
+    assert run(["connections", "retire", "1"]) == 0
+
+    lifecycles = {
+        int(row._mapping["account_id"]): row._mapping["lifecycle_status"]
+        for row in _rows(cli_env, accounts)
+    }
+    assert lifecycles[other] == "active"
 
 
 def test_retiring_removes_the_item_at_the_aggregator(
@@ -1147,6 +1422,41 @@ def test_the_url_lifetime_is_the_wait_not_a_second_number(
 
     request = FakeClient.instances[0].hosted_lifetime
     assert request == 120, "the URL can outlive the wait, which orphans an Item"
+
+
+def test_the_wait_message_names_its_own_deadline_and_how_to_raise_it(
+    cli_env: Config, offline_client: type[FakeClient], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """🔴 The one moment the operator can still act on the deadline is while waiting.
+
+    A production first link can mean an OAuth redirect to the bank's own site, a
+    password reset, an SMS code and a device registration. When the default runs
+    out mid-login the URL dies with it and the operator is told the session was
+    abandoned -- after the fact, with no hint that a longer wait was available.
+    """
+    assert run(["enroll", "--yes"]) == 0
+
+    printed = capsys.readouterr().out
+    assert f"{DEFAULT_HOSTED_URL_LIFETIME_SECONDS}" in printed
+    assert "--timeout" in printed
+
+
+def test_the_help_names_the_default_wait_and_the_flag_that_changes_it(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--help` is where an operator plans the run they are about to make.
+
+    Asserted on the rendered help rather than on the argument's declaration,
+    because a default carried in code and a default described in prose are two
+    accounts of one number, and only the rendered one reaches the operator.
+    """
+    with pytest.raises(SystemExit) as raised:
+        run(["enroll", "--help"])
+
+    assert raised.value.code == 0
+    printed = capsys.readouterr().out
+    assert "--timeout" in printed
+    assert f"{DEFAULT_HOSTED_URL_LIFETIME_SECONDS}" in printed
 
 
 def test_an_unreadable_credential_does_not_collapse_a_cap_refusal_to_two(

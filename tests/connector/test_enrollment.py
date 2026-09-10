@@ -288,6 +288,74 @@ def test_the_request_asks_for_a_hosted_session_not_just_reads_one_back(
     assert request.hosted_link.url_lifetime_seconds > 0
 
 
+def test_an_optional_product_reaches_the_request_without_joining_the_required_set(
+    client_config: Config,
+) -> None:
+    """🔴 The two lists mean opposite things to the institution picker.
+
+    A product in `products` is REQUIRED: Link offers only institutions supporting
+    every member, so listing one there silently removes every institution that
+    does not have it -- no error, nothing in the log, an operator who concludes
+    their bank is unsupported. `optional_products` is added to the Item wherever
+    the institution has it and narrows nothing.
+
+    Asserted on the request the SDK builds, because the response cannot testify to
+    it: the fake answers the same body whatever it is sent, and the aggregator's
+    own answer carries neither list back.
+    """
+    invoke = _answering(
+        {
+            "link_token": "link-sandbox-x",
+            "expiration": "2026-09-08T00:00:00Z",
+            "hosted_link_url": "https://secure.example/hl/session",
+        }
+    )
+
+    with _client(client_config) as client:
+        client._api.link_token_create = invoke
+        client.link_token_create(
+            history_days=730,
+            client_user_id="operator",
+            country_codes=["US"],
+            products=["transactions"],
+            optional_products=["investments"],
+        )
+
+    request = invoke.captured["request"]
+    assert [str(product.value) for product in request.products] == ["transactions"]
+    assert [str(product.value) for product in request.optional_products] == ["investments"]
+
+
+def test_a_request_naming_no_optional_product_omits_the_field_entirely(
+    client_config: Config,
+) -> None:
+    """An empty list is not the same message as no list.
+
+    The SDK serialises what it is given, and a caller that asks for no optional
+    product should send a request that does not mention them -- so the absence
+    stays an absence rather than becoming an explicit empty set the aggregator
+    has to interpret.
+    """
+    invoke = _answering(
+        {
+            "link_token": "link-sandbox-x",
+            "expiration": "2026-09-08T00:00:00Z",
+            "hosted_link_url": "https://secure.example/hl/session",
+        }
+    )
+
+    with _client(client_config) as client:
+        client._api.link_token_create = invoke
+        client.link_token_create(
+            history_days=730,
+            client_user_id="operator",
+            country_codes=["US"],
+            products=["transactions"],
+        )
+
+    assert "optional_products" not in invoke.captured["request"].to_dict()
+
+
 def test_a_hosted_session_that_returns_no_url_is_refused_not_returned_empty(
     client_config: Config,
 ) -> None:

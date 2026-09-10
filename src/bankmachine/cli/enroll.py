@@ -22,7 +22,7 @@ import sys
 import time
 from dataclasses import dataclass
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.engine import Connection as SAConnection
 
 from bankmachine.cli.connections import (
@@ -46,7 +46,7 @@ from bankmachine.secrets import get_plaid_secret, set_access_token
 from bankmachine.store.connection import DatastoreMissingError, inspect, remedy_for
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, transaction, writer_connection
-from bankmachine.store.schema import connections, institutions
+from bankmachine.store.schema import connections, institutions, sync_state
 from bankmachine.store.types import UtcInstant, now_utc
 
 logger = get_logger("cli.enroll")
@@ -152,17 +152,25 @@ def source_institution_id_of(item_body: bytes) -> str:
         return "unreadable"
 
 
-#: What enrollment asks the aggregator for. Both products are requested up front
-#: by operator decision (2026-09-07), which bills `investments` on every
-#: connection including deposit-only ones. The recommendation was `transactions`
-#: alone, because AC-3.2 drives investment pulls off `/item/get` rather than off
-#: what was requested -- and that discovery still runs. 🔴 It runs only because
-#: capabilities read the UNION of `products` and `available_products`: requesting
-#: a product moves it OUT of `available_products`, so a discovery reading that
-#: list alone would be switched off by this very decision, for exactly the
-#: products it names. What requesting both changes is the bill, and that a
-#: connection enrolled without a product cannot gain it without re-linking.
-ENROLLMENT_PRODUCTS: tuple[str, ...] = ("transactions", "investments")
+#: The REQUIRED product set, and it is required in the aggregator's sense: Link
+#: offers only institutions that support every product named here, with no error
+#: and nothing in the log to say an institution was filtered out. So it holds the
+#: one product this code actually calls an endpoint for, and nothing else --
+#: `investments` sat here and removed most card issuers and credit unions from the
+#: picker, which is invisible against a test bank that supports everything.
+ENROLLMENT_PRODUCTS: tuple[str, ...] = ("transactions",)
+
+#: Asked for, but never at the cost of an institution. Both products are requested
+#: up front by operator decision (2026-09-07), which bills `investments` on every
+#: connection that has it including deposit-only ones. The recommendation was
+#: `transactions` alone, because AC-3.2 drives investment pulls off `/item/get`
+#: rather than off what was requested -- and that discovery still runs. 🔴 It runs
+#: only because capabilities read the UNION of `products` and `available_products`:
+#: requesting a product moves it OUT of `available_products`, so a discovery reading
+#: that list alone would be switched off by this very decision, for exactly the
+#: products it names. Asking optionally keeps that discovery and the accepted bill
+#: where the institution has the product, and narrows the picker nowhere.
+ENROLLMENT_OPTIONAL_PRODUCTS: tuple[str, ...] = ("investments",)
 
 #: Countries the institution picker offers. Configuration would be premature:
 #: the roster is one operator's, and a second country is a config knob the day
@@ -325,7 +333,8 @@ def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
         help=(
             "how long to wait for the hosted session to be completed, and how long the "
             f"URL stays usable -- they are one number (default: "
-            f"{DEFAULT_HOSTED_URL_LIFETIME_SECONDS})"
+            f"{DEFAULT_HOSTED_URL_LIFETIME_SECONDS}). Raise it for a bank login with "
+            f"OAuth, MFA or a device registration, which the default may not outlast"
         ),
     )
     enroll.set_defaults(handler=cmd_enroll)
@@ -393,6 +402,7 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
             client_user_id=f"bankmachine-{config.environment}",
             country_codes=list(ENROLLMENT_COUNTRIES),
             products=list(ENROLLMENT_PRODUCTS),
+            optional_products=list(ENROLLMENT_OPTIONAL_PRODUCTS),
             # 🔴 ONE number, not two that happen to agree. The URL outliving the
             # wait is the dangerous direction: this side stops polling, the
             # operator completes Link anyway, and the aggregator mints an Item
@@ -406,7 +416,7 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
             print("enrollment cancelled; nothing was linked", file=sys.stderr)
             return EXIT_UNHEALTHY
 
-        _print_invitation(config, issued)
+        _print_invitation(config, issued, timeout_seconds=args.timeout)
         # `EnrollmentAbandonedError` propagates rather than being caught here.
         # Catching it to return a code would put the exit-code decision in two
         # places, which is the split that made one condition answer 1 and 2
@@ -572,13 +582,29 @@ def _confirm_window(config: Config, issued: LinkToken, *, assume_yes: bool) -> b
     return answer in {"y", "yes"}
 
 
-def _print_invitation(config: Config, issued: LinkToken) -> None:
+def _print_invitation(config: Config, issued: LinkToken, *, timeout_seconds: int) -> None:
+    """The deadline is printed here because here is where it can still be changed.
+
+    A production first link can mean an OAuth redirect to the bank's own site, a
+    password reset, an SMS code and a device registration -- none of which the
+    sandbox has. When the wait runs out the URL dies with it, and an operator who
+    only learns the number afterwards learns it from an abandoned session.
+    """
     print()
     print(f"open this URL to link an institution ({config.environment}):")
     print()
     print(f"    {issued.hosted_link_url}")
     print()
-    print("waiting for you to finish...", flush=True)
+    print(
+        f"waiting up to {timeout_seconds} seconds for you to finish; the URL expires with "
+        f"the wait.",
+        flush=True,
+    )
+    print(
+        "  a bank login with OAuth, MFA or a device registration can take longer -- "
+        "cancel and re-run with `--timeout SECONDS` for more time",
+        flush=True,
+    )
 
 
 def _await_completion(
@@ -629,9 +655,18 @@ def _record_connection(
 
     `enrolled_at` is preserved on an update. It records when the operator first
     linked this institution, and re-linking after an expired login is that
-    enrollment continuing rather than a new one; `granted_history_days` is left
-    alone for the same reason, since a re-link does not re-grant a window this
-    product has not yet observed (AC-1.3a).
+    enrollment continuing rather than a new one.
+
+    🔴 **Everything scoped to the aggregator's item is not preserved, and the
+    split is the point.** A re-link mints a NEW item behind the same row. A
+    transaction cursor belongs to the item that issued it, so replaying it against
+    its successor is refused for the life of the connection -- a wedge no command
+    could clear -- and the granted window measures what the replaced item granted,
+    so the shortfall warning built on it would describe a connection that no longer
+    exists. Both are cleared here, in the transaction that repoints the row, so no
+    crash can leave one half of the pair behind. A re-run landing on the SAME item
+    is a converging re-run and changes none of it: history is what this clears, and
+    re-fetching it for an item that never went away is pure cost.
 
     `requested_history_days` IS rewritten, and the asymmetry is deliberate: a
     re-enrollment goes through Link again, which is exactly the "remove and
@@ -669,20 +704,37 @@ def _record_connection(
         previous_credential_ref = str(existing[2])
         previous_source_id = str(existing[3])
         replaced_the_item = previous_source_id != source_connection_id
+        rewritten: dict[str, object] = {
+            "source_connection_id": source_connection_id,
+            "credential_ref": credential_ref,
+            "capabilities": capability_json,
+            "requested_history_days": requested_history_days,
+            "status": "active",
+            "last_error_code": None,
+            "last_error_at": None,
+            "updated_at": now,
+        }
+        if replaced_the_item:
+            rewritten["granted_history_days"] = None
         conn.execute(
             update(connections)
             .where(connections.c.connection_id == connection_id)
-            .values(
-                source_connection_id=source_connection_id,
-                credential_ref=credential_ref,
-                capabilities=capability_json,
-                requested_history_days=requested_history_days,
-                status="active",
-                last_error_code=None,
-                last_error_at=None,
-                updated_at=now,
-            )
+            .values(**rewritten)
         )
+        if replaced_the_item:
+            # Every domain, not only the one that has a cursor today: `sync_state`
+            # is keyed by item-scoped progress of any kind, and a domain added
+            # later would inherit the same wedge from a row nobody remembered.
+            conn.execute(delete(sync_state).where(sync_state.c.connection_id == connection_id))
+            # WARNING, because the operator is about to see a sync re-read the
+            # whole window and would otherwise have nothing to attribute it to.
+            # The item ids stay out of it: a production one is redacted by shape,
+            # so the line would arrive half-blank.
+            logger.warning(
+                "connection %d was re-linked to a new item; its transaction cursor and "
+                "granted window were cleared, so history re-fetches from the start",
+                connection_id,
+            )
         return EnrolledConnection(
             connection_id=connection_id,
             institution_id=institution_id,
