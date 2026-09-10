@@ -386,6 +386,109 @@ def test_replaying_a_posting_transaction_does_not_insert_a_second_row(synced: Co
     assert len(_rows(synced)) == 1
 
 
+def test_a_modification_naming_a_hold_that_has_already_posted_updates_the_merged_row(
+    synced: Config,
+) -> None:
+    """🔴 The same purchase counted twice, with nothing on either row to say so.
+
+    Once the posting has been applied, the merged row answers to the POSTED id --
+    its `source_transaction_id` was overwritten by the transition. A later
+    `modified` entry naming the hold's id therefore finds nothing under its own
+    identity, and it carries no `pending_transaction_id` of its own for the
+    second lookup to use, so the hold is inserted a second time as a live row.
+    The purchase is then in the ledger twice, disclosed as an ordinary pending
+    row rather than as a duplicate.
+
+    `source_pending_transaction_id` is the column that still holds the hold's id
+    on the merged row, and it is what the third lookup reads.
+    """
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(added=[_txn(transaction_id="pend-1", amount="2000.00", pending=True)]),
+    )
+    merged_row_id = _rows(synced)[0]["transaction_id"]
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(
+            added=[
+                _txn(
+                    transaction_id="post-1",
+                    amount="2145.00",
+                    pending_transaction_id="pend-1",
+                )
+            ]
+        ),
+    )
+
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(
+            modified=[_txn(transaction_id="pend-1", amount="2000.00", pending=True)],
+        ),
+    )
+
+    rows = _rows(synced)
+    live = [row for row in rows if row["removed_at"] is None]
+    assert len(live) == 1, "one purchase, two live rows"
+    assert live[0]["transaction_id"] == merged_row_id
+    assert live[0]["source_pending_transaction_id"] == "pend-1"
+    # 🔴 The posting is not undone by a change to the hold it absorbed. A row
+    # sent back to `pending` under the hold's identity would also be the row a
+    # later `removed: pend-1` soft-deleted -- and the whole purchase would leave
+    # the ledger.
+    assert live[0]["source_transaction_id"] == "post-1"
+    assert live[0]["pending"] == 0
+    assert live[0]["amount_minor"] == -214500
+
+
+def test_the_hold_being_retired_after_that_does_not_take_the_purchase_with_it(
+    synced: Config,
+) -> None:
+    """The step after the merge, which is where getting the identity wrong shows.
+
+    The aggregator retires a hold once its posting has settled. If a modification
+    of that hold had been allowed to move the merged row back under the hold's
+    id, this removal would find it and soft-delete the purchase itself -- the
+    $2,145 leaves every total, and the row that says why is stamped `removed`.
+    """
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(added=[_txn(transaction_id="pend-1", amount="2000.00", pending=True)]),
+    )
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(
+            added=[
+                _txn(
+                    transaction_id="post-1",
+                    amount="2145.00",
+                    pending_transaction_id="pend-1",
+                )
+            ]
+        ),
+    )
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(modified=[_txn(transaction_id="pend-1", amount="2000.00", pending=True)]),
+    )
+
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(removed=[{"transaction_id": "pend-1", "account_id": SOURCE_ACCOUNT}]),
+    )
+
+    live = [row for row in _rows(synced) if row["removed_at"] is None]
+    assert len(live) == 1, "retiring the hold removed the purchase it had become"
+    assert live[0]["source_transaction_id"] == "post-1"
+
+
 def test_a_settlement_that_changes_the_amount_updates_it_in_place(synced: Config) -> None:
     """🔴 AC-13.2 — the ORDINARY settlement, and the one nothing here reached.
 

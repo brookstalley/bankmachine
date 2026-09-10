@@ -560,6 +560,27 @@ def _write_transaction(
 
     row_id = _existing_transaction(conn, account_id, source_transaction_id, pending_source_id)
     if row_id is None:
+        absorbed_by = _row_that_absorbed(conn, account_id, source_transaction_id)
+        if absorbed_by is not None:
+            # 🔴 A change to a hold whose posting this system has already merged
+            # in. The merged row answers to the POSTED id, so neither lookup
+            # above finds it and an insert here would put the same purchase in
+            # the ledger twice -- disclosed as an ordinary pending row, which is
+            # indistinguishable from a hold that has simply not settled yet.
+            #
+            # 🔴 And the row is not rewritten from the hold's entry. Doing so
+            # would move it back under the hold's identity and mark it pending
+            # again, so the retirement the aggregator sends next (`removed`,
+            # naming the hold) would soft-delete the purchase itself. The
+            # posting is the later fact about the same money; a change to what
+            # it superseded does not undo it.
+            _log.info(
+                "raw response %s modified a hold whose posting is already merged into "
+                "transaction %d; the posting stands",
+                response.raw_response_id,
+                absorbed_by,
+            )
+            return
         if existing_ok:
             # A `modified` entry for a row this system has never seen. Inserted
             # rather than refused: a rebuild replays pages in archive order, and
@@ -614,6 +635,33 @@ def _existing_transaction(
         )
     ).one_or_none()
     return None if pending_row is None else int(pending_row[0])
+
+
+def _row_that_absorbed(
+    conn: SAConnection, account_id: int, source_transaction_id: str
+) -> int | None:
+    """The row that already merged this hold in, if one did.
+
+    `source_pending_transaction_id` is the only column that still holds the
+    hold's id once the transition has happened, and nothing else in the lookup
+    path reads it -- which is why a change arriving for the hold afterwards
+    looked like a transaction this system had never seen.
+
+    Unlike the two lookups above, this column carries no unique index: two
+    postings could name one hold. The question asked here is only whether SOME
+    row already absorbed it, so the oldest match answers it, and a page shaped
+    that way must not take the connection down over which one.
+    """
+    row = conn.execute(
+        select(transactions.c.transaction_id)
+        .where(
+            transactions.c.account_id == account_id,
+            transactions.c.source_pending_transaction_id == source_transaction_id,
+        )
+        .order_by(transactions.c.transaction_id)
+        .limit(1)
+    ).first()
+    return None if row is None else int(row[0])
 
 
 def _mark_removed(
