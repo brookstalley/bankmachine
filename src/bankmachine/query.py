@@ -1186,7 +1186,9 @@ def _uncovered_caveat(uncovered: list[AccountCoverage]) -> list[Caveat]:
     ]
 
 
-def _unmatched_transfer_caveat(conn: SAConnection) -> list[Caveat]:
+def _unmatched_transfer_caveat(
+    conn: SAConnection, *, since: date | None, until: date | None
+) -> list[Caveat]:
     """The notice that the classifier FELL BACK rather than concluded.
 
     A transfer-shaped row with no counterparty leg in this store counts as money
@@ -1204,15 +1206,18 @@ def _unmatched_transfer_caveat(conn: SAConnection) -> list[Caveat]:
     household is not established, only assumed in the direction that overstates
     spending rather than hiding it.
     """
-    unmatched = transfers.unmatched_transfer_shaped(conn, _TRANSFER_SHAPED_DETAILED)
+    unmatched = transfers.unmatched_transfer_shaped(
+        conn, transfers.TRANSFER_SHAPED_DETAILED, since=since, until=until
+    )
     if not unmatched:
         return []
     return [
         Caveat(
             kind="partial",
             detail=(
-                f"{unmatched} transfer-shaped row(s) have no matching leg on any account this "
-                f"store holds, so they are counted as money LEAVING the household. That is the "
+                f"{unmatched} transfer-shaped row(s) in this window have no matching leg on "
+                f"any account this store holds, so they are counted as money LEAVING the "
+                f"household. That is the "
                 f"conservative reading and it is not established: the counterparty may simply "
                 f"be an account nobody enrolled. Enrol the other side to have them classified "
                 f"as transfers instead"
@@ -1234,7 +1239,7 @@ def _superseded_caveat(spans: Sequence[SupersededSpan]) -> list[Caveat]:
     dates -- and because the rows are still there. Nothing was deleted; a caller
     that wants them can ask for exactly the excluded set.
 
-    Rides `rule-applied`, the third emitter of a kind that had none until today.
+    Rides `rule-applied`: rows excluded from this aggregate on purpose.
     """
     if not spans:
         return []
@@ -2826,59 +2831,6 @@ _INTERNAL_TRANSFER_CATEGORIES: frozenset[str] = frozenset({"TRANSFER_IN", "TRANS
 #: then if that card is enrolled. The rest is money out of the household.
 _DEBT_SERVICE_CATEGORIES: frozenset[str] = frozenset({"LOAN_PAYMENTS"})
 
-#: The detailed categories that MIGHT be a movement between two accounts this
-#: household holds -- transfer-shaped, which is not the same as being a transfer.
-#:
-#: 🔴 A row is only `internal_transfer` when a matching opposite leg is FOUND on
-#: another enrolled account. These names are the candidates; `transfer_pair_id`
-#: is the evidence. An ATM withdrawal, a payment to a person, ACH rent to a
-#: landlord -- all transfer-shaped, none of them a transfer, because from the
-#: household's point of view the money is gone.
-#:
-#: 🔴 **`TRANSFER_IN_PAYROLL` is deliberately absent, and so is every `INCOME_*`
-#: name.** Wages arriving are external value ENTERING the household, whatever
-#: the aggregator's transfer-shaped naming suggests. Classifying the payroll row
-#: as an internal transfer is what made income read $0 on this surface, and no
-#: leg match should be able to bring it back: a paycheque has no counterparty
-#: leg here, but an accidental amount-and-date collision must not be allowed to
-#: invent one.
-_TRANSFER_SHAPED_DETAILED: frozenset[str] = frozenset(
-    {
-        "TRANSFER_IN_ACCOUNT_TRANSFER",
-        "TRANSFER_IN_DEPOSIT",
-        "TRANSFER_IN_INVESTMENT_AND_RETIREMENT_FUNDS",
-        "TRANSFER_IN_SAVINGS",
-        "TRANSFER_IN_OTHER_TRANSFER_IN",
-        "TRANSFER_OUT_ACCOUNT_TRANSFER",
-        "TRANSFER_OUT_INVESTMENT_AND_RETIREMENT_FUNDS",
-        "TRANSFER_OUT_SAVINGS",
-        "TRANSFER_OUT_OTHER_TRANSFER_OUT",
-    }
-)
-
-#: Detailed categories naming a payment toward a liability.
-#:
-#: 🔴 It is `debt_service` only when THIS STORE HOLDS the liability. A mortgage
-#: to a lender the operator has not enrolled is money out of the household and
-#: is `external_spend`; a card payoff where the card IS enrolled is
-#: `debt_service`, because that card's own purchases are already counted and
-#: counting the payoff too is the double count the class exists to prevent.
-#:
-#: 🔴 **Principal and interest are explicitly NOT split**, and the silence is a
-#: decision rather than an oversight. The aggregator does not decompose a loan
-#: payment per transaction, and deriving a split from balance movement would be
-#: an inference presented as a record. The whole payment classifies together.
-_DEBT_SERVICE_DETAILED: frozenset[str] = frozenset(
-    {
-        "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT",
-        "LOAN_PAYMENTS_MORTGAGE_PAYMENT",
-        "LOAN_PAYMENTS_CAR_PAYMENT",
-        "LOAN_PAYMENTS_STUDENT_LOAN_PAYMENT",
-        "LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT",
-        "LOAN_PAYMENTS_OTHER_PAYMENT",
-    }
-)
-
 
 #: Every `source_category_primary` this mapping has actually been designed
 #: against, observed in the sandbox datastore on 2026-09-09.
@@ -2932,8 +2884,8 @@ KNOWN_SOURCE_CATEGORIES: tuple[str, ...] = (
 #: nothing saying so. Conservative, and a fallback rather than a classification.
 KNOWN_SOURCE_CATEGORIES_DETAILED: tuple[str, ...] = tuple(
     sorted(
-        _TRANSFER_SHAPED_DETAILED
-        | _DEBT_SERVICE_DETAILED
+        transfers.TRANSFER_SHAPED_DETAILED
+        | transfers.DEBT_SERVICE_DETAILED
         | {
             "GENERAL_MERCHANDISE_ONLINE_MARKETPLACES",
             "FOOD_AND_DRINK_GROCERIES",
@@ -2974,10 +2926,11 @@ def _flow_class() -> ColumnElement[str]:
 
     🔴 **Classify, do not filter** -- the owner's ruling on #18. Every row is
     kept and gains a class; nothing is dropped, precisely so there is no
-    invisible undercount. That is also why this emits no `rule-applied` warning:
-    that kind means "an account rule filtered rows OUT of an aggregate, the
-    total excludes them on purpose", and nothing here excludes anything, so
-    saying it would be a false statement about the answer carrying it.
+    invisible undercount. That is also why the classification itself emits no
+    `rule-applied` warning: that kind means rows were excluded from an aggregate
+    on purpose, and classifying excludes nothing, so saying it would be a false
+    statement about the answer carrying it. Other producers on the same answer
+    do exclude rows and do raise it.
 
     🔴 **Read from `source_category_detailed`, NEVER from `category_override`.**
     The primary category is too coarse to carry the distinction that matters:
@@ -3000,7 +2953,9 @@ def _flow_class() -> ColumnElement[str]:
     return case(
         (
             and_(
-                transactions.c.source_category_detailed.in_(sorted(_TRANSFER_SHAPED_DETAILED)),
+                transactions.c.source_category_detailed.in_(
+                    sorted(transfers.TRANSFER_SHAPED_DETAILED)
+                ),
                 # 🔴 The evidence, not the label. A transfer-shaped row is only a
                 # transfer when the other leg is HERE -- a matching, opposite row
                 # on another enrolled account, recorded at derivation time. An
@@ -3012,7 +2967,9 @@ def _flow_class() -> ColumnElement[str]:
         ),
         (
             and_(
-                transactions.c.source_category_detailed.in_(sorted(_DEBT_SERVICE_DETAILED)),
+                transactions.c.source_category_detailed.in_(
+                    sorted(transfers.DEBT_SERVICE_DETAILED)
+                ),
                 # 🔴 The liability has to be one THIS STORE HOLDS. A mortgage to
                 # a lender the operator never enrolled is money out of the
                 # household; a card payoff where the card is enrolled is not,
@@ -3429,7 +3386,7 @@ def money_summary(
             extra_caveats=(
                 _uncovered_caveat(uncovered)
                 + _superseded_caveat(spans)
-                + _unmatched_transfer_caveat(conn)
+                + _unmatched_transfer_caveat(conn, since=since, until=until)
                 + _window_coverage_caveat(all_coverage, since)
                 + _not_active_caveat(not_active)
                 + _roster_observed_empty_caveat(not_active)

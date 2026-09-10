@@ -582,36 +582,62 @@ def test_the_payload_does_not_claim_a_transfer_never_left_or_a_debt_was_already_
     }
 
     for name, text in surfaces.items():
-        assert "never left" not in text, f"{name} still claims a transfer never left the household"
-        assert "already counted" not in text, (
-            f"{name} still claims debt service settles purchases already counted"
+        # 🔴 INVERTED, and the inversion is the contract change. These two claims
+        # were forbidden because the classifier could not support them: it read
+        # the aggregator's label alone, so "never left the household" was false
+        # of an ATM withdrawal and "already counted" was false of a mortgage.
+        # Both are now true BY CONSTRUCTION -- each class requires a matched
+        # counterparty leg on an enrolled account -- so what has to be absent is
+        # the old disclaimer, which now understates a verified figure in the
+        # direction this surface records as the one that gets believed.
+        assert "matches no counterparty leg" not in text, (
+            f"{name} still tells a client the class matches no counterparty leg, which is the "
+            f"classifier this build replaced"
+        )
+        assert "not verified against an enrolled counterparty" not in text, (
+            f"{name} still tells a client the class is unverified, so an agent will discount a "
+            f"figure that is now established"
+        )
+        assert "POSTING date" not in text, (
+            f"{name} still says the window is measured on the posting date; it is measured on "
+            f"`ledger_date`, which settlement does not move"
         )
 
 
 def test_every_surface_says_what_the_flow_classes_do_and_do_not_establish(
     initialized_config: Config,
 ) -> None:
-    """The positive half: removing the false claim must not leave silence.
+    """The positive half: correcting the false claim must not leave silence.
 
     An agent that reads "internal_transfer" with nothing beside it supplies a
     meaning of its own, and the one it will reach for is the one the label
-    suggests. So each surface has to say what the class is derived from — a
-    category the aggregator assigned, with no counterparty leg matched — and
-    which date a window is measured on, since a hold that settles later moves
-    between periods.
+    suggests. So each surface has to say what the class now establishes — that
+    the counterparty is an account this store holds — and, just as importantly,
+    what it still cannot: an unmatched transfer-shaped row counts as spending,
+    which is a fallback rather than a finding.
     """
     definition = next(d for d in mcp._tool_definitions() if d["name"] == "money_summary")
     resources = "\n".join(doc.text for doc in mcp._reference_documents())
+    described = str(definition["description"])
 
-    assert "not verified against an enrolled counterparty" in resources
-    assert "mortgage, auto or student-loan payment is money out" in resources
-    assert "categorised as a transfer by the aggregator" in str(definition["description"])
-    assert "falls back to `description`" in str(definition["description"]), (
+    assert "THIS STORE HOLDS" in resources, (
+        "the reference does not say the counterparty has to be an account this store holds, "
+        "which is the whole of what the class now establishes"
+    )
+    assert "nobody enrolled is" in resources, (
+        "the reference does not say a loan payment to an unenrolled lender is external spend"
+    )
+    assert "HOUSEHOLD BOUNDARY" in described, (
+        "the tool does not say what question the class answers"
+    )
+    assert "partial" in described, (
+        "the tool does not tell a caller how to see that the classifier fell back rather than "
+        "concluded"
+    )
+    assert "falls back to `description`" in described, (
         "the merchant rollup does not say when it is really rolling up by description"
     )
-    assert "POSTING date" in str(definition["description"]), (
-        "nothing says which date the window is measured on"
-    )
+    assert "ledger_date" in resources, "nothing says which date the window is measured on"
 
 
 def test_the_totals_are_identical_under_every_grouping(initialized_config: Config) -> None:

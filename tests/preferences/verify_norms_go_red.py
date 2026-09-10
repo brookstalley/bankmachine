@@ -1155,9 +1155,12 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # reclassifies a transfer as spending, silently and upward.
         "flow class: the class reads the source column, never category_override",
         QUERY,
-        "                transactions.c.source_category_detailed.in_("
-        "sorted(_TRANSFER_SHAPED_DETAILED)),",
-        "                transactions.c.category_override.in_(sorted(_TRANSFER_SHAPED_DETAILED)),",
+        # 🔴 Anchored on the COLUMN alone, not on the vocabulary constant beside
+        # it. The constant moved modules when the pairer needed it too, and the
+        # anchor went stale for a reason that had nothing to do with the norm --
+        # which is the kind of stale that gets re-pinned without being read.
+        "                transactions.c.source_category_detailed.in_(",
+        "                transactions.c.category_override.in_(",
         f"{AGGREGATE_TESTS}::test_a_re_categorisation_cannot_move_a_transfer_into_spending",
     ),
     (

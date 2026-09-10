@@ -85,7 +85,6 @@ DERIVATION_DESCRIPTION = (
     "expiry and its standing error recorded on the connection; and the two legs of a "
     "transfer between enrolled accounts paired, so a movement between them is not "
     "counted as money leaving the household"
-    "; the Item's consent expiry and its standing error recorded on the connection"
 )
 
 

@@ -259,6 +259,8 @@ Every normalized row in the silver layer carries `derivation_version_id NOT NULL
 | `status` | text | `active` \| `degraded` \| `retired` | |
 | `last_success_at` | UTC instant | nullable | |
 | `roster_observed_date` | calendar date | nullable | 🔴 The date this connection's roster was last successfully READ (AC-12.4). Null means never observed, which marks nothing absent. Migration 004 |
+| `consent_expires_at` | UTC instant | nullable | When the operator's authorisation for this connection lapses, from `/item/get`. Migration 008. 🔴 The pipeline is poll-only, so without this an expiry surfaces as a failed run rather than in advance — a connection reads healthy right up to the sync that fails. Null means the Item has not been polled since the column existed, never that consent does not expire |
+| `source_error_code` | text | nullable | The aggregator's STANDING complaint about the Item, from `/item/get`. Migration 008. 🔴 Not `last_error_code`, which records the last sync *attempt* failing: an Item can be unwell while the most recent poll succeeded, and folding the two together would let one success bury a complaint nobody resolved |
 | `last_error_code` / `last_error_at` | text / UTC instant | nullable | |
 | `enrolled_at` | UTC instant | required | |
 | `retired_at` | UTC instant | nullable | Set iff `status = 'retired'` |
@@ -429,6 +431,7 @@ same file is a no-op, and **an operator who renames the export cannot import it 
 | `first_seen_at` / `updated_at` | UTC instant | required | |
 | `ledger_date` | calendar date | nullable | 🔴 `COALESCE(authorized_date, posted_date)`, stamped **once** on insert and never moved by settlement — the day the money was committed. Migration 005; last in column order because `ALTER TABLE` appends. Null means *predates the split, not yet rebuilt*, never *committed on the posting date* |
 | `lineage_id` | int | nullable, FK → `connections` | 🔴 The aggregator Item that produced the row. Migration 007; last in column order for the same reason. Null means *predates the split, not yet rebuilt* or *came from an operator file*, never *the current Item* — so a null-lineage row is always counted |
+| `transfer_pair_id` | int | nullable | 🔴 The other leg of one transfer: both rows carry the same value, and neither is the other's parent — a shared token, not a pointer, which is why it has no FK. Migration 009; last in column order for the same reason. Set by the pairing pass over the categories a pair can change the meaning of, and **recomputed from scratch on every pass** so the classification is a function of the store rather than of the order pages arrived in. Null means *no counterparty leg was found here*, which is the ordinary case and is what makes a transfer-shaped row count as money that left |
 
 🔴 **Lineage, and why a re-link needs one.** Removing a connection and linking it again yields a new
 Item, and the new Item re-issues every transaction id — so the whole granted history arrives again as

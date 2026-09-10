@@ -140,13 +140,21 @@ spend, and **name the other two classes beside it**. The three sum to `outflow_m
 is how you check them against the rows. Over the sandbox store external spend is a fifth of the raw
 outflow.
 
-🔴 **The class says how the aggregator LABELLED a row, not where the money went.** It is read from
-one category and matches no counterparty leg, so `internal_transfer` covers an ATM withdrawal, a
-P2P payment, rent paid by ACH and an incoming paycheque as readily as a move between the holder's
-own accounts; `debt_service` covers mortgage, auto and student-loan payments as well as card
-payoff, and only a payment to an *enrolled* card settles purchases counted under their own
-categories. `inflow_minor_units` is inflow rather than income for the same reason: refunds are in
-it, and so is a paycheque the aggregator called a transfer.
+🔴 **The class says whether the money crossed the household boundary.** It is read from the
+aggregator's *detailed* category, and `internal_transfer` and `debt_service` **both require a
+matched counterparty leg on an account this store holds** — equal magnitude, opposite sign, a
+different enrolled account, same currency, within three days. So an ATM withdrawal, a P2P payment
+to another person, rent paid by ACH and a mortgage to a lender nobody enrolled are all
+`external_spend`: from the household's point of view that money is gone. A card payoff is
+`debt_service` only when the card is enrolled, because then its purchases are already counted.
+
+🔴 **A transfer-shaped row with no counterparty here counts as money that left**, and the answer
+carries a `partial` warning saying how many did. That is the conservative reading and it is not
+established — the other side may simply be an account nobody enrolled — so the count is there for
+you to say so rather than to be assumed either way.
+
+`inflow_minor_units` is still inflow rather than income: refunds are in it under `external_spend`
+alongside wages. There is no income figure on this surface.
 
 🔴 **`group_by=merchant` falls back to `description`** where the aggregator supplied no merchant
 name, so one merchant can split across several raw institution strings and each rollup understates
@@ -249,9 +257,11 @@ The second group describes **this request**, and fires only when the request act
 boundary it names — so the *absence* of one is information too:
 
 - `rule-applied` — rows were excluded from an aggregate on purpose, so the total will not
-  reconcile against a raw sum over the same window. `detail` names which rows and why: an account
-  rule, a currency this store was never told, or an amount it cannot represent exactly in minor
-  units. 🔴 Say the exclusion out loud when you report the total.
+  reconcile against a raw sum over the same window. 🔴 `detail` names which rows and why, and the
+  reasons are **not a closed list** — read it rather than matching on one you know. Today they
+  include a currency this store was never told, an amount it cannot represent exactly in minor
+  units, and history from a connection that was linked again and superseded by a newer one. Say
+  the exclusion out loud when you report the total.
 
 - `window_starts_before_coverage` — the window you asked for reaches back past the first covered
   date. Anything before it is *absent rather than zero*.

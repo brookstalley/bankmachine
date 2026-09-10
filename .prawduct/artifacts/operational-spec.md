@@ -212,6 +212,18 @@ same responses the original observation came from. Expect it to report a content
 `content_digest` walks every table, `connections` included. This is the remedy; it existed before
 this migration and simply was not written down.
 
+> 🔴 **Amendment, 2026-09-10 — the rebuild is now UNCONDITIONAL after an upgrade, not conditional
+> on a connection being stuck.** *Statement:* run `bankmachine store rebuild` after any migration,
+> whatever `connections list` says. *Why:* the condition above was correct while the only
+> derivation-owned column a migration left empty was the roster observation, which a healthy
+> connection refilled at its next sync. Migrations 005, 007 and 009 each add a column that is
+> stamped **once, at insert** — `ledger_date`, `lineage_id`, `transfer_pair_id` — so an ordinary
+> sync refills them only for rows it ADDS, and every row already in the store stays null on a
+> perfectly healthy connection. Until the rebuild runs, every windowed total silently excludes
+> the unstamped rows: it is a floor, not a measurement. The answers disclose that with a
+> `partial` warning naming the count and this command, but a disclosure is not the fix.
+> *Retroactivity:* none owed — the condition was true of the migration it was written for.
+
 The MCP server and the CLI must be upgraded *with* the datastore — an older reader
 refuses to serve, which is the norm working rather than a fault.
 

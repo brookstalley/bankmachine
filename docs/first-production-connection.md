@@ -369,12 +369,17 @@ deliberately: the sandbox was providing one for free and production will not.
 
 🔴 When you ask what went out, read `totals` rather than summing rows, and read the whole-window
 `outflow_minor_units` beside the three flow classes rather than any one of them alone.
-`external_spend_outflow_minor_units` is *external spend* — it excludes what the aggregator
-categorized as transfers and what it categorized as debt service. Neither exclusion is a claim about
-where money went: `internal_transfer` means the aggregator called it a transfer, not that a
-counterparty leg was matched against another enrolled account, and `debt_service` includes mortgage,
-auto and student-loan payments, which are real money out. `docs/connecting-an-mcp-client.md` carries
-the field-by-field definitions.
+`external_spend_outflow_minor_units` is *external spend* — money that left the household. Both
+exclusions ARE claims about where money went: `internal_transfer` requires a matched counterparty
+leg on another enrolled account, and `debt_service` requires the liability to be one this store
+holds. So a mortgage to a lender you have not enrolled, cash from an ATM and rent by ACH all sit in
+external spend, which is where they belong.
+
+🔴 **The exclusions are only as good as what you have enrolled.** A transfer between two of your
+accounts where only one is connected has no counterparty leg here, so it counts as spending — the
+answer's `partial` warning tells you how many rows fell back that way. If that count is high on
+your own data, the fix is to enrol the other side, not to discount the figure.
+`docs/connecting-an-mcp-client.md` carries the field-by-field definitions.
 
 **4.8 Point a second MCP server at production and confirm you can tell the two apart in your
 client's list.** The environment rides every response and the server titles itself
