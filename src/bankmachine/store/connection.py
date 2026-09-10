@@ -31,7 +31,7 @@ from typing import Final
 from sqlcipher3 import dbapi2
 
 from bankmachine.config import Config
-from bankmachine.secrets import SecretsError, get_datastore_key
+from bankmachine.secrets import SecretsError, get_datastore_key, validate_candidate_key
 
 Connection = dbapi2.Connection
 
@@ -472,11 +472,36 @@ def opens_with(config: Config, key: str) -> bool:
     datastore raises instead: neither is an answer about the key, and reporting
     "no" for a hot WAL this process cannot open would send the operator to
     restore a keychain entry that was never the problem.
+
+    🔴 True requires POSITIVE evidence that a page was decrypted, and the reason
+    is a state an incident actually produces. SQLite reads a file with no pages
+    -- a truncated copy, an interrupted restore, a `store init` killed between
+    creating the file and writing to it -- as a valid empty schema: the first
+    read succeeds without page 1 ever being touched, so SQLCipher's codec is
+    never invoked and NO KEY IS TESTED. Answering True there would have
+    `store key verify` print MATCHES for an arbitrary candidate, and
+    `store key import` -- whose whole warrant is that verification precedes the
+    write -- store that unverified key over a working keychain entry. So a
+    pageless file raises rather than answering: it is a fact about the file, not
+    about the key.
+
+    The candidate is validated here rather than only in the callers. SQLCipher
+    runs anything that is not exactly 64 hex digits through its KDF, so a
+    malformed value would come back as a confident False -- "this key does not
+    open the datastore" about something that is not a key at all.
     """
+    key = validate_candidate_key(key)
     if not config.datastore_path.exists():
         raise DatastoreMissingError(
             f"no datastore at {config.datastore_path} -- there is nothing to check a key against. "
             f"A key can only be verified against the datastore it is supposed to open"
+        )
+    if config.datastore_path.stat().st_size == 0:
+        raise DatastoreUnreadableError(
+            f"{config.datastore_path} is empty -- it holds no pages, so nothing was ever "
+            f"encrypted with any key and no key can be checked against it. This is a truncated "
+            f"copy or an interrupted restore, not a key problem: replace the file from a backup "
+            f"taken with `bankmachine store backup`"
         )
     conn = dbapi2.connect(
         _uri(config.datastore_path, READ_ROLE_MODE),
@@ -491,6 +516,12 @@ def opens_with(config: Config, key: str) -> bool:
         except DatastoreKeyRejectedError:
             return False
         opened = True
+        if conn.execute("SELECT count(*) FROM sqlite_master").fetchone()[0] == 0:
+            raise DatastoreUnreadableError(
+                f"{config.datastore_path} has no schema -- no page was decrypted, so this run "
+                f"tested no key. A datastore this build can serve always carries a schema; a "
+                f"file that does not is an incomplete copy, not a wrong key"
+            )
         return True
     finally:
         if opened:

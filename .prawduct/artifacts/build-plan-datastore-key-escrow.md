@@ -17,10 +17,17 @@ governed_by:
       - "🔴 'secrets live only in the OS keychain, and nothing returns one into a log line, an exception message, or a `repr`' → this plan is the amendment's implementation, not a departure from it. The amendment (2026-09-10, owner ruling) permits a deliberate, operator-initiated export of the DATASTORE KEY ONLY. The log/exception/`repr` half is untouched and AC-17.6 is its criterion here"
       - "the norm is `Status: in-transition` tracking #61, and this plan is what flips it to steady-state: chunk 02 removes the shell recipe the interim rule preserved"
       - "aggregator secrets and access tokens remain unexportable — no verb in this plan reaches them"
+      - "log redaction happens at the formatter, over-redacts by design, keyed to credential shape → INAPPLICABLE, because nothing in this plan writes a log record carrying a secret. The redactor is untouched; AC-17.6 asserts the key reaches no log at all, which is a stronger property than redacting it once there"
+      - "no tracked file carries a credential-shaped string; ignore rules cover data, logs and credential paths → conforms, and the export is the first thing that can write a key to a file. It refuses a destination inside the data directory and the operator names the path, so no product-chosen location can end up tracked; `tests/preferences/test_no_credentials_tracked.py` is unchanged and still passes"
+      - "the aggregator's API is the only network destination → INAPPLICABLE; nothing in this plan reaches a network transport"
   - artifact: api-contract
     dispositions:
       - "CLI exit codes `0`/`1`/`2` are a contract and the 1/2 split is not collapsible → conforms; `verify` on a mismatch is `1` (ran, found a problem), a refusal to run is `2` (could not run), and neither is collapsed into the other"
       - "the CLI command inventory is a published surface → chunk 02 adds three entries at `experimental`, by the inventory's own *shipped and depended on* criterion"
+      - "the MCP surface is read-only; adding a mutation tool is not a chunk-level decision → INAPPLICABLE, and worth stating rather than skipping: these commands write the KEYCHAIN, never the datastore, and they are CLI-only. No MCP tool is added, and nothing here is reachable from the MCP surface at all"
+      - "every response carries a freshness stamp, and incompleteness rides the success path as a warning → INAPPLICABLE; this plan emits no `Answer` envelope. Its CLI-shaped analogue is honoured instead — a refusal never rides the success path, and `verify` reports a mismatch as exit 1 rather than as a warning on exit 0"
+      - "a tool's boundary is drawn where the answer shape changes, never where the question changes → conforms, and it is why this is three verbs rather than one with a mode flag: export returns a secret, verify returns a verdict, import performs a write. Three answer shapes"
+      - "a stored balance is reported with its lifecycle, and no total over balances is emitted without it → INAPPLICABLE; this plan reports no balances and emits no totals"
 ---
 
 # Build plan — the operator can export, check, and restore the datastore key

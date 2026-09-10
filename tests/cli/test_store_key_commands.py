@@ -534,3 +534,80 @@ def test_the_missing_key_diagnosis_names_the_command_that_fixes_it(
     err = capsys.readouterr().err
     assert "bankmachine store key import" in err
     assert "a fresh one would decrypt nothing" in err
+
+
+# --- the pageless datastore: a state that tests no key at all ---------------------
+
+
+def test_opens_with_refuses_a_pageless_datastore_instead_of_answering(
+    cli_env: Config,
+) -> None:
+    """🔴 A file with no pages tests no key, so it gets no answer about one.
+
+    SQLite reads a zero-length file as a valid empty schema: the first read
+    succeeds without page 1 ever being touched, SQLCipher's codec is never
+    invoked, and no key is checked. Answering True there would be a MATCHES for
+    an arbitrary candidate in exactly the state an incident presents -- a
+    truncated copy, an interrupted restore, a `store init` killed between
+    creating the file and writing to it.
+
+    Two different random keys, because the tell is not that one is wrong: it is
+    that nothing can distinguish them.
+    """
+    cli_env.datastore_path.parent.mkdir(parents=True, exist_ok=True)
+    cli_env.datastore_path.touch()
+    assert cli_env.datastore_path.stat().st_size == 0
+
+    for candidate in (generate_datastore_key(), generate_datastore_key()):
+        with pytest.raises(connection.DatastoreUnreadableError, match="no pages"):
+            connection.opens_with(cli_env, candidate)
+
+
+def test_import_will_not_store_a_key_against_a_pageless_datastore(
+    cli_env: Config, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """🔴 The consequence the seam fix exists to prevent, asserted at the surface.
+
+    `import`'s entire warrant is that verification precedes the write. Against a
+    file that tests no key, an unverified candidate would land in the keychain
+    over whatever was working there -- the overwrite AC-17.5's rationale names.
+    """
+    working = generate_datastore_key()
+    set_datastore_key(cli_env, working)
+    cli_env.datastore_path.parent.mkdir(parents=True, exist_ok=True)
+    cli_env.datastore_path.touch()
+    _answer_prompt(monkeypatch, generate_datastore_key())
+
+    assert run(["store", "key", "import"]) == 2
+
+    assert get_datastore_key(cli_env) == working
+    assert "no pages" in capsys.readouterr().err
+
+
+def test_verify_will_not_say_matches_against_a_pageless_datastore(
+    cli_env: Config, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cli_env.datastore_path.parent.mkdir(parents=True, exist_ok=True)
+    cli_env.datastore_path.touch()
+    _answer_prompt(monkeypatch, generate_datastore_key())
+
+    assert run(["store", "key", "verify"]) == 2
+
+    captured = capsys.readouterr()
+    assert "MATCHES" not in captured.out
+    assert "no pages" in captured.err
+
+
+def test_opens_with_rejects_a_malformed_candidate_at_the_seam(
+    initialized: Config,
+) -> None:
+    """The precondition lives in the function, not only in today's callers.
+
+    A value that is not 64 hex digits is run through SQLCipher's KDF, so an
+    unvalidated candidate returns a confident False -- "this key does not open
+    the datastore" about something that is not a key at all.
+    """
+    from bankmachine.secrets import SecretsError
+
+    with pytest.raises(SecretsError):
+        connection.opens_with(initialized, "not-a-key")

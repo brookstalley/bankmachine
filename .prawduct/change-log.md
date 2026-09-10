@@ -78,6 +78,18 @@ that both "restore the keychain entry from your backup" messages still named no 
 exact defect #61 was filed about, fixed on the export side and left standing on the recovery side,
 and no test then in the suite could see it because both asserted the old prose.
 
+🔴 **The Critic caught a hole in the primitive that every test in the first cut walked straight
+past.** `opens_with` treated "the first read succeeded" as "the key decrypts this datastore". SQLite
+reads a **pageless** file — a truncated copy, an interrupted restore, a `store init` killed between
+creating the file and writing to it — as a valid empty schema, so the read succeeds without page 1
+ever being touched, SQLCipher's codec is never invoked, and **no key is tested**. `verify` would have
+printed MATCHES for an arbitrary candidate in exactly the state an incident presents, and `import`
+would then have stored that unverified key over a working keychain entry — the overwrite AC-17.5's
+rationale exists to prevent. Reproduced before fixing: two different random keys both "opened" a
+zero-length file. `opens_with` now requires positive evidence that a page was decrypted and raises on
+a pageless file, because that is a fact about the file rather than an answer about the key. It also
+validates the candidate at the seam, so a malformed value cannot come back as a confident False.
+
 **Known limit, stated so it is not mistaken for coverage:** AC-17.8's automated half is a round-trip
 test. The **operator** rehearsal — a restore into the production path, against a key read back from
 wherever the operator actually stored it — is still owed and sandbox cannot rehearse it
