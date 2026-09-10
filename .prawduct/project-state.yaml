@@ -1219,7 +1219,7 @@ distribution: plugin
 backlog_service_repo: brookstalley/bankmachine
 
 # Stamped by /prawduct:backlog list — resolves backlog-overdue-grooming.
-backlog_last_groomed_at: 2026-09-09
+backlog_last_groomed_at: 2026-09-10
 
 # Raised from the 40KB default on 2026-09-07, after measuring rather than
 # guessing at what the two nudged files actually hold.
