@@ -95,6 +95,9 @@ file imports  ──┘                                                         
 - **Datastore:** SQLCipher (Community Edition), single file. Key held in the OS keychain.
 - **Repo:** a git repo. Data, logs, and secrets are gitignored.
 - **Scheduling:** an OS-level user agent, daily. Survives reboot; requires no open terminal.
+  *(Specified — build step 8. **Not built:** there is no daemon and no user agent; the "sync daemon"
+  in the diagram above is `bankmachine sync run`, which an operator runs by hand. A day it is not
+  run is a day of `balances_daily` that no later sync can rebuild.)*
 - **MCP transport:** stdio, registered in the MCP client's config.
 
 **AC-ARCH.1** — A fresh clone plus documented setup steps produce a working sync on a clean machine,
@@ -247,6 +250,17 @@ successful sync.**
 
 **AC-4.3** — A repair command produces an update-mode enrollment URL that re-authenticates a broken
 connection **without losing its history or cursor.**
+
+> *(Specified — build step 6. **Not built:** `bankmachine sync --help` offers `shell` and `run`
+> only, and there is no `sync repair`.)* The recovery that exists today for `ITEM_LOGIN_REQUIRED`
+> is to **re-run `bankmachine enroll` and pick the same institution**. Enrollment converges on the
+> existing connection rather than adding a second one: the row keeps its id, its accounts and its
+> transactions, and its degraded status and error code are cleared. What it does not preserve is
+> the half AC-4.3 names — if the re-link yields a **new** Item at the aggregator, the connection's
+> cursor and its measured granted window are reset with it, because both are Item-scoped and
+> neither survives the credential they were measured against. History is then re-fetched from the
+> start of the granted window, which is idempotent but not free. AC-4.3 stays open for exactly
+> that reason.
 
 **AC-4.4** — Degraded state is visible through `get_pipeline_health`. 🔴 **Silent staleness is the
 primary failure mode of this entire system** — a connection that quietly stopped three weeks ago
