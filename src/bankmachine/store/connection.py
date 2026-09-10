@@ -11,10 +11,14 @@ was constructed rather than of which command asked for it:
 * **Writer** -- `writer()` and `initializing_writer()`. Both route through one
   private factory that takes the exclusive advisory lock *before* it returns a
   handle. There is no other way to obtain a connection that can write.
-* **Reader** -- `reader()`. Opened `mode=ro` at the file, so the refusal lives
-  in the file handle where SQL cannot reach it, with `PRAGMA query_only=ON` as a
-  second layer. It holds no snapshot beyond the statement that needs it, and it
-  never falls back to a writable handle.
+* **Reader** -- every read-role handle comes from `_open_read_role`, which
+  `reader()` and `opens_with()` are the two entry points to. Opened `mode=ro` at
+  the file, so the refusal lives in the file handle where SQL cannot reach it,
+  with `PRAGMA query_only=ON` as a second layer. It holds no snapshot beyond the
+  statement that needs it, and it never falls back to a writable handle. The two
+  entry points differ in ONE thing -- where the key comes from, the keychain or
+  an operator's candidate -- and that difference is an argument, not a second
+  copy of the open.
 """
 
 from __future__ import annotations
@@ -411,19 +415,22 @@ def initializing_writer(config: Config) -> Iterator[Connection]:
         yield conn
 
 
-@contextmanager
-def reader(config: Config, *, require_supported_schema: bool = True) -> Iterator[Connection]:
-    """A read-only handle. Every statement is its own snapshot.
+def _open_read_role(config: Config, key: str) -> Connection:
+    """The one place a read-role handle is constructed.
 
-    The connection is opened in autocommit, so no read transaction spans two
-    statements and none survives an idle moment -- the property that keeps a
-    long-lived reader from starving WAL checkpointing.
+    🔴 Two callers, and the second is why this exists as a function. `reader()`
+    takes the key from the keychain; `opens_with()` is handed a candidate and
+    must not. That single difference had been enough to justify a second copy of
+    the open, and the copy immediately drifted -- it lost `PRAGMA query_only`
+    and the `OperationalError` translation, so a read-role handle held half the
+    norm and a driver error escaped the layer that turns it into a `StoreError`.
+    The difference is the ARGUMENT. Everything else is the role, and the role is
+    written once.
+
+    `mode=ro` puts the refusal in the file handle where SQL cannot reach it;
+    `query_only` is the second layer; autocommit is what keeps a reader from
+    holding a snapshot across statements and starving WAL checkpointing.
     """
-    if not config.datastore_path.exists():
-        raise DatastoreMissingError(
-            f"no datastore at {config.datastore_path} -- run `bankmachine store init`"
-        )
-    key = get_datastore_key(config)
     try:
         conn = dbapi2.connect(
             _uri(config.datastore_path, READ_ROLE_MODE),
@@ -440,9 +447,25 @@ def reader(config: Config, *, require_supported_schema: bool = True) -> Iterator
             f"{config.datastore_path} could not be opened read-only ({exc}). Not retried "
             f"read-write: that would restore the writes this handle exists to refuse"
         ) from exc
+    _key_and_prepare(conn, config, key)
+    conn.execute("PRAGMA query_only = ON")
+    return conn
+
+
+@contextmanager
+def reader(config: Config, *, require_supported_schema: bool = True) -> Iterator[Connection]:
+    """A read-only handle. Every statement is its own snapshot.
+
+    The connection is opened in autocommit, so no read transaction spans two
+    statements and none survives an idle moment -- the property that keeps a
+    long-lived reader from starving WAL checkpointing.
+    """
+    if not config.datastore_path.exists():
+        raise DatastoreMissingError(
+            f"no datastore at {config.datastore_path} -- run `bankmachine store init`"
+        )
+    conn = _open_read_role(config, get_datastore_key(config))
     try:
-        _key_and_prepare(conn, config, key)
-        conn.execute("PRAGMA query_only = ON")
         if require_supported_schema:
             _require_supported_schema(
                 conn,
@@ -504,34 +527,10 @@ def opens_with(config: Config, key: str) -> bool:
             f"taken with `bankmachine store backup`"
         )
     try:
-        conn = dbapi2.connect(
-            _uri(config.datastore_path, READ_ROLE_MODE),
-            uri=True,
-            isolation_level=None,
-            check_same_thread=True,
-        )
-    except dbapi2.OperationalError as exc:
-        # The same translation `reader()` performs. Without it a driver error
-        # escapes as a bare `OperationalError`, past the CLI arm that catches
-        # `StoreError` and into the unexpected-exception handler -- reported as
-        # a crash rather than as the environmental failure it is.
-        raise DatastoreUnreadableError(
-            f"{config.datastore_path} could not be opened read-only ({exc}). The key is not "
-            f"implicated: nothing has been checked against it"
-        ) from exc
-    opened = False
+        conn = _open_read_role(config, key)
+    except DatastoreKeyRejectedError:
+        return False
     try:
-        try:
-            _key_and_prepare(conn, config, key)
-        except DatastoreKeyRejectedError:
-            return False
-        opened = True
-        # The read-role second layer, as `reader()` sets it. This handle is
-        # short-lived and never writes, but "read-role handles are opened
-        # `mode=ro` AND carry `query_only`" is the architecture norm, and a
-        # handle that quietly holds only half of it is the version a later
-        # reader copies.
-        conn.execute("PRAGMA query_only = ON")
         if conn.execute("SELECT count(*) FROM sqlite_master").fetchone()[0] == 0:
             raise DatastoreUnreadableError(
                 f"{config.datastore_path} has no schema -- no page was decrypted, so this run "
@@ -540,13 +539,8 @@ def opens_with(config: Config, key: str) -> bool:
             )
         return True
     finally:
-        if opened:
+        with suppress(dbapi2.Error):
             conn.close()
-        else:
-            # `_key_and_prepare` closes the handle on the paths it diagnoses;
-            # closing twice is harmless and covers the paths it does not.
-            with suppress(dbapi2.Error):
-                conn.close()
 
 
 def read_schema_version(conn: Connection) -> int | None:

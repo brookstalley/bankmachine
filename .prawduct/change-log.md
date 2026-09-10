@@ -112,6 +112,22 @@ reported the identical fact as exit 1 — it is 1 in both places now, because th
 found a problem. And the escrow paths recorded nothing on success: a key leaving the keychain is the
 most consequential thing this product does to a secret, and only the failures were legible.
 
+🔴 **A third round caught the fix regressing the remediation it was written to deliver.** Closing
+the argparse echo removed the per-verb catch-all, and with it the sentence telling an operator that
+the key they just typed is now in their shell history — on exactly the two invocations that used to
+say so. The assertion guarding that string was deleted in the same commit that widened the test from
+two cases to five, so nothing was left to notice. **Redacting is half the job:** the value is kept
+off stderr, and the copy already in the operator's history is theirs to clear and nobody else's to
+find. The remediation now fires off the fact that the scrub CHANGED something, so it reaches every
+command and every argument shape rather than the handful anyone thought to guard, and the assertion
+is back on all five cases.
+
+**The read-role open is modelled once.** `opens_with` had been a second hand-built copy, and it had
+already drifted — losing `PRAGMA query_only` and the `OperationalError` translation. The two entry
+points differ in exactly one thing, where the key comes from, and that is now an argument rather
+than a second copy of the open. `connection.py`'s module docstring said `reader()` was the only
+read-role construction site; it says what is true instead.
+
 **Known limit, stated so it is not mistaken for coverage:** AC-17.8's automated half is a round-trip
 test. The **operator** rehearsal — a restore into the production path, against a key read back from
 wherever the operator actually stored it — is still owed and sandbox cannot rehearse it

@@ -33,5 +33,24 @@ class RedactingParser(argparse.ArgumentParser):
     32-character path segment in a usage error is blanked along with the keys.
     """
 
+    #: Said whenever a usage error turned out to be carrying a credential. The
+    #: redaction keeps the value off this stderr; it does nothing about the copy
+    #: already in the operator's shell history, and only they can clear that.
+    REMEDIATION = (
+        "one of those arguments looked like a credential and was not repeated back. "
+        "If it was a secret, it is in your shell history now -- clear it there. "
+        "No command in this product takes a datastore key as an argument; the ones "
+        "that need it prompt for it."
+    )
+
     def error(self, message: str) -> None:
-        super().error(redact(message))
+        scrubbed = redact(message)
+        if scrubbed != message:
+            # 🔴 Redaction alone leaves the operator worse off than a plain
+            # error would: they see `[REDACTED]`, learn that something they
+            # typed was sensitive, and are told nothing about the copy sitting
+            # in their history. The remediation fires off the fact that the
+            # scrub CHANGED something, so it reaches every command and every
+            # argument shape rather than the handful anybody thought to guard.
+            scrubbed = f"{scrubbed}\n{self.REMEDIATION}"
+        super().error(scrubbed)

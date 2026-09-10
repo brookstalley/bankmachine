@@ -277,6 +277,12 @@ def test_no_invocation_echoes_a_key_back(
     assert exit_code == 2
     err = capsys.readouterr().err
     assert key not in err, f"the product echoed the key back for {argv}"
+    # 🔴 Redacting is half the job. The operator has already put the key in
+    # their shell history by typing it, and only they can clear it -- so every
+    # one of these invocations has to SAY so. An earlier fix closed the leak and
+    # silently dropped this guidance from two of the five, which is why the
+    # assertion is here and not only in the two cases that happened to keep it.
+    assert "shell history" in err, f"no remediation offered for {argv}"
 
 
 # --- AC-17.5: import verifies before it writes ------------------------------------
