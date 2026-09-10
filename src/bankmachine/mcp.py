@@ -1047,6 +1047,29 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "description": "null means NOT YET MEASURED, never 'no shortfall'",
                     },
                     "history_starts": {"type": ["string", "null"]},
+                    "consent_expires_at": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "when the operator's authorisation for this connection lapses. 🔴 "
+                            "After it does, data stops arriving with NO failure to notice — the "
+                            "pipeline is poll-only, so expiry otherwise surfaces as a failed run "
+                            "rather than in advance. A `partial` warning fires within 14 days "
+                            "and a `degraded` one once it has passed. null means the connection "
+                            "has not been polled since this was recorded — NEVER that consent "
+                            "does not expire"
+                        ),
+                    },
+                    "source_error_code": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "the aggregator's STANDING complaint about this connection, which is "
+                            "not `last_error_code`: that one records the last sync ATTEMPT "
+                            "failing, this one records the connection being unwell whether or "
+                            "not the last attempt happened to succeed. Non-null raises "
+                            "`degraded`. null means no complaint is recorded — which, if the "
+                            "connection has never been polled since, is not the same as none"
+                        ),
+                    },
                     "retired": {"type": "boolean"},
                     # 🔴 The check DECLARES itself here (AC-14.3): the category
                     # set it judged over, the threshold it judged by, and the

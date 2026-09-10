@@ -814,3 +814,87 @@ def test_an_unmeasured_account_is_not_named_a_second_time_by_the_aggregate() -> 
     unmeasured = _coverage(date(2026, 1, 1), None)
     assert unmeasured.unmeasured
     assert query._window_coverage_caveat([unmeasured], date(2020, 1, 1)) == []
+
+
+# --------------------------------------------------------------------------
+# A connection about to lose its authorisation, said BEFORE it does
+# --------------------------------------------------------------------------
+
+
+def _consent(days_from_now: int) -> list[Any]:
+    """The caveats a connection expiring that many days out would raise."""
+    from bankmachine.store.types import now_utc
+
+    now = now_utc()
+    return query._consent_caveats(
+        name="An Institution",
+        connection_id=1,
+        expires_at=now + timedelta(days=days_from_now),
+        now=now,
+    )
+
+
+def test_a_consent_expiring_soon_is_reported_before_it_lapses() -> None:
+    """🔴 The defect: the pipeline is poll-only, so expiry surfaced as a failed run.
+
+    A connection whose consent lapses next week answered *healthy* and stayed
+    healthy right up to the sync that failed. The date to say otherwise was
+    archived on every poll and read by nothing, which made the one surface that
+    could have given advance notice the one that stayed quiet.
+    """
+    caveats = _consent(7)
+
+    assert len(caveats) == 1
+    assert caveats[0].kind == "partial"
+    assert "7 day(s)" in caveats[0].detail
+    assert "re-link" in caveats[0].detail
+
+
+def test_an_approaching_expiry_is_partial_rather_than_stale() -> None:
+    """🔴 The decision, not a wording choice.
+
+    `stale` means "has not synced recently" — a claim about the PAST. An
+    expiring consent is a claim about the future, and a reader acts on the two
+    differently. `partial` already means *something is not yet known, never read
+    it as no shortfall*, and a consent about to lapse is exactly a known future
+    gap in what will be known.
+    """
+    assert [c.kind for c in _consent(3)] == ["partial"]
+
+
+def test_an_expiry_already_passed_is_degraded_because_it_is_no_longer_a_warning() -> None:
+    """It has stopped being about the future. The connection has not failed soon — it has failed."""
+    caveats = _consent(-1)
+
+    assert len(caveats) == 1
+    assert caveats[0].kind == "degraded"
+    assert "EXPIRED" in caveats[0].detail
+
+
+def test_an_expiry_far_out_is_not_permanently_lit() -> None:
+    """A notice present on every answer for months is one a reader learns to skip.
+
+    That is the same "true and useless" failure the two warning tuples exist to
+    prevent, and it is why the threshold is a threshold rather than a flag on
+    the presence of a date.
+    """
+    assert _consent(query.CONSENT_EXPIRY_WARNING_DAYS + 1) == []
+
+
+def test_a_connection_never_polled_for_consent_raises_nothing_here() -> None:
+    """🔴 Silence, and it is honest silence.
+
+    A null means the Item has not been fetched since the column existed — which
+    is NOT "consent does not expire". Inventing a warning from the absence would
+    fire on every connection in a store that has not re-synced; inventing
+    reassurance would be worse. The connection's unmeasured state is already
+    reported by its own `partial`.
+    """
+    from bankmachine.store.types import now_utc
+
+    assert (
+        query._consent_caveats(
+            name="An Institution", connection_id=1, expires_at=None, now=now_utc()
+        )
+        == []
+    )

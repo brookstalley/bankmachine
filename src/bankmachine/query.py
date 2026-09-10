@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import Text, and_, case, cast, func, or_, select
@@ -72,6 +72,7 @@ from bankmachine.store.types import (
     calendar_date,
     has_minor_digits,
     now_utc,
+    utc_instant,
 )
 
 logger = get_logger("query")
@@ -160,6 +161,8 @@ def _pipeline_warnings(
             connections.c.requested_history_days,
             connections.c.granted_history_days,
             sync_state.c.history_start_date,
+            connections.c.consent_expires_at,
+            connections.c.source_error_code,
         )
         .select_from(
             connections.join(institutions).outerjoin(
@@ -191,6 +194,32 @@ def _pipeline_warnings(
         status, last_success = str(row[2]), row[3]
         requested, granted = row[5], row[6]
 
+        # 🔴 The aggregator's STANDING complaint about the Item, which is not
+        # the same fact as a failed sync attempt. An Item can be unwell while
+        # the most recent poll happened to succeed, so this is checked
+        # independently of `status` -- folding them together would let one
+        # success bury a complaint nobody resolved.
+        if row[9] is not None:
+            warnings.append(
+                Caveat(
+                    kind="degraded",
+                    detail=(
+                        f"{name}'s connection carries a standing error from the aggregator "
+                        f"({row[9]}), whether or not its last sync happened to succeed. Its "
+                        f"data may stop without the next run failing"
+                    ),
+                    connection_id=connection_id,
+                    institution=name,
+                )
+            )
+        warnings.extend(
+            _consent_caveats(
+                name=name,
+                connection_id=connection_id,
+                expires_at=row[8],
+                now=now,
+            )
+        )
         if status == "degraded":
             warnings.append(
                 Caveat(
@@ -255,6 +284,82 @@ def _pipeline_warnings(
                 )
             )
     return warnings
+
+
+#: How long before consent lapses the pipeline starts saying so.
+#:
+#: Fourteen days: long enough to act on -- re-linking an institution can involve
+#: an OAuth trip, an SMS code and a bank that is down that evening -- and short
+#: enough that the notice is not permanently lit, which is the state that teaches
+#: a reader to skip it. The date itself always rides the detail, so a caller with
+#: its own threshold reads that rather than this.
+CONSENT_EXPIRY_WARNING_DAYS = 14
+
+
+def _consent_caveats(
+    *, name: str, connection_id: int, expires_at: object, now: UtcInstant
+) -> list[Caveat]:
+    """What an expiring authorisation does to an answer, before it does it.
+
+    🔴 **The whole point is that this arrives EARLY.** The pipeline is poll-only,
+    so a lapsed consent otherwise surfaces as a failure on the NEXT run -- and
+    until then the connection answers *healthy* while its data quietly stops.
+    The date to say so in advance is archived on every `/item/get`, and was read
+    by nothing.
+
+    🔴 **An approaching expiry is `partial`, NOT `stale`**, and the distinction is
+    the decision rather than a wording choice. `stale` means "has not synced
+    recently", which is a claim about the past; this is a claim about the future,
+    and a reader acts on the two differently. `partial` is already defined as
+    *something is not yet known, never read it as 'no shortfall'* -- and a
+    consent about to lapse is exactly a known future gap in what will be known.
+
+    🔴 **An expiry that has already PASSED is `degraded`**, because it has stopped
+    being a warning about the future. The connection is not going to fail; it has
+    failed, and nothing further will arrive.
+
+    No new kind, by `api-contract.md`'s closed vocabulary. Fitting these to the
+    kinds that exist is a constraint rather than a preference -- if neither could
+    honestly carry the meaning that would be a finding to raise, not a licence to
+    invent one.
+
+    A null `expires_at` produces nothing at all, and that silence is honest: it
+    means the Item has not been fetched since the column existed, which is not
+    the same as consent that does not expire. `partial` already rides such a
+    connection from the granted-window branch below.
+    """
+    if not isinstance(expires_at, datetime):
+        return []
+    expiry = utc_instant(expires_at)
+    days = (expiry - now).days
+    if days < 0:
+        return [
+            Caveat(
+                kind="degraded",
+                detail=(
+                    f"{name}'s consent EXPIRED on {expiry.date().isoformat()}. Nothing further "
+                    f"will arrive from it until the operator links it again, so its data stops "
+                    f"there and every total over a later window is a floor"
+                ),
+                connection_id=connection_id,
+                institution=name,
+            )
+        ]
+    if days <= CONSENT_EXPIRY_WARNING_DAYS:
+        return [
+            Caveat(
+                kind="partial",
+                detail=(
+                    f"{name}'s consent expires on {expiry.date().isoformat()}, in {days} day(s). "
+                    f"After that its data stops arriving with no failure to notice, so what this "
+                    f"connection will contribute past that date is NOT YET KNOWN -- re-link it "
+                    f"before then"
+                ),
+                connection_id=connection_id,
+                institution=name,
+            )
+        ]
+    return []
 
 
 def _gapped_detail(
@@ -3203,6 +3308,8 @@ def pipeline_health(config: Config) -> Answer:
                 connections.c.granted_history_days,
                 connections.c.retired_at,
                 sync_state.c.history_start_date,
+                connections.c.consent_expires_at,
+                connections.c.source_error_code,
             )
             .select_from(
                 connections.join(institutions).outerjoin(
@@ -3237,6 +3344,13 @@ def pipeline_health(config: Config) -> Answer:
                 # 🔴 Null is reported as null, never as zero or as "complete".
                 "granted_history_days": None if r[6] is None else int(r[6]),
                 "history_starts": None if r[8] is None else str(r[8]),
+                # 🔴 Null means the Item has not been fetched since this column
+                # existed -- NEVER that consent does not expire, and never that
+                # the aggregator reports nothing wrong. A reader that treats
+                # either null as reassurance reproduces the defect these columns
+                # were added to end.
+                "consent_expires_at": None if r[9] is None else r[9].isoformat(),
+                "source_error_code": r[10],
                 "retired": r[7] is not None,
                 "sign_convention": conventions[int(r[0])].verdict,
                 "sign_convention_rows_judged": conventions[int(r[0])].rows_judged,

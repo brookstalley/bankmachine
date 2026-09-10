@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any, Final
 
@@ -69,12 +69,14 @@ from bankmachine.store.types import (
     CalendarDate,
     MinorUnits,
     MoneyError,
+    TemporalError,
     UnknownMinorDigitsError,
     UtcInstant,
     calendar_date,
     from_decimal_string,
     minor_digits,
     negate,
+    utc_instant,
 )
 
 _log = get_logger(__name__)
@@ -340,6 +342,50 @@ def derive_item(conn: SAConnection, response: RawResponse, context: DerivationCo
         name=_required(item.get("institution_name"), "institution name", response),
         seen_at=response.received_at,
     )
+    _record_item_standing(conn, item=item, response=response)
+
+
+def _record_item_standing(
+    conn: SAConnection, *, item: dict[str, Any], response: RawResponse
+) -> None:
+    """The two facts about the Item itself, which nothing used to read.
+
+    🔴 **Both were archived and discarded, and that is why a dying connection
+    reported healthy.** The pipeline is poll-only, so an expiring consent
+    otherwise surfaces as a failure on the NEXT run rather than in advance --
+    and the date to say so in advance was sitting in the archive the whole time.
+
+    🔴 **`error` is written even when it is null, and that is the point.** The
+    aggregator clears the field once the Item recovers, so a null is a real
+    observation -- *the aggregator is not complaining now* -- and skipping the
+    write would leave a resolved complaint standing forever. It is NOT folded
+    into `last_error_code`, which records the last sync ATTEMPT failing: an Item
+    can be unwell while the most recent poll happened to succeed, and merging
+    them would let that success erase a complaint nobody resolved.
+
+    🔴 **A missing key is not the same as a null value**, and only the second is
+    written. A body that omits `consent_expiration_time` entirely says nothing
+    about consent, so blanking a date already recorded would discard the only
+    warning the operator was going to get.
+    """
+    values: dict[str, Any] = {"updated_at": response.received_at}
+    if "consent_expiration_time" in item:
+        raw = item.get("consent_expiration_time")
+        values["consent_expires_at"] = (
+            None if raw is None else _parse_instant(raw, "a consent expiry", response)
+        )
+    if "error" in item:
+        error = item.get("error")
+        values["source_error_code"] = (
+            _optional(error.get("error_code")) if isinstance(error, dict) else None
+        )
+    if len(values) == 1:
+        return
+    conn.execute(
+        update(connections)
+        .where(connections.c.connection_id == response.connection_id)
+        .values(**values)
+    )
 
 
 def derive_transactions_sync(
@@ -480,6 +526,28 @@ def _parse_calendar(value: object, what: str, response: RawResponse) -> Calendar
         raise DerivationError(
             f"raw response {response.raw_response_id} ({response.endpoint}) has {what} "
             f"{value!r}, which is not a calendar date"
+        ) from exc
+
+
+def _parse_instant(value: object, what: str, response: RawResponse) -> UtcInstant:
+    """An ISO 8601 instant from the aggregator into a UTC instant, or refuse.
+
+    🔴 The mirror of `_parse_calendar`, and separate from it for the reason
+    `data-model.md` § Direction gives: a consent expiry is a moment in time the
+    aggregator states with a zone, not a calendar fact an institution reports.
+    Reading one as the other is the mixing that section forbids, and `utc_instant`
+    refuses a naive value rather than assuming the reader's offset.
+    """
+    if not isinstance(value, str) or not value:
+        raise DerivationError(
+            f"raw response {response.raw_response_id} ({response.endpoint}) has no {what}"
+        )
+    try:
+        return utc_instant(datetime.fromisoformat(value))
+    except (ValueError, TemporalError) as exc:
+        raise DerivationError(
+            f"raw response {response.raw_response_id} ({response.endpoint}) has {what} "
+            f"{value!r}, which is not an instant this store can record"
         ) from exc
 
 

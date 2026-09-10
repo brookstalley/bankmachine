@@ -92,6 +92,18 @@ connections = Table(
     # been observed" -- `query._account_lifecycle` reads it as exactly that, so
     # such a connection marks nothing absent.
     Column("roster_observed_date", CalendarDateColumn, nullable=True),
+    # 🔴 Declared LAST, not beside `last_error_code` where they read better:
+    # migration 008 adds them with `ALTER TABLE`, which appends, and this
+    # metadata is compared to the migrated database column-by-column in order.
+    #
+    # A null in either means the Item has not been fetched since the columns
+    # existed -- never that consent does not expire, and never that the
+    # aggregator reports no error.
+    Column("consent_expires_at", UtcInstantColumn, nullable=True),
+    # The aggregator's STANDING complaint about the Item, which is not
+    # `last_error_code`: that records the last sync attempt failing, this
+    # records the Item being unwell whether or not the last attempt succeeded.
+    Column("source_error_code", Text, nullable=True),
 )
 
 Index(

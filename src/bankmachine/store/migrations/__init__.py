@@ -24,6 +24,7 @@ from bankmachine.store.connection import (
 )
 from bankmachine.store.migrations.account_last_seen import apply_account_last_seen
 from bankmachine.store.migrations.core_schema import apply_core_schema
+from bankmachine.store.migrations.item_consent import apply_item_consent
 from bankmachine.store.migrations.ledger_date import apply_ledger_date
 from bankmachine.store.migrations.nullable_account_currency import (
     apply_nullable_account_currency,
@@ -91,6 +92,11 @@ MIGRATIONS: Sequence[Migration] = (
         version=7,
         name="record the aggregator Item a transaction was produced under",
         apply=apply_transaction_lineage,
+    ),
+    Migration(
+        version=8,
+        name="record the Item's consent expiry and standing error",
+        apply=apply_item_consent,
     ),
 )
 
