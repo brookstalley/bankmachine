@@ -9,6 +9,7 @@ deriver that fails takes its own rows down without taking the archive with them.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
@@ -17,9 +18,11 @@ from sqlalchemy import Connection as SAConnection
 from sqlalchemy import func, insert, select
 
 from bankmachine.config import Config
+from bankmachine.logging_setup import redact
 from bankmachine.store.derivation import (
     DERIVATION_VERSION,
     DerivationContext,
+    DerivationError,
     UnknownEndpointError,
     apply_response,
     ensure_derivation_version,
@@ -213,3 +216,98 @@ def test_received_at_is_the_derivation_clock(writer: SAConnection) -> None:
 
     assert captured == [RECEIVED]
     assert not hasattr(DerivationContext(derivation_version_id=1), "now")
+
+
+# --------------------------------------------------------------------------
+# A failed derivation names the row an operator can go and read
+# --------------------------------------------------------------------------
+
+
+def _refuse_the_response(
+    conn: SAConnection, response: RawResponse, context: DerivationContext
+) -> None:
+    """A deriver that refuses the way a real one does: naming an account, not a row.
+
+    The identifier is the shape an aggregator actually sends -- a 32-character
+    opaque run -- which is exactly what the redacting formatter blanks. That is
+    the whole reason the response's own id cannot ride on the refusal's sentence.
+    """
+    raise DerivationError(f"account {'a1b2c3d4' * 5} has no currency, so nothing can be derived")
+
+
+def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_a_derivation_that_fails_names_the_archived_row_in_the_log(
+    writer: SAConnection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """🔴 The body is kept and inspectable, but only if the operator learns which row.
+
+    The refusal's own sentence cannot carry that reliably. It is written by
+    whichever deriver refused; `UnknownEndpointError` names an endpoint and no
+    response at all; and what reaches the log is scrubbed, so a message that
+    identified the response by naming an aggregator account identifier -- a
+    32-character run -- arrives blanked. Naming the id on the failure path makes
+    it a property of the path rather than of each message that travels it.
+
+    Re-raised, never absorbed: the caller is the one that decides whether this
+    ends a connection or a run.
+    """
+    caplog.set_level(logging.WARNING)
+
+    with pytest.raises(DerivationError):
+        apply_response(
+            writer,
+            connection_id=None,
+            endpoint=ENDPOINT,
+            body=BODY,
+            received_at=RECEIVED,
+            derivers={ENDPOINT: _refuse_the_response},
+        )
+
+    stored = writer.execute(select(raw_responses.c.raw_response_id)).scalar_one()
+    named = [m for m in _warnings(caplog) if f"raw response {stored}" in m and ENDPOINT in m]
+    assert named, (
+        f"nothing in the log names raw response {stored}, so `sync shell` has no id to read "
+        f"the archived body back by"
+    )
+    assert redact(named[0]) == named[0], (
+        "the line an operator actually reads is scrubbed on its way to the handler; a line "
+        "that only names the row before redaction names nothing after it"
+    )
+    assert "a1b2c3d4a1b2c3d4" not in named[0], "the deriver's own identifier rode along"
+
+
+def test_the_same_page_failing_twice_names_both_archived_rows(
+    writer: SAConnection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A connection whose derivation fails re-fetches, so the archive really does grow.
+
+    🔴 The rows are not collapsed, and that is a ruling rather than an omission.
+    `store.raw` keeps this table append-only because two bodies received at two
+    times are two things the source said; a digest-keyed guard would also fire on
+    nothing, since every response carries its own per-request identifier and no
+    two archives of the same page hash alike. What is fixed is that each attempt
+    names its own row, so an operator can read either body back and `store
+    rebuild` can replay them once the build understands the page.
+    """
+    caplog.set_level(logging.WARNING)
+
+    for _ in range(2):
+        with pytest.raises(DerivationError):
+            apply_response(
+                writer,
+                connection_id=None,
+                endpoint=ENDPOINT,
+                body=BODY,
+                received_at=RECEIVED,
+                derivers={ENDPOINT: _refuse_the_response},
+            )
+
+    archived = [int(row[0]) for row in writer.execute(select(raw_responses.c.raw_response_id))]
+    assert len(archived) == 2
+    for raw_response_id in archived:
+        assert any(f"raw response {raw_response_id}" in m for m in _warnings(caplog)), (
+            f"the attempt that archived raw response {raw_response_id} left no way to find it"
+        )

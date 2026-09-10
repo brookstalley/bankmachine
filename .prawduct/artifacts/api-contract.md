@@ -59,7 +59,7 @@ the balance-lifecycle norm names one unmigrated emitter it does not grandfather.
 
 - **Every response carries a freshness stamp, and incompleteness rides the success path as a warning
   field rather than as an exception.** Warnings distinguish at minimum `stale`, `degraded`, `gapped`,
-  `partial`, and `rule-applied`; an aggregate that applied an account rule says so.
+  `partial`, and `rule-applied`; an aggregate that deliberately excluded rows says so.
   Why: this is the whole product thesis in one sentence. A hard error is the easy case; the dangerous
   case is a **successful** response computed over incomplete data, because nothing throws and the
   numbers simply stop being true (AC-4.4, AC-9.3). The consumer is an analyst agent that **cannot see
@@ -68,6 +68,28 @@ the balance-lifecycle norm names one unmigrated emitter it does not grandfather.
   channel would make it invisible exactly when it matters. AC-8.3's rule-applied clause is the same
   argument for exclusions: an exclusion that is not announced is one that gets silently forgotten
   during analysis.
+
+  > **Amendment, 2026-09-10 — `rule-applied` covers every deliberate exclusion, not only an
+  > account rule's.** *Statement:* the kind means "rows were excluded from this aggregate on
+  > purpose"; the excluding mechanism is named in `detail` rather than fixed by the kind.
+  > *Why:* as written, the kind named the one mechanism this build does not have. `account_rules`
+  > exists in the schema with no reader and no writer — the rule engine is FR-8 and is unbuilt —
+  > while two exclusions that DO happen had no way to announce themselves: a row whose currency is
+  > unknown (#86) and one whose amount cannot be represented exactly in minor units (#84). Both
+  > are excluded from minor-units aggregates for the same reason an account rule would be, and the
+  > vocabulary is closed, so the choice was to widen this kind's meaning or to leave real
+  > exclusions silent. Silent exclusion is the failure the kind was created to prevent.
+  > *Retroactivity:* none owed. The kind had no emitter to reinterpret — that absence is what #34
+  > filed — so nothing already on the wire changes meaning. When FR-8's rule engine lands it
+  > becomes a third emitter of the same kind, needing no further amendment.
+  > 🔴 *And it moved scope in the same breath:* `rule-applied` sat in `CONNECTION_SCOPED_KINDS`
+  > while it had no producer, because *which accounts this store cannot denominate* is standing
+  > state. Its emitters are not — they fire only on an answer that computes a total, and only
+  > when that answer's own scope holds such an account — so it now sits in
+  > `REQUEST_SCOPED_KINDS`. A kind in the connection tuple promises to ride every response
+  > equally; once one member of one set behaves like the other's, the absence of ANY kind in
+  > either set stops being readable as information, which is the guarantee the split exists to
+  > make.
   Status: steady-state.
 
 - **The CLI's three-way exit code is a contract: `0` success, `1` ran and found a problem, `2` could
@@ -76,6 +98,34 @@ the balance-lifecycle norm names one unmigrated emitter it does not grandfather.
   ergonomics. Collapsing them makes **a broken scheduler indistinguishable from a degraded feed** —
   which is this product's primary failure mode arriving through the operational door, and the one
   place where an ops shortcut reproduces the exact bug the product exists to prevent.
+
+  > **Amendment, 2026-09-10 — a fourth code, `75` (`EX_TEMPFAIL`), for a run that did not
+  > finish.** *Statement:* the vocabulary is `0` success, `1` ran and found a problem, `2` could not
+  > run, and `75` ran, found nothing wrong, and still owes work — come back. `sync run` answers `75`
+  > for every state in which more history is owed and nothing is broken: `NOT_READY`,
+  > `INITIAL_UPDATE_COMPLETE`, and a page run stopped at its ceiling. `1` outranks `75` on a run
+  > that produced both. The `1`/`2` distinction is untouched and still not collapsible; an
+  > unexpected exception is `2`, which is the existing norm being *obeyed* rather than amended —
+  > `1` was never available to a command that did not finish.
+  > *Why:* this is an ADDITION to the vocabulary, not a collapse of it, and it rests on the same
+  > argument that made `1`/`2` non-collapsible. The CLI is not the MCP envelope. An envelope can
+  > carry incompleteness as a `partial` warning field because its consumer reads the payload; a
+  > scheduled runner reads the exit code and nothing else. A first sync on a real institution
+  > reaches `INITIAL_UPDATE_COMPLETE` — roughly thirty days of a 730-day grant — minutes to hours
+  > before the rest lands, and under a bare `0` build step 8's launchd agent cannot tell that from a
+  > whole history, so the connection sits at thirty of its 730 days until tomorrow's window. The
+  > only mitigation that existed was a paragraph in `docs/first-production-connection.md` § 3.6,
+  > which works solely for an operator reading it at that moment. `EX_TEMPFAIL` rather than a fourth
+  > small integer, because 75 already means "temporary failure, retry" to every piece of operational
+  > tooling that reads exit codes at all. **One code rather than two:** splitting "history complete"
+  > from "still arriving" would encode an internal distinction the caller cannot act on differently.
+  > *Retroactivity:* owed, and paid in the same commit rather than deferred. § 3.6 asserted *"Exit 0
+  > with nothing applied is the expected first result on a real institution"* and is now false; it
+  > is rewritten, together with the page-ceiling paragraph beside it, the standing-routine guidance
+  > on writing your own `cron`/`launchd` entry, and `operational-spec.md`'s scheduling contract and
+  > failure table. Nothing is grandfathered because nothing yet reads these codes in production: the
+  > scheduler is unbuilt, which is why this amendment lands **before** build step 8 rather than as a
+  > migration after it.
   Status: steady-state.
 
 - **A tool's boundary is drawn where the answer *shape* changes — never where the question changes.**
@@ -482,7 +532,7 @@ health.
 field that appears on one grouping and is guessed on the others. It has to be: an account holds a
 transfer and a coffee, a month holds all three by definition, and even a category can split,
 because the category key reads `category_override` first while the class is fixed to read
-`source_category_primary` only. Attaching one row's class to a group that spans classes would
+`source_category_detailed` only. Attaching one row's class to a group that spans classes would
 state it for the others, and making the field *optional* is refused by § Direction's fourth norm,
 which merges tools only where one strict row schema covers every parameter value. The consequence
 is accepted and is the point: one month can return three rows per currency where it returned one.
@@ -491,6 +541,32 @@ is accepted and is the point: one month can return three rows per currency where
 so there is no invisible undercount. That is also why this emits no `rule-applied` warning —
 that kind means an account rule filtered rows *out* of an aggregate, and a tool that excludes
 nothing saying so would be a false statement about the answer carrying it.
+
+> **Amendment, 2026-09-10 — the three classes answer whether money crossed the household
+> boundary, not what the aggregator called the row.** *Statement:* `internal_transfer` means value
+> moved between two accounts **this store holds**, matched leg to leg; `debt_service` means a
+> payment toward a liability **this store holds**; everything else is `external_spend`. The class
+> is read from `source_category_detailed`, and both non-spending classes require a matched
+> opposite leg — equal magnitude, opposite sign, a different enrolled account, same currency,
+> `ledger_date` within ±3 days — recorded at derivation time as `transactions.transfer_pair_id`.
+> The three class NAMES are unchanged; this surface is stable and a rename would break every
+> consumer for no gain.
+> *Why:* classifying on the aggregator's primary category alone made the tool answer a question
+> nobody asked. Measured on the review's own scenario, it reported **"spent $5,000, income $0"**
+> where the truth was ≈$8,900 and $6,000: a mortgage to an unenrolled lender, ATM cash and ACH
+> rent were all excluded from spending as though the money had merely moved between the
+> household's own accounts, and a payroll deposit categorised `TRANSFER_IN` was excluded from
+> income for the same reason. Both errors ran in the direction that gets believed.
+> *What this deliberately does NOT do:* it does not split a loan payment into principal and
+> interest. The aggregator does not decompose one per transaction, and deriving a split from
+> balance movement would be an inference presented as a record — so the whole payment classifies
+> together. It also does not net refunds against spending; that remains descoped.
+> *Retroactivity:* owed and paid in the same commit. Every figure this tool has ever returned for
+> a store holding transfer-shaped rows was computed under the old rule, and no answer is
+> re-issued — the change is forward-only. An unmatched transfer-shaped row now counts as
+> spending and the answer carries a `partial` warning saying how many, so a caller can see the
+> classifier fell back rather than concluded. `store rebuild` recomputes the pairing over the
+> whole archive, which is what makes an existing store's answers move to the new rule.
 
 🔴 **The class is read from the source column, never from `category_override`.** An override is
 local interpretation of what a transaction was *for*; the flow class is about whose money moved and
@@ -505,9 +581,11 @@ own principle: an overcount gets questioned and an undercount gets believed.
 `inflow_minor_units` and `outflow_minor_units` and then splitting that *outflow* under each of the
 three classes. Quote `outflow_minor_units` when asked how much went out and
 `external_spend_outflow_minor_units` when asked about external spend, and **name the other two
-classes beside it**: the split describes the outflow rather than filtering it, and the classifier
-reads one aggregator category without matching a counterparty leg, so a mortgage payment and an ATM
-withdrawal are money out under labels that do not say so.
+classes beside it**: the split describes the outflow rather than filtering it. 🔴 Since the
+2026-09-10 amendment the classifier matches a counterparty leg, so a mortgage payment to an
+unenrolled lender and an ATM withdrawal ARE `external_spend` and need no allowance made for them.
+What still needs saying is the other direction: a transfer-shaped row whose counterparty is an
+account nobody enrolled counts as spending, and the answer's `partial` warning says how many.
 
 🔴 **Measured against the sandbox store on 2026-09-09, over its full 24 months:** $267,692.77 of
 outflow, of which $164,400.00 is internal transfer and $50,484.00 is debt service — leaving
@@ -556,6 +634,20 @@ aggregate here — a summed integer over two currencies is not a wrong number, i
 The block is present and empty when the datastore cannot be read, exactly as `coverage` is present
 and zero, so the key set a consumer branches on never depends on the store's health.
 
+🔴 **An account this store cannot denominate contributes to neither the rows nor the totals, and
+`money_summary` says which account and why.** Two states reach it: an account whose `currency` is
+null, because the aggregator has never stated one, and an account whose currency has no known
+minor-unit exponent, so no amount in it can be expressed exactly. Adding either to a figure in a
+unit that IS known would produce a number that means nothing — the arithmetic succeeds and the
+result is meaningless — so their rows are excluded from every figure in the answer and the exclusion
+rides `rule-applied`, whose `detail` names the account ids and, where the code is known, the code.
+
+The disclosure is computed from `accounts` rather than from the rows the answer returned, and that
+is load-bearing: an account whose unit has no known scale typically has **no derivable rows at
+all**, because each was refused at derivation, so a scan of the returned rows would find nothing
+excluded and report nothing. These are the kind's first two emitters, per § Direction's amendment
+of 2026-09-10.
+
 ### Coverage is reported per account, never per institution (AC-9.5)
 
 🔴 **Ruling, 2026-09-09 — where the three new findings live.** Two discovery passes each asked
@@ -590,7 +682,7 @@ a caller had to ask for.
 
 **`get_coverage_report` is the verification surface built on the same producer**, and carries the
 analysis `list_accounts` does not: `median_interval_days` (this account's own posting cadence),
-`days_silent`, `silence_ratio`, `silence_exceeds_cadence`, and `source_breakdown` by provenance.
+`days_silent`, `silence_ratio`, `silence_exceeds_cadence`, `interior_gaps` and `interior_gap_detail`, and `source_breakdown` by provenance.
 🔴 **One producer feeds both** — built twice they can disagree, and a verification surface that
 contradicts the analysis surface is worse than one that is absent.
 
@@ -753,6 +845,9 @@ here.
 | `currency` | string, nullable | the currency that balance is in; null on the same condition as the balance |
 | `balance_as_of` | string, nullable | the date of the balance snapshot `current_minor_units` came from, `YYYY-MM-DD`; null when there is none. 🔴 It is a property of the BALANCE, not of the answer — `as_of` on the envelope says when the answer was assembled, and on a stale or non-active account the two are far apart. That distance is the whole signal |
 | `first_transaction_date` | string, nullable | the oldest transaction recorded for this account, `YYYY-MM-DD`. 🔴 Null means NO TRANSACTION HAS EVER BEEN RECORDED, never "no activity" |
+| `history_starts` | string, nullable | Where this account's CONNECTION was granted history from. 🔴 It is what makes `first_transaction_date` readable: alone, that date cannot distinguish a recently opened account — a TRUE zero before it — from one whose history was TRUNCATED BY THE GRANT, where everything earlier is absent. A first transaction within 7 days of this date is read as truncation; materially after it, the account genuinely begins there. The tie goes to truncation on purpose: calling absent data a true zero is the error that gets believed. Null means the granted window is not yet measured — the question is unanswerable, never that the account is covered |
+| `consent_expires_at` | string, nullable | When the operator's authorisation for this connection lapses. 🔴 After it does, data stops arriving with **no failure to notice** — the pipeline is poll-only, so expiry otherwise surfaces as a failed run rather than in advance. A `partial` warning fires within 14 days of it and a `degraded` one once it has passed. Null means the connection has not been polled since this was recorded — never that consent does not expire |
+| `source_error_code` | string, nullable | The aggregator's STANDING complaint about this connection. 🔴 Not `last_error_code`, which records the last sync *attempt* failing: a connection can be unwell while the most recent poll succeeded, and folding the two together would let one success bury a complaint nobody resolved. Non-null raises `degraded` |
 | `last_transaction_date` | string, nullable | the newest transaction recorded for this account, `YYYY-MM-DD`; null on the same condition |
 | `transaction_count` | integer | how many transactions this store holds for the account. `0` rather than null, because a null here would be a second spelling of the same fact |
 | `lifecycle` | string | `active`, `closed`, or `no_longer_reported` — see § *A classifying tool carries `totals`* and FR-9. `no_longer_reported` names an OBSERVATION and not a closure; `closed` is the operator's own declaration and is the only value that asserts one |
@@ -767,14 +862,15 @@ here.
 | `transaction_id` | integer | this store's own id for the transaction. Opaque, and the id `get_coverage_report`'s `oldest_stranded_hold` names when it points at one |
 | `account_id` | integer | this store's id for the account the transaction is on — the same value `list_accounts` publishes, `get_coverage_report` keys on, and the `account_id` argument takes. 🔴 It is the only join between a row and the account it belongs to: `account` beside it is display text that two accounts can share |
 | `account` | string | the NAME of the account the transaction is on, not its id. 🔴 It is display text and not a key — filter with the `account_id` argument, which is what selects rows; two accounts can carry the same name and this field would not tell them apart |
-| `date` | string | the transaction's posted date, `YYYY-MM-DD`. A CALENDAR FACT and never an instant (§ Conventions), and the field the effective window is applied to. Every returned row's `date` lies inside `effective_window.effective` |
+| `date` | string | the transaction's POSTED date, `YYYY-MM-DD`. A CALENDAR FACT and never an instant (§ Conventions). 🔴 **It moves.** The source reports a charge's authorisation date while it is pending and its posting date once it settles, so the same transaction can carry a different `date` between two syncs. It answers *when did this arrive*; `ledger_date` answers *which period does this money belong to*, and the effective window is applied to that one |
+| `ledger_date` | string, nullable | the day the money was committed from the account holder's point of view — the authorisation date where the institution reports one, else the posting date. Stamped once at derivation and **never moved by settlement**, which is what makes a monthly total stable under re-sync. Rows are ordered on it, the window filters on it, and every returned row's `ledger_date` lies inside `effective_window.effective`. 🔴 **Null means the row predates this column and the datastore has not been rebuilt — never that the money was committed on the posting date.** A null row is excluded from every window, and a `partial` warning on the answer names how many and the command that fixes it |
 | `description` | string | the institution's own string for the transaction, and 🔴 **the authoritative one.** When it and `merchant` disagree, this is the one that came from the bank |
 | `merchant` | string, nullable | the aggregator's guess at a merchant name, 🔴 **unvalidated** — it is a normalisation the aggregator performed and this product did not check. Null when it offered none. Grouping `money_summary` by merchant falls back to `description` where this is null, so one merchant can split across several raw institution strings and each rollup understates it |
 | `amount_minor_units` | integer | the amount in MINOR UNITS, signed from the account holder's point of view: negative is money out |
 | `currency` | string | the currency the amount is in |
 | `pending` | boolean | this row is an authorisation hold that has not settled. A pending amount can settle at a different figure or expire without settling, so a total computed over these rows can move with no new activity — which is what `includes_pending_rows` warns about |
 | `category` | string, nullable | the category this transaction is filed under: 🔴 **the operator's override where one exists, and the source's category otherwise.** Read `category_is_override` beside it to know which you are looking at. Null when neither exists |
-| `category_is_override` | boolean | whether `category` came from the operator rather than from the source. It matters beyond provenance: `flow_class` on `money_summary` is fixed to read the SOURCE category only, so an overridden row can be grouped under one category and classed as though it were under another — and that is deliberate, because a re-categorisation must not be able to reclassify a transfer as spending |
+| `category_is_override` | boolean | whether `category` came from the operator rather than from the source. It matters beyond provenance: `flow_class` on `money_summary` is fixed to read the source's DETAILED category only, so an overridden row can be grouped under one category and classed as though it were under another — and that is deliberate, because a re-categorisation must not be able to reclassify a transfer as spending |
 
 **Fields — `rows[]`** *(`money_summary`)*.
 
@@ -783,7 +879,7 @@ here.
 | `group_key` | string | the group this row is for, 🔴 **always a string whatever the grouping** — an account id rendered as text under `group_by=account`, a `YYYY-MM` month under `month`, the category or merchant name under those, and the flow class itself under `flow_class`. It is the key to act on: under `account` it is the value `query_transactions(account_id=…)` takes, once read as an integer |
 | `group_label` | string | the same group, named for reading. Equal to `group_key` under every grouping except `account`, where the key is the id and the label is the account's name. Never a second key — two accounts can share a label |
 | `currency` | string | the currency this row's figures are in. Rows are per currency, because a figure summed across currencies is not a wrong number, it is not a number |
-| `flow_class` | string | `external_spend`, `internal_transfer` or `debt_service` — a GROUPING DIMENSION under every value of `group_by`, so one month or one account can return up to three rows. Read from the source category only, never from an override. 🔴 It says how the AGGREGATOR labelled the row and not where the money went: nothing matches a counterparty leg |
+| `flow_class` | string | `external_spend`, `internal_transfer` or `debt_service` — a GROUPING DIMENSION under every value of `group_by`, so one month or one account can return up to three rows. Read from `source_category_detailed` only, never from an override. 🔴 It says **whether the money crossed the household boundary**: `internal_transfer` and `debt_service` both require a matched counterparty leg on an account this store holds, so an ATM withdrawal, a payment to a person and a mortgage to an unenrolled lender are all `external_spend` |
 | `transactions` | integer | how many transactions this group holds. 🔴 A per-group count, and a different figure from `coverage.transactions`, which is store-wide and never narrowed by the question asked |
 | `inflow_minor_units` | integer | money IN over this window for this group, 🔴 **a POSITIVE MAGNITUDE** in minor units — not operator-signed. The sign convention is carried by `net_minor_units`; these two are the halves it is made of |
 | `outflow_minor_units` | integer | money OUT over this window for this group, likewise a positive magnitude. It is the figure the `totals` block decomposes by flow class |
@@ -799,7 +895,7 @@ here.
 | `inflow_minor_units` | integer | everything that came IN over the whole window in this currency, a positive magnitude. 🔴 **Inflow is not income:** refunds sit in it under `external_spend`, and a paycheque can sit in it under `internal_transfer` |
 | `outflow_minor_units` | integer | everything that went OUT over the whole window in this currency, a positive magnitude and before any classification. 🔴 **The figure to quote when asked how much went out** |
 | `external_spend_outflow_minor_units` | integer | the part of `outflow_minor_units` the aggregator categorised as neither a transfer nor a loan payment — the closest figure to external spend, and a residual rather than a verification |
-| `internal_transfer_outflow_minor_units` | integer | the part the aggregator categorised as a transfer; 🔴 **not verified against an enrolled counterparty.** That label covers a move between the holder's own accounts, and equally an ATM withdrawal, a P2P payment, and rent paid by ACH. On the sandbox store it is the larger part of the gap measured in § *A classifying tool carries `totals`* |
+| `internal_transfer_outflow_minor_units` | integer | the part that moved between two accounts THIS STORE HOLDS, 🔴 **matched leg to leg** — equal magnitude, opposite sign, a different enrolled account, same currency, within three days. An ATM withdrawal, a P2P payment and rent paid by ACH are NOT in it; they are `external_spend`, because from the household's point of view that money is gone |
 | `debt_service_outflow_minor_units` | integer | the part the aggregator categorised as a loan or card payment. A card payment settles purchases counted under their own categories **only if that card is enrolled**; a mortgage, auto or student-loan payment is money out |
 | `pending_transactions` | integer | how many of the rows behind these totals are authorisation holds that have not settled. `0` is a real answer |
 | `pending_net_minor_units` | integer | what those holds come to, SIGNED — the amount these totals could move by when the holds settle or expire, with no new activity at all |
@@ -853,6 +949,11 @@ without a second call — and carries the analysis `list_accounts` does not.
 | `median_interval_days` | number, nullable | this account's own posting cadence in days; null under two transactions, because no interval exists rather than because it posts daily. `0` is a real answer and means the opposite of null: the account posts more than once a day |
 | `days_silent` | integer, nullable | days since the last recorded transaction; null when there is none |
 | `silence_ratio` | number, nullable | `days_silent` against this account's own cadence, the divisor floored at one day. A NUMBER rather than a flag on purpose: 28 days silent on a 30-day cycle is genuinely borderline, and a boolean is what would hide that |
+| `interior_gaps` | integer | Holes INSIDE this account's history — runs where the feed stopped and restarted — counted against its own cadence: longer than three cycles AND at least seven days. Both conditions, because the multiple alone flags a long weekend on a daily account and the floor alone flags every normal month on a monthly one. 🔴 `days_silent` cannot see these at all: it measures from the last transaction to today, so a three-month hole mid-history leaves it at 1 while a monthly total shows a collapse that never happened. Present and 0, never omitted. This is the count as MEASURED |
+| `interior_gap_detail` | array | The widest of those gaps, each one an object of `from`, `to`, `days` and `ratio`, where `ratio` is the gap against this account's cadence. Numbers rather than a flag, for the same reason as `silence_ratio`. Capped per account, so a list shorter than `interior_gaps` means the remaining gaps were narrower than the ones shown |
+| `from` | string | On an `interior_gap_detail` entry: the last date the feed posted before the gap |
+| `to` | string | On an `interior_gap_detail` entry: the first date it posted after it |
+| `days` | integer | On an `interior_gap_detail` entry: the gap's length. The evidence under `ratio`, so a caller can apply its own threshold rather than this one |
 | `silence_exceeds_cadence` | boolean | a full posting cycle has been missed (ratio above 1) by an account still being reported. 🔴 Always false for a non-active account, whose silence is closure rather than a hole — `silence_ratio` beside it still carries the measurement, so nothing is hidden |
 | `stranded_holds` | integer | authorisation holds on this account still unsettled past any ordinary hold lifetime. Present and `0`, never omitted. A hold this old usually means the merchant never captured it, so the money is neither spent nor available |
 | `oldest_stranded_hold` | object, nullable | the worst of them, so the operator can go and look at it; null when there are none, and 🔴 also null for a non-active account, whose holds can never settle and can never be cleared. `stranded_holds` beside it still carries the count, so the measurement is not withheld — only the call to action nobody could answer |
@@ -920,7 +1021,7 @@ three-week-old hole in the data and answer confidently.
 | `degraded` | A contributing connection is in error |
 | `gapped` | A known coverage hole in the queried window |
 | `partial` | A contributing account has bounded history |
-| `rule-applied` | An account rule filtered rows from this aggregate |
+| `rule-applied` | Rows were excluded from this aggregate ON PURPOSE, so the figure will not reconcile against a raw sum over the same window. `detail` names which rows and why |
 | `window_starts_before_coverage` | The window asked for reaches back past the first covered date |
 | `window_extends_past_coverage` | The window asked for reaches past the covered end — today, or the last transaction when that is later |
 | `rows_truncated` | The request matched more rows than the cap returned, and the answer holds only the newest of them |
@@ -1050,12 +1151,20 @@ cases: one breaks the carve-out, the other removes the refusal.
 |---|---|---|
 | `0` | `EXIT_OK` | Success |
 | `1` | `EXIT_UNHEALTHY` | 🔴 **Ran fine; the answer is "unhealthy."** `store status` on a missing or empty datastore |
-| `2` | `EXIT_ERROR` | The command could not run — config error, keychain failure, connector failure |
+| `2` | `EXIT_ERROR` | The command could not run — config error, keychain failure, connector failure, or an unexpected exception |
+| `75` | `EXIT_RUN_AGAIN` | 🔴 **Ran fine, nothing is wrong, and work is still owed — come back.** `EX_TEMPFAIL`. `sync run` answers it for `NOT_READY`, for `INITIAL_UPDATE_COMPLETE`, and for a page run stopped at its ceiling |
 
 🔴 **The 1/2 split is load-bearing and must not be collapsed.** launchd needs to distinguish *"the job
 ran and found a problem"* from *"the job could not run."* Merging them would make a broken scheduler
 indistinguishable from a degraded feed, which is the silent-staleness failure mode arriving through
 the operational door.
+
+🔴 **`75` is an addition to that vocabulary, ratified as an amendment in § Direction on 2026-09-10.**
+It exists because the scheduled runner reads the exit code and nothing else: a first sync on a real
+institution reaches `INITIAL_UPDATE_COMPLETE` — thirty of a granted 730 days — minutes to hours
+before the rest lands, and under a bare `0` launchd cannot tell that from a whole history. `1`
+outranks `75` on a run that produced both: the stuck connection needs a person, the arriving one
+needs only the next run.
 
 Expected failures print one sentence to stderr, not a traceback — **but they are never silent, which
 is the one outcome this project disallows.**
@@ -1159,6 +1268,10 @@ means *this may break*, and for the other three it means *this does not exist ye
 - `--config` — stable
 - `--verbose` — stable
 - exit codes `0` / `1` / `2` — stable
+- exit code `75` — experimental, by the same *shipped and depended on* criterion that grades
+  `store backup`: it was added on 2026-09-10 and its one intended consumer, build step 8's
+  launchd agent, does not exist yet. The meaning is fixed by the § Direction amendment; the
+  tier records that nothing has yet read it in anger
 
 The `connector` commands are `experimental` because the connector is mid-build (step 2) and its
 command shape may still move; `store init`/`status`/`rebuild` and `sync shell` shipped in step 1 and

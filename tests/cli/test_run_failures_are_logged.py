@@ -131,14 +131,21 @@ def test_the_new_log_line_cannot_carry_a_credential_into_the_file(
     assert leaked not in text, "a credential in an exception message reached the log file"
 
 
-def test_an_unexpected_failure_reaches_the_log_and_still_propagates(
-    cli_env: Config, monkeypatch: pytest.MonkeyPatch
+def test_an_unexpected_failure_is_could_not_run_rather_than_found_a_problem(
+    cli_env: Config, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The crash case is the one most likely to leave no other trace.
+    """🔴 A crash used to escape, and an escaping exception exits `1`.
 
-    It must gain a log record without changing what the caller sees: the
-    exception still escapes, so the exit status and the interactive traceback
-    are untouched.
+    `1` is the code reserved for a command that ran to the end and found a
+    problem — one whose output can be trusted as far as it goes. A crash means
+    the command did not finish and nothing it printed can be relied on. To the
+    scheduled job, which reads the code and nothing else, those two were the same
+    fact. `2` is the one that already means "could not run".
+
+    The crash case is also the one most likely to leave no other trace, so the
+    two records it used to leave must survive the change: the traceback in the
+    log file, which is all a scheduled run leaves behind, and the traceback on
+    stderr, which is what a developer running this by hand reads.
     """
     from bankmachine.cli import store as store_commands
 
@@ -147,8 +154,11 @@ def test_an_unexpected_failure_reaches_the_log_and_still_propagates(
 
     monkeypatch.setattr(store_commands, "cmd_status", explode)
 
-    with pytest.raises(RuntimeError, match="bad-thing-happened"):
-        run(["store", "status"])
+    assert run(["store", "status"]) == 2, "a crash was reported as a run that found a problem"
+
+    err = capsys.readouterr().err
+    assert "bad-thing-happened" in err, "the developer lost the traceback"
+    assert "RuntimeError" in err
 
     text = _log_text(cli_env)
     assert "failed unexpectedly" in text

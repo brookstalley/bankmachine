@@ -35,9 +35,9 @@ aggregator sent and `from_decimal_string` converts it exactly or refuses.
 
 from __future__ import annotations
 
-import json
-from collections.abc import Mapping
-from datetime import date
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import date, datetime
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any, Final
 
@@ -50,6 +50,8 @@ from bankmachine.connector import (
     ITEM_GET,
     ITEM_REMOVE,
     TRANSACTIONS_SYNC,
+    MalformedResponseError,
+    parse_response_body,
 )
 from bankmachine.logging_setup import get_logger
 from bankmachine.store.derivation import DerivationContext, DerivationError, Deriver
@@ -67,11 +69,14 @@ from bankmachine.store.types import (
     CalendarDate,
     MinorUnits,
     MoneyError,
+    TemporalError,
+    UnknownMinorDigitsError,
     UtcInstant,
     calendar_date,
     from_decimal_string,
     minor_digits,
     negate,
+    utc_instant,
 )
 
 _log = get_logger(__name__)
@@ -109,18 +114,29 @@ _ASSET_TYPES: Final[frozenset[str]] = frozenset({"depository", "investment", "br
 def _payload(response: RawResponse) -> dict[str, Any]:
     """The response body, with every number left as the text the aggregator sent.
 
-    `parse_float=str` is the load-bearing argument. Without it `json.loads`
-    builds a float and the exactness question is already lost -- `from_decimal_string`
-    would then be converting this machine's best rendering of a number rather
-    than the number itself.
+    `parse_float=str` is the load-bearing argument, and it is a property of
+    `parse_response_body` rather than of this call: without it `json.loads`
+    builds a float and the exactness question is already lost --
+    `from_decimal_string` would then be converting this machine's best rendering
+    of a number rather than the number itself.
+
+    🔴 **Ruling on the three parse failures: the shared helper, translated back
+    to `DerivationError` so the seam's contract is unchanged.** A body that
+    cannot be read is a refusal to derive one response, and `store.derivation`'s
+    callers are written to catch that -- `sync run` degrades the connection it
+    belongs to and carries on with the others. A syntax error already did that;
+    a body nested past the stack and a body whose bytes are not UTF-8 raised
+    `RecursionError` and `UnicodeDecodeError`, which share no base with
+    `ValueError`, so they escaped the run and every connection queued behind
+    this one went unsynced. `response.body` is `bytes`, so the parser does the
+    decoding and the third mode is reachable here.
     """
     try:
-        parsed = json.loads(response.body, parse_float=str)
-    except json.JSONDecodeError as exc:
-        raise DerivationError(
-            f"raw response {response.raw_response_id} ({response.endpoint}) is not JSON, so "
-            f"nothing can be derived from it"
-        ) from exc
+        parsed = parse_response_body(
+            response.body, what=f"raw response {response.raw_response_id} ({response.endpoint})"
+        )
+    except MalformedResponseError as exc:
+        raise DerivationError(f"{exc}, so nothing can be derived from it") from exc
     if not isinstance(parsed, dict):
         raise DerivationError(
             f"raw response {response.raw_response_id} ({response.endpoint}) is a "
@@ -159,6 +175,25 @@ def _stated_currency(fields: dict[str, Any]) -> str | None:
     return _optional(fields.get("iso_currency_code")) or _optional(
         fields.get("unofficial_currency_code")
     )
+
+
+class UndenominableAmountError(DerivationError):
+    """One row is in a unit this build cannot express in minor units.
+
+    🔴 **A ROW's refusal, never a connection's.** A `DerivationError` aborts the
+    response that raised it, and for `/accounts/get` that is fetched first on
+    every run -- so one unrepresentable holding would take the whole institution
+    offline, on that run and every run after it. This subclass is what the two
+    loops catch to skip the row and keep going: the account stays, its other
+    rows derive, and the raw body keeps what was refused.
+
+    🔴 **Refused, not approximated.** The alternative -- store the rounded value
+    and flag it -- puts a number that is wrong by a fraction into the ledger and
+    asks every later reader to notice a marker. The balance-sheet identities
+    this store maintains would then be built on values that do not add up, and a
+    figure wrong by 0.4% and marked is still wrong in every total computed from
+    it.
+    """
 
 
 def to_minor(amount: object, currency: str, what: str, response: RawResponse) -> MinorUnits:
@@ -202,7 +237,21 @@ def to_minor(amount: object, currency: str, what: str, response: RawResponse) ->
             f"{type(amount).__name__}; amounts must reach this point as the text the aggregator "
             f"sent, because a float has already lost fractions of a cent by the time it is seen"
         )
-    exponent = minor_digits(currency)
+    # 🔴 **Rounded to the currency's OWN minor unit, which has to be known.**
+    # This once defaulted an unrecognized code to two digits, which is right for
+    # most fiat and wrong for every cryptocurrency: `0.04217` in a currency whose
+    # minor unit is 1/100,000,000 became `0.04`, and the 0.4% it lost was
+    # disclosed in a log line no caller of any surface ever sees. Rounding a
+    # valuation to a scale the currency actually has is a recorded
+    # approximation; rounding it to a scale that was guessed is a wrong number.
+    try:
+        exponent = minor_digits(currency)
+    except UnknownMinorDigitsError as exc:
+        raise UndenominableAmountError(
+            f"raw response {response.raw_response_id} gives {what} in {currency}, and {exc}. "
+            f"The row is refused rather than rounded; the archive keeps the value, so a build "
+            f"that knows this currency's minor unit derives it exactly and nothing is lost"
+        ) from exc
     try:
         return from_decimal_string(amount, exponent=exponent)
     except MoneyError:
@@ -292,6 +341,50 @@ def derive_item(conn: SAConnection, response: RawResponse, context: DerivationCo
         source_institution_id=_required(item.get("institution_id"), "institution_id", response),
         name=_required(item.get("institution_name"), "institution name", response),
         seen_at=response.received_at,
+    )
+    _record_item_standing(conn, item=item, response=response)
+
+
+def _record_item_standing(
+    conn: SAConnection, *, item: dict[str, Any], response: RawResponse
+) -> None:
+    """The two facts about the Item itself, which nothing used to read.
+
+    🔴 **Both were archived and discarded, and that is why a dying connection
+    reported healthy.** The pipeline is poll-only, so an expiring consent
+    otherwise surfaces as a failure on the NEXT run rather than in advance --
+    and the date to say so in advance was sitting in the archive the whole time.
+
+    🔴 **`error` is written even when it is null, and that is the point.** The
+    aggregator clears the field once the Item recovers, so a null is a real
+    observation -- *the aggregator is not complaining now* -- and skipping the
+    write would leave a resolved complaint standing forever. It is NOT folded
+    into `last_error_code`, which records the last sync ATTEMPT failing: an Item
+    can be unwell while the most recent poll happened to succeed, and merging
+    them would let that success erase a complaint nobody resolved.
+
+    🔴 **A missing key is not the same as a null value**, and only the second is
+    written. A body that omits `consent_expiration_time` entirely says nothing
+    about consent, so blanking a date already recorded would discard the only
+    warning the operator was going to get.
+    """
+    values: dict[str, Any] = {"updated_at": response.received_at}
+    if "consent_expiration_time" in item:
+        raw = item.get("consent_expiration_time")
+        values["consent_expires_at"] = (
+            None if raw is None else _parse_instant(raw, "a consent expiry", response)
+        )
+    if "error" in item:
+        error = item.get("error")
+        values["source_error_code"] = (
+            _optional(error.get("error_code")) if isinstance(error, dict) else None
+        )
+    if len(values) == 1:
+        return
+    conn.execute(
+        update(connections)
+        .where(connections.c.connection_id == response.connection_id)
+        .values(**values)
     )
 
 
@@ -436,6 +529,28 @@ def _parse_calendar(value: object, what: str, response: RawResponse) -> Calendar
         ) from exc
 
 
+def _parse_instant(value: object, what: str, response: RawResponse) -> UtcInstant:
+    """An ISO 8601 instant from the aggregator into a UTC instant, or refuse.
+
+    🔴 The mirror of `_parse_calendar`, and separate from it for the reason
+    `data-model.md` § Direction gives: a consent expiry is a moment in time the
+    aggregator states with a zone, not a calendar fact an institution reports.
+    Reading one as the other is the mixing that section forbids, and `utc_instant`
+    refuses a naive value rather than assuming the reader's offset.
+    """
+    if not isinstance(value, str) or not value:
+        raise DerivationError(
+            f"raw response {response.raw_response_id} ({response.endpoint}) has no {what}"
+        )
+    try:
+        return utc_instant(datetime.fromisoformat(value))
+    except (ValueError, TemporalError) as exc:
+        raise DerivationError(
+            f"raw response {response.raw_response_id} ({response.endpoint}) has {what} "
+            f"{value!r}, which is not an instant this store can record"
+        ) from exc
+
+
 def _operator_signed_amount(amount: object, currency: str, response: RawResponse) -> MinorUnits:
     """🔴 The aggregator's sign, inverted to the operator's point of view.
 
@@ -470,6 +585,19 @@ def _operator_signed_amount(amount: object, currency: str, response: RawResponse
         )
     try:
         exact = from_decimal_string(amount, exponent=minor_digits(currency))
+    except UnknownMinorDigitsError as exc:
+        # 🔴 Distinguished from the refusal below, because the two are refused
+        # at different scopes. A sub-cent amount in a currency this build knows
+        # is a body it cannot interpret and the page is refused; an amount in a
+        # currency whose minor unit is unknown is a fact about that one row, and
+        # taking the connection offline over it would lose every other row on
+        # the page for the lifetime of the unknown currency.
+        raise UndenominableAmountError(
+            f"raw response {response.raw_response_id} ({response.endpoint}) has transaction "
+            f"amount {amount!r} in {currency}, and {exc}. The row is refused rather than "
+            f"rounded; the archive keeps it, so a build that knows this currency's minor unit "
+            f"derives it exactly"
+        ) from exc
     except MoneyError as exc:
         # Wrapped so the refusal names the response, like every other refusal
         # here. A bare `MoneyError` says an amount was unrepresentable and not
@@ -530,12 +658,46 @@ def _apply_transaction_changes(
     modified = _entries(payload, "modified", response)
     removed = _entries(payload, "removed", response)
     for entry in added:
-        _write_transaction(conn, entry, response, context, known, existing_ok=False)
+        _write_one_change(conn, entry, response, context, known, existing_ok=False)
     for entry in modified:
-        _write_transaction(conn, entry, response, context, known, existing_ok=True)
+        _write_one_change(conn, entry, response, context, known, existing_ok=True)
     for entry in removed:
         _mark_removed(conn, entry, response, known)
     return len(added) + len(modified) + len(removed)
+
+
+def _write_one_change(
+    conn: SAConnection,
+    entry: dict[str, Any],
+    response: RawResponse,
+    context: DerivationContext,
+    known: dict[str, int],
+    *,
+    existing_ok: bool,
+) -> None:
+    """One change from the page, refusing THIS row where it must and no more.
+
+    🔴 **The only refusal that stops here is a unit this build cannot express.**
+    A row in a currency whose minor unit is unknown cannot be stored exactly and
+    is not stored approximately, but it is one row: letting it escape would
+    abort the page, leave the cursor where it was, and re-fetch and re-refuse the
+    same body on every run afterwards -- so a single unrepresentable holding
+    would take the whole institution's history offline indefinitely. Every other
+    `DerivationError` still escapes, because every other one says the body could
+    not be interpreted, which is a fact about the page rather than about a row.
+
+    The raw response keeps what was refused, so nothing is lost and a build that
+    knows the currency's minor unit derives it on the next `store rebuild`.
+    """
+    try:
+        _write_transaction(conn, entry, response, context, known, existing_ok=existing_ok)
+    except UndenominableAmountError as exc:
+        _log.warning(
+            "raw response %s: one transaction is in a unit this build cannot express in minor "
+            "units, so it is not derived and the rest of the page is -- %s",
+            response.raw_response_id,
+            exc,
+        )
 
 
 def _entries(payload: dict[str, Any], key: str, response: RawResponse) -> list[dict[str, Any]]:
@@ -667,7 +829,49 @@ def _write_transaction(
                 "raw response %s modified a transaction with no local row; inserting it",
                 response.raw_response_id,
             )
-        conn.execute(insert(transactions).values(first_seen_at=response.received_at, **values))
+        conn.execute(
+            insert(transactions).values(
+                first_seen_at=response.received_at,
+                # 🔴 The day this money was committed from the account holder's
+                # point of view, stamped ONCE here and named on no other path.
+                #
+                # The aggregator's `date` -- which `posted_date` mirrors -- is
+                # the transaction date while a charge is pending and the POSTING
+                # date once it settles. So a hold authorised on 06-28 and posted
+                # on 07-02 moves between months on its own, and every window
+                # measured on `posted_date` reports a different June depending
+                # on when it is asked. This column does not move.
+                #
+                # 🔴 That it is absent from `values`, rather than filtered out of
+                # the update below, is the whole mechanism: an UPDATE cannot
+                # carry a column no dictionary contains. A later exclusion list
+                # would be one edit away from being forgotten, and the symptom
+                # -- a settled hold silently changing period again -- is
+                # invisible in every total it corrupts.
+                #
+                # `authorized_date` is nullable and null for institutions that do
+                # not report it, which is why the window is measured on this
+                # coalesced column rather than on `authorized_date` itself: a
+                # total measured on a nullable field would count some rows by
+                # when the money was committed and others by when it cleared,
+                # with nothing telling a caller which.
+                ledger_date=values["authorized_date"] or values["posted_date"],
+                # 🔴 The Item this row was produced under, stamped ONCE here for
+                # the same reason `ledger_date` is: it is a fact about where the
+                # row came from, and a later change to the same transaction is
+                # not a change of origin. Absent from `values` rather than
+                # filtered out of the update below, so no UPDATE can carry it.
+                #
+                # A re-link yields a new Item that re-issues every transaction
+                # id, so the whole granted history arrives again as rows this
+                # store has never seen, under an account it now recognises.
+                # Nothing collides and nothing is deduped -- every row is kept,
+                # and the read path counts the newest lineage over the range it
+                # covers, older lineages only outside it, and says so.
+                lineage_id=response.connection_id,
+                **values,
+            )
+        )
         return
     conn.execute(
         update(transactions)
@@ -969,21 +1173,22 @@ def _derive_one_account(
     # product's whole warning vocabulary exists to preserve; refusing the roster
     # loses the transactions as well and calls it safety.
     stated_currency = _stated_currency(balances)
-    currency = stated_currency or _recorded_currency(conn, response, source_account_id)
-    if currency is None:
-        # Named by type and mask: the source id is an opaque run the log
-        # formatter redacts, and there is no local id yet for an account that
-        # is being skipped before it is upserted.
-        _log.warning(
-            "raw response %s gives a %s account (mask %s) a balance in no stated currency "
-            "and this datastore has no currency recorded for it, so the account is skipped; "
-            "its transactions cannot be derived until a later roster names one",
-            response.raw_response_id,
-            account_type,
-            entry.get("mask"),
-        )
-        return
-
+    # 🔴 **`None` is a value this column holds, not a reason to skip the
+    # account.** It means *the aggregator has not told us what unit this account
+    # is in* -- never `USD`, never the unit of the operator's other accounts.
+    # Skipping was the old behaviour and it cascaded: the account was invisible,
+    # which `first-production-connection.md` § 4.2 names as the undetectable
+    # failure, and every transaction on it went on refusing to derive until some
+    # later sync happened to state one. The transactions never needed it -- they
+    # carry their own currency, stated per row.
+    matched = _match_account(
+        conn,
+        response=response,
+        institution_id=institution_id,
+        source_account_id=source_account_id,
+        persistent_account_id=_optional(entry.get("persistent_account_id")),
+    )
+    currency = stated_currency or (None if matched is None else matched.currency)
     account_id = _upsert_account(
         conn,
         response=response,
@@ -993,12 +1198,16 @@ def _derive_one_account(
         account_type=account_type,
         currency=currency,
         roster=roster,
+        matched=matched,
     )
     if stated_currency is None:
         # The account row keeps the unit the aggregator itself recorded for it
-        # earlier. This BALANCE has no stated unit, and storing an amount under a
-        # unit inferred from another response is how a total silently mixes two
-        # of them -- so the account is kept and the balance is not.
+        # earlier, or none where there has never been one. This BALANCE has no
+        # stated unit, and storing an amount under a unit inferred from another
+        # response is how a total silently mixes two of them -- so the account is
+        # kept and the balance is not. `balances_daily.currency` stays NOT NULL
+        # for exactly that reason: one amount with no unit is unusable, while an
+        # account with no unit yet is merely incompletely known.
         _log.warning(
             "raw response %s gives account %d a balance in no stated currency; the account "
             "is kept and no balance is recorded for it",
@@ -1006,34 +1215,148 @@ def _derive_one_account(
             account_id,
         )
         return
-    _write_balance(
-        conn,
-        response=response,
-        context=context,
-        account_id=account_id,
-        source_account_id=source_account_id,
-        balances=balances,
-        currency=currency,
-        balance_class=balance_class_of(account_type, response),
-    )
-
-
-def _recorded_currency(
-    conn: SAConnection, response: RawResponse, source_account_id: str
-) -> str | None:
-    """The unit this datastore already has for the account, if it has one.
-
-    Read only when the response states none. It is the aggregator's own earlier
-    word about the same account rather than a guess, which is what makes keeping
-    the account row honest -- and keeping it is what lets the account's
-    transactions derive at all.
-    """
-    return conn.execute(
-        select(accounts.c.currency).where(
-            accounts.c.connection_id == response.connection_id,
-            accounts.c.source_account_id == source_account_id,
+    try:
+        _write_balance(
+            conn,
+            response=response,
+            context=context,
+            account_id=account_id,
+            source_account_id=source_account_id,
+            balances=balances,
+            currency=stated_currency,
+            balance_class=balance_class_of(account_type, response),
         )
-    ).scalar_one_or_none()
+    except UndenominableAmountError as exc:
+        # 🔴 Caught HERE so the refusal costs one balance rather than the
+        # roster. `/accounts/get` is fetched first on every run, so letting this
+        # escape would abort the connection before a page was pulled -- on this
+        # run and on every run after it, since the same body is archived again
+        # each time. The account is kept and says which unit it is in; the read
+        # path excludes it from minor-units figures and names it there.
+        _log.warning(
+            "raw response %s: account %d holds a balance this build cannot express in minor "
+            "units, so no balance is recorded for it and its rows are excluded from every "
+            "minor-units total until the currency's exponent is known -- %s",
+            response.raw_response_id,
+            account_id,
+            exc,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _MatchedAccount:
+    """The row an incoming account entry is about, and what a merge of it needs.
+
+    `currency` rides along because the unit this datastore already holds for the
+    account is the aggregator's own earlier word about it, and reading it is what
+    lets an account whose balance states no unit keep the one it had. Fetching it
+    separately would ask the same question twice and could answer it about a
+    different row than the one the entry is merged into.
+    """
+
+    account_id: int
+    first_seen_date: date
+    last_seen_date: date | None
+    currency: str | None
+
+
+def _account_row(conn: SAConnection, *criteria: Any) -> Sequence[Any]:
+    """The columns a merge needs, for every account matching `criteria`."""
+    return conn.execute(
+        select(
+            accounts.c.account_id,
+            accounts.c.first_seen_date,
+            accounts.c.last_seen_date,
+            accounts.c.currency,
+        )
+        .where(*criteria)
+        .order_by(accounts.c.account_id)
+    ).all()
+
+
+def _match_account(
+    conn: SAConnection,
+    *,
+    response: RawResponse,
+    institution_id: int,
+    source_account_id: str,
+    persistent_account_id: str | None,
+) -> _MatchedAccount | None:
+    """The account this entry is about: its persistent identity first, this connection's key second.
+
+    🔴 **Why the persistent identity comes first.** Removing a connection and
+    linking it again yields a new Item, and the new Item issues a NEW id for
+    every account. Matched on `(connection_id, source_account_id)` alone, the
+    same real account appears a second time under the new connection, the whole
+    granted history is re-fetched against it, and annual spending doubles --
+    signalled by nothing louder than a count of accounts that are no longer
+    active. `persistent_account_id` is the aggregator's own statement that two
+    differently-numbered accounts are the same underlying account, so where it
+    is present it decides, and the local `account_id` -- which every row of
+    history references -- survives the break.
+
+    🔴 **Scoped to the institution, never globally.** The field is documented
+    stable for the same underlying account, but nothing makes it unique across
+    institutions, and a global match would turn a collision between two banks
+    into a silent merge of two real accounts into one. That is the worst outcome
+    available here: every total over both is then wrong, and the store holds no
+    record that two things were joined.
+
+    🔴 **Absence is ORDINARY, not an error.** The aggregator populates this field
+    for select institutions only. Where it is absent the match falls back to
+    today's key, and a re-link at such an institution still duplicates -- which
+    this deriver cannot fix by guessing. Re-authorising in place (the same Item,
+    so no second lineage at all) is the remedy there.
+
+    🔴 **A persistent match that would collide is refused rather than forced.**
+    Two rows already sharing a persistent identity under one institution is what
+    a re-link BEFORE this match existed left behind. Re-pointing the older row
+    onto the newer one's `(connection_id, source_account_id)` would violate the
+    identity index and take the connection down on every run; merging their
+    history is a repair with its own requirement, not something a deriver does
+    on the way past. So today's row answers, and the pair is named in the log.
+    """
+    own = _account_row(
+        conn,
+        accounts.c.connection_id == response.connection_id,
+        accounts.c.source_account_id == source_account_id,
+    )
+    if persistent_account_id is not None:
+        persistent = _account_row(
+            conn,
+            accounts.c.institution_id == institution_id,
+            accounts.c.source_persistent_account_id == persistent_account_id,
+        )
+        if len(persistent) > 1:
+            # Ordered by `account_id`, so the earliest row answers and a replay
+            # of the archive in any order lands on the same one.
+            _log.warning(
+                "raw response %s names a persistent account identity that %d rows at this "
+                "institution already carry; the earliest answers for it and the rest are "
+                "left where they are",
+                response.raw_response_id,
+                len(persistent),
+            )
+        if persistent and (not own or own[0].account_id == persistent[0].account_id):
+            if not own:
+                _log.info(
+                    "raw response %s carries a persistent identity account %d already holds, "
+                    "so its history stays where it is and the newly issued account id is "
+                    "recorded against it",
+                    response.raw_response_id,
+                    persistent[0].account_id,
+                )
+            return _MatchedAccount(*persistent[0])
+        if persistent:
+            _log.warning(
+                "raw response %s names a persistent identity held by account %d, while "
+                "account %d already answers to the id this connection used; converging them "
+                "would collide on the identity index, so both are kept and neither moves",
+                response.raw_response_id,
+                persistent[0].account_id,
+                own[0].account_id,
+            )
+    return None if not own else _MatchedAccount(*own[0])
 
 
 def _upsert_account(
@@ -1044,15 +1367,18 @@ def _upsert_account(
     source_account_id: str,
     entry: dict[str, Any],
     account_type: str,
-    currency: str,
+    currency: str | None,
     roster: bool,
+    matched: _MatchedAccount | None,
 ) -> int:
-    """One account row, converged on its source identity.
+    """One account row, converged on the identity `_match_account` resolved.
 
     Matched explicitly rather than through the unique index: that index spans
     `(connection_id, source_account_id)`, and SQLite treats NULLs as distinct, so
     relying on a conflict would let the manual-import path's null connections
-    duplicate silently.
+    duplicate silently -- and since a re-link converges on a row held under a
+    DIFFERENT connection and a different source id, there is no conflict for the
+    index to raise in the case that matters most.
 
     🔴 **`last_seen_date` moves only on a roster read** (`roster=True`). It
     records *the roster was observed and this account was in it*, and AC-12.5
@@ -1063,22 +1389,17 @@ def _upsert_account(
     a NULL `last_seen_date`, which already means exactly what is true of it: no
     roster observation is recorded for this account.
     """
-    existing = conn.execute(
-        select(
-            accounts.c.account_id,
-            accounts.c.first_seen_date,
-            accounts.c.last_seen_date,
-        ).where(
-            accounts.c.connection_id == response.connection_id,
-            accounts.c.source_account_id == source_account_id,
-        )
-    ).one_or_none()
     seen_date = _as_of(response.received_at)
+    persistent_account_id = _optional(entry.get("persistent_account_id"))
     values: dict[str, Any] = {
         "institution_id": institution_id,
+        # 🔴 Both move on a match, and that is what convergence IS. The account
+        # a re-link converged on is now reached through the NEW Item under the
+        # NEW id, and the transaction path finds an account by exactly that pair
+        # -- so a row left pointing at the retired connection would take every
+        # page of the re-fetched history down with it.
         "connection_id": response.connection_id,
         "source_account_id": source_account_id,
-        "source_persistent_account_id": _optional(entry.get("persistent_account_id")),
         "name": _required(entry.get("name"), "account name", response),
         "official_name": _optional(entry.get("official_name")),
         # Absent on plenty of real accounts, and nullable for exactly that reason.
@@ -1091,10 +1412,11 @@ def _upsert_account(
         "source": "aggregator",
         "updated_at": response.received_at,
     }
-    if existing is None:
+    if matched is None:
         result = conn.execute(
             insert(accounts).values(
                 **values,
+                source_persistent_account_id=persistent_account_id,
                 first_seen_date=seen_date,
                 # AC-12.4: the same date at both ends on the first observation.
                 # The pair only diverges once a later roster names the account
@@ -1107,7 +1429,23 @@ def _upsert_account(
         assert primary_key is not None  # an INTEGER PRIMARY KEY insert always yields one
         return int(primary_key[0])
 
-    account_id, first_seen_date, last_seen_date = existing
+    account_id, first_seen_date, last_seen_date = (
+        matched.account_id,
+        matched.first_seen_date,
+        matched.last_seen_date,
+    )
+    # 🔴 **A persistent identity already recorded is KEPT when an entry states
+    # none.** This field is the only key convergence has, and the aggregator
+    # populates the accounts array of one endpoint and not always the other --
+    # so writing an unconditional `None` over it would erase, on an ordinary
+    # sync, the one thing that will make the next re-link converge. Keeping the
+    # aggregator's own earlier word about the same account is the rule the
+    # currency column already follows.
+    identity: dict[str, Any] = (
+        {}
+        if persistent_account_id is None
+        else {"source_persistent_account_id": persistent_account_id}
+    )
     # 🔴 **An update owns fewer columns than an insert, and the difference is the
     # point.** Applying one `values` dict to both would make derivation the
     # permanent owner of every column it names -- so an operator's correction to
@@ -1144,6 +1482,7 @@ def _upsert_account(
         .where(accounts.c.account_id == account_id)
         .values(
             **{k: v for k, v in values.items() if k not in _OPERATOR_OWNED},
+            **identity,
             first_seen_date=min(first_seen_date, seen_date),
             **observed,
         )

@@ -51,11 +51,15 @@ from dataclasses import dataclass
 from sqlalchemy import Connection as SAConnection
 from sqlalchemy import insert, select
 
+from bankmachine.logging_setup import get_logger
+from bankmachine.store import transfers
 from bankmachine.store.connection import StoreError
 from bankmachine.store.engine import transaction
 from bankmachine.store.raw import RawResponse, record_response
 from bankmachine.store.schema import derivation_versions
 from bankmachine.store.types import UtcInstant, now_utc
+
+logger = get_logger("store.derivation")
 
 #: The version of the normalization logic in this build. **Bump it in the same
 #: commit as any change to a deriver that could produce different rows from the
@@ -63,14 +67,24 @@ from bankmachine.store.types import UtcInstant, now_utc
 #: column. AC-5.3 exists because losslessness is only well-defined against a
 #: recorded version: without one, an upstream taxonomy change and a rebuild bug
 #: are indistinguishable, since both simply produce different rows than before.
-DERIVATION_VERSION = 3
+DERIVATION_VERSION = 8
 
 #: What that version means, recorded beside it so a datastore carrying rows from
 #: an old version says something useful about them years later.
 DERIVATION_DESCRIPTION = (
     "institutions and accounts derived from the aggregator; balances signed from the "
     "operator's point of view; the roster observation recorded per account "
-    "(`accounts.last_seen_date`) and per connection (`connections.roster_observed_date`)"
+    "(`accounts.last_seen_date`) and per connection (`connections.roster_observed_date`); "
+    "the day a transaction's money was committed stamped once as "
+    "`transactions.ledger_date` and never moved by settlement; an account created with no "
+    "currency where the aggregator has stated none, and any row whose currency has no known "
+    "minor-unit exponent refused rather than rounded; an account matched on the persistent "
+    "identity the aggregator gives it, scoped to its institution, so a re-link converges on "
+    "the row its history already hangs from; and every transaction stamped with the "
+    "aggregator Item that produced it (`transactions.lineage_id`); the Item's consent "
+    "expiry and its standing error recorded on the connection; and the two legs of a "
+    "transfer between enrolled accounts paired, so a movement between them is not "
+    "counted as money leaving the household"
 )
 
 
@@ -210,6 +224,20 @@ def apply_response(
     The two commits are the point. See this module's docstring: the archive
     survives a deriver that raises, because the response may be unfetchable and
     the derivation is always re-runnable.
+
+    🔴 **A failing derivation names the row an operator can go and read.** The
+    body is archived and therefore inspectable, but only if the operator learns
+    which row it is, and the refusal alone does not reliably tell them: the
+    message is written by whichever deriver refused, `UnknownEndpointError` names
+    an endpoint and no response at all, and the sentence that reaches the log is
+    scrubbed by the redacting formatter -- an aggregator's account identifier is
+    a 32-character run, so a message that identified the response by naming one
+    arrives blanked. Logging it here makes the id a property of the
+    derivation-failure path rather than of each message that travels it, and
+    `sync shell` reads the body from there.
+
+    Logged and re-raised, never absorbed: the caller is the one that decides
+    whether this ends a connection or a run.
     """
     with transaction(conn):
         response = record_response(
@@ -222,5 +250,26 @@ def apply_response(
         )
     with transaction(conn):
         context = DerivationContext(derivation_version_id=ensure_derivation_version(conn))
-        derive(conn, response, context, derivers=derivers)
+        try:
+            derive(conn, response, context, derivers=derivers)
+        except StoreError:
+            logger.warning(
+                "raw response %d (%s) on connection %s was archived but could not be derived; "
+                "`bankmachine sync shell` can read the body back by that id",
+                response.raw_response_id,
+                response.endpoint,
+                "none" if response.connection_id is None else response.connection_id,
+            )
+            raise
+        # 🔴 Inside the same transaction as the derivation that produced the
+        # rows, so a page never commits with its rows visible and their pairing
+        # not yet computed -- a reader between the two would see a transfer's
+        # outgoing leg counted as spending and then watch it stop being counted,
+        # with nothing to say why.
+        #
+        # Per response rather than per run because this is the sync path's ONE
+        # entry point and it has no notion of a run ending. The pass considers
+        # only unpaired rows, so the cost is the rows this page added, and a leg
+        # whose counterparty arrives on a later page pairs when that page lands.
+        transfers.pair_transfers(conn)
     return response

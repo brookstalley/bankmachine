@@ -158,7 +158,13 @@ _GUIDANCE: dict[str, _Guidance] = {
         ),
     ),
     "rule-applied": _Guidance(
-        means="an account rule filtered rows out of an aggregate, so the total excludes them",
+        means=(
+            "rows were deliberately excluded from an aggregate, so the total excludes them. "
+            "🔴 `detail` names which rows and why, and the reasons are NOT a closed list -- read "
+            "it rather than matching on one you know. Today they include a currency this store "
+            "was never told, an amount it cannot represent exactly, and history from a "
+            "connection that was linked again and superseded by a newer one"
+        ),
         for_this_answer=(
             "the figure is smaller than the raw sum over the same window, and deliberately so; "
             "it will not reconcile against a total computed without the rule"
@@ -338,29 +344,30 @@ _GUIDANCE: dict[str, _Guidance] = {
 #: reference document below.
 #:
 #: 🔴 **These sentences say what the classifier establishes, and nothing more.**
-#: It reads a single category the aggregator assigned and matches no
-#: counterparty leg, so it can say how a row was LABELLED and cannot say where
-#: the money went. Any wording that claims the second is false on ordinary data:
-#: this store's own payroll deposit is categorised as a transfer, a mortgage
-#: payment is money out of the household, and a card payment double-counts only
-#: if that card is enrolled. It is also false in the UNDERSTATING direction,
-#: which `api-contract.md` records as the one that gets believed.
+#: It reads the aggregator's DETAILED category and requires a matched
+#: counterparty leg on an account this store holds before calling anything
+#: internal, so it can say whether money crossed the household boundary. What it
+#: still cannot say is whether an UNMATCHED transfer-shaped row really left:
+#: the counterparty may be an account nobody enrolled, and the answer carries a
+#: `partial` warning counting those rather than asserting either way.
 FLOW_CLASS_MEANINGS: dict[str, str] = {
     "external_spend": (
-        "everything the aggregator did not categorise as a transfer or a loan payment. It is "
-        "the closest figure to external spend, and it is a residual rather than a "
-        "verification"
+        "value that left the household and is not coming back. An ATM withdrawal, a payment "
+        "to another person, rent by ACH and a mortgage to a lender this store does not hold "
+        "are all in it -- from the household's point of view that money is gone, whatever "
+        "the aggregator's transfer-shaped labelling suggests"
     ),
     "internal_transfer": (
-        "categorised as a transfer by the aggregator; not verified against an enrolled "
-        "counterparty. That label covers a genuine move between the holder's own accounts, "
-        "and equally an ATM withdrawal, a P2P payment to another person, rent paid by ACH, "
-        "and an incoming paycheque"
+        "value moved between two accounts THIS STORE HOLDS, matched leg to leg: equal "
+        "magnitude, opposite sign, a different enrolled account, same currency, within three "
+        "days. A transfer-shaped row with no such counterparty is `external_spend`, and the "
+        "answer's `partial` warning counts those so you can see the classifier fell back"
     ),
     "debt_service": (
-        "loan and card payments. A card payment settles purchases that are counted under "
-        "their categories only if that card is enrolled -- a mortgage, auto or student-loan "
-        "payment is money out"
+        "payment toward a liability THIS STORE HOLDS -- a card payoff where the card is "
+        "enrolled, whose purchases are already counted under their own categories. A "
+        "mortgage, auto or student-loan payment to a lender nobody enrolled is "
+        "`external_spend`. Principal and interest are deliberately not split"
     ),
 }
 
@@ -383,25 +390,26 @@ def flow_class_meaning(flow_class: str) -> str:
 _FLOW_CLASSES_INTRO = (
     "## Flow classes, and what they do and do not establish\n\n"
     "`money_summary` splits every row by `flow_class`, and `totals` carries the window's "
-    "outflow under each. 🔴 **The class is read from ONE category the aggregator assigned to "
-    "the row. Nothing matches a counterparty leg, and nothing checks whether the account on "
-    "the other side is enrolled** — so the class says how a transaction was LABELLED, never "
-    "where the money went.\n\n"
+    "outflow under each. 🔴 **The class answers whether the money crossed the household "
+    "boundary.** `internal_transfer` and `debt_service` BOTH require a matched counterparty "
+    "leg on an account this store holds; everything else is `external_spend`. So a mortgage "
+    "to an unenrolled lender, cash from an ATM and rent by ACH all count as money that "
+    "left.\n\n"
     "Quote `totals[].outflow_minor_units` when asked how much went out, and "
     "`external_spend_outflow_minor_units` when asked about external spend — then name the "
-    "other two classes beside it, because a household's mortgage, its card payments and its "
-    "cash withdrawals are money leaving whatever the label says. The three classes add up to "
+    "other two classes beside it. The three classes add up to "
     "`outflow_minor_units`, which is what proves the split describes the outflow rather than "
     "filtering it.\n\n"
-    "🔴 **Inflow is not income.** `inflow_minor_units` is everything that came in: refunds "
-    "sit in it under `external_spend`, and a paycheque can sit in it under "
-    "`internal_transfer`. There is no income figure on this surface, so say what you are "
-    "quoting.\n\n"
+    "🔴 **Inflow is not income.** `inflow_minor_units` is everything that came in, and "
+    "refunds sit in it under `external_spend`. A paycheque is `external_spend` inflow -- "
+    "wages are external value ENTERING the household -- but so is a refund, so there is "
+    "still no income figure on this surface. Say what you are quoting.\n\n"
     "🔴 **`group_by=merchant` falls back to `description`** where the aggregator supplied no "
     "merchant name, so a rollup can split one merchant across several raw institution "
-    "strings and understate each. And **a window is measured on the POSTING date**: a hold "
-    "that posts in a later period moves into that period, so a total for a closed month can "
-    "change after the fact.\n"
+    "strings and understate each. And **a window is measured on `ledger_date`** -- the day "
+    "the money was committed, stamped once and never moved by settlement -- so a hold that "
+    "posts in a later period does NOT move between periods and a closed month's total is "
+    "stable. `date` on a transaction row is the posting date and still moves.\n"
 )
 
 

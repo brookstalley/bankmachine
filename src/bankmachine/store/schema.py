@@ -92,6 +92,18 @@ connections = Table(
     # been observed" -- `query._account_lifecycle` reads it as exactly that, so
     # such a connection marks nothing absent.
     Column("roster_observed_date", CalendarDateColumn, nullable=True),
+    # 🔴 Declared LAST, not beside `last_error_code` where they read better:
+    # migration 008 adds them with `ALTER TABLE`, which appends, and this
+    # metadata is compared to the migrated database column-by-column in order.
+    #
+    # A null in either means the Item has not been fetched since the columns
+    # existed -- never that consent does not expire, and never that the
+    # aggregator reports no error.
+    Column("consent_expires_at", UtcInstantColumn, nullable=True),
+    # The aggregator's STANDING complaint about the Item, which is not
+    # `last_error_code`: that records the last sync attempt failing, this
+    # records the Item being unwell whether or not the last attempt succeeded.
+    Column("source_error_code", Text, nullable=True),
 )
 
 Index(
@@ -120,7 +132,19 @@ accounts = Table(
     Column("account_type", Text, nullable=False),
     Column("account_subtype", Text, nullable=True),
     Column("balance_class", Text, nullable=False),
-    Column("currency", Text, nullable=False),
+    # 🔴 Nullable, and the null MEANS "the aggregator has not stated this
+    # account's unit" -- never `USD`, never the unit of the operator's other
+    # accounts. Both of the aggregator's currency fields are documented
+    # nullable, and while this column was NOT NULL such an account could not be
+    # created at all: it was skipped, and every transaction on it went on
+    # refusing to derive. An account that is honest about its unknown unit is
+    # strictly better than one that is invisible.
+    #
+    # 🔴 The four other NOT NULL currency columns stay NOT NULL. They each
+    # describe ONE amount, and an amount whose unit nothing stated is refused
+    # row by row with a named reason; this column describes an account, which
+    # can exist perfectly well before its unit is known.
+    Column("currency", Text, nullable=True),
     Column("lifecycle_status", Text, nullable=False),
     Column("opened_date", CalendarDateColumn, nullable=True),
     Column("first_seen_date", CalendarDateColumn, nullable=False),
@@ -225,6 +249,42 @@ transactions = Table(
     Column("removed_at", UtcInstantColumn, nullable=True),
     Column("first_seen_at", UtcInstantColumn, nullable=False),
     Column("updated_at", UtcInstantColumn, nullable=False),
+    # 🔴 Declared LAST, and not beside `posted_date` where the split it makes
+    # would read far better: migration 005 adds it with `ALTER TABLE`, which
+    # appends, and this metadata is compared to the migrated database
+    # column-by-column in order. Two correct descriptions of one correct
+    # database must not disagree about position.
+    #
+    # Nullable because there is no constant default that is correct -- the value
+    # is `COALESCE(authorized_date, posted_date)` per row -- so a null means
+    # "predates the split, not yet rebuilt", never "committed on the posting
+    # date". `store rebuild` fills it from the archive.
+    Column("ledger_date", CalendarDateColumn, nullable=True),
+    # 🔴 Declared LAST for the same reason `ledger_date` is: migration 007 adds
+    # it with `ALTER TABLE`, which appends, and this metadata is compared to the
+    # migrated database column-by-column in order.
+    #
+    # The aggregator Item this row was produced under, which is this store's
+    # `connections` row -- `source_connection_id` holds the Item id and is
+    # unique, so one connection is one Item. Removing a connection and linking
+    # it again yields a NEW Item that re-issues every transaction id, so the
+    # whole granted history arrives again as rows nothing can collide with. The
+    # rows are all kept; the read path counts the newest lineage over the range
+    # it covers and older lineages only outside it, and DISCLOSES the overlap.
+    #
+    # 🔴 Nullable, and the null means "predates the split, not yet rebuilt" or
+    # "came from an operator file, which no Item produced" -- never "belongs to
+    # the current Item". A row with no lineage is therefore never excluded: the
+    # alternative is deleting money on the strength of a column nothing filled.
+    # `store rebuild` fills it from the archive.
+    Column("lineage_id", Integer, ForeignKey("connections.connection_id"), nullable=True),
+    # 🔴 Declared LAST for the same reason every ALTER-added column is: this
+    # metadata is compared to the migrated database column-by-column in order.
+    #
+    # A shared token, not a pointer: both legs of one transfer carry the same
+    # value, and neither is the other's parent. A null means no counterparty leg
+    # was found -- the ordinary case for most rows, and never "not checked".
+    Column("transfer_pair_id", Integer, nullable=True),
 )
 
 Index(

@@ -112,9 +112,11 @@ _WINDOW_NOTE = (
     "was actually answered over, and a `window_starts_before_coverage` or "
     "`window_extends_past_coverage` warning names the boundary crossed; absent those, you got "
     "the window you asked for. Outside coverage, data is ABSENT rather than zero, so an empty "
-    "result there is not a zero. The window is measured on the POSTING date, so a hold that "
-    "posts in a later period moves into that period and a total for a period you already "
-    "asked about can change after the fact."
+    "result there is not a zero. 🔴 The window is measured on `ledger_date` -- the day the "
+    "money was committed, stamped once and never moved by settlement -- so a hold that posts "
+    "in a later period does NOT change which period it counts in, and a total for a period "
+    "you already asked about is stable. The `date` on a transaction row is the posting date "
+    "and does move; `ledger_date` rides beside it."
 )
 
 #: 🔴 On `query_transactions` alone. `money_summary` is an aggregate, fixed
@@ -123,6 +125,22 @@ _WINDOW_NOTE = (
 #: Shortened for the reason `_WINDOW_NOTE` is, and kept longer than it because
 #: the failure it prevents is silent arithmetic on a partial page rather than a
 #: misread empty one. The field-by-field detail is in the envelope reference.
+#: What a CAPPED-BUT-UNPAGED aggregate says about itself. Deliberately not
+#: `_TRUNCATION_NOTE`: that one instructs a caller to pass `next_cursor` back
+#: until `truncated` goes false, and this tool issues no cursor -- following it
+#: here would send an agent looking for a field that is never there. The remedy
+#: differs too, which is the substance rather than the wording: a cut ROW list is
+#: reached by paging, and a cut GROUP list is reached by asking a narrower
+#: question.
+_GROUP_CAP_NOTE = (
+    " 🔴 CAPPED, and NOT pageable: `truncation` says whether the group list was cut and how "
+    "many groups the window holds in total. There is no cursor -- narrow the window, filter "
+    "to an account, or group more coarsely. 🔴 `totals` is computed over EVERY group, never "
+    "over the visible ones, so a cut list never shrinks the window's figures: the rows are a "
+    "view and the totals are the answer."
+)
+
+
 _TRUNCATION_NOTE = (
     "CAPPED: `truncation` carries `matching` (what the WHOLE request selects, unchanged as "
     "you page), `remaining`, `returned` and `truncated`. 🔴 When `truncated` is true the rows "
@@ -531,6 +549,18 @@ def _coverage_row_fields() -> dict[str, dict[str, Any]]:
             "type": "integer",
             "description": "0 is a real answer: the account has no transaction data at all",
         },
+        "history_starts": {
+            "type": ["string", "null"],
+            "description": (
+                "where this account's CONNECTION was granted history from. 🔴 It is what makes "
+                "`first_transaction_date` readable: on its own that date cannot tell a recently "
+                "opened account — a TRUE zero before it — from one whose history was cut by the "
+                "grant, where everything earlier is ABSENT. A first transaction sitting close to "
+                "this date means truncation; well after it means the account really does begin "
+                "there. null means the granted window has not been measured yet, so the question "
+                "is NOT YET ANSWERABLE — never that the account is fully covered"
+            ),
+        },
     }
 
 
@@ -819,7 +849,31 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             "the account's display name, which identifies nothing on its own"
                         ),
                     },
-                    "date": {"type": "string"},
+                    "date": {
+                        "type": "string",
+                        "description": (
+                            "the POSTING date, as the institution reports it. 🔴 It MOVES: a "
+                            "charge carries its authorisation date while pending and its "
+                            "posting date once it settles, so the same transaction can change "
+                            "this value between two syncs. Use it to answer *when did this "
+                            "arrive*; use `ledger_date` to answer *which period does this "
+                            "money belong to*"
+                        ),
+                    },
+                    "ledger_date": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "the day the money was committed from the account holder's point "
+                            "of view -- the authorisation date where the institution reports "
+                            "one, else the posting date. Stamped once and NEVER moved by "
+                            "settlement, which is what makes a monthly total stable; rows are "
+                            "ordered on it and the window filters on it. 🔴 null means this row "
+                            "predates the column and the datastore has not been rebuilt -- it "
+                            "does NOT mean the money was committed on the posting date. A null "
+                            "row is excluded from every window here, and a `partial` warning "
+                            "on the answer says how many and what to run"
+                        ),
+                    },
                     "description": {
                         "type": "string",
                         "description": "the institution's own string, and the authoritative one",
@@ -861,17 +915,18 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "near zero is money that came back -- refunds or transfers -- so quote `net` "
                 "when the question is 'how much did this cost me'. Rows are per currency and "
                 "are never summed across currencies. 🔴 Rows also split by `flow_class`, so "
-                "one month or one merchant can return up to three rows. The class is read "
-                "from ONE category the AGGREGATOR assigned and matches no counterparty leg: "
-                "`internal_transfer` means categorised as a transfer by the aggregator, not "
-                "verified against an enrolled counterparty, and `debt_service` means loan "
-                "and card payments, where only a payment to an ENROLLED card settles "
-                "purchases counted under their own categories. Read `totals` before quoting "
-                "any money figure: quote `outflow_minor_units` for how much went out and "
-                "`external_spend_outflow_minor_units` for external spend, and name the other "
-                "two classes beside it. 🔴 `group_by=merchant` falls back to `description` "
-                "where the aggregator supplied no merchant name, so a rollup can split one "
-                "merchant across several raw institution strings. "
+                "one month or one merchant can return up to three rows. 🔴 The class says "
+                "whether the money CROSSED THE HOUSEHOLD BOUNDARY: `internal_transfer` and "
+                "`debt_service` both require a matched counterparty leg on an account this "
+                "store holds, so an ATM withdrawal, a payment to another person, rent by ACH "
+                "and a mortgage to an unenrolled lender are all `external_spend`. A "
+                "transfer-shaped row with no counterparty here is counted as money that left, "
+                "and a `partial` warning says how many fell back that way. Read `totals` "
+                "before quoting any money figure: quote `outflow_minor_units` for how much "
+                "went out and `external_spend_outflow_minor_units` for external spend, and "
+                "name the other two classes beside it. 🔴 `group_by=merchant` falls back to "
+                "`description` where the aggregator supplied no merchant name, so a rollup "
+                "can split one merchant across several raw institution strings. "
                 "🔴 EVERY row and every `totals` entry says how much of itself is an "
                 "unsettled authorisation hold (`pending_transactions`, "
                 "`pending_net_minor_units`, always present and 0 when none). A hold is not "
@@ -879,7 +934,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "settling — so quote the settled part as the answer and the pending part as "
                 "a separate outstanding figure. `totals` also carries `expired_holds` and "
                 "`settled_from_hold`, which are why a figure over this window can differ "
-                "from one you were given earlier with no new activity in between. " + _WINDOW_NOTE
+                "from one you were given earlier with no new activity in between. "
+                + _WINDOW_NOTE
+                + _GROUP_CAP_NOTE
             ),
             "inputSchema": {
                 "type": "object",
@@ -959,7 +1016,12 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 windowed=True,
-                capped=False,
+                # The group list IS capped now: keyed on a merchant string that
+                # falls back to a per-transaction description, the group count
+                # approaches the transaction count. The cap bounds the payload
+                # only -- `totals` beside the rows is summed from every group,
+                # so a cut list never shrinks the window's figures.
+                capped=True,
                 totals=True,
             ),
         },
@@ -988,6 +1050,29 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "description": "null means NOT YET MEASURED, never 'no shortfall'",
                     },
                     "history_starts": {"type": ["string", "null"]},
+                    "consent_expires_at": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "when the operator's authorisation for this connection lapses. 🔴 "
+                            "After it does, data stops arriving with NO failure to notice — the "
+                            "pipeline is poll-only, so expiry otherwise surfaces as a failed run "
+                            "rather than in advance. A `partial` warning fires within 14 days "
+                            "and a `degraded` one once it has passed. null means the connection "
+                            "has not been polled since this was recorded — NEVER that consent "
+                            "does not expire"
+                        ),
+                    },
+                    "source_error_code": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "the aggregator's STANDING complaint about this connection, which is "
+                            "not `last_error_code`: that one records the last sync ATTEMPT "
+                            "failing, this one records the connection being unwell whether or "
+                            "not the last attempt happened to succeed. Non-null raises "
+                            "`degraded`. null means no complaint is recorded — which, if the "
+                            "connection has never been polled since, is not the same as none"
+                        ),
+                    },
                     "retired": {"type": "boolean"},
                     # 🔴 The check DECLARES itself here (AC-14.3): the category
                     # set it judged over, the threshold it judged by, and the
@@ -1088,6 +1173,39 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             "this still carries the measurement so nothing is hidden"
                         ),
                     },
+                    "interior_gaps": {
+                        "type": "integer",
+                        "description": (
+                            "holes INSIDE this account's history — runs where the feed stopped "
+                            "and restarted — measured against its own cadence. Present and 0, "
+                            "never omitted. 🔴 `days_silent` cannot see these: it measures from "
+                            "the last transaction to today, so a three-month hole mid-history "
+                            "leaves it at 1 while `money_summary` group_by=month shows a "
+                            "spending collapse that never happened. This is the count as "
+                            "MEASURED; the list beside it may be shorter"
+                        ),
+                    },
+                    "interior_gap_detail": {
+                        "type": "array",
+                        "description": (
+                            "the widest of those gaps, each with the dates it runs between, its "
+                            "length in days, and its `ratio` against this account's cadence. "
+                            "🔴 Numbers rather than a flag, for the reason `silence_ratio` is: a "
+                            "3.1x gap and a 40x gap are not the same finding. Capped, so a "
+                            "shorter list than `interior_gaps` means the rest were narrower"
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "from": {"type": "string"},
+                                "to": {"type": "string"},
+                                "days": {"type": "integer"},
+                                "ratio": {"type": "number"},
+                            },
+                            "required": ["from", "to", "days", "ratio"],
+                            "additionalProperties": False,
+                        },
+                    },
                     "stranded_holds": {
                         "type": "integer",
                         "description": (
@@ -1109,6 +1227,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "properties": {
                             "transaction_id": {"type": "integer"},
                             "posted_date": {"type": ["string", "null"]},
+                            "ledger_date": {"type": ["string", "null"]},
                             "days_pending": {"type": "integer"},
                             "amount_minor_units": {"type": "integer"},
                             "currency": {"type": "string"},
@@ -1116,6 +1235,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "required": [
                             "transaction_id",
                             "posted_date",
+                            "ledger_date",
                             "days_pending",
                             "amount_minor_units",
                             "currency",
@@ -1778,6 +1898,79 @@ def _error(message_id: Any, code: int, detail: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": message_id, "error": {"code": code, "message": detail}}
 
 
+def _handle_guarded(config: Config, message: Any) -> dict[str, Any] | None:
+    """One message, answered or refused, with nothing allowed to escape.
+
+    Returns None where the message is owed no reply at all -- a notification, or
+    a notification whose handling failed.
+    """
+    if not isinstance(message, dict):
+        # 🔴 JSON-RPC 2.0: a frame that is not a Request object is an Invalid
+        # Request, and there is no `id` to answer under, so `null` carries it.
+        # Reached two ways -- a bare scalar on a line of its own, and an element
+        # inside a batch, where this refusal rides in the array alongside the
+        # real answers rather than replacing them.
+        return _error(None, _INVALID_REQUEST, "a message must be an object")
+    try:
+        return _handle(config, message)
+    except Exception:  # prawduct:allow prawduct/broad-except -- see below
+        # 🔴 The last resort under the WHOLE boundary, not just under a tool
+        # call. `initialize`, `tools/list` and the resource methods each
+        # assemble a reply from this process's own state, and an exception in
+        # any of them escapes to here -- where, uncaught, it ends the loop and
+        # the client sees its tool disappear rather than fail. That is the one
+        # outcome this module names as worse than any wrong answer.
+        #
+        # 🔴 The exception never crosses the boundary. `api-contract.md`
+        # § Error Model: no stack traces and no internal identifiers. The
+        # detail goes to the log, where redaction applies.
+        logger.exception("a request could not be handled")
+        if "id" not in message:
+            # A notification takes no reply at all, so a failure while handling
+            # one is logged and dropped. Answering it would put a frame on the
+            # wire the client has no promise waiting for.
+            return None
+        return _error(
+            message.get("id"),
+            _INTERNAL_ERROR,
+            "the request could not be handled. The failure has been logged",
+        )
+
+
+def _handle_frame(config: Config, frame: Any) -> dict[str, Any] | list[dict[str, Any]] | None:
+    """One frame off the wire: a lone message, or a BATCH of them.
+
+    🔴 **A batch is answered element by element, in one array.** Batching is
+    base JSON-RPC 2.0 and is mandatory in the two oldest revisions
+    `SUPPORTED_PROTOCOL_VERSIONS` offers, so a conformant client may send one at
+    any time. Refusing the whole array with a single `id: null` error leaves
+    every id inside it unanswered, and the client's promises never settle --
+    which is the hang the read loop exists to prevent, arriving one level up.
+
+    Three shapes the spec fixes, each of which a naive implementation gets
+    wrong:
+
+    - An EMPTY array is itself an Invalid Request, answered with one non-array
+      error under `id: null` -- not with an empty array.
+    - A batch of only notifications is owed NO response at all. An empty array
+      back would be a frame the client has no promise waiting for.
+    - A bad element is one error object INSIDE the array; it does not fail the
+      batch, because the sibling ids are still owed their answers.
+    """
+    if not isinstance(frame, list):
+        return _handle_guarded(config, frame)
+    if not frame:
+        return _error(None, _INVALID_REQUEST, "a batch must carry at least one message")
+    replies = [
+        reply
+        for reply in (_handle_guarded(config, message) for message in frame)
+        if reply is not None
+    ]
+    # Empty means every element was a notification, which is answered with
+    # silence rather than with `[]`.
+    return replies or None
+
+
 def serve(config: Config, *, stdin: IO[str], stdout: IO[str]) -> int:
     """Read requests until the client closes the pipe.
 
@@ -1787,34 +1980,8 @@ def serve(config: Config, *, stdin: IO[str], stdout: IO[str]) -> int:
     wrong, and it should be exercised by something that runs on every commit.
     """
     try:
-        for message in _read_messages(stdin, stdout):
-            try:
-                reply = _handle(config, message)
-            except Exception:  # prawduct:allow prawduct/broad-except -- see below
-                # 🔴 The last resort under the WHOLE boundary, not just under a
-                # tool call. `initialize`, `tools/list` and the resource methods
-                # each assemble a reply from this process's own state, and an
-                # exception in any of them escapes to here -- where, uncaught, it
-                # ends the loop and the client sees its tool disappear rather
-                # than fail. That is the one outcome this module names as worse
-                # than any wrong answer.
-                #
-                # 🔴 The exception never crosses the boundary. `api-contract.md`
-                # § Error Model: no stack traces and no internal identifiers. The
-                # detail goes to the log, where redaction applies.
-                logger.exception("a request could not be handled")
-                reply = (
-                    # A notification takes no reply at all, so a failure while
-                    # handling one is logged and dropped. Answering it would put
-                    # a frame on the wire the client has no promise waiting for.
-                    None
-                    if "id" not in message
-                    else _error(
-                        message.get("id"),
-                        _INTERNAL_ERROR,
-                        "the request could not be handled. The failure has been logged",
-                    )
-                )
+        for frame in _read_messages(stdin, stdout):
+            reply = _handle_frame(config, frame)
             if reply is not None:
                 _write(stdout, reply)
     except _PipeClosedError:
@@ -1837,7 +2004,7 @@ def serve(config: Config, *, stdin: IO[str], stdout: IO[str]) -> int:
 _MAX_UNDECODABLE_FRAMES = 3
 
 
-def _read_messages(stdin: IO[str], stdout: IO[str]) -> Iterator[dict[str, Any]]:
+def _read_messages(stdin: IO[str], stdout: IO[str]) -> Iterator[Any]:
     undecodable = 0
     while True:
         try:
@@ -1888,9 +2055,11 @@ def _read_messages(stdin: IO[str], stdout: IO[str]) -> Iterator[dict[str, Any]]:
                 _error(None, _PARSE_ERROR, "could not parse a message: it is nested too deeply"),
             )
             continue
-        if not isinstance(message, dict):
-            _write(stdout, _error(None, _INVALID_REQUEST, "a message must be an object"))
-            continue
+        # 🔴 Yielded whatever it decoded, object or not. Deciding what a frame
+        # IS belongs to `_handle_frame`, which is the one place that knows a
+        # top-level array is a batch rather than a malformed request -- refusing
+        # non-objects here would refuse every batch as one `id: null` error and
+        # leave the ids inside it with no reply.
         yield message
 
 
@@ -1904,7 +2073,7 @@ class _PipeClosedError(RuntimeError):
     """
 
 
-def _write(stdout: IO[str], payload: dict[str, Any]) -> None:
+def _write(stdout: IO[str], payload: dict[str, Any] | list[dict[str, Any]]) -> None:
     try:
         stdout.write(json.dumps(payload) + "\n")
         stdout.flush()

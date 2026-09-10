@@ -31,6 +31,7 @@ narrower one it does.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import ClassVar
 
@@ -331,6 +332,51 @@ class UnrecognizedAggregatorError(AggregatorError):
     """
 
     retryable = False
+
+
+def parse_response_body(
+    body: bytes | str, *, what: str, endpoint: Endpoint | None = None
+) -> object:
+    """A response body read as JSON, or a `MalformedResponseError` naming what broke.
+
+    🔴 **`json.loads` fails three ways that share no base below `Exception`, so
+    one `except` clause never covers them.** A malformed document raises
+    `json.JSONDecodeError`, which is a `ValueError`. A document nested past the
+    interpreter's stack raises `RecursionError`, which is a `RuntimeError`. Bytes
+    the parser has to decode itself raise `UnicodeDecodeError`. A site that names
+    one of them and stops does not degrade on the other two -- it lets them out
+    of whatever narrowing surrounds it, which on the sync path means one
+    unreadable page ends the whole run and every connection after it goes
+    unsynced.
+
+    This is the one place that enumerates all three, so a caller gets a single
+    connector-vocabulary failure to catch instead of three unrelated ones to
+    remember. It is deliberately **not** `except Exception`: enumerating is the
+    whole point, and a fourth failure mode arriving in a future interpreter must
+    surface loudly rather than be absorbed here wearing this one's name.
+
+    `parse_float=str` is not optional and no caller opts out. Every number
+    reaches this system as the digits the aggregator sent, and a `float`
+    anywhere in the money path has already lost fractions of a cent by the time
+    anyone can look at it. A parameter would make the exactness of the archive
+    depend on each caller remembering; a constant makes it a property of reading
+    a body at all.
+
+    The message is this product's own words rather than the decoder's, because
+    `api-contract.md` § Error Model keeps internals off the wire and a parser's
+    text names the stack size it blew. The cause is chained, so a traceback
+    still holds it.
+    """
+    try:
+        return json.loads(body, parse_float=str)
+    except json.JSONDecodeError as exc:
+        raise MalformedResponseError(f"{what} is not JSON", endpoint=endpoint) from exc
+    except UnicodeDecodeError as exc:
+        raise MalformedResponseError(f"{what} is not valid UTF-8", endpoint=endpoint) from exc
+    except RecursionError as exc:
+        raise MalformedResponseError(
+            f"{what} is nested too deeply to read", endpoint=endpoint
+        ) from exc
 
 
 @dataclass(frozen=True, slots=True)

@@ -266,10 +266,14 @@ def test_a_not_ready_first_page_is_not_reported_as_a_successful_empty_sync(
     A NOT_READY reply carries `has_more: false`, so the naive loop exits at once
     and stamps a success over a connection whose history has not materialized.
     The operator sees an account with no activity and no reason to doubt it.
+
+    `75`, not `0`: a scheduled runner reads the exit code and nothing else, and
+    "nothing has arrived yet" has to reach it as *come back* rather than as
+    *done*.
     """
     FakeClient.pages = [_page(status="NOT_READY")]
 
-    assert run(["sync", "run", "--no-wait"]) == 0
+    assert run(["sync", "run", "--no-wait"]) == 75
 
     assert _txn_rows(cli_env) == []
     assert _cursor(cli_env) is None, "an empty cursor was persisted"
@@ -701,7 +705,8 @@ def test_a_run_that_hits_the_page_ceiling_says_it_stopped_short(
 
     And the operator would have no reason to run again — while the cursor sat
     mid-history. Not degraded: nothing is wrong, the run is bounded, and the next
-    one continues exactly here.
+    one continues exactly here. `75` is exactly that sentence in the one channel
+    a scheduled runner can read.
     """
     monkeypatch.setattr("bankmachine.cli.sync_run.MAX_PAGES_PER_RUN", 2)
     FakeClient.pages = [
@@ -710,7 +715,7 @@ def test_a_run_that_hits_the_page_ceiling_says_it_stopped_short(
         _page(added=[_txn("t3")], next_cursor="c3", has_more=True),
     ]
 
-    assert run(["sync", "run"]) == 0
+    assert run(["sync", "run"]) == 75
 
     out = capsys.readouterr().out
     assert "stopped at the page ceiling" in out
@@ -727,7 +732,7 @@ def test_a_bounded_run_resumes_from_where_it_stopped(
         _page(added=[_txn("t1")], next_cursor="c1", has_more=True),
         _page(added=[_txn("t2")], next_cursor="c2", has_more=True),
     ]
-    assert run(["sync", "run"]) == 0
+    assert run(["sync", "run"]) == 75
     assert len(_txn_rows(cli_env)) == 2
 
     FakeClient.calls = []
@@ -763,7 +768,7 @@ def test_the_granted_window_is_not_computed_before_the_backfill_completes(
         _page(added=[_txn("t1")], next_cursor="c1", status="INITIAL_UPDATE_COMPLETE")
     ]
 
-    assert run(["sync", "run"]) == 0
+    assert run(["sync", "run"]) == 75
 
     assert _granted(cli_env) is None, "a window was measured against a backfill in flight"
 
@@ -839,20 +844,31 @@ def test_a_bounded_run_does_not_claim_the_connection_is_up_to_date(
     monkeypatch.setattr("bankmachine.cli.sync_run.MAX_PAGES_PER_RUN", 1)
     FakeClient.pages = [_page(added=[_txn("t1")], next_cursor="c1", has_more=True)]
 
-    assert run(["sync", "run"]) == 0
+    assert run(["sync", "run"]) == 75
 
     row = _connection_row(cli_env)
     assert row["last_success_at"] is None, "a run that stopped short claimed to be up to date"
     assert row["status"] == "active", "the run succeeded at what it did do"
 
 
-def test_a_complete_run_does_stamp_the_success(cli_env: Config) -> None:
-    """The mirror half, without which the rule above is satisfied by never stamping."""
+def test_a_complete_run_does_stamp_the_success(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The mirror half, without which the rule above is satisfied by never stamping.
+
+    It is also the mirror of the two rules below it: a run that reached
+    `HISTORICAL_UPDATE_COMPLETE` exits `0` and says nothing about history still
+    arriving, so neither the gate nor the new sentence can be satisfied by
+    applying them to every run.
+    """
     FakeClient.pages = [_page(added=[_txn("t1")], next_cursor="c1")]
 
     assert run(["sync", "run"]) == 0
 
     assert _connection_row(cli_env)["last_success_at"] is not None
+    assert "still arriving" not in capsys.readouterr().out, (
+        "a finished backfill was reported as still arriving"
+    )
 
 
 def test_the_granted_window_is_measured_once_and_never_re_measured(
@@ -914,3 +930,138 @@ def test_a_later_run_still_reports_the_shortfall_it_did_not_measure(
     assert run(["sync", "run"]) == 0
 
     assert "gap" in capsys.readouterr().out, "a later run went quiet about a gap that still exists"
+
+
+# --------------------------------------------------------------------------
+# The initial backfill: applied pages are not a finished history
+# --------------------------------------------------------------------------
+
+
+def test_a_run_whose_history_is_still_arriving_asks_to_be_run_again(cli_env: Config) -> None:
+    """🔴 `INITIAL_UPDATE_COMPLETE` is ~30 days of a 730-day grant, and it exits.
+
+    In production the rest follows minutes to hours later. A `0` here tells the
+    scheduled runner the backfill landed, and the runner has no other channel to
+    learn otherwise — it does not read the terminal, and the MCP envelope's
+    `partial` warning is on a surface it never calls. `75` (`EX_TEMPFAIL`) is the
+    one thing it can act on: come back.
+    """
+    FakeClient.pages = [
+        _page(added=[_txn("t1")], next_cursor="c1", status="INITIAL_UPDATE_COMPLETE")
+    ]
+
+    assert run(["sync", "run"]) == 75
+
+    assert len(_txn_rows(cli_env)) == 1, "the pages that DID arrive were not applied"
+
+
+def test_a_run_whose_history_is_still_arriving_names_what_is_not_yet_known(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """🔴 "1 page applied" is true and reads as finished, which is the defect.
+
+    The line has to say the history is still arriving AND name what that costs:
+    `granted_history_days` is null, so there is no window to report, and the
+    oldest transaction on hand is the oldest *so far* rather than the oldest that
+    exists. An operator who reads only "1 page applied" has no way to know either.
+    """
+    FakeClient.pages = [
+        _page(added=[_txn("t1")], next_cursor="c1", status="INITIAL_UPDATE_COMPLETE")
+    ]
+
+    code = run(["sync", "run"])
+
+    # Collapsed to one line first: the contract is the sentence, not where the
+    # report chose to wrap it, and asserting on the line breaks would make every
+    # rewording of the layout look like a change of meaning.
+    out = " ".join(capsys.readouterr().out.split())
+    assert "1 page applied" in out, "the pages that arrived went unreported"
+    assert "still arriving" in out, "a partial backfill was reported as a finished one"
+    assert "granted window is not yet known" in out, (
+        "the report did not say the window is unmeasured"
+    )
+    assert "not the oldest that exists" in out, (
+        "the report let the oldest transaction on hand pass for the oldest there is"
+    )
+    assert code == 75
+
+
+def test_a_partial_backfill_is_not_stamped_as_a_successful_sync(cli_env: Config) -> None:
+    """🔴 The half of this that an agent reads instead of a terminal.
+
+    `last_success_at` is what the freshness warning and `get_pipeline_health`
+    answer from, and to both of them a successful sync means the backfill is in.
+    A connection at `INITIAL_UPDATE_COMPLETE` is behind by 700 of its 730 days
+    and was being reported as current — a well-formed, plausible, wrong answer
+    on the surface with no terminal to look at.
+
+    Asserted on the stamped column rather than on the gate's argument, so it
+    cannot pass by reading a word that was renamed.
+    """
+    FakeClient.pages = [
+        _page(added=[_txn("t1")], next_cursor="c1", status="INITIAL_UPDATE_COMPLETE")
+    ]
+
+    code = run(["sync", "run"])
+
+    row = _connection_row(cli_env)
+    assert row["last_success_at"] is None, (
+        "a connection holding thirty of its 730 days was recorded as up to date"
+    )
+    assert row["status"] == "active", "the run succeeded at what it did do"
+    assert row["last_error_code"] is None
+    assert code == 75
+
+
+def test_the_cli_and_the_read_path_say_the_same_thing_about_a_partial_backfill(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """🔴 Two surfaces over one datastore, and they were disagreeing.
+
+    The read path has always put this state on every answer as a `partial`
+    warning; the CLI printed "N pages applied" and exited 0. Driven end to end
+    against the same datastore rather than compared by eye, because agreement
+    read side by side in two files is agreement nothing enforces.
+    """
+    from bankmachine.query import list_accounts
+
+    FakeClient.pages = [
+        _page(added=[_txn("t1")], next_cursor="c1", status="INITIAL_UPDATE_COMPLETE")
+    ]
+
+    code = run(["sync", "run"])
+    assert "still arriving" in " ".join(capsys.readouterr().out.split()), (
+        "the CLI called the datastore finished while the read path called it partial"
+    )
+
+    warnings = list_accounts(cli_env).warnings
+    assert any(w.kind == "partial" for w in warnings), (
+        f"the read path called the same datastore complete: {[w.kind for w in warnings]}"
+    )
+    assert code == 75
+
+
+def test_a_degraded_connection_outranks_one_that_is_still_arriving(
+    cli_env: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`75` says come back; `1` says look at this. A run that is both needs the operator.
+
+    The scheduled runner would come back tomorrow regardless, so `75` costs the
+    stuck connection a day of nobody noticing. Pinned because it is a decision,
+    not a consequence: nothing else in the suite fixes the order of the two.
+    """
+    second_token = _enroll_a_second_connection(cli_env)
+    FakeClient.pages = [
+        _page(added=[_txn("t1")], next_cursor="c1", status="INITIAL_UPDATE_COMPLETE")
+    ]
+    FakeClient.fail_for_token = second_token
+
+    assert run(["sync", "run"]) == 1
+
+    with reader_connection(cli_env) as conn:
+        rows = {
+            int(r._mapping["connection_id"]): r._mapping["status"]
+            for r in conn.execute(select(connections)).all()
+        }
+    assert rows[1] == "active", "the still-arriving connection was not synced"
+    assert rows[2] == "degraded"

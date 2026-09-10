@@ -24,7 +24,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import Connection as SAConnection
-from sqlalchemy import delete, insert, select
+from sqlalchemy import delete, insert, select, update
 
 from bankmachine.config import Config
 from bankmachine.connector import ACCOUNTS_GET, INSTITUTIONS_GET, ITEM_GET, Endpoint
@@ -33,6 +33,7 @@ from bankmachine.connector.plaid.derivers import (
     balance_class_of,
     to_minor,
 )
+from bankmachine.store import types as store_types
 from bankmachine.store.derivation import (
     DerivationContext,
     DerivationError,
@@ -50,8 +51,9 @@ from bankmachine.store.schema import (
     manual_imports,
 )
 from bankmachine.store.types import (
-    DEFAULT_MINOR_DIGITS,
+    UnknownMinorDigitsError,
     UtcInstant,
+    has_minor_digits,
     minor_digits,
     utc_instant,
 )
@@ -319,21 +321,52 @@ def test_a_currency_with_a_different_minor_unit_is_not_scaled_by_a_hundred() -> 
     """A JPY balance stored with two minor digits is 100x too large, and plausible."""
     assert minor_digits("JPY") == 0
     assert minor_digits("KWD") == 3
-    assert minor_digits("USD") == DEFAULT_MINOR_DIGITS == 2
+    assert minor_digits("USD") == 2
     # Lowercase too: the field is the aggregator's, not ours.
     assert minor_digits("jpy") == 0
 
 
-def test_a_balance_in_no_stated_currency_is_not_stored_and_does_not_stop_the_roster(
+def test_a_currency_this_build_does_not_know_has_no_minor_digits_at_all() -> None:
+    """🔴 The exponent is a LOOKUP, and an absent entry is a state rather than a 2.
+
+    The table used to answer 2 for anything it did not recognize, which is the
+    ISO convention and is not a fact about `BTC` -- so `0.04217` became `0.04`,
+    a 0.4% loss that every total computed from it inherited. There is no default
+    to fall back to now, and `has_minor_digits` is how the read path asks the
+    same question without catching an exception.
+    """
+    with pytest.raises(UnknownMinorDigitsError, match="BTC"):
+        minor_digits("BTC")
+    assert not has_minor_digits("BTC")
+    assert not has_minor_digits(None)
+    assert has_minor_digits("usd")
+    # An ISO currency that is neither an exception nor the reference one: the
+    # table enumerates the two-decimal codes rather than defaulting to them, so
+    # an ordinary account in one still derives.
+    assert minor_digits("EUR") == 2
+    assert minor_digits("SEK") == 2
+
+
+def test_an_account_in_no_stated_currency_is_created_with_a_null_one(
     store: Config, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """An amount whose unit is unknown is how a total silently mixes two of them.
+    """🔴 The account EXISTS, with `currency = NULL`, and the balance does not.
 
-    🔴 So the balance is not stored -- and the REST of the roster still is.
-    `/accounts/get` is fetched first on every run, so refusing the whole response
-    over one account aborted the connection before a single transaction page was
-    pulled, on that run and on every run after it, with the same body re-archived
-    each time. One unusable account is a fact about that account.
+    Both of the aggregator's currency fields are documented nullable, and while
+    `accounts.currency` was NOT NULL an account of that shape could not be
+    written at all -- so it was skipped, it was invisible to `list_accounts`,
+    and every transaction on it went on refusing to derive until some later sync
+    happened to state a unit. The transactions never needed the account's
+    currency: they carry their own, stated per row.
+
+    A null here means *the aggregator has not told us yet* -- never `USD`, never
+    the unit of the operator's other accounts. Inventing the unit of every
+    amount on an account is the largest version of the mistake this product
+    exists to refuse.
+
+    The BALANCE is still not written, and that asymmetry is deliberate: one
+    amount with no stated unit is unusable, while an account with no unit yet is
+    merely incompletely known.
     """
     body = _with(
         fixture("accounts_get"),
@@ -359,12 +392,114 @@ def test_a_balance_in_no_stated_currency_is_not_stored_and_does_not_stop_the_ros
     with caplog.at_level(logging.WARNING, logger="bankmachine"):
         derive(store, str(ACCOUNTS_GET), body)
 
-    derived = {row["source_account_id"] for row in rows(store, accounts)}
-    assert derived == {"acct-ordinary"}, "an unusable account did not stop the rest of the roster"
-    assert not [row for row in rows(store, balances_daily) if row["currency"] is None]
-    assert any("no stated currency" in record.getMessage() for record in caplog.records), (
-        "an account was dropped with nothing recording that it happened"
+    derived = {row["source_account_id"]: row for row in rows(store, accounts)}
+    assert set(derived) == {"acct-no-currency", "acct-ordinary"}, (
+        "an account whose unit the aggregator has not stated is invisible rather than honest"
     )
+    assert derived["acct-no-currency"]["currency"] is None, (
+        "a unit nothing stated was filled in from somewhere"
+    )
+    assert derived["acct-ordinary"]["currency"] == "USD"
+    assert [row["account_id"] for row in rows(store, balances_daily)] == [
+        derived["acct-ordinary"]["account_id"]
+    ], "a balance was stored under a unit the response did not state"
+    assert any("no stated currency" in record.getMessage() for record in caplog.records), (
+        "a balance was dropped with nothing recording that it happened"
+    )
+
+
+def test_a_balance_in_a_currency_with_no_known_exponent_is_refused_not_rounded(
+    store: Config, caplog: pytest.LogCaptureFixture
+) -> None:
+    """🔴 `0.04217` is not `0.04`, and a rounded amount is a changed amount.
+
+    `to_minor` used to default an unrecognized code to two minor digits, which is
+    ISO's convention and is not a fact about a cryptocurrency: the 0.4% this
+    rounding lost was disclosed only in a log line, which no caller of the MCP
+    surface or the CLI ever sees. A value this system cannot represent exactly is
+    not stored as an approximation -- the row is refused, the raw body keeps it,
+    and a build that knows the currency's minor unit derives it later.
+
+    🔴 Refused per ROW, never per connection. `/accounts/get` runs before a
+    single page is fetched, so one unrepresentable holding escaping here would
+    take the whole institution's history offline on this run and on every run
+    after it.
+    """
+    body = _with(
+        fixture("accounts_get"),
+        lambda p: p.__setitem__(
+            "accounts",
+            [
+                {
+                    **p["accounts"][0],
+                    "account_id": "acct-unofficial",
+                    "balances": {
+                        "current": "0.04217",
+                        "available": None,
+                        "limit": None,
+                        "iso_currency_code": None,
+                        "unofficial_currency_code": "BTC",
+                    },
+                },
+                {**p["accounts"][1], "account_id": "acct-ordinary"},
+            ],
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="bankmachine"):
+        derive(store, str(ACCOUNTS_GET), body)
+
+    derived = {row["source_account_id"]: row for row in rows(store, accounts)}
+    assert set(derived) == {"acct-unofficial", "acct-ordinary"}, (
+        "one unrepresentable balance cost the roster the rest of its accounts"
+    )
+    assert derived["acct-unofficial"]["currency"] == "BTC", (
+        "the unit IS known; it is the scale that is not, and the account should say so"
+    )
+    assert [row["account_id"] for row in rows(store, balances_daily)] == [
+        derived["acct-ordinary"]["account_id"]
+    ], "a balance this build cannot express exactly was stored anyway"
+    assert any("cannot express in minor units" in r.getMessage() for r in caplog.records)
+
+
+def test_the_same_balance_derives_exactly_once_the_currency_has_an_exponent(
+    store: Config, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half: an exponent that is CONFIGURED is not a guess.
+
+    Adding the currency's minor digits to the lookup is the whole remedy -- the
+    amount then converts exactly, nothing is refused, and nothing is warned
+    about. What the previous test refuses is an unknown scale, not an unofficial
+    currency.
+    """
+    monkeypatch.setitem(store_types._MINOR_DIGITS, "BTC", 8)
+    body = _with(
+        fixture("accounts_get"),
+        lambda p: p.__setitem__(
+            "accounts",
+            [
+                {
+                    **p["accounts"][0],
+                    "account_id": "acct-unofficial",
+                    "balances": {
+                        "current": "0.04217",
+                        "available": None,
+                        "limit": None,
+                        "iso_currency_code": None,
+                        "unofficial_currency_code": "BTC",
+                    },
+                }
+            ],
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="bankmachine"):
+        derive(store, str(ACCOUNTS_GET), body)
+
+    balance = rows(store, balances_daily)[0]
+    assert balance["current_minor"] == 4217000, "the amount was scaled to the wrong exponent"
+    assert balance["currency"] == "BTC"
+    assert not caplog.records, "an exactly-derived amount warned about something"
 
 
 def test_an_account_whose_currency_this_datastore_knows_survives_a_response_that_omits_it(
@@ -1234,3 +1369,337 @@ def test_the_composed_registry_is_what_the_rebuild_command_uses() -> None:
     from bankmachine.derivers import ALL_DERIVERS
 
     assert dict(ALL_DERIVERS) == dict(PLAID_DERIVERS)
+
+
+# --------------------------------------------------------------------------
+# Convergence across a re-link (#68, Part 1)
+# --------------------------------------------------------------------------
+
+#: When the operator re-linked. Later than `RECEIVED`, so the connection the
+#: re-link enrolled is unambiguously the newer of the two.
+RELINKED = utc_instant(datetime(2026, 9, 11, 9, 0, tzinfo=UTC))
+
+#: The aggregator's own statement that two differently-numbered accounts are the
+#: same underlying account. Named once so a test reading it is not carrying a
+#: second copy of the value under test.
+PERSISTENT = "persistent-checking"
+
+
+def _one_account(
+    *, account_id: str, persistent_account_id: str | None, name: str = "Plaid Checking"
+) -> bytes:
+    """A recorded `/accounts/get` narrowed to one account, so a match is unambiguous."""
+    return _with(
+        fixture("accounts_get"),
+        lambda p: p.__setitem__(
+            "accounts",
+            [
+                {
+                    **p["accounts"][0],
+                    "account_id": account_id,
+                    "name": name,
+                    **(
+                        {}
+                        if persistent_account_id is None
+                        else {"persistent_account_id": persistent_account_id}
+                    ),
+                }
+            ],
+        ),
+    )
+
+
+def _second_institution(config: Config, source_institution_id: str) -> int:
+    """Another bank, enrolled -- what makes a global persistent match dangerous."""
+    with writer_connection(config) as conn, transaction(conn):
+        seeded = conn.execute(
+            insert(institutions).values(
+                source_institution_id=source_institution_id,
+                name="Second Platypus Bank",
+                first_seen_at=RECEIVED,
+                last_seen_at=RECEIVED,
+            )
+        ).inserted_primary_key
+        assert seeded is not None  # an INTEGER PRIMARY KEY insert always yields one
+        created = conn.execute(
+            insert(connections).values(
+                institution_id=seeded[0],
+                source_connection_id=f"item-{source_institution_id}",
+                credential_ref="plaid:sandbox",
+                status="active",
+                enrolled_at=RECEIVED,
+                created_at=RECEIVED,
+                updated_at=RECEIVED,
+            )
+        ).inserted_primary_key
+        assert created is not None
+        return int(created[0])
+
+
+def _relink(config: Config) -> int:
+    """Retire the enrolled connection and enrol a new one at the same institution.
+
+    🔴 The retirement is not decoration. `connections_one_live_per_institution`
+    refuses two live connections at one bank, so this is the state
+    `connections remove` followed by `enroll` actually produces -- and building
+    the fixture any other way would test a shape the product cannot reach.
+    """
+    with writer_connection(config) as conn, transaction(conn):
+        institution_id = conn.execute(
+            select(institutions.c.institution_id).where(
+                institutions.c.source_institution_id == SEEDED_INSTITUTION
+            )
+        ).scalar_one()
+        conn.execute(
+            update(connections)
+            .where(connections.c.connection_id == 1)
+            .values(status="retired", retired_at=RELINKED, updated_at=RELINKED)
+        )
+        created = conn.execute(
+            insert(connections).values(
+                institution_id=institution_id,
+                source_connection_id="item-after-relink",
+                credential_ref="plaid:sandbox",
+                status="active",
+                enrolled_at=RELINKED,
+                created_at=RELINKED,
+                updated_at=RELINKED,
+            )
+        ).inserted_primary_key
+        assert created is not None  # an INTEGER PRIMARY KEY insert always yields one
+        return int(created[0])
+
+
+def test_a_relink_converges_on_the_account_its_history_already_hangs_from(
+    store: Config,
+) -> None:
+    """🔴 The defect this item exists for, at the account level.
+
+    A full re-link issues a new Item, and the new Item issues a NEW id for every
+    account. Matched on `(connection_id, source_account_id)` alone the same real
+    account appears a second time, the whole granted history is re-fetched
+    against it, and annual spending doubles -- signalled by nothing louder than a
+    count of accounts that are no longer active.
+
+    The local `account_id` is what every row of history references (AC-6.3), so
+    keeping it is the whole point: the rows already in the store stay attached
+    to the account they were about.
+    """
+    derive(
+        store,
+        str(ACCOUNTS_GET),
+        _one_account(account_id="acct-old", persistent_account_id=PERSISTENT),
+    )
+    before = rows(store, accounts)
+    assert len(before) == 1, "the fixture listed more than one account, so a match is ambiguous"
+
+    relinked = _relink(store)
+    derive(
+        store,
+        str(ACCOUNTS_GET),
+        _one_account(account_id="acct-new", persistent_account_id=PERSISTENT),
+        connection_id=relinked,
+        received_at=RELINKED,
+    )
+
+    after = rows(store, accounts)
+    assert len(after) == 1, "the re-link left a second account row, so its history is split"
+    assert after[0]["account_id"] == before[0]["account_id"], (
+        "the account was renumbered, so every transaction and balance already stored points "
+        "at a row nothing lists"
+    )
+    assert after[0]["source_account_id"] == "acct-new"
+    assert after[0]["connection_id"] == relinked, (
+        "the converged account still points at the retired connection, so the re-fetched "
+        "pages have no account to hang from and the whole sync refuses"
+    )
+    assert after[0]["first_seen_date"] == RECEIVED.date(), (
+        "the converged row forgot when the account was first seen"
+    )
+
+
+def test_a_persistent_identity_shared_across_institutions_is_never_merged(
+    store: Config,
+) -> None:
+    """🔴 Scoped to the institution, because a global match's failure is unrecoverable.
+
+    The field is documented stable for the same underlying account, but nothing
+    makes it unique across banks. A global match turns a collision between two
+    institutions into a silent merge of two real accounts into one: every total
+    over either is then wrong, and the store keeps no record that two things were
+    joined.
+
+    **Red against a global match, not against the pre-fix code** -- which had no
+    persistent match at all and so also kept the two apart. This is the guard on
+    the fix, and it is stated rather than left to look like a regression test.
+    """
+    derive(
+        store,
+        str(ACCOUNTS_GET),
+        _one_account(account_id="acct-a", persistent_account_id=PERSISTENT),
+    )
+    elsewhere = _second_institution(store, "ins_999999")
+
+    derive(
+        store,
+        str(ACCOUNTS_GET),
+        _one_account(account_id="acct-b", persistent_account_id=PERSISTENT, name="Other Checking"),
+        connection_id=elsewhere,
+        received_at=LATER,
+    )
+
+    held = rows(store, accounts)
+    assert len(held) == 2, "two banks' accounts were merged on an identity neither bank shares"
+    assert {row["institution_id"] for row in held} == {1, 2}
+
+
+def test_an_account_the_aggregator_gives_no_persistent_identity_falls_back_to_todays_key(
+    store: Config,
+) -> None:
+    """Absence is ORDINARY, and what it costs is stated rather than claimed fixed.
+
+    The aggregator populates `persistent_account_id` for select institutions
+    only, so a body without one is not an error and must still converge on an
+    ordinary re-sync. What it cannot do is survive a re-link: with no identity
+    that outlives the Item, the second Item's account is a new account as far as
+    anything here can tell. 🔴 That case is NOT fixed by this match, and the
+    remedy is re-authorising in place -- the same Item, so no second lineage at
+    all.
+    """
+    body = _one_account(account_id="acct-old", persistent_account_id=None)
+    derive(store, str(ACCOUNTS_GET), body)
+    derive(store, str(ACCOUNTS_GET), body, received_at=LATER)
+    assert len(rows(store, accounts)) == 1, "an ordinary re-sync duplicated the account"
+
+    relinked = _relink(store)
+    derive(
+        store,
+        str(ACCOUNTS_GET),
+        _one_account(account_id="acct-new", persistent_account_id=None),
+        connection_id=relinked,
+        received_at=RELINKED,
+    )
+
+    assert len(rows(store, accounts)) == 2, (
+        "the re-link converged with no identity to converge on, so something guessed"
+    )
+
+
+def test_a_persistent_identity_already_recorded_survives_a_body_that_omits_it(
+    store: Config,
+) -> None:
+    """🔴 The one key convergence has must not be erasable by an ordinary sync.
+
+    The aggregator populates this field on some responses and not others. An
+    unconditional write of what the current body says would blank the column on
+    the first response that omits it -- and nothing would look wrong until the
+    next re-link, which would then duplicate exactly as it does today.
+    """
+    derive(
+        store,
+        str(ACCOUNTS_GET),
+        _one_account(account_id="acct-old", persistent_account_id=PERSISTENT),
+    )
+
+    derive(
+        store,
+        str(ACCOUNTS_GET),
+        _one_account(account_id="acct-old", persistent_account_id=None),
+        received_at=LATER,
+    )
+
+    assert rows(store, accounts)[0]["source_persistent_account_id"] == PERSISTENT
+
+
+def test_two_rows_already_sharing_a_persistent_identity_are_left_where_they_are(
+    store: Config, caplog: pytest.LogCaptureFixture
+) -> None:
+    """🔴 What a re-link performed BEFORE this match existed left behind.
+
+    Such a store holds two rows carrying one persistent identity. Re-pointing the
+    older onto the newer one's `(connection_id, source_account_id)` would violate
+    the identity index and take the connection down on every run afterwards, and
+    merging their history is a repair with its own requirement rather than
+    something a deriver does on the way past. So both are kept, neither moves,
+    and the pair is named in the log rather than left for a total to disagree
+    about silently.
+    """
+    derive(
+        store,
+        str(ACCOUNTS_GET),
+        _one_account(account_id="acct-old", persistent_account_id=PERSISTENT),
+    )
+    relinked = _relink(store)
+    # The duplicate this store would already be holding: derived under the new
+    # connection before the aggregator stated an identity for it.
+    derive(
+        store,
+        str(ACCOUNTS_GET),
+        _one_account(account_id="acct-new", persistent_account_id=None),
+        connection_id=relinked,
+        received_at=RELINKED,
+    )
+    assert len(rows(store, accounts)) == 2, "the duplicate this test is about was never created"
+
+    with caplog.at_level(logging.WARNING):
+        derive(
+            store,
+            str(ACCOUNTS_GET),
+            _one_account(account_id="acct-new", persistent_account_id=PERSISTENT),
+            connection_id=relinked,
+            received_at=RELINKED,
+        )
+        derive(
+            store,
+            str(ACCOUNTS_GET),
+            _one_account(account_id="acct-new", persistent_account_id=PERSISTENT),
+            connection_id=relinked,
+            received_at=LATER,
+        )
+
+    held = rows(store, accounts)
+    assert len(held) == 2, "the collision was forced through and one row absorbed the other"
+    assert {row["source_account_id"] for row in held} == {"acct-old", "acct-new"}
+    assert any("collide" in record.message for record in caplog.records), (
+        "the store holds two rows for one account and says nothing about it"
+    )
+
+
+def test_a_rebuild_over_a_relinked_archive_converges_the_same_way_twice(store: Config) -> None:
+    """🔴 Convergence has to be a function of the archive, not of what ran first.
+
+    The account row a re-link converges on is one a rebuild never deletes -- its
+    id is what every transaction and balance references -- so the replay meets a
+    row already carrying the NEW Item's identity and has to land back on exactly
+    the same state. The failure is not subtle but it is late: the rebuild's own
+    digest guard rolls it back at an unchanged derivation version, so the remedy
+    the upgrade procedure prescribes stops working on precisely the stores that
+    most need it.
+    """
+    derive(
+        store,
+        str(ACCOUNTS_GET),
+        _one_account(account_id="acct-old", persistent_account_id=PERSISTENT),
+    )
+    relinked = _relink(store)
+    derive(
+        store,
+        str(ACCOUNTS_GET),
+        _one_account(account_id="acct-new", persistent_account_id=PERSISTENT),
+        connection_id=relinked,
+        received_at=RELINKED,
+    )
+    converged = rows(store, accounts)
+    assert len(converged) == 1, "nothing converged, so the replay below has nothing to reproduce"
+    with writing(store) as conn:
+        before = content_digest(conn)
+
+    report = rebuild(store, derivers=PLAID_DERIVERS)
+
+    assert not report.content_changed, (
+        "replaying a re-linked archive landed somewhere else, so the account this store "
+        "converged on depends on the order the responses were first applied"
+    )
+    with writing(store) as conn:
+        assert content_digest(conn) == before
+    assert rows(store, accounts) == converged

@@ -308,10 +308,23 @@ def _connections_in_window(
         transactions.c.removed_at.is_(None),
         accounts.c.connection_id.is_not(None),
     ]
+    # 🔴 `ledger_date`, because this set has to be the one the ANSWER drew on and
+    # the answer's window is measured there. Scoped on `posted_date` instead,
+    # this caveat would name the feeds behind a different set of rows than the
+    # figures it rides beside -- and it would diverge exactly on settled holds,
+    # the rows whose two dates disagree.
+    #
+    # 🔴 These predicates are spelled here rather than taken from
+    # `query._transaction_filters`, which is where every other reader gets them:
+    # `query` imports this module, so the shared list cannot be imported back
+    # without a cycle. That is a duplication, and the drift it invites is real --
+    # this reader kept the old column when every other one moved. Any later
+    # change to the window's shape has to be made in both places until the
+    # predicate list lives somewhere neither module owns.
     if since is not None:
-        filters.append(transactions.c.posted_date >= since)
+        filters.append(transactions.c.ledger_date >= since)
     if until is not None:
-        filters.append(transactions.c.posted_date <= until)
+        filters.append(transactions.c.ledger_date <= until)
     rows = conn.execute(
         select(accounts.c.connection_id)
         .select_from(transactions.join(accounts))

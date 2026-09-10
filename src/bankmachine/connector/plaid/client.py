@@ -27,7 +27,6 @@ from the aggregator.
 
 from __future__ import annotations
 
-import json
 import time
 from collections.abc import Callable
 from typing import Any, Final
@@ -70,6 +69,7 @@ from bankmachine.connector import (
     LinkToken,
     MalformedResponseError,
     TransportError,
+    parse_response_body,
 )
 from bankmachine.connector.plaid.errors import (
     RetryPolicy,
@@ -212,13 +212,17 @@ def _payload(endpoint: Endpoint, body: bytes) -> dict[str, Any]:
     token. Archivable responses are never parsed here: AC-5.1 puts the archive
     before any normalization, and a client that parsed on the way through would
     make itself the first normalization step.
+
+    **Ruling on the three parse failures: the shared helper, not a loud crash.**
+    Every caller here is enrolling a connection, and this module's whole contract
+    is that an unusable answer arrives as a `MalformedResponseError` the CLI can
+    turn into a sentence. A syntax error already did; a body nested past the
+    stack and a body that is not UTF-8 escaped as `RecursionError` and
+    `UnicodeDecodeError`, neither of which is a `ValueError`, so the operator got
+    a traceback where the contract promises a sentence. `body` is `bytes`, so the
+    parser is the one doing the decoding and the third mode is reachable.
     """
-    try:
-        payload = json.loads(body)
-    except json.JSONDecodeError as exc:
-        raise MalformedResponseError(
-            f"{endpoint} answered with something that is not JSON", endpoint=endpoint
-        ) from exc
+    payload = parse_response_body(body, what=f"what {endpoint} answered", endpoint=endpoint)
     if not isinstance(payload, dict):
         raise MalformedResponseError(
             f"{endpoint} answered with {type(payload).__name__}, expected an object",

@@ -178,12 +178,23 @@ never guessed from labels. Guessing fails both ways: a label is the institution'
 shortened form used in code slips past a literal match, while tokenizing a label collides with
 unrelated legitimate text.
 
-So the filled-in copy is accompanied by two plain token lists in the same gitignored directory:
+So the filled-in copy is accompanied by three plain token lists in the same gitignored directory.
+Two matching modes, and the **file** carries the mode — never the token line, because a prefix or a
+second column would have to pass the single-word validator, and that validator's strictness is what
+stops a name matching nothing from counting toward a reassuring total:
 
-| File | Holds |
-|---|---|
-| `deployment/roster-tokens.txt` | financial-institution spellings |
-| `deployment/identity-tokens.txt` | the operator's name, username, machine name |
+| File | Holds | Matched |
+|---|---|---|
+| `deployment/roster-tokens.txt` | financial-institution spellings | case-insensitively, on word boundaries |
+| `deployment/identity-tokens.txt` | the operator's name, username, machine name | case-insensitively, on word boundaries |
+| `deployment/roster-tokens-cased.txt` | institution spellings whose lowercase form is an ordinary English word | **case-sensitively**, on word boundaries |
+
+🔴 **The cased file is a genuine reduction in coverage, and the rule for using it is narrow.** A
+token listed there no longer catches its lowercase or embedded form. That is the point — the leaked
+form of a proper noun is capitalized, so ordinary prose using the word goes free — but it is less
+protection than the strict files give. **A token belongs in the cased file only when its lowercase
+form is an ordinary English word.** The default is the strict file, and a token's placement is a
+review decision, not a convenience.
 
 ```
 # One token per line. Blank lines and #-comments ignored.
@@ -202,8 +213,38 @@ names it hunts for cannot scan itself, so the one tracked file guaranteed to con
 the one file never checked. And anyone cloning a published copy of this repository would otherwise
 inherit a guard protecting a stranger's identity while protecting none of their own.
 
-`tests/preferences/check-no-personal-data.sh` matches these on word boundaries, case-insensitively, across
-**every commit being pushed** — not the working tree, because the leak this project actually had was
-documentation in already-pushed history behind a clean tip. A checkout with no `deployment/`
-directory has no tokens, nothing to leak, and passes with a note; that is the ordinary state for
-anyone who is not this deployment's operator, and it is what makes the guard safe to publish.
+`tests/preferences/check-no-personal-data.sh` matches these across **every commit being pushed** —
+not the working tree, because the leak this project actually had was documentation in already-pushed
+history behind a clean tip. A checkout with no `deployment/` directory has no tokens, nothing to
+leak, and passes with a note; that is the ordinary state for anyone who is not this deployment's
+operator, and it is what makes the guard safe to publish.
+
+### 8.1 The audit that a push-scoped scan depends on
+
+🔴 **A push is checked against the commits it actually publishes.** Where the remote has never seen
+the branch, that is everything reachable from the tip that no remote-tracking ref already reaches —
+not everything reachable, which on a branch cut from an existing one is almost entirely history the
+remote already holds, and a refusal aimed at that history is one no push can act on.
+
+**That narrowing has a precondition and it is not waived.** Trusting remote-tracking refs means
+already-pushed history is never re-read, which is exactly the blind spot the guard exists to close.
+🔴 **A one-off full-history audit closes it instead**, and it is a standing precondition rather than
+a one-time chore: the audit is **per-deployment**, because the tokens are, and a token added later
+has no audited history behind it.
+
+- Run it before relying on the narrowed range, and again whenever a token is added.
+- Record its adjudicated matches beside the token lists, in `deployment/`. A match judged not to be
+  a leak is written down as adjudicated, so it does not re-trip the guard forever and so the
+  judgement is reviewable.
+- A match found in **unpublished** history is not covered by that adjudication. The push publishes
+  it, and the guard blocking it is correct.
+
+> **Amendment (2026-09-10).** This section previously described two token files matched
+> case-insensitively, and a zero-remote push scanning every commit reachable from the tip. Both are
+> restated above. The first push of a branch was refusing on matches in already-published history —
+> a refusal unfixable at the moment it fires, whose only escape is `--no-verify`, which also
+> switches off the gitflow guard that keeps non-release work off `main`. Narrowing the range is what
+> removes it; the audit is what pays for the narrowing. The cased token file is the same problem in
+> the other half: a roster token that is also an ordinary English word cannot be dropped, because a
+> dropped token stops guarding every file, so it gets a narrower matching rule stated by the file it
+> lives in.

@@ -69,7 +69,17 @@ stated separately because they are not the same guarantee:
   *commits* rather than the working tree. This is wider on purpose: the exposure this project
   actually had was documentation sitting in already-pushed history behind a clean tip, which a
   worktree or tip-only check reports clean. `tests/preferences/check-no-personal-data.sh`, wired into
-  `pre-push`, is this one.
+  `pre-push`, is this one. Its scope is **what the push publishes** — on a branch the remote has
+  never seen, everything reachable from the tip that no remote-tracking ref already reaches. History
+  the remote already holds is covered by the standing full-history audit
+  (`deployment-requirements.template.md` §8.1), not by re-reading it on every push: a refusal aimed
+  at published history is one the push cannot act on, and its only escape also disables the gitflow
+  guard.
+
+> **Amendment (2026-09-10).** The push-time scan previously read *every* commit reachable from the
+> tip whenever the remote sha was all-zero, which made the first push of every new branch refuse on
+> matches already public. The scope above replaces it, and the audit named there is the precondition
+> that makes it safe rather than merely quieter.
 
 🔴 Both **fail closed.** An error condition — an unreadable token file, a regex the engine rejects,
 a missing script — must abort, never report clean: a check whose only bad-news channel is the

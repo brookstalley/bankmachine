@@ -723,3 +723,47 @@ def test_the_type_that_spans_several_remedies_is_not_classified_by_its_type() ->
         error_code="TRANSACTIONS_SYNC_INVALID_CURSOR", error_type="TRANSACTIONS_ERROR"
     )
     assert classify(400, unknown) is UnrecognizedAggregatorError
+
+
+# --------------------------------------------------------------------------
+# The three ways a body fails to parse, at the site where it matters most
+# --------------------------------------------------------------------------
+
+
+def test_an_error_body_nested_past_the_stack_still_produces_a_report() -> None:
+    """🔴 The parse failure that is NOT a `ValueError`, on the error path itself.
+
+    `json.loads` raises `RecursionError` on a deeply nested document -- a
+    `RuntimeError`, sharing no base with `JSONDecodeError` below `Exception`. A
+    clause naming only the syntax error let it out of the one function whose
+    whole contract is that a failure which cannot be described is still
+    reported, so a refusal arrived as a decoder's traceback and the operator
+    lost the failure that was actually being reported to them.
+
+    The `describe` half is the assertion that matters. Degrading to empty fields
+    is only useful if what comes out the other side still names the call.
+    """
+    body = "[" * 100_000 + "]" * 100_000
+
+    detail = parse_error_body(body)
+
+    assert detail == AggregatorErrorDetail()
+    described = describe(INSTITUTIONS_GET, 500, "Server Error", detail)
+    assert "/institutions/get" in described
+    assert "500" in described
+
+
+def test_an_error_body_that_is_not_utf8_still_produces_a_report() -> None:
+    """The third mode, and the reason it cannot arise here is worth pinning.
+
+    `parse_error_body` decodes bytes itself with `errors="replace"` before the
+    parse, so the parser never sees undecodable bytes and `UnicodeDecodeError`
+    is unreachable from this site today. The guard covers it anyway, and this
+    case holds the *behaviour* -- a report, not a raise -- so that moving the
+    pre-decode cannot turn "unreachable" into "uncaught" without reddening
+    something.
+    """
+    detail = parse_error_body(b'{"error_code": "ITEM_LOCKED", "x": "\xff\xfe"}')
+
+    described = describe(INSTITUTIONS_GET, 400, "Bad Request", detail)
+    assert "/institutions/get" in described

@@ -27,7 +27,6 @@ because a wrong remedy sends the operator somewhere that cannot help them.
 
 from __future__ import annotations
 
-import json
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -42,10 +41,12 @@ from bankmachine.connector import (
     DataNotReadyError,
     Endpoint,
     InstitutionUnavailableError,
+    MalformedResponseError,
     RateLimitedError,
     ReauthRequiredError,
     TransactionsPaginationRestartError,
     UnrecognizedAggregatorError,
+    parse_response_body,
 )
 from bankmachine.logging_setup import get_logger
 from bankmachine.store.types import UtcInstant
@@ -148,14 +149,29 @@ def parse_error_body(body: object) -> AggregatorErrorDetail:
 
     The body arrives as `str` because the SDK decodes it before re-raising, but
     `bytes` is accepted too rather than trusting that to stay true.
+
+    🔴 **Ruling on the three parse failures: the shared helper, and this is the
+    site where it matters most.** This is the path taken when something has
+    already gone wrong, so a parse that raises replaces a diagnosable failure
+    with an undiagnosable one -- the operator is handed a decoder's traceback
+    instead of the report that was being built for them. A syntax error already
+    degraded to empty fields; a body nested past the stack raised
+    `RecursionError`, which is not a `ValueError` and so went straight out
+    through the caller's refusal path.
+
+    `UnicodeDecodeError` cannot arise from the parse here, because the two lines
+    above decode with `errors="replace"` and hand the parser a `str`. It is
+    covered anyway rather than argued away: the helper is what keeps
+    *unreachable today* from quietly becoming *uncaught tomorrow* if that
+    pre-decode ever moves.
     """
     if isinstance(body, bytes | bytearray):
         body = body.decode("utf-8", errors="replace")
     if not isinstance(body, str):
         return AggregatorErrorDetail()
     try:
-        payload = json.loads(body)
-    except json.JSONDecodeError:
+        payload = parse_response_body(body, what="an error body")
+    except MalformedResponseError:
         return AggregatorErrorDetail()
     if not isinstance(payload, dict):
         return AggregatorErrorDetail()

@@ -14,12 +14,19 @@ the source reports no more pages" literally while being wrong.
 the error on the failing connection's own row and continues, and the run's exit
 code reports what it found: `1` if it ran and something is degraded, `2` only if
 it could not run at all.
+
+🔴 **A backfill still arriving is neither of those, and it gets its own code.**
+`INITIAL_UPDATE_COMPLETE` hands over roughly the last thirty days of a two-year
+grant, with the rest following minutes to hours later; `NOT_READY` hands over
+nothing yet; a page run stopped at its ceiling has more to fetch. All three are
+`75` -- ran, nothing wrong, come back -- because a scheduled runner reads the
+exit code and nothing else, and under a bare `0` it cannot tell a whole history
+from thirty days of one.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time
 from collections.abc import Callable
@@ -29,12 +36,13 @@ from typing import Any
 from sqlalchemy import func, select, update
 from sqlalchemy.engine import Connection as SAConnection
 
-from bankmachine.cli.exit_codes import EXIT_OK, EXIT_UNHEALTHY
+from bankmachine.cli.exit_codes import EXIT_OK, EXIT_RUN_AGAIN, EXIT_UNHEALTHY
 from bankmachine.config import Config
 from bankmachine.connector import (
     ConnectorError,
     FetchedResponse,
     TransactionsPaginationRestartError,
+    parse_response_body,
 )
 from bankmachine.connector.plaid.client import PlaidClient
 from bankmachine.derivers import ALL_DERIVERS
@@ -108,6 +116,24 @@ class ConnectionOutcome:
     granted_history_days: int | None = None
     history_shortfall_days: int | None = None
 
+    @property
+    def unfinished(self) -> bool:
+        """Whether this connection still owes history that this run did not get.
+
+        🔴 Positive evidence, not the absence of a stop signal.
+        `HISTORICAL_UPDATE_COMPLETE` is the only status that proves the backfill
+        landed, so anything else -- `NOT_READY`, `INITIAL_UPDATE_COMPLETE`, a
+        status this build does not recognise -- leaves the connection reported as
+        still arriving. That is the only direction that cannot claim a window
+        nobody watched close, and it is the same gate `_record_granted_window`
+        applies for the same reason.
+
+        `stopped_short` is a second, independent way to owe more: a run can page
+        through history the aggregator calls complete and still hit its ceiling
+        with `has_more` true.
+        """
+        return not self.historical_complete or self.stopped_short
+
 
 @dataclass(slots=True)
 class RunOutcome:
@@ -117,14 +143,21 @@ class RunOutcome:
 
     @property
     def exit_code(self) -> int:
-        """`1` when the run completed and found a problem; `0` when it did not.
+        """`1` found a problem, `75` did not finish, `0` finished with nothing wrong.
 
         Derived rather than tracked, so a caller cannot forget to set it. `2` is
         never produced here: it means "could not run", and by this point the run
         has run.
+
+        🔴 A problem outranks an unfinished backfill. `75` asks the caller to
+        come back, which a scheduled runner does on its own timetable anyway;
+        `1` asks an operator to look at a connection that is stuck. A run that
+        found both needs the operator, so the code that reaches one wins.
         """
         if any(o.degraded for o in self.outcomes):
             return EXIT_UNHEALTHY
+        if any(o.unfinished for o in self.outcomes):
+            return EXIT_RUN_AGAIN
         return EXIT_OK
 
 
@@ -341,12 +374,12 @@ def _sync_one(
 
     if outcome.historical_complete:
         _record_granted_window(config, connection_id, outcome)
-    # 🔴 A run stopped by the page ceiling has NOT finished, and stamping it
-    # `active` with a fresh `last_success_at` would tell every later reader --
-    # the freshness warning in `query.py` most of all -- that this connection is
-    # up to date. It is not: `has_more` was still true. The status is what a
-    # consumer trusts, so it must not claim more than the run did.
-    _record_success(config, connection_id, complete=not outcome.stopped_short)
+    # 🔴 A run that still owes history has NOT finished, and stamping it `active`
+    # with a fresh `last_success_at` would tell every later reader -- the
+    # freshness warning in `query.py` and `get_pipeline_health` most of all --
+    # that this connection is up to date. The status is what a consumer trusts,
+    # so it must not claim more than the run did.
+    _record_success(config, connection_id, history_complete=not outcome.unfinished)
     return outcome
 
 
@@ -482,9 +515,28 @@ def _page(fetched: FetchedResponse) -> dict[str, object]:
 
     `parse_float=str` even though no money is read here: it is the habit that
     keeps a float out of the system, and an exception for "this caller does not
-    look at amounts today" is how one gets in tomorrow.
+    look at amounts today" is how one gets in tomorrow. It is not passed at this
+    call because `parse_response_body` makes it a property of reading a body at
+    all, which is one fewer caller who has to remember.
+
+    🔴 **Ruling on the three parse failures: the shared helper, raising into the
+    per-connection refusal this loop already has.** This is the multi-connection
+    path, and it had no guard at all: an unreadable page raised out of
+    `_update_status` or `_has_more`, past `_sync_one`'s catch -- which names
+    `ConnectorError` and `StoreError`, and none of `JSONDecodeError`,
+    `RecursionError` or `UnicodeDecodeError` is either -- and ended the whole
+    run, so every connection queued behind this one went unsynced on account of
+    one institution's malformed reply. That is the single thing AC-4.1 says must
+    never happen. `MalformedResponseError` is a `ConnectorError`, so this
+    connection is now recorded degraded and the run carries on.
+
+    Degrading rather than returning an empty mapping is the other half of the
+    ruling: `{}` would make `has_more` false and the status unknown, which reads
+    as a page run that finished cleanly. Silence is the one disallowed outcome.
     """
-    parsed = json.loads(fetched.body, parse_float=str)
+    parsed = parse_response_body(
+        fetched.body, what="a transactions page", endpoint=fetched.endpoint
+    )
     return parsed if isinstance(parsed, dict) else {}
 
 
@@ -514,14 +566,23 @@ def _degrade(
     return outcome
 
 
-def _record_success(config: Config, connection_id: int, *, complete: bool) -> None:
-    """Clear the error state, and stamp `last_success_at` only on a complete run.
+def _record_success(config: Config, connection_id: int, *, history_complete: bool) -> None:
+    """Clear the error state, and stamp `last_success_at` only once the history is in.
 
-    🔴 The two halves are separated deliberately. A bounded run really did clear
-    whatever was wrong -- it fetched pages successfully -- so leaving the
-    connection `degraded` would be false. But `last_success_at` is what the
-    freshness warning reads, and advancing it on a run that stopped mid-history
-    would report a connection as current when it is behind.
+    🔴 The two halves are separated deliberately. A run that fetched pages really
+    did clear whatever was wrong, so leaving the connection `degraded` would be
+    false. But `last_success_at` is what the freshness warning and
+    `get_pipeline_health` read, and to both of them a successful sync means *the
+    backfill is in*.
+
+    🔴 The parameter names the aggregator's status, not the pager's, because
+    those are two different questions and only one of them is the one worth
+    stamping. A connection at `INITIAL_UPDATE_COMPLETE` has paged cleanly to the
+    end of what it was offered and holds roughly thirty days of a two-year grant;
+    the remaining seven hundred are still arriving. Stamping there reports a
+    connection as current while it is behind by almost all of its history --
+    which is the silent staleness this product exists to refuse, produced by its
+    own bookkeeping.
     """
     now: UtcInstant = now_utc()
     values: dict[str, Any] = {
@@ -530,7 +591,7 @@ def _record_success(config: Config, connection_id: int, *, complete: bool) -> No
         "last_error_at": None,
         "updated_at": now,
     }
-    if complete:
+    if history_complete:
         values["last_success_at"] = now
     with writer_connection(config) as conn:
         conn.execute(
@@ -558,6 +619,26 @@ def _report(run: RunOutcome) -> None:
                 f"  {outcome.connection_id}  {outcome.institution_name}: "
                 f"{outcome.pages} {pages} applied{more}"
             )
+            if not outcome.historical_complete:
+                # 🔴 A bare "N pages applied" reads as finished, and at
+                # `INITIAL_UPDATE_COMPLETE` it is roughly thirty days of a
+                # two-year grant. The line names what is NOT known rather than
+                # only that something is missing: the granted window is null, so
+                # there is no window to report, and the oldest row here is the
+                # oldest so far rather than the oldest that exists. This is the
+                # same fact the read path already puts on every answer as a
+                # `partial` warning; the two surfaces must not disagree.
+                #
+                # Wrapped by hand rather than left to the terminal, because the
+                # shortfall line below it is the only other continuation the
+                # operator ever sees and a reflowed paragraph beside a fixed one
+                # reads as two different kinds of thing.
+                print(
+                    "       the history is still arriving. The granted window is not yet\n"
+                    "       known, so it cannot be reported here, and the oldest\n"
+                    "       transaction applied so far is not the oldest that exists.\n"
+                    "       Run again shortly"
+                )
             if outcome.history_shortfall_days:
                 print(
                     f"       🔴 {outcome.granted_history_days} days of history granted "
@@ -568,3 +649,12 @@ def _report(run: RunOutcome) -> None:
     degraded = sum(1 for o in run.outcomes if o.degraded)
     if degraded:
         print(f"\n{degraded} of {len(run.outcomes)} connections could not be synced")
+    owing = sum(1 for o in run.outcomes if not o.degraded and o.unfinished)
+    if owing:
+        # The summary an operator scanning ten institutions reads. Degraded
+        # connections are counted separately above and never here: those need
+        # someone to look at them, not another run. The exit code is deliberately
+        # not quoted -- it is `1` rather than `75` whenever both counts are
+        # non-zero, and a line that named the wrong number would be worse than
+        # one that names none.
+        print(f"\n{owing} of {len(run.outcomes)} connections still owe history; run again")

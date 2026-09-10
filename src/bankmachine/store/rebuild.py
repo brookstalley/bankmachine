@@ -43,7 +43,7 @@ from sqlalchemy import Connection as SAConnection
 
 from bankmachine.config import Config
 from bankmachine.logging_setup import get_logger
-from bankmachine.store import derivation
+from bankmachine.store import derivation, transfers
 from bankmachine.store.connection import StoreError
 from bankmachine.store.derivation import DerivationContext, Deriver
 from bankmachine.store.engine import transaction, writer_connection
@@ -325,6 +325,15 @@ def rebuild(
                     context = DerivationContext(derivation_version_id=derivation_version_id)
                 derivation.derive(conn, response, context, derivers=derivers)
                 replayed += 1
+
+            # 🔴 After every response is replayed and BEFORE the digest is
+            # taken. A transfer's two legs routinely arrive on different pages
+            # and sometimes from different institutions, so pairing per response
+            # would match only whatever happened to be in the store already --
+            # and a rebuild would then produce a different pairing from the same
+            # archive depending on page order. Once, over the finished tables,
+            # is the only pass that is a function of the data.
+            transfers.pair_transfers(conn)
 
             _restore_operator_state(conn, preserved)
 

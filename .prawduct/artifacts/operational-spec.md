@@ -157,9 +157,21 @@ it does not survive sleep or handle missed windows on macOS. launchd's `StartCal
 on wake for a missed window; that behaviour is the requirement, and it must be **verified by actually
 installing and firing the agent, including a missed-window case — not simulated.**
 
-The agent invokes the CLI, so 🔴 **the exit-code contract is a scheduling contract**: `1` means the run
-found a problem, `2` means it could not run. Collapsing them would make a broken scheduler
-indistinguishable from a degraded feed.
+The agent invokes the CLI, so 🔴 **the exit-code contract is a scheduling contract**: `0` means the
+run finished, `1` means it found a problem, `2` means it could not run, and `75` (`EX_TEMPFAIL`)
+means it ran, nothing is wrong, and history is still owed. Collapsing `1` and `2` would make a broken
+scheduler indistinguishable from a degraded feed.
+
+🔴 **`75` is the code this agent is built around, and it is why the agent needs one at all.** A
+first sync on a real institution reaches `INITIAL_UPDATE_COMPLETE` — roughly thirty days of a
+730-day grant — minutes to hours before the rest lands, and the aggregator does not call back. The
+exit code is the only channel the agent reads: under a bare `0` it cannot tell a whole history from
+thirty days of one, and the connection would sit at 4% of its data with `StartCalendarInterval`
+next firing tomorrow. `NOT_READY` and a page run stopped at its ceiling are the same fact and the
+same code. **The agent's behaviour on `75` is to re-run before the next calendar window** — that is
+a requirement on build step 8, not an optimisation, and the interval is the step's to choose.
+`1` outranks `75` on a run that produced both: a stuck connection needs a person, and the arriving
+one gets its retry from the next scheduled window regardless.
 
 🔴 **Upgrading across a schema migration has an order, and it is not the usual one.** A build that
 does not recognize the datastore's version refuses to serve, so the datastore must be brought forward
@@ -199,6 +211,18 @@ every archived `/accounts/get` through the accounts deriver, which populates the
 same responses the original observation came from. Expect it to report a content change:
 `content_digest` walks every table, `connections` included. This is the remedy; it existed before
 this migration and simply was not written down.
+
+> 🔴 **Amendment, 2026-09-10 — the rebuild is now UNCONDITIONAL after an upgrade, not conditional
+> on a connection being stuck.** *Statement:* run `bankmachine store rebuild` after any migration,
+> whatever `connections list` says. *Why:* the condition above was correct while the only
+> derivation-owned column a migration left empty was the roster observation, which a healthy
+> connection refilled at its next sync. Migrations 005, 007 and 009 each add a column that is
+> stamped **once, at insert** — `ledger_date`, `lineage_id`, `transfer_pair_id` — so an ordinary
+> sync refills them only for rows it ADDS, and every row already in the store stays null on a
+> perfectly healthy connection. Until the rebuild runs, every windowed total silently excludes
+> the unstamped rows: it is a floor, not a measurement. The answers disclose that with a
+> `partial` warning naming the count and this command, but a disclosure is not the fix.
+> *Retroactivity:* none owed — the condition was true of the migration it was written for.
 
 The MCP server and the CLI must be upgraded *with* the datastore — an older reader
 refuses to serve, which is the norm working rather than a fault.
@@ -320,7 +344,7 @@ Fully specified in `observability-strategy.md`; the operational summary is:
 | Question | Command |
 |---|---|
 | Is the datastore healthy? | `bankmachine store status` — exit `0` healthy, `1` unhealthy, `2` could not run |
-| Did last night's sync run? | `get_pipeline_health`, or `last_success_at` in `sync_state` |
+| Did last night's sync run? | `get_pipeline_health`, or `last_success_at` on the connection row — 🔴 which is stamped only once the whole granted history has landed, so a connection mid-backfill reads as not-yet-succeeded rather than as current |
 | What happened during a run? | The log directory, per-run correlation id |
 | Why is this number wrong? | `bankmachine sync shell` — read-only SQL over the real datastore |
 
@@ -341,7 +365,8 @@ The exceptions are marked.
 |---|---|---|
 | **One connection broke** (auth required, locked, institution down) | `status = 'degraded'` + error code + `last_success_at` | `sync repair` → update-mode enrollment URL. 🔴 **History and cursor are preserved** (AC-4.3). The other connections were never affected (AC-4.1) *(specified — step 6)* |
 | **Rate limited** | Error code on that connection | Backoff; the next scheduled run resumes. Never a crash |
-| **Initial backfill not ready** | Not-yet-ready response | 🔴 Backoff-and-retry, not failure (AC-2.6). A multi-year backfill takes time to materialize |
+| **Initial backfill not ready** | Not-yet-ready response; exit `75` | 🔴 Backoff-and-retry, not failure (AC-2.6). A multi-year backfill takes time to materialize |
+| **Backfill only partly arrived** | Exit `75` with pages applied; `last_success_at` still null, so every answer carries `partial` | 🔴 Run again. `INITIAL_UPDATE_COMPLETE` is ~30 days of a 730-day grant and the rest follows minutes to hours later. Nothing is wrong and nothing is lost; the connection is simply not yet whole, and it says so on both surfaces rather than on neither |
 | **Crash mid-sync** | Run absent from logs; cursor unchanged | 🔴 **Nothing to do.** The cursor never advances without the data it accompanies committing in the same transaction, so the next run resumes without loss (AC-2.5). *Tested by killing the process mid-pagination* |
 | **Missed schedule** (machine asleep) | `stale` | launchd fires on wake (AC-ARCH.2). If it did not, run the sync by hand and investigate the agent |
 | **Datastore locked** | `database is locked` after busy timeout | A writer is running. Wait. 🔴 The `flock` is released by the kernel even on SIGKILL — which is why it is a `flock` and not a lease row in `sync_state`, since a lease survives SIGKILL and strands every later run |

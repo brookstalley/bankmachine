@@ -272,6 +272,72 @@ def test_a_token_typed_into_the_shell_is_redacted_in_the_transcript(
 
 
 # --------------------------------------------------------------------------
+# Free text: the echoed statement and the driver's error sentence
+# --------------------------------------------------------------------------
+
+#: Exactly the 32 characters the opaque rule blanks, and a real column here.
+_LONG_COLUMN: Final = "source_investment_transaction_id"
+
+#: The same shape, and nothing this datastore holds.
+_ABSENT_NAME: Final = "a_table_this_datastore_does_not_hold"
+
+
+def test_a_statement_naming_a_long_column_is_echoed_intact(initialized_config: Config) -> None:
+    """Querying the investment tables is a core use of this surface.
+
+    The echoed statement is a mixture of structure and value, and the structure
+    half is exactly what an operator needs back to read their own transcript.
+    """
+    statement = f"SELECT {_LONG_COLUMN} FROM investment_transactions;"
+
+    out = _run(initialized_config, [statement])
+
+    assert statement in out
+    assert "[REDACTED]" not in out
+
+
+def test_an_error_naming_a_long_column_names_it(initialized_config: Config) -> None:
+    """An error that will not say which column it means is not a diagnosis."""
+    out = _run(initialized_config, [f"SELECT {_LONG_COLUMN} FROM accounts;"])
+
+    assert "error:" in out
+    assert _LONG_COLUMN in out.split("error:", 1)[1]
+
+
+def test_a_long_name_this_datastore_does_not_hold_is_still_blanked(
+    initialized_config: Config,
+) -> None:
+    """What is spared is a property of this store, not of looking like a name.
+
+    An identifier-shaped run that names nothing here is an operator-typed
+    value as far as this surface can tell, so it keeps the value rule.
+    """
+    out = _run(initialized_config, [f"SELECT * FROM {_ABSENT_NAME};"])
+
+    assert _ABSENT_NAME not in out
+    assert "[REDACTED]" in out
+
+
+def test_a_token_typed_beside_a_long_column_is_still_redacted(
+    initialized_config: Config,
+) -> None:
+    """Both halves of one line, which is the case the shape rule cannot split.
+
+    The column survives and the literal does not, in the same echoed statement.
+    """
+    token = "sbx-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"  # credential-shape: test vector
+
+    out = _run(
+        initialized_config,
+        [f"SELECT {_LONG_COLUMN} FROM investment_transactions WHERE {_LONG_COLUMN} = '{token}';"],
+    )
+
+    assert token not in out
+    assert "[REDACTED]" in out
+    assert _LONG_COLUMN in out
+
+
+# --------------------------------------------------------------------------
 # The norm this chunk exists to get right: nothing is pinned between statements
 # --------------------------------------------------------------------------
 

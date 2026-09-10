@@ -45,7 +45,11 @@ def test_the_pre_push_hook_still_points_at_the_guard() -> None:
 
 
 def test_the_guard_proves_itself_before_it_reports_clean() -> None:
-    """22 cases in a throwaway repository, including both fail-closed directions."""
+    """Every case in a throwaway repository, including both fail-closed directions.
+
+    The script prints its own tally; asserting "0 failed" rather than a total keeps
+    a case that is added from having to be counted in two places.
+    """
     result = _run(SELFTEST)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "0 failed" in result.stdout

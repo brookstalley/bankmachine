@@ -12,11 +12,14 @@ from __future__ import annotations
 
 import argparse
 import getpass
-import json
 import sys
 
 from bankmachine.config import Config
-from bankmachine.connector import FetchedResponse
+from bankmachine.connector import (
+    FetchedResponse,
+    MalformedResponseError,
+    parse_response_body,
+)
 from bankmachine.connector.plaid.client import PlaidClient
 from bankmachine.logging_setup import get_logger
 from bankmachine.secrets import get_plaid_secret, set_plaid_secret
@@ -127,10 +130,18 @@ def _reported_total(body: bytes) -> int | None:
     Parsed for the operator's benefit only -- the archive already holds the
     bytes this came from, so a shape the parser does not recognize costs a line
     of output rather than the response.
+
+    🔴 **Ruling on the three parse failures: the shared helper.** The sentence
+    above is the decision, and it was only two-thirds implemented -- a document
+    nested past the stack raises `RecursionError`, which is a `RuntimeError` and
+    so fell through a clause naming a `ValueError` and a `UnicodeDecodeError`.
+    The response was already archived by the time this runs, so letting that
+    out would end `connector check` with a traceback in place of the report that
+    says where the bytes went.
     """
     try:
-        payload = json.loads(body)
-    except (json.JSONDecodeError, UnicodeDecodeError):
+        payload = parse_response_body(body, what="the archived body")
+    except MalformedResponseError:
         return None
     if not isinstance(payload, dict):
         return None

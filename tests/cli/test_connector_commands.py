@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from bankmachine.cli import connector as connector_cli
 from bankmachine.cli import run
 from bankmachine.config import Config
 from bankmachine.connector import INSTITUTIONS_GET, FetchedResponse
@@ -286,3 +287,26 @@ def test_set_secret_refuses_an_empty_secret(
     assert run(["connector", "set-secret"]) == 2
     assert "empty" in capsys.readouterr().err
     assert get_plaid_secret(cli_env) == "test-secret", "the existing secret was destroyed"
+
+
+@pytest.mark.parametrize(
+    ("body", "mode"),
+    [
+        (b'{"institutions": [], "total": 4', "malformed syntax"),
+        (("[" * 100_000 + "]" * 100_000).encode(), "nested past the decoder's stack"),
+        (b'{"total": 42, "name": "\xff\xfe"}', "bytes that are not UTF-8"),
+    ],
+    ids=["syntax", "depth", "encoding"],
+)
+def test_a_body_the_parser_cannot_read_costs_a_line_not_the_report(body: bytes, mode: str) -> None:
+    """The count is read for the operator's benefit; the archive already has the bytes.
+
+    🔴 That decision was only two-thirds implemented. `RecursionError` is a
+    `RuntimeError`, so it fell through a clause naming `ValueError` and
+    `UnicodeDecodeError` -- and by the time this runs the response is already
+    archived, so letting it out would end `connector check` with a traceback in
+    place of the line saying where the bytes went.
+    """
+    assert connector_cli._reported_total(body) is None, (
+        f"a body {mode} took down the report instead of one line of it"
+    )

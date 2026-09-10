@@ -426,10 +426,14 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         f"{DERIVER_TESTS}::test_a_liability_reported_positive_is_stored_negative",
     ),
     (
+        # 🔴 Pinned to the SHARED parse helper, which is where the argument now
+        # lives. Five readers used to spell `json.loads` themselves; breaking one
+        # of them would leave the other four honest and the norm half-proven.
+        # One site is the point of routing them all through it.
         "AC-6.2: money is read as text, never through a float",
-        CONNECTOR_DERIVERS,
-        "        parsed = json.loads(response.body, parse_float=str)",
-        "        parsed = json.loads(response.body)",
+        CONNECTOR_PACKAGE,
+        "        return json.loads(body, parse_float=str)",
+        "        return json.loads(body)",
         f"{DERIVER_TESTS}::test_an_amount_a_float_would_have_mangled_survives_exactly",
     ),
     (
@@ -928,8 +932,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-2.1: a bounded run does not stamp last_success_at",
         SYNC_RUN,
-        "    _record_success(config, connection_id, complete=not outcome.stopped_short)",
-        "    _record_success(config, connection_id, complete=True)",
+        "    _record_success(config, connection_id, history_complete=not outcome.unfinished)",
+        "    _record_success(config, connection_id, history_complete=True)",
         f"{SYNC_RUN_TESTS}::test_a_bounded_run_does_not_claim_the_connection_is_up_to_date",
     ),
     (
@@ -1060,16 +1064,15 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "AC-12.8: the aggregate names the accounts that stopped being reported",
         QUERY,
         "        not_active = [entry for entry in lifecycle.values() if not entry.active]\n"
-        "        uncovered = [entry for entry in _account_coverage(conn).values()",
+        "        all_coverage = list(_account_coverage(conn).values())",
         "        not_active: list[AccountLifecycle] = []\n"
-        "        uncovered = [entry for entry in _account_coverage(conn).values()",
+        "        all_coverage = list(_account_coverage(conn).values())",
         f"{LIFECYCLE_TESTS}::test_a_money_summary_spanning_an_account_that_went_quiet_says_so",
     ),
     (
         "#19: the aggregate names an account that has never had a transaction",
         QUERY,
-        "        uncovered = [entry for entry in _account_coverage(conn).values() "
-        "if entry.uncovered]",
+        "        uncovered = [entry for entry in all_coverage if entry.uncovered]",
         "        uncovered: list[AccountCoverage] = []",
         f"{COVERAGE_TESTS}::test_summarising_money_warns_when_an_account_in_scope_has_no_coverage",
     ),
@@ -1080,8 +1083,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # answers with the size of that page.
         "truncation: `matching` counts the whole request, cursor or no cursor",
         QUERY,
-        "                        since=since, until=until, account_id=account_id, after=None",
-        "                        since=since, until=until, account_id=account_id, after=after",
+        "                        account_id=account_id,\n                        after=None,",
+        "                        account_id=account_id,\n                        after=after,",
         f"{TRUNCATION_TESTS}::"
         "test_a_cursor_narrows_what_is_left_and_leaves_the_whole_request_count_alone",
     ),
@@ -1152,9 +1155,12 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # reclassifies a transfer as spending, silently and upward.
         "flow class: the class reads the source column, never category_override",
         QUERY,
-        "            transactions.c.source_category_primary.in_("
-        "sorted(_INTERNAL_TRANSFER_CATEGORIES)),",
-        "            transactions.c.category_override.in_(sorted(_INTERNAL_TRANSFER_CATEGORIES)),",
+        # 🔴 Anchored on the COLUMN alone, not on the vocabulary constant beside
+        # it. The constant moved modules when the pairer needed it too, and the
+        # anchor went stale for a reason that had nothing to do with the norm --
+        # which is the kind of stale that gets re-pinned without being read.
+        "                transactions.c.source_category_detailed.in_(",
+        "                transactions.c.category_override.in_(",
         f"{AGGREGATE_TESTS}::test_a_re_categorisation_cannot_move_a_transfer_into_spending",
     ),
     (
@@ -1352,10 +1358,16 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # again, so the documented fix would fail on the store it is for.
         "AC-5.3: a newly-populated column bumps the derivation version",
         pathlib.Path("src/bankmachine/store/derivation.py"),
-        "DERIVATION_VERSION = 3",
-        "DERIVATION_VERSION = 2",
-        f"{LIFECYCLE_TESTS}::"
-        "test_a_store_derived_before_the_roster_column_rebuilds_instead_of_rolling_back",
+        "DERIVATION_VERSION = 8",
+        "DERIVATION_VERSION = 7",
+        # 🔴 Pinned to the UPGRADE test, not the lifecycle one. The lifecycle
+        # test's store is stamped two versions back, so `change_was_expected`
+        # stays true under a single reverted bump and the mutation passes -- the
+        # guard reads green while proving nothing. The upgrade fixture stamps its
+        # rows at exactly one version back, which is the operator's real
+        # situation and the only gap a single reverted bump closes.
+        "tests/store/test_upgrading_a_populated_store.py::"
+        "test_the_rebuild_stamps_the_ledger_dates_migration_005_could_only_leave_empty",
     ),
     (
         "AC-12.7: a non-active account's silence is closure, not a coverage finding",
@@ -1424,12 +1436,12 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "test_the_roster_observation_is_a_maximum_so_a_replay_cannot_move_it_back",
     ),
     (
-        # 🔴 The break is the design the amendment REVERSED, written out in
-        # full, rather than a constant that makes the read return nothing. The
-        # regression this case exists to catch is somebody restoring the derived
-        # maximum because it needs no column and cannot disagree with its rows --
-        # and under it every other lifecycle test still passes, which is exactly
-        # why the N=1 case had to be written before it could be caught.
+        # 🔴 The break is the DERIVED MAXIMUM written out in full, rather than a
+        # constant that makes the read return nothing. That design is the one a
+        # reader keeps reaching for -- it needs no column and cannot disagree
+        # with its own rows -- and under it every other lifecycle test still
+        # passes, so the N=1 case had to exist before this could be caught at
+        # all. A break that merely empties the read would prove far less.
         "AC-12.5: absence is measured against the RECORDED observation, at N=1 too",
         QUERY,
         "            select(connections.c.connection_id, connections.c.roster_observed_date)",

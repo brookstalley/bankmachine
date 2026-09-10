@@ -106,6 +106,30 @@ nothing to migrate or grandfather.
   enqueued as VRF-006 in `.prawduct/operator-verification.md`, are what close it, and they are the
   operator's.
 
+  > **Amendment, 2026-09-10 — a valuation is rounded to a minor unit this build KNOWS, and refused
+  > otherwise.** *Statement:* the rounding clause above holds where the currency's minor-unit
+  > exponent is a recorded fact. Where it is not, there is no scale to round to, and the row is
+  > refused rather than approximated — per ROW, never per connection, with the raw response keeping
+  > the value.
+  > *Why:* the clause was implemented against a lookup that answered **2 for anything it did not
+  > recognize**, which is ISO 4217's convention for its own codes and is not a fact about the codes
+  > the aggregator sends in `unofficial_currency_code`. So `0.04217` in a cryptocurrency became
+  > `0.04` — a 0.4% loss, disclosed only in a log line no caller of the MCP surface or the CLI ever
+  > sees, and inherited by every total computed from it. That is neither exact nor refused, which
+  > is the one state this norm's whole point is to exclude. The alternative considered and rejected
+  > was to store the rounded value and flag it: a number wrong by 0.4% and marked is still wrong in
+  > every identity this store maintains over it.
+  > *Retroactivity:* none owed against stored rows — the exponent table gains every ISO 4217 code
+  > rather than losing one, so no currency that derived exactly before derives differently now.
+  > Rows previously rounded under a guessed exponent are re-derived by `store rebuild`, which the
+  > derivation-version bump makes a recorded change rather than a silent one.
+  > *Mechanism:* `store/types.py::minor_digits` raises `UnknownMinorDigitsError` rather than
+  > defaulting; `has_minor_digits` is the same question asked without an exception, and is what the
+  > read path uses to exclude such an account from a minor-units aggregate and name it under
+  > `rule-applied`. Adding a currency's exponent to that table is the whole remedy: the amount then
+  > derives exactly and nothing is refused or warned about.
+  Status: steady-state.
+
 - **All monetary values are stored as integer minor units. No floats anywhere in the schema or in
   aggregation code.**
   Why: binary floating point cannot represent decimal currency exactly, and the error accumulates
@@ -235,6 +259,8 @@ Every normalized row in the silver layer carries `derivation_version_id NOT NULL
 | `status` | text | `active` \| `degraded` \| `retired` | |
 | `last_success_at` | UTC instant | nullable | |
 | `roster_observed_date` | calendar date | nullable | 🔴 The date this connection's roster was last successfully READ (AC-12.4). Null means never observed, which marks nothing absent. Migration 004 |
+| `consent_expires_at` | UTC instant | nullable | When the operator's authorisation for this connection lapses, from `/item/get`. Migration 008. 🔴 The pipeline is poll-only, so without this an expiry surfaces as a failed run rather than in advance — a connection reads healthy right up to the sync that fails. Null means the Item has not been polled since the column existed, never that consent does not expire |
+| `source_error_code` | text | nullable | The aggregator's STANDING complaint about the Item, from `/item/get`. Migration 008. 🔴 Not `last_error_code`, which records the last sync *attempt* failing: an Item can be unwell while the most recent poll succeeded, and folding the two together would let one success bury a complaint nobody resolved |
 | `last_error_code` / `last_error_at` | text / UTC instant | nullable | |
 | `enrolled_at` | UTC instant | required | |
 | `retired_at` | UTC instant | nullable | Set iff `status = 'retired'` |
@@ -270,12 +296,12 @@ exact failure AC-11.8 exists to prevent.
 | `institution_id` | int | required, FK | |
 | `connection_id` | int | nullable, FK | Null for an import-only account |
 | `source_account_id` | text | nullable | The aggregator's id; **not** the identity |
-| `source_persistent_account_id` | text | nullable | The source's own cross-enrollment handle, where offered |
+| `source_persistent_account_id` | text | nullable | 🔴 The source's own cross-enrollment handle, where offered — **the first key account matching consults**, scoped to the institution |
 | `name` / `official_name` | text | | As reported |
 | `mask` | text | | Last 4 — the only account-number fragment stored anywhere |
 | `account_type` / `account_subtype` | text | | The **source's** vocabulary, retained verbatim |
 | `balance_class` | text | `asset` \| `liability` | Local classification, operator-correctable |
-| `currency` | text | | ISO code |
+| `currency` | text | nullable | The unit the account is denominated in. 🔴 Null means **the aggregator has not stated one**, never `USD` and never another account's unit (migration 006) |
 | `lifecycle_status` | text | `active` \| `inactive` | |
 | `opened_date` | calendar date | nullable | |
 | `first_seen_date` | calendar date | required | |
@@ -286,6 +312,20 @@ exact failure AC-11.8 exists to prevent.
 
 - `(source = 'aggregator') <= (source_account_id IS NOT NULL)`.
 - Partial unique index `accounts_source_identity ON (connection_id, source_account_id) WHERE source_account_id IS NOT NULL`.
+- 🔴 **Matching is `source_persistent_account_id` first, `(connection_id, source_account_id)` second.**
+  A full re-link issues a new Item, and the new Item issues a NEW id for every account — so matched on
+  the index alone the same real account appears a second time, the whole granted history is re-fetched
+  against it, and annual spending doubles. Where the aggregator supplies a persistent identity it
+  decides: the newly issued `source_account_id` and `connection_id` are written onto the existing row
+  and the `account_id` every row of history references survives.
+  🔴 **Scoped to the institution, never globally.** Nothing makes the field unique across banks, and a
+  global match would turn a collision between two of them into a silent merge of two real accounts.
+  🔴 **Absence is ORDINARY.** The aggregator supplies it for select institutions only; the fallback is
+  the index above, and a re-link at such an institution still duplicates. That is **not fixed here** —
+  the remedy is re-authorising in place, which keeps the same Item and so creates no second lineage.
+  🔴 **A recorded persistent identity is kept when a body omits it**, for the reason a recorded
+  currency is: blanking it on an ordinary sync would remove the only key the next re-link can converge
+  on, and nothing would look wrong until it duplicated.
 - 🔴 **`last_seen_date` is nullable and was not backfilled, and the null is load-bearing.** It means
   *no roster observation is recorded for this account*, and `query._account_lifecycle` reads it as
   exactly that — never as a date. The deeper reason there is no backfill is that there is nothing
@@ -298,6 +338,26 @@ exact failure AC-11.8 exists to prevent.
   then fell behind that maximum and was reported closed for the whole window until the connection's
   next successful sync. A connection with no observation marks nothing absent; once any of its
   accounts carries one, an account still null was genuinely not in that roster.
+- 🔴 **`currency` is nullable and its null is load-bearing too.** It means *the aggregator has not
+  told us what unit this account is in* — never `USD`, never the unit of the operator's other
+  accounts. Both of the aggregator's currency fields are documented nullable, and while the column
+  was NOT NULL an account of that shape could not be written at all: it was skipped, invisible to
+  `list_accounts`, and every transaction on it went on refusing to derive until a later sync
+  happened to state one. The transactions never needed it — they carry their own
+  `transactions.currency`, stated per row.
+  ⚠️ **The four other NOT NULL currency columns stay NOT NULL** — `transactions`, `balances_daily`,
+  `holdings`, `investment_transactions`. Each describes ONE amount, and an amount whose unit nothing
+  stated is refused row by row with a named reason; an account with no unit *yet* is merely
+  incompletely known. Widening those too would turn a narrow honesty fix into a store-wide
+  loosening.
+  🔴 **Such an account, and one whose currency has no known minor-unit exponent, are excluded from
+  every minor-units aggregate, and the exclusion is disclosed** under `rule-applied` naming the
+  account (`query._undenominable_accounts`). Adding an amount whose unit or scale is unknown to a
+  total in a unit that is known produces a figure that means nothing, and an exclusion nobody
+  announces is one that gets silently forgotten during analysis.
+  Migration 006 dropped the NOT NULL by rebuilding the table — SQLite cannot drop one in place — and
+  **no row changed value**: every account in every datastore had a currency, so the copy is the
+  identity and the migration is schema-only.
 
 🔴 **Why `balance_class` exists as data rather than being derived from `account_type`.** `net_worth`
 is an enumerated consumer of this schema and `account_type` cannot answer it: the types are the
@@ -369,6 +429,32 @@ same file is a no-op, and **an operator who renames the export cannot import it 
 | `import_fingerprint` | text | nullable | Import-path identity |
 | `removed_at` | UTC instant | nullable | 🔴 **Soft delete** (AC-2.2) |
 | `first_seen_at` / `updated_at` | UTC instant | required | |
+| `ledger_date` | calendar date | nullable | 🔴 `COALESCE(authorized_date, posted_date)`, stamped **once** on insert and never moved by settlement — the day the money was committed. Migration 005; last in column order because `ALTER TABLE` appends. Null means *predates the split, not yet rebuilt*, never *committed on the posting date* |
+| `lineage_id` | int | nullable, FK → `connections` | 🔴 The aggregator Item that produced the row. Migration 007; last in column order for the same reason. Null means *predates the split, not yet rebuilt* or *came from an operator file*, never *the current Item* — so a null-lineage row is always counted |
+| `transfer_pair_id` | int | nullable | 🔴 The other leg of one transfer: both rows carry the same value, and neither is the other's parent — a shared token, not a pointer, which is why it has no FK. Migration 009; last in column order for the same reason. Set by the pairing pass over the categories a pair can change the meaning of, and **recomputed from scratch on every pass** so the classification is a function of the store rather than of the order pages arrived in. Null means *no counterparty leg was found here*, which is the ordinary case and is what makes a transfer-shaped row count as money that left |
+
+🔴 **Lineage, and why a re-link needs one.** Removing a connection and linking it again yields a new
+Item, and the new Item re-issues every transaction id — so the whole granted history arrives again as
+rows this store has never seen, against an account that converged on its persistent identity, with
+nothing for a unique index to collide with. Summed naively, a year of spending doubles. `connections`
+is already this store's row per Item (`source_connection_id` holds the Item id and is unique) and the
+sync cursor and the measured granted window are already Item-scoped, so this column is that same
+boundary recorded on the rows rather than a parallel mechanism.
+
+**Every row is kept; aggregates count one lineage.** For a range covered by more than one Item the
+NEWEST answers, older ones answer only outside it, and the overlap is disclosed with `rule-applied`
+naming the account and the superseded range. The excluded rows stay in the store and stay reachable —
+consistent with § Direction's rule that a transaction is never hard-deleted. `store/lineage.py` is the
+one place the rule lives: `superseded_spans` computes it, `counts_once` filters a query by it, and
+`only_superseded` asks for exactly what was left out.
+
+🔴 **Rejected: natural-key dedupe** on `(account_id, ledger_date, amount_minor, normalized name)`.
+It is what most systems do and it is wrong here: two genuinely distinct real transactions with the
+same merchant, amount and day — two $5 coffees, two identical fares — collapse into one and the total
+goes **down** with nothing to signal it. This product's asymmetry is that an overcount gets questioned
+and an undercount gets believed, so a rule that can silently delete real money is on the wrong side of
+it. Lineage exclusion fails the other way: a boundary computed wrongly leaves a **visible** duplicate
+or a **disclosed** exclusion.
 
 Identity and access indexes:
 

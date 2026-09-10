@@ -6,6 +6,7 @@ import argparse
 import logging
 import os
 import sys
+import traceback
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -16,14 +17,21 @@ from bankmachine.cli import enroll as enroll_commands
 from bankmachine.cli import store as store_commands
 from bankmachine.cli import sync as sync_commands
 from bankmachine.cli.enroll import EnrollmentError
-from bankmachine.cli.exit_codes import EXIT_ERROR, EXIT_OK, EXIT_UNHEALTHY
+from bankmachine.cli.exit_codes import EXIT_ERROR, EXIT_OK, EXIT_RUN_AGAIN, EXIT_UNHEALTHY
 from bankmachine.config import Config, ConfigError, load_config
 from bankmachine.connector import ConnectorError
 from bankmachine.logging_setup import configure_logging, get_logger, log_startup
 from bankmachine.secrets import SecretsError
 from bankmachine.store.connection import StoreError
 
-__all__ = ["EXIT_ERROR", "EXIT_OK", "EXIT_UNHEALTHY", "build_parser", "run"]
+__all__ = [
+    "EXIT_ERROR",
+    "EXIT_OK",
+    "EXIT_RUN_AGAIN",
+    "EXIT_UNHEALTHY",
+    "build_parser",
+    "run",
+]
 
 logger = get_logger(__name__)
 
@@ -123,10 +131,22 @@ def run(argv: Sequence[str] | None = None) -> int:
         print(f"bankmachine: {exc}", file=sys.stderr)
         logger.error("command %s failed: %s", args.command, exc, extra=_FILE_ONLY)
         return EXIT_ERROR
-    except Exception:  # prawduct:allow prawduct/broad-except -- logs and re-raises
+    except Exception:  # prawduct:allow prawduct/broad-except -- logs, reports, and exits 2
         # An unexpected failure is exactly the one worth a traceback in the file,
-        # and it is the case most likely to leave no other trace. This swallows
-        # nothing: the `raise` preserves the exit status and the stderr traceback
-        # a developer sees interactively, and only the log gains a record.
+        # and it is the case most likely to leave no other trace.
+        #
+        # 🔴 `2`, not `1`. `1` means the command ran to the end and found a
+        # problem, so what it printed can be trusted as far as it goes; a crash
+        # means it did not finish and nothing it printed can be relied on. The
+        # scheduled job reads the code and nothing else, and those two outcomes
+        # must not look alike to it -- which is the same argument that makes the
+        # 1/2 split non-collapsible in the first place.
+        #
+        # Nothing is swallowed: the traceback goes to the log file, which is the
+        # only durable record a scheduled run leaves, and to stderr, which is what
+        # a developer running this by hand reads. Only the propagation is traded
+        # away, and it is traded for an exit code that tells the truth.
         logger.exception("command %s failed unexpectedly", args.command, extra=_FILE_ONLY)
-        raise
+        print(f"bankmachine: {args.command} failed unexpectedly", file=sys.stderr)
+        traceback.print_exc()
+        return EXIT_ERROR
