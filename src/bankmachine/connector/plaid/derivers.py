@@ -35,7 +35,8 @@ aggregator sent and `from_decimal_string` converts it exactly or refuses.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Any, Final
@@ -787,6 +788,19 @@ def _write_transaction(
                 # when the money was committed and others by when it cleared,
                 # with nothing telling a caller which.
                 ledger_date=values["authorized_date"] or values["posted_date"],
+                # 🔴 The Item this row was produced under, stamped ONCE here for
+                # the same reason `ledger_date` is: it is a fact about where the
+                # row came from, and a later change to the same transaction is
+                # not a change of origin. Absent from `values` rather than
+                # filtered out of the update below, so no UPDATE can carry it.
+                #
+                # A re-link yields a new Item that re-issues every transaction
+                # id, so the whole granted history arrives again as rows this
+                # store has never seen, under an account it now recognises.
+                # Nothing collides and nothing is deduped -- every row is kept,
+                # and the read path counts the newest lineage over the range it
+                # covers, older lineages only outside it, and says so.
+                lineage_id=response.connection_id,
                 **values,
             )
         )
@@ -1099,7 +1113,14 @@ def _derive_one_account(
     # failure, and every transaction on it went on refusing to derive until some
     # later sync happened to state one. The transactions never needed it -- they
     # carry their own currency, stated per row.
-    currency = stated_currency or _recorded_currency(conn, response, source_account_id)
+    matched = _match_account(
+        conn,
+        response=response,
+        institution_id=institution_id,
+        source_account_id=source_account_id,
+        persistent_account_id=_optional(entry.get("persistent_account_id")),
+    )
+    currency = stated_currency or (None if matched is None else matched.currency)
     account_id = _upsert_account(
         conn,
         response=response,
@@ -1109,6 +1130,7 @@ def _derive_one_account(
         account_type=account_type,
         currency=currency,
         roster=roster,
+        matched=matched,
     )
     if stated_currency is None:
         # The account row keeps the unit the aggregator itself recorded for it
@@ -1153,22 +1175,120 @@ def _derive_one_account(
         )
 
 
-def _recorded_currency(
-    conn: SAConnection, response: RawResponse, source_account_id: str
-) -> str | None:
-    """The unit this datastore already has for the account, if it has one.
+@dataclass(frozen=True, slots=True)
+class _MatchedAccount:
+    """The row an incoming account entry is about, and what a merge of it needs.
 
-    Read only when the response states none. It is the aggregator's own earlier
-    word about the same account rather than a guess, which is what makes keeping
-    the account row honest -- and keeping it is what lets the account's
-    transactions derive at all.
+    `currency` rides along because the unit this datastore already holds for the
+    account is the aggregator's own earlier word about it, and reading it is what
+    lets an account whose balance states no unit keep the one it had. Fetching it
+    separately would ask the same question twice and could answer it about a
+    different row than the one the entry is merged into.
     """
+
+    account_id: int
+    first_seen_date: date
+    last_seen_date: date | None
+    currency: str | None
+
+
+def _account_row(conn: SAConnection, *criteria: Any) -> Sequence[Any]:
+    """The columns a merge needs, for every account matching `criteria`."""
     return conn.execute(
-        select(accounts.c.currency).where(
-            accounts.c.connection_id == response.connection_id,
-            accounts.c.source_account_id == source_account_id,
+        select(
+            accounts.c.account_id,
+            accounts.c.first_seen_date,
+            accounts.c.last_seen_date,
+            accounts.c.currency,
         )
-    ).scalar_one_or_none()
+        .where(*criteria)
+        .order_by(accounts.c.account_id)
+    ).all()
+
+
+def _match_account(
+    conn: SAConnection,
+    *,
+    response: RawResponse,
+    institution_id: int,
+    source_account_id: str,
+    persistent_account_id: str | None,
+) -> _MatchedAccount | None:
+    """The account this entry is about: its persistent identity first, this connection's key second.
+
+    🔴 **Why the persistent identity comes first.** Removing a connection and
+    linking it again yields a new Item, and the new Item issues a NEW id for
+    every account. Matched on `(connection_id, source_account_id)` alone, the
+    same real account appears a second time under the new connection, the whole
+    granted history is re-fetched against it, and annual spending doubles --
+    signalled by nothing louder than a count of accounts that are no longer
+    active. `persistent_account_id` is the aggregator's own statement that two
+    differently-numbered accounts are the same underlying account, so where it
+    is present it decides, and the local `account_id` -- which every row of
+    history references -- survives the break.
+
+    🔴 **Scoped to the institution, never globally.** The field is documented
+    stable for the same underlying account, but nothing makes it unique across
+    institutions, and a global match would turn a collision between two banks
+    into a silent merge of two real accounts into one. That is the worst outcome
+    available here: every total over both is then wrong, and the store holds no
+    record that two things were joined.
+
+    🔴 **Absence is ORDINARY, not an error.** The aggregator populates this field
+    for select institutions only. Where it is absent the match falls back to
+    today's key, and a re-link at such an institution still duplicates -- which
+    this deriver cannot fix by guessing. Re-authorising in place (the same Item,
+    so no second lineage at all) is the remedy there.
+
+    🔴 **A persistent match that would collide is refused rather than forced.**
+    Two rows already sharing a persistent identity under one institution is what
+    a re-link BEFORE this match existed left behind. Re-pointing the older row
+    onto the newer one's `(connection_id, source_account_id)` would violate the
+    identity index and take the connection down on every run; merging their
+    history is a repair with its own requirement, not something a deriver does
+    on the way past. So today's row answers, and the pair is named in the log.
+    """
+    own = _account_row(
+        conn,
+        accounts.c.connection_id == response.connection_id,
+        accounts.c.source_account_id == source_account_id,
+    )
+    if persistent_account_id is not None:
+        persistent = _account_row(
+            conn,
+            accounts.c.institution_id == institution_id,
+            accounts.c.source_persistent_account_id == persistent_account_id,
+        )
+        if len(persistent) > 1:
+            # Ordered by `account_id`, so the earliest row answers and a replay
+            # of the archive in any order lands on the same one.
+            _log.warning(
+                "raw response %s names a persistent account identity that %d rows at this "
+                "institution already carry; the earliest answers for it and the rest are "
+                "left where they are",
+                response.raw_response_id,
+                len(persistent),
+            )
+        if persistent and (not own or own[0].account_id == persistent[0].account_id):
+            if not own:
+                _log.info(
+                    "raw response %s carries a persistent identity account %d already holds, "
+                    "so its history stays where it is and the newly issued account id is "
+                    "recorded against it",
+                    response.raw_response_id,
+                    persistent[0].account_id,
+                )
+            return _MatchedAccount(*persistent[0])
+        if persistent:
+            _log.warning(
+                "raw response %s names a persistent identity held by account %d, while "
+                "account %d already answers to the id this connection used; converging them "
+                "would collide on the identity index, so both are kept and neither moves",
+                response.raw_response_id,
+                persistent[0].account_id,
+                own[0].account_id,
+            )
+    return None if not own else _MatchedAccount(*own[0])
 
 
 def _upsert_account(
@@ -1181,13 +1301,16 @@ def _upsert_account(
     account_type: str,
     currency: str | None,
     roster: bool,
+    matched: _MatchedAccount | None,
 ) -> int:
-    """One account row, converged on its source identity.
+    """One account row, converged on the identity `_match_account` resolved.
 
     Matched explicitly rather than through the unique index: that index spans
     `(connection_id, source_account_id)`, and SQLite treats NULLs as distinct, so
     relying on a conflict would let the manual-import path's null connections
-    duplicate silently.
+    duplicate silently -- and since a re-link converges on a row held under a
+    DIFFERENT connection and a different source id, there is no conflict for the
+    index to raise in the case that matters most.
 
     🔴 **`last_seen_date` moves only on a roster read** (`roster=True`). It
     records *the roster was observed and this account was in it*, and AC-12.5
@@ -1198,22 +1321,17 @@ def _upsert_account(
     a NULL `last_seen_date`, which already means exactly what is true of it: no
     roster observation is recorded for this account.
     """
-    existing = conn.execute(
-        select(
-            accounts.c.account_id,
-            accounts.c.first_seen_date,
-            accounts.c.last_seen_date,
-        ).where(
-            accounts.c.connection_id == response.connection_id,
-            accounts.c.source_account_id == source_account_id,
-        )
-    ).one_or_none()
     seen_date = _as_of(response.received_at)
+    persistent_account_id = _optional(entry.get("persistent_account_id"))
     values: dict[str, Any] = {
         "institution_id": institution_id,
+        # 🔴 Both move on a match, and that is what convergence IS. The account
+        # a re-link converged on is now reached through the NEW Item under the
+        # NEW id, and the transaction path finds an account by exactly that pair
+        # -- so a row left pointing at the retired connection would take every
+        # page of the re-fetched history down with it.
         "connection_id": response.connection_id,
         "source_account_id": source_account_id,
-        "source_persistent_account_id": _optional(entry.get("persistent_account_id")),
         "name": _required(entry.get("name"), "account name", response),
         "official_name": _optional(entry.get("official_name")),
         # Absent on plenty of real accounts, and nullable for exactly that reason.
@@ -1226,10 +1344,11 @@ def _upsert_account(
         "source": "aggregator",
         "updated_at": response.received_at,
     }
-    if existing is None:
+    if matched is None:
         result = conn.execute(
             insert(accounts).values(
                 **values,
+                source_persistent_account_id=persistent_account_id,
                 first_seen_date=seen_date,
                 # AC-12.4: the same date at both ends on the first observation.
                 # The pair only diverges once a later roster names the account
@@ -1242,7 +1361,23 @@ def _upsert_account(
         assert primary_key is not None  # an INTEGER PRIMARY KEY insert always yields one
         return int(primary_key[0])
 
-    account_id, first_seen_date, last_seen_date = existing
+    account_id, first_seen_date, last_seen_date = (
+        matched.account_id,
+        matched.first_seen_date,
+        matched.last_seen_date,
+    )
+    # 🔴 **A persistent identity already recorded is KEPT when an entry states
+    # none.** This field is the only key convergence has, and the aggregator
+    # populates the accounts array of one endpoint and not always the other --
+    # so writing an unconditional `None` over it would erase, on an ordinary
+    # sync, the one thing that will make the next re-link converge. Keeping the
+    # aggregator's own earlier word about the same account is the rule the
+    # currency column already follows.
+    identity: dict[str, Any] = (
+        {}
+        if persistent_account_id is None
+        else {"source_persistent_account_id": persistent_account_id}
+    )
     # 🔴 **An update owns fewer columns than an insert, and the difference is the
     # point.** Applying one `values` dict to both would make derivation the
     # permanent owner of every column it names -- so an operator's correction to
@@ -1279,6 +1414,7 @@ def _upsert_account(
         .where(accounts.c.account_id == account_id)
         .values(
             **{k: v for k, v in values.items() if k not in _OPERATOR_OWNED},
+            **identity,
             first_seen_date=min(first_seen_date, seen_date),
             **observed,
         )

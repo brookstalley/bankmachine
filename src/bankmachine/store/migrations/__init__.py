@@ -29,6 +29,7 @@ from bankmachine.store.migrations.nullable_account_currency import (
     apply_nullable_account_currency,
 )
 from bankmachine.store.migrations.roster_observed import apply_roster_observed
+from bankmachine.store.migrations.transaction_lineage import apply_transaction_lineage
 
 logger = get_logger("store.migrations")
 
@@ -85,6 +86,11 @@ MIGRATIONS: Sequence[Migration] = (
         name="let an account exist in a currency the aggregator has not stated",
         apply=apply_nullable_account_currency,
         rebuilds_a_referenced_table=True,
+    ),
+    Migration(
+        version=7,
+        name="record the aggregator Item a transaction was produced under",
+        apply=apply_transaction_lineage,
     ),
 )
 

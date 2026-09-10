@@ -944,17 +944,27 @@ def test_a_window_covering_nothing_counts_nothing_and_says_why(seeded_config: Co
 # --------------------------------------------------------------------------
 
 
-def test_an_aggregate_carries_no_truncation_block(seeded_config: Config) -> None:
-    """🔴 `api-contract.md` fixes aggregates as unpaginated, bounded by the grouping.
+def test_an_aggregate_says_whether_its_groups_were_capped(seeded_config: Config) -> None:
+    """🔴 A CONTRACT CHANGE. This aggregate now HAS a cap, so it reports one.
 
-    A truncation block on a spending summary would describe a cap it does not
-    have, and `truncated: false` on every response is the invariant warning
-    measurement already showed a reader learns to skip.
+    The old rule was that an aggregate is unpaginated, bounded by its grouping
+    rather than by a cap -- so a truncation block would have described something
+    it did not have, and `truncated: false` on every response is the invariant
+    notice a reader learns to skip.
+
+    The grouping stopped bounding anything. Keyed on a merchant string that
+    falls back to a per-transaction description, the group count approaches the
+    TRANSACTION count, so the payload grew without limit. The block is now a
+    real measurement rather than a constant: it says how many groups the window
+    holds against how many came back, and `truncated` is only false because
+    this store's are few.
     """
     answer = query.money_summary(seeded_config)
 
-    assert answer.truncation is None
-    assert "truncation" not in answer.to_wire()
+    assert answer.truncation is not None
+    assert answer.truncation.truncated is False, "this store holds fewer groups than the cap"
+    assert answer.truncation.returned == answer.truncation.matching
+    assert "truncation" in answer.to_wire()
 
 
 @pytest.mark.parametrize("tool", ["list_accounts", "pipeline_health"])

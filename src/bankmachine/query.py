@@ -47,6 +47,7 @@ from bankmachine.envelope import (
     resolve_window,
 )
 from bankmachine.logging_setup import get_logger
+from bankmachine.store import lineage
 from bankmachine.store.connection import (
     DatastoreProblem,
     DatastoreStatus,
@@ -54,6 +55,7 @@ from bankmachine.store.connection import (
     remedy_for,
 )
 from bankmachine.store.engine import reader_connection
+from bankmachine.store.lineage import SupersededSpan
 from bankmachine.store.schema import (
     PROVENANCE_SOURCES,
     TRANSACTIONS_DOMAIN,
@@ -1079,6 +1081,42 @@ def _uncovered_caveat(uncovered: list[AccountCoverage]) -> list[Caveat]:
     ]
 
 
+def _superseded_caveat(spans: Sequence[SupersededSpan]) -> list[Caveat]:
+    """The notice that this answer counted one lineage where the store holds two.
+
+    🔴 **A silent correct total and a silent wrong total look identical to
+    whoever reads them; only this tells them apart.** The exclusion is the whole
+    reason the figure is right, so an answer that applied it and did not say so
+    would be asking to be trusted for a reason it kept to itself.
+
+    Names the account and the range each older lineage no longer answers for,
+    because the operator's next move is to look at that account over those
+    dates -- and because the rows are still there. Nothing was deleted; a caller
+    that wants them can ask for exactly the excluded set.
+
+    Rides `rule-applied`, the third emitter of a kind that had none until today.
+    """
+    if not spans:
+        return []
+    named = ", ".join(
+        f"{span.account_id} ({span.start.isoformat()}..{span.end.isoformat()})"
+        for span in sorted(spans, key=lambda s: (s.account_id, s.start))
+    )
+    return [
+        Caveat(
+            kind="rule-applied",
+            detail=(
+                f"account(s) {named} carry history from more than one connection over those "
+                f"dates, because the institution was linked again and the aggregator re-issued "
+                f"every transaction id. The NEWEST connection answers for the overlap and the "
+                f"older one's rows are excluded ON PURPOSE -- counting both would report that "
+                f"spending twice. Nothing was deleted: the excluded rows are still stored and "
+                f"still reachable by asking about them directly"
+            ),
+        )
+    ]
+
+
 def _window_coverage_caveat(coverage: list[AccountCoverage], since: date | None) -> list[Caveat]:
     """The warning an AGGREGATE owes about the accounts it could not cover.
 
@@ -1235,7 +1273,9 @@ def _undenominable_caveat(excluded: list[UndenominableAccount]) -> list[Caveat]:
     ]
 
 
-def _covered_rows(conn: SAConnection, *, since: date, until: date) -> int:
+def _covered_rows(
+    conn: SAConnection, *, since: date, until: date, spans: Sequence[SupersededSpan] = ()
+) -> int:
     """How many transactions lie inside the window this answer actually covered.
 
     🔴 Store-wide, never narrowed by `account_id`. Per-account coverage is a
@@ -1271,7 +1311,11 @@ def _covered_rows(conn: SAConnection, *, since: date, until: date) -> int:
         conn.execute(
             select(func.count())
             .select_from(transactions)
-            .where(*_transaction_filters(since=since, until=until, account_id=None, after=None))
+            .where(
+                *_transaction_filters(
+                    since=since, until=until, account_id=None, after=None, spans=spans
+                )
+            )
         ).scalar_one()
     )
 
@@ -1282,6 +1326,7 @@ def _answer(
     rows: list[dict[str, Any]],
     *,
     requested_window: tuple[date | None, date | None] | None,
+    spans: Sequence[SupersededSpan] = (),
     truncation: Truncation | None,
     totals: list[dict[str, Any]] | None = None,
     extra_caveats: list[Caveat] | None = None,
@@ -1332,7 +1377,9 @@ def _answer(
             # silent one: the caveat that made the bounds null is already in
             # `window.caveats` and rides the warnings below.
             "transactions_in_effective_window": (
-                0 if covered is None else _covered_rows(conn, since=covered[0], until=covered[1])
+                0
+                if covered is None
+                else _covered_rows(conn, since=covered[0], until=covered[1], spans=spans)
             ),
         }
     return Answer(
@@ -1712,6 +1759,7 @@ def _transaction_filters(
     account_id: int | None,
     after: Cursor | None,
     include_removed: bool = False,
+    spans: Sequence[SupersededSpan] = (),
 ) -> list[Any]:
     """🔴 The predicates of a transaction query, built once for both statements.
 
@@ -1731,6 +1779,26 @@ def _transaction_filters(
     caller asking for removed rows is asking a different question and says so.
     """
     filters: list[Any] = [] if include_removed else [transactions.c.removed_at.is_(None)]
+    # 🔴 Declared HERE, with the soft delete, because it is the same KIND of
+    # rule: a row this answer must not count, for a reason that is a property of
+    # the store rather than of the caller. A re-link re-issues every transaction
+    # id, so the granted history arrives again as rows nothing can collide with
+    # -- and a total that counted both would report a year of spending twice.
+    #
+    # Composed into the one shared list rather than added at each aggregate, so
+    # a reader added later is covered by construction. That is the promise this
+    # function exists to make, and the reader that rebuilt these predicates by
+    # hand is the one that silently kept the old date column when the window
+    # moved.
+    #
+    # 🔴 Appended only when there is a span to apply. With none, `counts_once`
+    # is a bare `true` -- it constrains nothing, and every reader would carry a
+    # `1` in its WHERE that means nothing to anyone reading the SQL. The branch
+    # costs no safety: a caller that forgets to pass `spans` gets the default
+    # empty tuple and excludes nothing, which is exactly what an unconditional
+    # `true` would have done for it.
+    if spans:
+        filters.append(lineage.counts_once(spans))
     if since is not None:
         filters.append(transactions.c.ledger_date >= since)
     if until is not None:
@@ -1933,6 +2001,7 @@ def _hold_transitions(
     since: date | None,
     until: date | None,
     excluded: list[int],
+    spans: Sequence[SupersededSpan] = (),
 ) -> HoldTransitions:
     """Holds that left this window, and rows in it that settled out of one.
 
@@ -1979,12 +2048,19 @@ def _hold_transitions(
         # never became anything.
         expired=tally(
             _transaction_filters(
-                since=since, until=until, account_id=None, after=None, include_removed=True
+                since=since,
+                until=until,
+                account_id=None,
+                after=None,
+                include_removed=True,
+                spans=spans,
             ),
             [transactions.c.removed_at.is_not(None), transactions.c.pending == 1],
         ),
         settled=tally(
-            _transaction_filters(since=since, until=until, account_id=None, after=None),
+            _transaction_filters(
+                since=since, until=until, account_id=None, after=None, spans=spans
+            ),
             [
                 transactions.c.source_pending_transaction_id.is_not(None),
                 transactions.c.pending == 0,
@@ -2073,7 +2149,10 @@ def list_transactions(
             raise UnknownAccountError(
                 f"account_id {account_id} does not exist. list_accounts reports the ids that do."
             )
-        filters = _transaction_filters(since=since, until=until, account_id=account_id, after=after)
+        spans = lineage.superseded_spans(conn)
+        filters = _transaction_filters(
+            since=since, until=until, account_id=account_id, after=after, spans=spans
+        )
         # 🔴 Both statements take the SAME from-clause as well as the same
         # filters. The join to `accounts` is part of what selects a row -- an
         # inner join drops a transaction whose account is absent -- so a count
@@ -2159,7 +2238,11 @@ def list_transactions(
                 .select_from(source)
                 .where(
                     *_transaction_filters(
-                        since=since, until=until, account_id=account_id, after=None
+                        since=since,
+                        until=until,
+                        account_id=account_id,
+                        after=None,
+                        spans=spans,
                     )
                 )
             ).scalar_one()
@@ -2232,6 +2315,7 @@ def list_transactions(
             conn,
             rows,
             requested_window=(since, until),
+            spans=spans,
             # `returned` is derived from the rows themselves rather than from
             # `limit`, so it cannot claim a count the payload does not contain.
             truncation=Truncation.over(
@@ -2242,6 +2326,7 @@ def list_transactions(
             ),
             extra_caveats=(
                 _uncovered_caveat(uncovered)
+                + _superseded_caveat(spans)
                 + _not_active_caveat(not_active)
                 + _roster_observed_empty_caveat(not_active)
                 + _pending_caveat(pending)
@@ -2838,6 +2923,12 @@ def money_summary(
         # every one of them, including the ones whose rows were refused at
         # derivation and so could never have appeared here anyway.
         undenominable = _undenominable_accounts(conn)
+        # 🔴 Read ONCE per answer and threaded, never recomputed per statement.
+        # The rows, the totals and the hold tallies must all be taken over the
+        # same set: a second read at a different instant could name a different
+        # boundary, and the answer would carry figures computed under two rules
+        # while presenting them as one.
+        spans = lineage.superseded_spans(conn)
         # Annotated as the general expression type both branches produce: the
         # first assignment would otherwise fix the name to `coalesce` and the
         # account branch's plain column would not fit it.
@@ -2970,7 +3061,9 @@ def money_summary(
             # rather than merely unaggregated. Direction is a COLUMN on the row,
             # so both halves are always answerable.
             .where(
-                *_transaction_filters(since=since, until=until, account_id=None, after=None),
+                *_transaction_filters(
+                    since=since, until=until, account_id=None, after=None, spans=spans
+                ),
                 # 🔴 Excluded in the SQL rather than filtered out of the rows
                 # afterwards, so `totals` -- which is summed from these rows by
                 # construction -- cannot disagree with them about what the
@@ -3042,6 +3135,7 @@ def money_summary(
             conn,
             rows,
             requested_window=(since, until),
+            spans=spans,
             # 🔴 Reported, where this tool used to say `None` because "an
             # aggregate is unpaginated by contract, bounded by the grouping".
             # That held only while the grouping bounded anything: keyed on a
@@ -3066,6 +3160,7 @@ def money_summary(
                     since=since,
                     until=until,
                     excluded=[entry.account_id for entry in undenominable],
+                    spans=spans,
                 ),
             ),
             # 🔴 AC-14.5. The two producers are independent and both belong here:
@@ -3075,6 +3170,7 @@ def money_summary(
             # as settled.
             extra_caveats=(
                 _uncovered_caveat(uncovered)
+                + _superseded_caveat(spans)
                 + _window_coverage_caveat(all_coverage, since)
                 + _not_active_caveat(not_active)
                 + _roster_observed_empty_caveat(not_active)

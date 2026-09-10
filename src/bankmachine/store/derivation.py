@@ -66,7 +66,7 @@ logger = get_logger("store.derivation")
 #: column. AC-5.3 exists because losslessness is only well-defined against a
 #: recorded version: without one, an upstream taxonomy change and a rebuild bug
 #: are indistinguishable, since both simply produce different rows than before.
-DERIVATION_VERSION = 5
+DERIVATION_VERSION = 6
 
 #: What that version means, recorded beside it so a datastore carrying rows from
 #: an old version says something useful about them years later.
@@ -77,7 +77,10 @@ DERIVATION_DESCRIPTION = (
     "the day a transaction's money was committed stamped once as "
     "`transactions.ledger_date` and never moved by settlement; an account created with no "
     "currency where the aggregator has stated none, and any row whose currency has no known "
-    "minor-unit exponent refused rather than rounded"
+    "minor-unit exponent refused rather than rounded; an account matched on the persistent "
+    "identity the aggregator gives it, scoped to its institution, so a re-link converges on "
+    "the row its history already hangs from; and every transaction stamped with the "
+    "aggregator Item that produced it (`transactions.lineage_id`)"
 )
 
 

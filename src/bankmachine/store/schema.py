@@ -248,6 +248,24 @@ transactions = Table(
     # "predates the split, not yet rebuilt", never "committed on the posting
     # date". `store rebuild` fills it from the archive.
     Column("ledger_date", CalendarDateColumn, nullable=True),
+    # 🔴 Declared LAST for the same reason `ledger_date` is: migration 007 adds
+    # it with `ALTER TABLE`, which appends, and this metadata is compared to the
+    # migrated database column-by-column in order.
+    #
+    # The aggregator Item this row was produced under, which is this store's
+    # `connections` row -- `source_connection_id` holds the Item id and is
+    # unique, so one connection is one Item. Removing a connection and linking
+    # it again yields a NEW Item that re-issues every transaction id, so the
+    # whole granted history arrives again as rows nothing can collide with. The
+    # rows are all kept; the read path counts the newest lineage over the range
+    # it covers and older lineages only outside it, and DISCLOSES the overlap.
+    #
+    # 🔴 Nullable, and the null means "predates the split, not yet rebuilt" or
+    # "came from an operator file, which no Item produced" -- never "belongs to
+    # the current Item". A row with no lineage is therefore never excluded: the
+    # alternative is deleting money on the strength of a column nothing filled.
+    # `store rebuild` fills it from the archive.
+    Column("lineage_id", Integer, ForeignKey("connections.connection_id"), nullable=True),
 )
 
 Index(

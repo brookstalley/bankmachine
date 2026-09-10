@@ -13,7 +13,7 @@ import logging
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, insert, select, update
 
 from bankmachine.config import Config
 from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC
@@ -21,6 +21,7 @@ from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.store import types as store_types
 from bankmachine.store.derivation import DerivationError, apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
+from bankmachine.store.lineage import counts_once, only_superseded, superseded_spans
 from bankmachine.store.schema import (
     TRANSACTIONS_DOMAIN,
     accounts,
@@ -35,10 +36,20 @@ SOURCE_ACCOUNT = "acct-checking"
 CONNECTION_ID = 1
 
 
-def _account_entry(account_id: str = SOURCE_ACCOUNT, *, name: str = "Plaid Checking") -> Any:
+def _account_entry(
+    account_id: str = SOURCE_ACCOUNT,
+    *,
+    name: str = "Plaid Checking",
+    persistent_account_id: str | None = None,
+) -> Any:
     """One account in the shape both `/accounts/get` and `/transactions/sync` send it."""
     return {
         "account_id": account_id,
+        **(
+            {}
+            if persistent_account_id is None
+            else {"persistent_account_id": persistent_account_id}
+        ),
         "name": name,
         "official_name": "Plaid Gold Checking",
         "mask": "0000",
@@ -53,10 +64,10 @@ def _account_entry(account_id: str = SOURCE_ACCOUNT, *, name: str = "Plaid Check
     }
 
 
-def _accounts_body() -> bytes:
+def _accounts_body(entries: list[Any] | None = None) -> bytes:
     return json.dumps(
         {
-            "accounts": [_account_entry()],
+            "accounts": entries if entries is not None else [_account_entry()],
             "item": {"item_id": "item-x"},
             "request_id": "req-accounts",
         }
@@ -65,6 +76,7 @@ def _accounts_body() -> bytes:
 
 def _txn(
     *,
+    account_id: str = SOURCE_ACCOUNT,
     transaction_id: str,
     amount: str,
     pending: bool = False,
@@ -75,7 +87,7 @@ def _txn(
     merchant_name: str | None = "FUN",
 ) -> dict[str, Any]:
     return {
-        "account_id": SOURCE_ACCOUNT,
+        "account_id": account_id,
         "transaction_id": transaction_id,
         "amount": amount,
         "iso_currency_code": "USD",
@@ -146,11 +158,13 @@ def synced(initialized_config: Config) -> Config:
     return initialized_config
 
 
-def _apply(config: Config, endpoint: str, body: bytes) -> None:
+def _apply(
+    config: Config, endpoint: str, body: bytes, *, connection_id: int = CONNECTION_ID
+) -> None:
     with writer_connection(config) as conn:
         apply_response(
             conn,
-            connection_id=CONNECTION_ID,
+            connection_id=connection_id,
             endpoint=endpoint,
             body=body,
             received_at=now_utc(),
@@ -987,3 +1001,290 @@ def test_a_boolean_amount_is_refused_rather_than_read_as_a_number(synced: Config
 
     with pytest.raises(DerivationError):
         _apply(synced, TRANSACTIONS_SYNC.path, _sync_body(added=[entry]))
+
+
+# --------------------------------------------------------------------------
+# Lineage: two Items' worth of history on one account (#68, Part 2)
+# --------------------------------------------------------------------------
+
+#: The aggregator's own statement that two differently-numbered accounts are the
+#: same underlying account, and the id the second Item issues for it.
+PERSISTENT = "persistent-checking"
+RELINKED_ACCOUNT = "acct-checking-relinked"
+
+#: Two purchases, months apart, so a lineage's covered range is wider than a day
+#: and an older lineage has somewhere outside it to still answer from.
+SPRING = "2026-03-10"
+SUMMER = "2026-06-15"
+
+#: A purchase from before the second Item's granted window -- the tail only the
+#: older lineage holds, and the one an over-eager exclusion would delete.
+LAST_AUTUMN = "2025-11-02"
+
+
+def _relink(config: Config) -> int:
+    """Retire the enrolled connection and enrol its replacement at the same bank.
+
+    🔴 The retirement is not decoration. `connections_one_live_per_institution`
+    refuses two live connections at one institution, so this is the state
+    `connections remove` followed by `enroll` actually produces -- and a fixture
+    built any other way would test a shape the product cannot reach.
+    """
+    later = now_utc()
+    with writer_connection(config) as conn:
+        institution_id = conn.execute(
+            select(institutions.c.institution_id).where(
+                institutions.c.source_institution_id == "ins_109508"
+            )
+        ).scalar_one()
+        conn.execute(
+            update(connections)
+            .where(connections.c.connection_id == CONNECTION_ID)
+            .values(status="retired", retired_at=later, updated_at=later)
+        )
+        created = conn.execute(
+            insert(connections).values(
+                institution_id=institution_id,
+                source_connection_id="item-after-relink",
+                credential_ref="connection:sandbox:item-after-relink",
+                capabilities="[]",
+                requested_history_days=730,
+                status="active",
+                enrolled_at=later,
+                created_at=later,
+                updated_at=later,
+            )
+        ).inserted_primary_key
+        assert created is not None  # an INTEGER PRIMARY KEY insert always yields one
+        return int(created[0])
+
+
+def _purchase(account: str, transaction_id: str, amount: str, day: str) -> dict[str, Any]:
+    """One purchase whose two dates agree, so `ledger_date` is unambiguous."""
+    return _txn(
+        account_id=account,
+        transaction_id=transaction_id,
+        amount=amount,
+        date=day,
+        authorized_date=day,
+    )
+
+
+def _relinked_history(config: Config, *, older_tail: bool = False) -> int:
+    """One account synced under two Items, the second re-delivering the first's rows.
+
+    What a remove-and-re-link actually produces: the account converges on its
+    persistent identity, and the whole granted history arrives again under new
+    transaction ids that collide with nothing.
+    """
+    _apply(
+        config,
+        ACCOUNTS_GET.path,
+        _accounts_body([_account_entry(persistent_account_id=PERSISTENT)]),
+    )
+    first = [
+        _purchase(SOURCE_ACCOUNT, "t-spring", "10.00", SPRING),
+        _purchase(SOURCE_ACCOUNT, "t-summer", "20.00", SUMMER),
+    ]
+    if older_tail:
+        first.append(_purchase(SOURCE_ACCOUNT, "t-autumn", "30.00", LAST_AUTUMN))
+    _apply(config, TRANSACTIONS_SYNC.path, _sync_body(added=first))
+
+    relinked = _relink(config)
+    _apply(
+        config,
+        ACCOUNTS_GET.path,
+        _accounts_body([_account_entry(RELINKED_ACCOUNT, persistent_account_id=PERSISTENT)]),
+        connection_id=relinked,
+    )
+    _apply(
+        config,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(
+            added=[
+                _purchase(RELINKED_ACCOUNT, "t-spring-again", "10.00", SPRING),
+                _purchase(RELINKED_ACCOUNT, "t-summer-again", "20.00", SUMMER),
+            ],
+            next_cursor="cursor-relinked",
+        ),
+        connection_id=relinked,
+    )
+    return relinked
+
+
+def _total(config: Config, *, superseded: bool = False, rule: bool = True) -> int:
+    """What a total over this store comes to, with the lineage rule on or off.
+
+    `rule=False` is the naive sum -- the figure this store reports today -- and it
+    is asserted alongside the corrected one so the test states the defect rather
+    than only the fix.
+    """
+    with reader_connection(config) as conn:
+        spans = superseded_spans(conn)
+        if not rule:
+            where = counts_once(())
+        else:
+            where = only_superseded(spans) if superseded else counts_once(spans)
+        return int(
+            conn.execute(
+                select(func.coalesce(func.sum(transactions.c.amount_minor), 0)).where(
+                    transactions.c.removed_at.is_(None), where
+                )
+            ).scalar_one()
+        )
+
+
+def test_a_transaction_records_the_aggregator_item_that_produced_it(synced: Config) -> None:
+    """The column the whole convergence rests on, filled from the archived response.
+
+    A lineage is not a new concept in this system: the sync cursor and the
+    measured granted window are already Item-scoped and are already reset by a
+    re-link. This is that same boundary, recorded on the rows so a total can tell
+    two Items' copies of one month apart.
+    """
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(added=[_txn(transaction_id="t1", amount="89.40")]),
+    )
+
+    assert [row["lineage_id"] for row in _rows(synced)] == [CONNECTION_ID]
+
+
+def test_a_settlement_leaves_a_transaction_in_the_lineage_that_produced_it(
+    synced: Config,
+) -> None:
+    """Stamped once, like `ledger_date`, and for the same reason.
+
+    A hold posting is the one event that rewrites almost every column of a row,
+    and where a row CAME FROM is not something a later fact about it can change.
+    A settlement that re-homed a row would move it across a lineage boundary, so
+    which total counted it would depend on when the question was asked.
+    """
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(added=[_txn(transaction_id="hold", amount="12.00", pending=True)]),
+    )
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(
+            added=[
+                _txn(
+                    transaction_id="posted",
+                    amount="12.50",
+                    pending_transaction_id="hold",
+                    date="2026-09-09",
+                )
+            ]
+        ),
+    )
+
+    held = _rows(synced)
+    assert len(held) == 1, "the posting did not merge into the hold, so this proves nothing"
+    assert held[0]["lineage_id"] == CONNECTION_ID
+
+
+def test_a_relink_does_not_double_the_annual_total(synced: Config) -> None:
+    """🔴 The headline defect: the same money counted twice, silently.
+
+    A full re-link re-issues every transaction id, so the whole granted history
+    arrives again as rows this store has never seen, against an account it now
+    recognises. Nothing collides, nothing warns, and the year's spending is
+    double. The naive figure is asserted here beside the corrected one, because
+    a fix that merely produced a plausible number would be indistinguishable
+    from the defect it replaces.
+
+    🔴 Every row is KEPT. The rejected alternative -- deduping on merchant,
+    amount and day -- would have collapsed two genuinely distinct $5 coffees into
+    one, and an undercount is the direction that gets believed.
+    """
+    _relinked_history(synced)
+
+    with reader_connection(synced) as conn:
+        listed = conn.execute(select(accounts.c.account_id)).scalars().all()
+    assert len(listed) == 1, "the re-link split the account, so its history is in two places"
+    assert len(_rows(synced)) == 4, "a row was deleted or deduped; every row is meant to be kept"
+    assert _total(synced, rule=False) == -6000, (
+        "the store no longer holds the doubled history this test exists to correct"
+    )
+    assert _total(synced) == -3000, (
+        "the year is still counted twice, which is the number the operator reads"
+    )
+
+
+def test_the_superseded_rows_are_retained_and_reachable(synced: Config) -> None:
+    """🔴 Excluded from a total is not removed from the store.
+
+    `data-model.md` § Direction already says a transaction that goes away is soft
+    deleted rather than dropped, and the same rule governs here: an operator who
+    is told a range was superseded must be able to look at what was left out and
+    judge it. A design that could only be trusted is the design that was
+    rejected.
+    """
+    older = CONNECTION_ID
+    _relinked_history(synced)
+
+    with reader_connection(synced) as conn:
+        spans = superseded_spans(conn)
+    assert [(span.lineage_id, span.start.isoformat(), span.end.isoformat()) for span in spans] == [
+        (older, SPRING, SUMMER)
+    ], "the disclosure does not name the lineage and range the total left out"
+    assert spans[0].account_id == _rows(synced)[0]["account_id"]
+    assert _total(synced, superseded=True) == -3000, (
+        "the superseded rows cannot be asked for, so an operator is told a range was excluded "
+        "and handed nothing to check it against"
+    )
+    assert all(row["removed_at"] is None for row in _rows(synced)), (
+        "a superseded row was soft-deleted; exclusion is a reading of the rows, not a change "
+        "to them"
+    )
+
+
+def test_an_older_lineage_still_answers_outside_the_range_the_newer_one_covers(
+    synced: Config,
+) -> None:
+    """🔴 The tail only the old Item holds, and the undercount that would eat it.
+
+    A re-link resets the measured granted window, and the new Item routinely
+    grants less history than the store already has. Excluding an older lineage
+    outright -- rather than only where a newer one covers it -- would delete
+    every month before the new grant begins, and the loss would look exactly like
+    a household that spent nothing.
+    """
+    _relinked_history(synced, older_tail=True)
+
+    assert len(_rows(synced)) == 5
+    assert _total(synced) == -6000, (
+        "the purchase from before the new Item's window was dropped with the lineage it "
+        "belongs to, so the store now reports months it holds as empty"
+    )
+    assert _total(synced, superseded=True) == -3000, (
+        "the tail was counted as superseded, so the exclusion reaches past the overlap"
+    )
+
+
+def test_a_transaction_with_no_lineage_is_counted_rather_than_excluded(
+    synced: Config,
+) -> None:
+    """🔴 A null means "predates the split", never "belongs to the current Item".
+
+    Between migration 007 and `store rebuild` every row already in the store has
+    an empty lineage. Reading that as anything but "unknown" would exclude rows
+    from totals on the strength of a column nothing ever filled -- an invisible
+    undercount, arriving inside the fix for an overcount. So the rows stay in,
+    the total stays doubled until the rebuild runs, and the doubling is the
+    visible failure the rebuild then closes.
+    """
+    _relinked_history(synced)
+    with writer_connection(config=synced) as conn:
+        conn.execute(
+            update(transactions)
+            .where(transactions.c.lineage_id == CONNECTION_ID)
+            .values(lineage_id=None)
+        )
+
+    with reader_connection(synced) as conn:
+        assert superseded_spans(conn) == (), "a row with no lineage supersedes or is superseded"
+    assert _total(synced) == -6000

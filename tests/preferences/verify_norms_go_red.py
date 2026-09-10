@@ -1064,16 +1064,15 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "AC-12.8: the aggregate names the accounts that stopped being reported",
         QUERY,
         "        not_active = [entry for entry in lifecycle.values() if not entry.active]\n"
-        "        uncovered = [entry for entry in _account_coverage(conn).values()",
+        "        all_coverage = list(_account_coverage(conn).values())",
         "        not_active: list[AccountLifecycle] = []\n"
-        "        uncovered = [entry for entry in _account_coverage(conn).values()",
+        "        all_coverage = list(_account_coverage(conn).values())",
         f"{LIFECYCLE_TESTS}::test_a_money_summary_spanning_an_account_that_went_quiet_says_so",
     ),
     (
         "#19: the aggregate names an account that has never had a transaction",
         QUERY,
-        "        uncovered = [entry for entry in _account_coverage(conn).values() "
-        "if entry.uncovered]",
+        "        uncovered = [entry for entry in all_coverage if entry.uncovered]",
         "        uncovered: list[AccountCoverage] = []",
         f"{COVERAGE_TESTS}::test_summarising_money_warns_when_an_account_in_scope_has_no_coverage",
     ),
@@ -1084,8 +1083,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # answers with the size of that page.
         "truncation: `matching` counts the whole request, cursor or no cursor",
         QUERY,
-        "                        since=since, until=until, account_id=account_id, after=None",
-        "                        since=since, until=until, account_id=account_id, after=after",
+        "                        account_id=account_id,\n                        after=None,",
+        "                        account_id=account_id,\n                        after=after,",
         f"{TRUNCATION_TESTS}::"
         "test_a_cursor_narrows_what_is_left_and_leaves_the_whole_request_count_alone",
     ),
@@ -1356,8 +1355,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # again, so the documented fix would fail on the store it is for.
         "AC-5.3: a newly-populated column bumps the derivation version",
         pathlib.Path("src/bankmachine/store/derivation.py"),
+        "DERIVATION_VERSION = 6",
         "DERIVATION_VERSION = 5",
-        "DERIVATION_VERSION = 4",
         # 🔴 Pinned to the UPGRADE test, not the lifecycle one. The lifecycle
         # test's store is stamped two versions back, so `change_was_expected`
         # stays true under a single reverted bump and the mutation passes -- the

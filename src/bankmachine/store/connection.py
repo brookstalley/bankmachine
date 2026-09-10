@@ -56,7 +56,7 @@ def statement_is_complete(sql: str) -> bool:
 
 #: The schema versions this build of the code understands. A datastore outside
 #: this range is refused, loudly, rather than served against.
-SUPPORTED_SCHEMA_VERSION: Final = 6
+SUPPORTED_SCHEMA_VERSION: Final = 7
 
 SCHEMA_VERSION_TABLE: Final = "schema_version"
 
