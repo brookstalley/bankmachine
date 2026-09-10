@@ -32,6 +32,7 @@ import time
 from collections.abc import Callable
 from typing import Any, Final
 
+import certifi
 import plaid
 import urllib3.exceptions
 from plaid.api import plaid_api
@@ -331,6 +332,15 @@ class PlaidClient:
         configuration = plaid.Configuration(
             host=_host_for(config.environment),
             api_key={"clientId": config.plaid_client_id, "secret": secret},
+            # 🔴 The anchor set is named rather than left to OpenSSL's defaults,
+            # which honour `SSL_CERT_FILE` and `SSL_CERT_DIR`. This product's
+            # documented setup step is `source .env`, so the shell that runs a
+            # sync routinely imports environment -- and a stray export from
+            # another project would then narrow or replace the trust anchors for
+            # the one channel that carries live credentials, with no symptom
+            # until an interception succeeds. `certifi` is a file on disk that
+            # the lockfile controls, not a network destination.
+            ssl_ca_cert=certifi.where(),
         )
         # Held so `close()` can return the pool's sockets rather than leaving
         # them to the garbage collector; a CLI process that exits immediately

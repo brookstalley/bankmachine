@@ -11,10 +11,12 @@ a fake of an assumed one, which is the only kind worth having.
 from __future__ import annotations
 
 import json
+import ssl
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
+import certifi
 import plaid
 import pytest
 import urllib3
@@ -570,3 +572,33 @@ def test_an_item_with_nothing_left_to_add_is_read_not_refused() -> None:
     )
 
     assert capabilities == frozenset({"investments", "transactions"})
+
+
+# --------------------------------------------------------------------------
+# The trust anchors
+# --------------------------------------------------------------------------
+
+
+def test_the_trust_store_is_the_pinned_bundle_and_not_the_environments(
+    client_config: Config,
+) -> None:
+    """🔴 A sourced `.env` must not be able to choose who this client trusts.
+
+    OpenSSL's default paths honour `SSL_CERT_FILE` and `SSL_CERT_DIR`, and this
+    product's documented setup step is `source .env` -- so a stray export left in
+    the operator's shell by another project silently replaces the anchor set for
+    the one channel that carries live credentials, with no symptom until an
+    interception succeeds. Naming the bundle makes both variables inert here.
+
+    Asserted on the pool manager the SDK actually builds rather than on the
+    configuration object, because that is the thing the socket is opened with.
+    """
+    with _client(client_config) as client:
+        kwargs = client._api_client.rest_client.pool_manager.connection_pool_kw
+
+    assert kwargs["ca_certs"] == certifi.where()
+    # The controls: pinning the bundle must not have switched verification or
+    # hostname checking off on the way past.
+    assert kwargs["cert_reqs"] == ssl.CERT_REQUIRED
+    assert client._api_client.configuration.verify_ssl is True
+    assert client._api_client.configuration.assert_hostname is None
