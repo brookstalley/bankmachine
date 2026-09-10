@@ -286,6 +286,26 @@ class AggregatorUnavailableError(AggregatorError):
     retryable = True
 
 
+class TransactionsPaginationRestartError(AggregatorError):
+    """The data moved while a page run was in flight, so the run starts again.
+
+    The aggregator documents the remedy as *begin again from the last cursor you
+    successfully stored*, and that is what makes this retryable rather than a
+    connection-health state: nothing is wrong with the connection, the page run
+    simply has to be re-taken against a roster that has stopped moving. On a
+    long initial backfill -- which is what every connection does the first time
+    it is synced for real -- it is ordinary rather than exceptional.
+
+    🔴 **Retrying the identical call IS the documented restart here**, because
+    the page loop reads its cursor from the datastore before every request and a
+    failed page commits nothing. That equivalence is a property of the caller,
+    which is why the caller bounds how many times a page run may restart rather
+    than trusting the wait alone to end it.
+    """
+
+    retryable = True
+
+
 class AggregatorRequestError(AggregatorError):
     """The aggregator rejected the request as malformed or unsupported.
 

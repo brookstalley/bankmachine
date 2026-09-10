@@ -30,6 +30,7 @@ from bankmachine.connector import (
     InstitutionUnavailableError,
     RateLimitedError,
     ReauthRequiredError,
+    TransactionsPaginationRestartError,
     TransportError,
     UnrecognizedAggregatorError,
 )
@@ -64,6 +65,10 @@ from bankmachine.store.types import now_utc
         ("INVALID_API_KEYS", AggregatorNotConfiguredError),
         ("INVALID_FIELD", AggregatorRequestError),
         ("INTERNAL_SERVER_ERROR", AggregatorUnavailableError),
+        (
+            "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION",
+            TransactionsPaginationRestartError,
+        ),
     ],
 )
 def test_each_code_maps_to_the_type_that_names_its_remedy(
@@ -679,3 +684,42 @@ def test_the_code_table_and_the_taxonomy_do_not_drift_apart() -> None:
             f"{mapped.__name__} is reachable from the code table but never decided whether "
             f"it retries"
         )
+
+
+def test_a_mid_pagination_mutation_is_a_restart_rather_than_a_broken_connection() -> None:
+    """The aggregator's own word for "the data moved under your page run".
+
+    It is expected rather than exceptional on a long initial backfill -- which is
+    what every connection does on its first production sync and never did in
+    sandbox, where backfills are tiny and static. Left unclassified it is
+    `UnrecognizedAggregatorError`, which does not retry, so one ordinary
+    mid-backfill mutation degrades the connection for the rest of the run.
+
+    The remedy the aggregator documents is to start again from the last cursor
+    that was successfully stored, which is why this type retries: the page loop
+    re-reads the cursor from the datastore before every request, so a repeat of
+    the same call already IS that restart.
+    """
+    detail = AggregatorErrorDetail(
+        error_code="TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION",
+        error_type="TRANSACTIONS_ERROR",
+    )
+    assert classify(400, detail) is TransactionsPaginationRestartError
+    assert TransactionsPaginationRestartError.retryable is True
+
+
+def test_the_type_that_spans_several_remedies_is_not_classified_by_its_type() -> None:
+    """`TRANSACTIONS_ERROR` stays out of the coarse layer, for `ITEM_ERROR`'s reason.
+
+    It spans a mid-pagination mutation (restart the page run), a product not
+    enabled for the Item (a dashboard change) and a cursor the aggregator will
+    not accept (re-enrol). Mapping the type to any one of them would send the
+    operator to a place that cannot help them two times in three -- which is
+    worse than the refusal `UnrecognizedAggregatorError` gives, because that one
+    at least carries the code.
+    """
+    assert "TRANSACTIONS_ERROR" not in TYPE_TO_ERROR
+    unknown = AggregatorErrorDetail(
+        error_code="TRANSACTIONS_SYNC_INVALID_CURSOR", error_type="TRANSACTIONS_ERROR"
+    )
+    assert classify(400, unknown) is UnrecognizedAggregatorError
