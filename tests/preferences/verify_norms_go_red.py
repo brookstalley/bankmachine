@@ -421,7 +421,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "the sign convention: a liability balance is stored negative",
         CONNECTOR_DERIVERS,
-        '    if balance_class == "liability" and current > 0:',
+        '    if balance_class == "liability":',
         "    if False:",
         f"{DERIVER_TESTS}::test_a_liability_reported_positive_is_stored_negative",
     ),
@@ -710,8 +710,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-2.1: an empty next_cursor never overwrites a good one",
         CONNECTOR_DERIVERS,
-        "    if not isinstance(next_cursor, str) or not next_cursor:\n        return",
-        "    if False:\n        return",
+        "    if not isinstance(next_cursor, str) or not next_cursor:",
+        "    if False:",
         f"{SYNC_CURSOR_TESTS}::test_a_not_ready_response_does_not_move_the_cursor",
     ),
     (
