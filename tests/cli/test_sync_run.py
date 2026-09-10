@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
-from bankmachine.cli import run
+from bankmachine.cli import run, sync_run
 from bankmachine.cli.sync_run import MAX_PAGINATION_RESTARTS
 from bankmachine.config import Config
 from bankmachine.connector import (
@@ -36,6 +36,7 @@ from bankmachine.secrets import (
     set_access_token,
     set_plaid_secret,
 )
+from bankmachine.store.connection import AnotherWriterRunningError
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
 from bankmachine.store.schema import (
@@ -353,6 +354,42 @@ def test_a_second_run_is_a_no_op(cli_env: Config) -> None:
 # --------------------------------------------------------------------------
 
 
+def _enroll_a_second_connection(config: Config) -> str:
+    """A second live connection, and the access token that reaches it.
+
+    AC-4.1 is only observable across two connections: with one, "the loop
+    continued" is indistinguishable from "there was nothing left to do".
+    """
+    now = now_utc()
+    second_ref = config.connection_keychain_account("item-two")
+    second_token = "access-sandbox-second-fake"  # credential-shape: test vector
+    set_access_token(config, second_ref, second_token)
+    with writer_connection(config) as conn:
+        primary_key = conn.execute(
+            institutions.insert().values(
+                source_institution_id="ins_second",
+                name="Second Bank",
+                first_seen_at=now,
+                last_seen_at=now,
+            )
+        ).inserted_primary_key
+        assert primary_key is not None
+        conn.execute(
+            connections.insert().values(
+                institution_id=primary_key[0],
+                source_connection_id="item-two",
+                credential_ref=second_ref,
+                capabilities="[]",
+                requested_history_days=730,
+                status="active",
+                enrolled_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    return second_token
+
+
 def test_a_failing_connection_is_recorded_and_the_run_reports_one(
     cli_env: Config, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -384,33 +421,7 @@ def test_one_connection_failing_does_not_stop_the_others(
     A single-connection test cannot tell "the loop continued" from "there was
     nothing left to do".
     """
-    now = now_utc()
-    second_ref = cli_env.connection_keychain_account("item-two")
-    second_token = "access-sandbox-second-fake"  # credential-shape: test vector
-    set_access_token(cli_env, second_ref, second_token)
-    with writer_connection(cli_env) as conn:
-        primary_key = conn.execute(
-            institutions.insert().values(
-                source_institution_id="ins_second",
-                name="Second Bank",
-                first_seen_at=now,
-                last_seen_at=now,
-            )
-        ).inserted_primary_key
-        assert primary_key is not None
-        conn.execute(
-            connections.insert().values(
-                institution_id=primary_key[0],
-                source_connection_id="item-two",
-                credential_ref=second_ref,
-                capabilities="[]",
-                requested_history_days=730,
-                status="active",
-                enrolled_at=now,
-                created_at=now,
-                updated_at=now,
-            )
-        )
+    second_token = _enroll_a_second_connection(cli_env)
     FakeClient.pages = [_page(added=[_txn("t1")], next_cursor="cursor-1")]
     # 🔴 An AGGREGATOR failure, not a missing credential. Both degrade the
     # connection, but they leave by different paths -- and a test that took the
@@ -429,6 +440,43 @@ def test_one_connection_failing_does_not_stop_the_others(
         }
     assert rows[1] == "active"
     assert rows[2] == "degraded"
+
+
+def test_a_datastore_failure_on_one_connection_leaves_the_others_to_sync(
+    cli_env: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 AC-4.1's hole: a locked datastore, not an aggregator refusal.
+
+    `_persist` takes the exclusive writer lock per page and does not wait, so an
+    ordinary `store backup` running beside a sync raises `AnotherWriterRunningError`
+    -- a `StoreError`, which is neither a `ConnectorError` nor a `DerivationError`.
+    It escaped the per-connection catch, escaped the run, and was reported as a
+    command that could not run at all, skipping every connection after it. The
+    requirement is that one broken connection never aborts another, and the
+    datastore was the counterexample.
+    """
+    second_token = _enroll_a_second_connection(cli_env)
+    FakeClient.pages = [_page(added=[_txn("t1")], next_cursor="cursor-1")]
+    real_persist = sync_run._persist
+
+    def persist(config: Config, fetched: FetchedResponse, connection_id: int) -> None:
+        if connection_id == 1:
+            raise AnotherWriterRunningError("another writer holds the datastore")
+        real_persist(config, fetched, connection_id)
+
+    monkeypatch.setattr(sync_run, "_persist", persist)
+
+    assert run(["sync", "run"]) == 1, "a locked datastore was reported as could-not-run"
+
+    with reader_connection(cli_env) as conn:
+        rows = {
+            int(r._mapping["connection_id"]): r._mapping["status"]
+            for r in conn.execute(select(connections)).all()
+        }
+    assert rows[1] == "degraded"
+    assert rows[2] == "active", "the second connection never got its turn"
+    assert second_token  # the second connection is the one that had to succeed
+    assert len(_txn_rows(cli_env)) == 1
 
 
 def test_a_mid_pagination_mutation_restarts_the_page_run_rather_than_degrading_it(

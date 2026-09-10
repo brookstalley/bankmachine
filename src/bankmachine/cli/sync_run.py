@@ -40,8 +40,13 @@ from bankmachine.connector.plaid.client import PlaidClient
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.logging_setup import get_logger
 from bankmachine.secrets import SecretsError, get_access_token, get_plaid_secret
-from bankmachine.store.connection import DatastoreMissingError, inspect, remedy_for
-from bankmachine.store.derivation import DerivationError, apply_response
+from bankmachine.store.connection import (
+    DatastoreMissingError,
+    StoreError,
+    inspect,
+    remedy_for,
+)
+from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, transaction, writer_connection
 from bankmachine.store.schema import (
     TRANSACTIONS_DOMAIN,
@@ -324,7 +329,14 @@ def _sync_one(
                     connection_id,
                     MAX_PAGES_PER_RUN,
                 )
-    except (ConnectorError, DerivationError) as exc:
+    except (ConnectorError, StoreError) as exc:
+        # 🔴 `StoreError`, not `DerivationError`. `_persist` takes the exclusive
+        # writer lock per page and does not wait, so an ordinary `store backup`
+        # running beside a sync raises `AnotherWriterRunningError` -- a sibling
+        # of `DerivationError` rather than a subclass, which escaped this catch,
+        # escaped the run, and was reported as a command that could not run at
+        # all. Every connection after the locked one was then skipped, which is
+        # the one thing AC-4.1 says must never happen.
         return _degrade(config, outcome, type(exc).__name__, str(exc))
 
     if outcome.historical_complete:
