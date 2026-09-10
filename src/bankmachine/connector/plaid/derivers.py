@@ -759,12 +759,12 @@ def _mark_removed(
         # otherwise be lost behind an advancing cursor; there is no such row
         # here, and refusing stopped the cursor on a page whose only unusable
         # entry was a soft delete of something this system never held.
+        # Counted rather than named: both ids are opaque runs the log formatter
+        # redacts, and the raw response id is what leads back to them.
         _log.info(
-            "raw response %s removes transaction %s from account %r, which this connection "
-            "has no row for; there is nothing to soft-delete",
+            "raw response %s removes a transaction from an account this connection has no "
+            "row for; there is nothing to soft-delete",
             response.raw_response_id,
-            source_transaction_id,
-            source_account_id,
         )
         return
     account_id = known[source_account_id]

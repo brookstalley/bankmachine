@@ -1132,14 +1132,19 @@ def test_an_unknown_tool_is_refused_as_a_bad_parameter(initialized_config: Confi
     )
 
 
+@pytest.mark.parametrize("arguments", [["since"], [], 0, False, ""])
 def test_a_non_object_arguments_member_is_refused_as_a_bad_parameter(
-    initialized_config: Config,
+    initialized_config: Config, arguments: object
 ) -> None:
     """`arguments` of the wrong type is a params problem, not a malformed request.
 
     `-32600` describes the request OBJECT — a frame that is not a valid JSON-RPC
     request at all. This frame is one, and the fault is in what it carries, so a
     client is told to correct its parameters rather than its framing.
+
+    The falsy shapes are in the list on purpose: an `or {}` default would let
+    `[]`, `0`, `false` and `""` run the tool over defaults instead of being
+    refused, and only `null` and absence mean "no arguments".
     """
     replies = _converse(
         initialized_config,
@@ -1149,7 +1154,7 @@ def test_a_non_object_arguments_member_is_refused_as_a_bad_parameter(
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "tools/call",
-                "params": {"name": "list_accounts", "arguments": ["since"]},
+                "params": {"name": "list_accounts", "arguments": arguments},
             },
             {"jsonrpc": "2.0", "id": 3, "method": "ping"},
         ],
