@@ -252,10 +252,31 @@ uv run bankmachine sync run
 changes since the connection's cursor. A backfill that has not materialized yet answers `NOT_READY`,
 and the command waits across five attempts totalling 112 seconds (`NOT_READY_DELAYS`,
 `src/bankmachine/cli/sync_run.py`) before printing `history is still being prepared; run again
-shortly` and exiting **0**.
+shortly` and exiting **75**.
 
-🔴 **Exit 0 with nothing applied is the expected first result on a real institution.** Re-run until
-you see `N pages applied`.
+🔴 **Exit 75 is the expected first result on a real institution, and it means run it again.**
+`75` is `EX_TEMPFAIL`: the run worked, nothing is wrong, and history is still owed. Re-run until you
+get **0**. Three states produce it — `NOT_READY` with nothing applied, `INITIAL_UPDATE_COMPLETE`
+with the first pages applied and the rest still arriving, and a page run stopped at its ceiling.
+They are one code on purpose: whichever it is, the action is the same.
+
+🔴 **`N pages applied` is NOT the finish line.** The first successful pull on a real institution
+typically reports `INITIAL_UPDATE_COMPLETE` — roughly the last thirty days of a 730-day grant — and
+says so:
+
+```
+  1  Your Bank: 4 pages applied
+       the history is still arriving. The granted window is not yet
+       known, so it cannot be reported here, and the oldest
+       transaction applied so far is not the oldest that exists.
+       Run again shortly
+
+1 of 1 connections still owe history; run again
+```
+
+Until you see exit **0**, that connection's `last_success_at` is deliberately left unstamped, so
+`get_pipeline_health` and every MCP answer report it as `partial` rather than as current. The
+terminal and the MCP surface say the same thing on purpose.
 
 *The number that matters:* `granted_history_days` is written **once**, and only when the aggregator
 reports `HISTORICAL_UPDATE_COMPLETE` (`_record_granted_window`,
@@ -263,14 +284,17 @@ reports `HISTORICAL_UPDATE_COMPLETE` (`_record_granted_window`,
 `INITIAL_UPDATE_COMPLETE` records a shortfall that does not exist while the backfill is still
 arriving. In sandbox the two statuses arrive **seconds** apart — measured, three seconds, in
 `.prawduct/artifacts/api-notes-plaid.md` § 17.1 — and on a real institution they are expected to be
-**minutes to hours** apart, which is why the first run so often applies pages and still has no
-window to report. If the grant comes up short you get a line naming the gap in days and saying it
+**minutes to hours** apart, which is why the first run so often applies pages, exits 75 and still has
+no window to report. If the grant comes up short you get a line naming the gap in days and saying it
 cannot be widened without re-linking.
 
 *Failure looks like:* a per-connection line carrying an error name — that connection is marked
-degraded with its code and timestamp and the run exits 1, while the other connections still sync; or
-`stopped at the page ceiling; run again to continue`, which is benign — the cursor resumes exactly
-there and the run deliberately does not stamp a successful-sync time.
+degraded with its code and timestamp and the run exits **1**, while the other connections still
+sync. 🔴 `1` outranks `75`: a run that found both a stuck connection and an arriving backfill exits
+`1`, because the stuck one needs a person and the arriving one only needs another run. The other
+non-zero line you will see is `stopped at the page ceiling; run again to continue`, which is benign
+and part of the same `75` — the cursor resumes exactly there and the run deliberately does not stamp
+a successful-sync time.
 
 ### 3.7 Look at what you have
 
@@ -373,6 +397,12 @@ uv run bankmachine store backup ~/backups/bankmachine-$(date +%F).db
 balance series — the one table no later re-sync can rebuild, because no aggregator backfills it. A
 day you do not run it is a day of balance history gone for good. Until scheduling ships, a reminder
 or a `cron`/`launchd` entry of your own is the mitigation.
+
+🔴 **If you write that entry yourself, read the exit code.** `0` is done, `75` is *run it again
+soon* (a still-arriving backfill or a page ceiling), `1` is a connection that needs you, `2` is a
+run that could not happen at all. A wrapper that treats every non-zero code alike turns `75` into a
+false alarm and, worse, treats `1` and `2` as one thing — which is precisely the collapse
+`.prawduct/artifacts/api-contract.md` § Direction refuses. Retry on `75`; alert on `1` and `2`.
 
 🔴 **Never `cp` the datastore.** It runs in WAL mode, so copying `store.db` alone silently loses
 whatever is still in `store.db-wal` — a measured `cp` of a source with a hot WAL lost every one of
