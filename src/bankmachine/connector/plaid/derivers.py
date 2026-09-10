@@ -145,6 +145,22 @@ def _optional(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _stated_currency(fields: dict[str, Any]) -> str | None:
+    """Whichever of the two currency fields the aggregator populated, if either.
+
+    🔴 **Both, everywhere an amount is read.** The aggregator nulls
+    `iso_currency_code` and populates `unofficial_currency_code` for
+    cryptocurrencies and other non-ISO instruments -- and reading only the ISO
+    field in one place and both in another produced an account that could exist
+    while none of its transactions could be derived, which stops the cursor
+    dead. The code is kept as sent, so an unofficial one groups separately from
+    every ISO total rather than being folded into one.
+    """
+    return _optional(fields.get("iso_currency_code")) or _optional(
+        fields.get("unofficial_currency_code")
+    )
+
+
 def to_minor(amount: object, currency: str, what: str, response: RawResponse) -> MinorUnits:
     """One *valuation* as integer minor units, rounded to the currency if it has to be.
 
@@ -531,7 +547,13 @@ def _write_transaction(
     """
     account_id = _local_account(entry, known, response)
     source_transaction_id = _required(entry.get("transaction_id"), "a transaction id", response)
-    currency = _required(entry.get("iso_currency_code"), "a transaction currency", response)
+    currency = _stated_currency(entry)
+    if currency is None:
+        raise DerivationError(
+            f"raw response {response.raw_response_id} ({response.endpoint}) has a transaction "
+            f"in no stated currency; storing an amount whose unit is unknown is how a total "
+            f"silently mixes two of them"
+        )
     pending_source_id = _optional(entry.get("pending_transaction_id"))
     category = entry.get("personal_finance_category")
 
@@ -839,9 +861,7 @@ def _derive_one_account(
             f"raw response {response.raw_response_id} gives account {source_account_id} no "
             f"balances object"
         )
-    currency = _optional(balances.get("iso_currency_code")) or _optional(
-        balances.get("unofficial_currency_code")
-    )
+    currency = _stated_currency(balances)
     if currency is None:
         raise DerivationError(
             f"raw response {response.raw_response_id} gives account {source_account_id} a "

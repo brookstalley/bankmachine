@@ -705,6 +705,45 @@ def test_a_transaction_for_an_unknown_account_is_refused(synced: Config) -> None
     assert "no row for" in str(raised.value)
 
 
+def test_a_transaction_in_an_unofficial_currency_derives_rather_than_failing_the_page(
+    synced: Config,
+) -> None:
+    """The inconsistency that let an account exist while none of its rows could derive.
+
+    The aggregator sets `iso_currency_code: null` and populates
+    `unofficial_currency_code` for cryptocurrencies and other non-ISO
+    instruments. Balances already read both; transactions read only the ISO
+    field, so a row of that shape refused the whole page -- the cursor never
+    advanced past it and the connection degraded on every run afterwards.
+
+    The code is stored as the aggregator sent it, so the currency groups
+    separately in every total rather than being folded in with the ISO ones.
+    """
+    entry = _txn(transaction_id="t1", amount="12.00")
+    entry["iso_currency_code"] = None
+    entry["unofficial_currency_code"] = "BTC"
+
+    _apply(synced, TRANSACTIONS_SYNC.path, _sync_body(added=[entry]))
+
+    row = _rows(synced)[0]
+    assert row["currency"] == "BTC"
+    assert row["amount_minor"] == -1200
+
+
+def test_a_transaction_in_no_stated_currency_at_all_is_still_refused(synced: Config) -> None:
+    """The control: the fallback widens what counts as stated, not what counts as known.
+
+    An amount whose unit nothing named is how a total silently mixes two of them,
+    and that refusal is the same one the balance path makes.
+    """
+    entry = _txn(transaction_id="t1", amount="12.00")
+    entry["iso_currency_code"] = None
+    entry["unofficial_currency_code"] = None
+
+    with pytest.raises(DerivationError, match="currency"):
+        _apply(synced, TRANSACTIONS_SYNC.path, _sync_body(added=[entry]))
+
+
 def test_a_malformed_change_list_is_refused_not_read_as_empty(synced: Config) -> None:
     """A page with a broken list would otherwise look like a page with no changes.
 
