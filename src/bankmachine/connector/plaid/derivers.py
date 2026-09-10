@@ -145,6 +145,22 @@ def _optional(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _stated_currency(fields: dict[str, Any]) -> str | None:
+    """Whichever of the two currency fields the aggregator populated, if either.
+
+    🔴 **Both, everywhere an amount is read.** The aggregator nulls
+    `iso_currency_code` and populates `unofficial_currency_code` for
+    cryptocurrencies and other non-ISO instruments -- and reading only the ISO
+    field in one place and both in another produced an account that could exist
+    while none of its transactions could be derived, which stops the cursor
+    dead. The code is kept as sent, so an unofficial one groups separately from
+    every ISO total rather than being folded into one.
+    """
+    return _optional(fields.get("iso_currency_code")) or _optional(
+        fields.get("unofficial_currency_code")
+    )
+
+
 def to_minor(amount: object, currency: str, what: str, response: RawResponse) -> MinorUnits:
     """One *valuation* as integer minor units, rounded to the currency if it has to be.
 
@@ -293,10 +309,13 @@ def derive_transactions_sync(
     rows makes them commit together because they are produced together -- there is
     no ordering left for anyone to get wrong.
 
-    🔴 **A response with no `next_cursor` does not move the cursor.** A
+    🔴 **A response with no `next_cursor` skips the CURSOR, not the page.** A
     `NOT_READY` reply carries an empty one *(measured, `api-notes-plaid.md` §17)*,
     and storing it would mean either "start from the beginning" or, worse,
-    overwriting a good cursor with nothing.
+    overwriting a good cursor with nothing. But that is a rule about the cursor
+    alone: a page carrying changes and no cursor keeps its rows and leaves the
+    cursor where it was, because discarding them would lose transactions the
+    aggregator has already handed over and has no reason to send again.
 
     Transaction rows are written here too, and the ordering is not incidental:
     the rows go in before the cursor, so a row that cannot be written stops the
@@ -312,11 +331,56 @@ def derive_transactions_sync(
             f"belongs to exactly one connection and nothing else can say which"
         )
     payload = _payload(response)
+    # 🔴 Before the change lists, because they depend on it. An account that has
+    # closed, been de-selected in Account Select, or stopped being shared drops
+    # out of `/accounts/get` while this endpoint keeps emitting deltas for its
+    # rows -- and the aggregator names it right here, in the same body. Without
+    # this the page refused forever: the raw body committed, the derivation
+    # rolled back, the cursor never moved, and every later run re-fetched and
+    # re-archived the identical page until the archive itself could not be
+    # replayed.
+    listed = payload.get("accounts")
+    if listed is not None:
+        institution_id = conn.execute(
+            select(connections.c.institution_id).where(
+                connections.c.connection_id == response.connection_id
+            )
+        ).scalar_one_or_none()
+        if institution_id is None:
+            raise DerivationError(
+                f"raw response {response.raw_response_id} names connection "
+                f"{response.connection_id}, which is not in this datastore"
+            )
+        _derive_account_entries(
+            conn,
+            response=response,
+            context=context,
+            institution_id=int(institution_id),
+            listed=listed,
+            roster=False,
+        )
+
+    applied = _apply_transaction_changes(conn, response, context)
+
     next_cursor = payload.get("next_cursor")
     if not isinstance(next_cursor, str) or not next_cursor:
+        if applied:
+            # 🔴 A shape nothing has observed, and the reason the rows go in
+            # first. The guard is right for `NOT_READY`, which carries an empty
+            # cursor and no changes -- but standing before the change lists it
+            # discarded the rows of any page that carried both, with no error and
+            # no trace. A page like that saying `has_more` would then be
+            # re-fetched to the page ceiling and reported as stopped short, so
+            # the operator reads "run again to continue" about a run that never
+            # can.
+            _log.warning(
+                "raw response %s (%s) carried %d change(s) and no cursor; the changes are "
+                "applied and the cursor stays where it was",
+                response.raw_response_id,
+                response.endpoint,
+                applied,
+            )
         return
-
-    _apply_transaction_changes(conn, response, context)
 
     existing = conn.execute(
         select(sync_state.c.connection_id).where(
@@ -447,8 +511,11 @@ def _account_ids(conn: SAConnection, connection_id: int) -> dict[str, int]:
 
 def _apply_transaction_changes(
     conn: SAConnection, response: RawResponse, context: DerivationContext
-) -> None:
+) -> int:
     """`added`, `modified` and `removed`, in the one transaction the cursor rides.
+
+    Returns how many changes the page carried, which is what lets the caller tell
+    a page with nothing to say from a page whose rows would otherwise vanish.
 
     🔴 **Nothing here issues a DELETE.** AC-2.2 soft-deletes: a removed
     transaction keeps its row and gains a `removed_at`, because a transaction
@@ -459,12 +526,16 @@ def _apply_transaction_changes(
     payload = _payload(response)
     known = _account_ids(conn, response.connection_id)
 
-    for entry in _entries(payload, "added", response):
+    added = _entries(payload, "added", response)
+    modified = _entries(payload, "modified", response)
+    removed = _entries(payload, "removed", response)
+    for entry in added:
         _write_transaction(conn, entry, response, context, known, existing_ok=False)
-    for entry in _entries(payload, "modified", response):
+    for entry in modified:
         _write_transaction(conn, entry, response, context, known, existing_ok=True)
-    for entry in _entries(payload, "removed", response):
+    for entry in removed:
         _mark_removed(conn, entry, response, known)
+    return len(added) + len(modified) + len(removed)
 
 
 def _entries(payload: dict[str, Any], key: str, response: RawResponse) -> list[dict[str, Any]]:
@@ -531,7 +602,13 @@ def _write_transaction(
     """
     account_id = _local_account(entry, known, response)
     source_transaction_id = _required(entry.get("transaction_id"), "a transaction id", response)
-    currency = _required(entry.get("iso_currency_code"), "a transaction currency", response)
+    currency = _stated_currency(entry)
+    if currency is None:
+        raise DerivationError(
+            f"raw response {response.raw_response_id} ({response.endpoint}) has a transaction "
+            f"in no stated currency; storing an amount whose unit is unknown is how a total "
+            f"silently mixes two of them"
+        )
     pending_source_id = _optional(entry.get("pending_transaction_id"))
     category = entry.get("personal_finance_category")
 
@@ -560,6 +637,27 @@ def _write_transaction(
 
     row_id = _existing_transaction(conn, account_id, source_transaction_id, pending_source_id)
     if row_id is None:
+        absorbed_by = _row_that_absorbed(conn, account_id, source_transaction_id)
+        if absorbed_by is not None:
+            # 🔴 A change to a hold whose posting this system has already merged
+            # in. The merged row answers to the POSTED id, so neither lookup
+            # above finds it and an insert here would put the same purchase in
+            # the ledger twice -- disclosed as an ordinary pending row, which is
+            # indistinguishable from a hold that has simply not settled yet.
+            #
+            # 🔴 And the row is not rewritten from the hold's entry. Doing so
+            # would move it back under the hold's identity and mark it pending
+            # again, so the retirement the aggregator sends next (`removed`,
+            # naming the hold) would soft-delete the purchase itself. The
+            # posting is the later fact about the same money; a change to what
+            # it superseded does not undo it.
+            _log.info(
+                "raw response %s modified a hold whose posting is already merged into "
+                "transaction %d; the posting stands",
+                response.raw_response_id,
+                absorbed_by,
+            )
+            return
         if existing_ok:
             # A `modified` entry for a row this system has never seen. Inserted
             # rather than refused: a rebuild replays pages in archive order, and
@@ -616,6 +714,33 @@ def _existing_transaction(
     return None if pending_row is None else int(pending_row[0])
 
 
+def _row_that_absorbed(
+    conn: SAConnection, account_id: int, source_transaction_id: str
+) -> int | None:
+    """The row that already merged this hold in, if one did.
+
+    `source_pending_transaction_id` is the only column that still holds the
+    hold's id once the transition has happened, and nothing else in the lookup
+    path reads it -- which is why a change arriving for the hold afterwards
+    looked like a transaction this system had never seen.
+
+    Unlike the two lookups above, this column carries no unique index: two
+    postings could name one hold. The question asked here is only whether SOME
+    row already absorbed it, so the oldest match answers it, and a page shaped
+    that way must not take the connection down over which one.
+    """
+    row = conn.execute(
+        select(transactions.c.transaction_id)
+        .where(
+            transactions.c.account_id == account_id,
+            transactions.c.source_pending_transaction_id == source_transaction_id,
+        )
+        .order_by(transactions.c.transaction_id)
+        .limit(1)
+    ).first()
+    return None if row is None else int(row[0])
+
+
 def _mark_removed(
     conn: SAConnection, entry: dict[str, Any], response: RawResponse, known: dict[str, int]
 ) -> None:
@@ -627,7 +752,22 @@ def _mark_removed(
     page predates the archive, and there is nothing to do about it.
     """
     source_transaction_id = _required(entry.get("transaction_id"), "a removed id", response)
-    account_id = _local_account(entry, known, response)
+    source_account_id = entry.get("account_id")
+    if not isinstance(source_account_id, str) or source_account_id not in known:
+        # 🔴 Skipped, where an addition is refused, because the two are not the
+        # same risk. Refusing an addition protects a transaction that would
+        # otherwise be lost behind an advancing cursor; there is no such row
+        # here, and refusing stopped the cursor on a page whose only unusable
+        # entry was a soft delete of something this system never held.
+        _log.info(
+            "raw response %s removes transaction %s from account %r, which this connection "
+            "has no row for; there is nothing to soft-delete",
+            response.raw_response_id,
+            source_transaction_id,
+            source_account_id,
+        )
+        return
+    account_id = known[source_account_id]
     conn.execute(
         update(transactions)
         .where(
@@ -709,11 +849,45 @@ def derive_accounts(conn: SAConnection, response: RawResponse, context: Derivati
             f"{response.connection_id}, which is not in this datastore"
         )
 
-    payload = _payload(response)
-    listed = payload.get("accounts")
+    _derive_account_entries(
+        conn,
+        response=response,
+        context=context,
+        institution_id=int(institution_id),
+        listed=_payload(response).get("accounts"),
+        roster=True,
+    )
+    # 🔴 AC-12.5a: recorded AFTER the loop and OUTSIDE it, so a roster that
+    # listed nothing still advances the observation. An empty `/accounts/get`
+    # is a successful observation of zero accounts, not a failed fetch, and the
+    # state that must not exist is the third one -- a response that type-checks,
+    # runs this loop zero times, and leaves no record that anyone looked.
+    _record_roster_observation(conn, response)
+
+
+def _derive_account_entries(
+    conn: SAConnection,
+    *,
+    response: RawResponse,
+    context: DerivationContext,
+    institution_id: int,
+    listed: object,
+    roster: bool,
+) -> None:
+    """The `accounts` array, from whichever endpoint carried it.
+
+    🔴 **One deriver, and `roster` is the one thing the two callers disagree
+    about.** `/accounts/get` answers *these are the accounts this connection
+    has*; `/transactions/sync` answers *these are the accounts the transactions
+    in this body belong to*. The rows are the same shape and mean the same
+    thing, so a second deriver would be two descriptions of one fact drifting
+    apart -- but only the first is an observation of the roster, and
+    `accounts.last_seen_date` is a record of that observation rather than of
+    having seen the account named anywhere.
+    """
     if not isinstance(listed, list):
         raise DerivationError(
-            f"raw response {response.raw_response_id} ({ACCOUNTS_GET}) has no accounts list"
+            f"raw response {response.raw_response_id} ({response.endpoint}) has no accounts list"
         )
     for entry in listed:
         if not isinstance(entry, dict):
@@ -725,15 +899,10 @@ def derive_accounts(conn: SAConnection, response: RawResponse, context: Derivati
             conn,
             response=response,
             context=context,
-            institution_id=int(institution_id),
+            institution_id=institution_id,
             entry=entry,
+            roster=roster,
         )
-    # 🔴 AC-12.5a: recorded AFTER the loop and OUTSIDE it, so a roster that
-    # listed nothing still advances the observation. An empty `/accounts/get`
-    # is a successful observation of zero accounts, not a failed fetch, and the
-    # state that must not exist is the third one -- a response that type-checks,
-    # runs this loop zero times, and leaves no record that anyone looked.
-    _record_roster_observation(conn, response)
 
 
 def _record_roster_observation(conn: SAConnection, response: RawResponse) -> None:
@@ -782,6 +951,7 @@ def _derive_one_account(
     context: DerivationContext,
     institution_id: int,
     entry: dict[str, Any],
+    roster: bool,
 ) -> None:
     source_account_id = _required(entry.get("account_id"), "account_id", response)
     account_type = _required(entry.get("type"), "account type", response)
@@ -791,15 +961,24 @@ def _derive_one_account(
             f"raw response {response.raw_response_id} gives account {source_account_id} no "
             f"balances object"
         )
-    currency = _optional(balances.get("iso_currency_code")) or _optional(
-        balances.get("unofficial_currency_code")
-    )
+    # 🔴 One unusable account must not cost the connection its transactions.
+    # `/accounts/get` is fetched first on every run, so a refusal here aborts the
+    # connection before a single page is pulled -- and the same body is archived
+    # again on the next run, and the one on the run after that. What the
+    # aggregator did not report is ABSENT, which is the distinction this
+    # product's whole warning vocabulary exists to preserve; refusing the roster
+    # loses the transactions as well and calls it safety.
+    stated_currency = _stated_currency(balances)
+    currency = stated_currency or _recorded_currency(conn, response, source_account_id)
     if currency is None:
-        raise DerivationError(
-            f"raw response {response.raw_response_id} gives account {source_account_id} a "
-            f"balance in no stated currency; storing an amount whose unit is unknown is how a "
-            f"total silently mixes two of them"
+        _log.warning(
+            "raw response %s gives account %s a balance in no stated currency and this "
+            "datastore has no currency recorded for it, so the account is skipped; its "
+            "transactions cannot be derived until a later roster names one",
+            response.raw_response_id,
+            source_account_id,
         )
+        return
 
     account_id = _upsert_account(
         conn,
@@ -809,16 +988,48 @@ def _derive_one_account(
         entry=entry,
         account_type=account_type,
         currency=currency,
+        roster=roster,
     )
+    if stated_currency is None:
+        # The account row keeps the unit the aggregator itself recorded for it
+        # earlier. This BALANCE has no stated unit, and storing an amount under a
+        # unit inferred from another response is how a total silently mixes two
+        # of them -- so the account is kept and the balance is not.
+        _log.warning(
+            "raw response %s gives account %s a balance in no stated currency; the account "
+            "is kept and no balance is recorded for it",
+            response.raw_response_id,
+            source_account_id,
+        )
+        return
     _write_balance(
         conn,
         response=response,
         context=context,
         account_id=account_id,
+        source_account_id=source_account_id,
         balances=balances,
         currency=currency,
         balance_class=balance_class_of(account_type, response),
     )
+
+
+def _recorded_currency(
+    conn: SAConnection, response: RawResponse, source_account_id: str
+) -> str | None:
+    """The unit this datastore already has for the account, if it has one.
+
+    Read only when the response states none. It is the aggregator's own earlier
+    word about the same account rather than a guess, which is what makes keeping
+    the account row honest -- and keeping it is what lets the account's
+    transactions derive at all.
+    """
+    return conn.execute(
+        select(accounts.c.currency).where(
+            accounts.c.connection_id == response.connection_id,
+            accounts.c.source_account_id == source_account_id,
+        )
+    ).scalar_one_or_none()
 
 
 def _upsert_account(
@@ -830,6 +1041,7 @@ def _upsert_account(
     entry: dict[str, Any],
     account_type: str,
     currency: str,
+    roster: bool,
 ) -> int:
     """One account row, converged on its source identity.
 
@@ -837,6 +1049,15 @@ def _upsert_account(
     `(connection_id, source_account_id)`, and SQLite treats NULLs as distinct, so
     relying on a conflict would let the manual-import path's null connections
     duplicate silently.
+
+    🔴 **`last_seen_date` moves only on a roster read** (`roster=True`). It
+    records *the roster was observed and this account was in it*, and AC-12.5
+    measures absence by comparing it against `connections.roster_observed_date`
+    -- so a sync body advancing it past an observation nobody made would leave no
+    account matching that observation, and the connection would report a roster
+    that listed nothing. An account first learned from a sync body therefore has
+    a NULL `last_seen_date`, which already means exactly what is true of it: no
+    roster observation is recorded for this account.
     """
     existing = conn.execute(
         select(
@@ -874,7 +1095,7 @@ def _upsert_account(
                 # AC-12.4: the same date at both ends on the first observation.
                 # The pair only diverges once a later roster names the account
                 # again, or stops naming it.
-                last_seen_date=seen_date,
+                last_seen_date=seen_date if roster else None,
                 created_at=response.received_at,
             )
         )
@@ -905,15 +1126,22 @@ def _upsert_account(
     # `seen_date` for it is right and is not a special case wearing a coalesce:
     # this response IS the latest observation of the account, whatever was or
     # was not recorded before it.
+    observed: dict[str, Any] = (
+        {
+            "last_seen_date": (
+                seen_date if last_seen_date is None else max(last_seen_date, seen_date)
+            )
+        }
+        if roster
+        else {}
+    )
     conn.execute(
         update(accounts)
         .where(accounts.c.account_id == account_id)
         .values(
             **{k: v for k, v in values.items() if k not in _OPERATOR_OWNED},
             first_seen_date=min(first_seen_date, seen_date),
-            last_seen_date=(
-                seen_date if last_seen_date is None else max(last_seen_date, seen_date)
-            ),
+            **observed,
         )
     )
     return int(account_id)
@@ -925,18 +1153,29 @@ def _write_balance(
     response: RawResponse,
     context: DerivationContext,
     account_id: int,
+    source_account_id: str,
     balances: dict[str, Any],
     currency: str,
     balance_class: str,
 ) -> None:
     """One day's balance for one account, signed from the operator's point of view.
 
-    🔴 **A liability's `current_minor` is stored negative**, whatever sign the
-    aggregator used -- several report a card balance as a positive amount owed,
-    and a consumer taking that at face value is wrong by twice the debt,
-    silently and plausibly. One convention rather than one per account type is
-    what lets net worth be a plain sum and AC-11.2's reconciliation be "change
-    in balance equals sum of transactions" for every account.
+    🔴 **A liability's stored sign is the NEGATION of the aggregator's**, applied
+    unconditionally rather than only to a positive balance. This aggregator
+    documents a credit or loan `current` as positive when the money is owed and
+    negative when the lender owes the account holder -- the ordinary state of a
+    card after a refund on a paid-off balance. A rule that only flipped positives
+    would map $250 owed and $250 in credit onto the same stored value, so two
+    opposite states would be one row and net worth would be understated by twice
+    the credit, silently and plausibly.
+
+    **The sign convention belongs to the connector, not to the account type.**
+    A second aggregator that signed liabilities the other way would get its own
+    connector declaring its own normalization; sniffing the sign here would put a
+    hypothetical feed's convention inside the one built for a documented feed.
+    One stored convention is what lets net worth be a plain sum and AC-11.2's
+    reconciliation be "change in balance equals sum of transactions" for every
+    account.
 
     `available_minor` and `limit_minor` are the documented exceptions and keep
     the magnitudes the source reported: neither participates in net worth, and
@@ -946,8 +1185,23 @@ def _write_balance(
     aggregator's, because the aggregator's changes when a connection is removed
     and re-linked, and history that pointed at it would detach.
     """
-    current = to_minor(balances.get("current"), currency, "a current balance", response)
-    if balance_class == "liability" and current > 0:
+    reported = balances.get("current")
+    if reported is None:
+        # 🔴 `current` is documented nullable, and a null one is an ABSENT
+        # balance rather than a zero or a refusal. `current_minor` is NOT NULL,
+        # so absence is recorded by the day having no row -- and the account
+        # keeps its row, which is what lets its transactions derive. Refusing
+        # instead aborted the connection before any page was fetched, on every
+        # run, forever.
+        _log.warning(
+            "raw response %s reports no current balance for account %s, so no balance is "
+            "recorded for that day; the account is kept",
+            response.raw_response_id,
+            source_account_id,
+        )
+        return
+    current = to_minor(reported, currency, "a current balance", response)
+    if balance_class == "liability":
         current = negate(current)
 
     available_raw = balances.get("available")

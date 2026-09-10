@@ -36,9 +36,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Any
+from typing import Any, Final
 
-from sqlalchemy import Column, Integer, Table, delete, select
+from sqlalchemy import Column, Integer, Table, delete, select, update
 from sqlalchemy import Connection as SAConnection
 
 from bankmachine.config import Config
@@ -58,6 +58,45 @@ RAW_PROVENANCE_COLUMN = "raw_response_id"
 #: The column that makes a table's rows *derived* at all: they were produced by
 #: some version of the normalization logic, and they say which (AC-5.3).
 DERIVATION_VERSION_COLUMN = "derivation_version_id"
+
+
+@dataclass(frozen=True, slots=True)
+class OperatorState:
+    """Columns on a rebuildable table that the archive could never bring back."""
+
+    identity: tuple[str, ...]
+    """What names the same row on the other side of the replay.
+
+    The SOURCE's identity, never the local primary key: a rebuild reinserts the
+    rows and SQLite allocates fresh row numbers, so a key captured before the
+    delete would point at whatever happened to land there afterwards.
+    """
+
+    columns: tuple[str, ...]
+    """What is carried across, because no deriver writes it."""
+
+
+#: What a rebuild carries across the replay, by table.
+#:
+#: 🔴 **A rebuild empties a table because the archive can recreate it, and these
+#: columns are the exception inside the exception.** `category_override` is the
+#: operator's own correction: no response contains it and no deriver writes it,
+#: so replaying the archive lands on a row with the column blank. The digest
+#: guard would normally refuse a rebuild that changed content -- but a changed
+#: derivation version is the usual REASON to rebuild, and in that state the
+#: guard treats a change as expected. So the loss was reported as a success.
+#:
+#: The sibling rule lives in the accounts deriver's `_OPERATOR_OWNED`, which
+#: stops a sync overwriting an operator's column; this is the same principle at
+#: the other event. Both are lists of columns rather than a property of the
+#: schema, because "the operator owns this" is a decision recorded in
+#: `data-model.md` and not something a column's type can say.
+OPERATOR_STATE: Final[Mapping[str, OperatorState]] = {
+    "transactions": OperatorState(
+        identity=("account_id", "source_transaction_id"),
+        columns=("category_override",),
+    ),
+}
 
 
 class UnhashableValueError(StoreError):
@@ -262,6 +301,8 @@ def rebuild(
             previous_versions = _previous_derivation_versions(conn, tables)
             digest_before = content_digest(conn)
 
+            preserved = _capture_operator_state(conn, tables)
+
             deleted: dict[str, int] = {}
             for table in tables:
                 result = conn.execute(
@@ -285,6 +326,12 @@ def rebuild(
                 derivation.derive(conn, response, context, derivers=derivers)
                 replayed += 1
 
+            _restore_operator_state(conn, preserved)
+
+            # 🔴 After the restore, because the digest is what decides whether
+            # this rebuild reproduced what it replaced -- and a digest taken
+            # while the operator's own columns were still blank would answer a
+            # question nobody asked.
             digest_after = content_digest(conn)
             report = RebuildReport(
                 responses_replayed=replayed,
@@ -318,6 +365,77 @@ def rebuild(
             derivation.DERIVATION_VERSION,
         )
         return report
+
+
+#: One captured row: the identity that finds it again, and what to put back on it.
+CapturedState = dict[str, list[tuple[tuple[object, ...], dict[str, object]]]]
+
+
+def _capture_operator_state(conn: SAConnection, tables: tuple[Table, ...]) -> CapturedState:
+    """Read the operator-owned columns off the rows about to be deleted.
+
+    Read before the delete, because afterwards there is nothing left to ask --
+    the same reason `_previous_derivation_versions` is.
+
+    A row whose identity is not fully populated is skipped: it cannot be matched
+    on the other side, and an incomplete key would match rows it does not mean.
+    Rows with nothing set in any of the columns are skipped too, so a rebuild of
+    a store nobody has corrected does no work at all.
+    """
+    captured: CapturedState = {}
+    for table in tables:
+        state = OPERATOR_STATE.get(table.name)
+        if state is None:
+            continue
+        rows = conn.execute(
+            select(*(table.c[name] for name in (*state.identity, *state.columns))).where(
+                table.c[RAW_PROVENANCE_COLUMN].is_not(None)
+            )
+        ).all()
+        held = []
+        for row in rows:
+            key = tuple(row[: len(state.identity)])
+            values = dict(zip(state.columns, row[len(state.identity) :], strict=True))
+            if None in key or all(value is None for value in values.values()):
+                continue
+            held.append((key, values))
+        if held:
+            captured[table.name] = held
+    return captured
+
+
+def _restore_operator_state(conn: SAConnection, captured: CapturedState) -> None:
+    """Put each captured value back on the row the replay recreated.
+
+    🔴 **A value with nowhere to land is reported, never re-homed.** The row it
+    belonged to is not in the rebuilt table -- its response was pruned, or a
+    changed deriver no longer emits it under that identity -- and applying the
+    correction to some other row would be worse than losing it. Saying which one
+    was lost is what lets the operator put it back; saying nothing is how a
+    rebuild reports success over an answer that quietly changed.
+    """
+    for table_name, held in captured.items():
+        table = metadata.tables[table_name]
+        state = OPERATOR_STATE[table_name]
+        for key, values in held:
+            result = conn.execute(
+                update(table)
+                .where(
+                    *(
+                        table.c[name] == value
+                        for name, value in zip(state.identity, key, strict=True)
+                    )
+                )
+                .values(**values)
+            )
+            if result.rowcount == 0:
+                logger.warning(
+                    "the replay did not recreate the %s row carrying %s, so %s is lost: %s",
+                    table_name,
+                    dict(zip(state.identity, key, strict=True)),
+                    ", ".join(state.columns),
+                    values,
+                )
 
 
 def _previous_derivation_versions(conn: SAConnection, tables: tuple[Table, ...]) -> tuple[int, ...]:

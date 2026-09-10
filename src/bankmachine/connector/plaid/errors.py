@@ -44,6 +44,7 @@ from bankmachine.connector import (
     InstitutionUnavailableError,
     RateLimitedError,
     ReauthRequiredError,
+    TransactionsPaginationRestartError,
     UnrecognizedAggregatorError,
 )
 from bankmachine.logging_setup import get_logger
@@ -81,6 +82,14 @@ CODE_TO_ERROR: Final[Mapping[str, type[ConnectorError]]] = {
     # is where that gets confirmed against a real backfill, and until a real one
     # has been seen this entry is the least-evidenced line in this file.
     "PRODUCT_NOT_READY": DataNotReadyError,
+    # -- Documented by the aggregator for the sync loop ------------------------
+    # 🔴 Kept at the CODE layer only, for the reason `ITEM_ERROR` is absent from
+    # the type layer: this code's `TRANSACTIONS_ERROR` type also spans a product
+    # the Item was never enrolled with and a cursor the aggregator refuses, and
+    # those three remedies are in three different places. Left unmapped here the
+    # code is unrecognized and therefore not retried, which turns an ordinary
+    # mid-backfill mutation into a connection degraded for the rest of the run.
+    "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION": TransactionsPaginationRestartError,
 }
 
 #: Aggregator error *type* -> local type. The coarse layer, and complete: every

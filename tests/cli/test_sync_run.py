@@ -18,12 +18,14 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
-from bankmachine.cli import run
+from bankmachine.cli import run, sync_run
+from bankmachine.cli.sync_run import MAX_PAGINATION_RESTARTS
 from bankmachine.config import Config
 from bankmachine.connector import (
     ACCOUNTS_GET,
     TRANSACTIONS_SYNC,
     FetchedResponse,
+    TransactionsPaginationRestartError,
     TransportError,
 )
 from bankmachine.derivers import ALL_DERIVERS
@@ -34,6 +36,7 @@ from bankmachine.secrets import (
     set_access_token,
     set_plaid_secret,
 )
+from bankmachine.store.connection import AnotherWriterRunningError
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
 from bankmachine.store.schema import (
@@ -114,7 +117,7 @@ def _page(
 class FakeClient:
     """Answers `transactions_sync` from a scripted list of pages."""
 
-    pages: list[bytes] = []
+    pages: list[bytes | Exception] = []
     calls: list[str | None] = []
     fail_with: Exception | None = None
     #: Fail only for this access token, so one connection can fail while another
@@ -149,9 +152,16 @@ class FakeClient:
         if FakeClient.fail_with is not None:
             raise FakeClient.fail_with
         index = min(len(FakeClient.calls) - 1, len(FakeClient.pages) - 1)
+        page = FakeClient.pages[index]
+        # A scripted page may be a refusal. The aggregator interleaves them with
+        # bodies -- a mid-pagination mutation arrives between two good pages --
+        # and a fake that could only fail for the whole run could not express
+        # the sequence the loop is supposed to survive.
+        if isinstance(page, Exception):
+            raise page
         return FetchedResponse(
             endpoint=TRANSACTIONS_SYNC,
-            body=FakeClient.pages[index],
+            body=page,
             received_at=now_utc(),
             request_context=None,
         )
@@ -344,6 +354,42 @@ def test_a_second_run_is_a_no_op(cli_env: Config) -> None:
 # --------------------------------------------------------------------------
 
 
+def _enroll_a_second_connection(config: Config) -> str:
+    """A second live connection, and the access token that reaches it.
+
+    AC-4.1 is only observable across two connections: with one, "the loop
+    continued" is indistinguishable from "there was nothing left to do".
+    """
+    now = now_utc()
+    second_ref = config.connection_keychain_account("item-two")
+    second_token = "access-sandbox-second-fake"  # credential-shape: test vector
+    set_access_token(config, second_ref, second_token)
+    with writer_connection(config) as conn:
+        primary_key = conn.execute(
+            institutions.insert().values(
+                source_institution_id="ins_second",
+                name="Second Bank",
+                first_seen_at=now,
+                last_seen_at=now,
+            )
+        ).inserted_primary_key
+        assert primary_key is not None
+        conn.execute(
+            connections.insert().values(
+                institution_id=primary_key[0],
+                source_connection_id="item-two",
+                credential_ref=second_ref,
+                capabilities="[]",
+                requested_history_days=730,
+                status="active",
+                enrolled_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    return second_token
+
+
 def test_a_failing_connection_is_recorded_and_the_run_reports_one(
     cli_env: Config, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -375,33 +421,7 @@ def test_one_connection_failing_does_not_stop_the_others(
     A single-connection test cannot tell "the loop continued" from "there was
     nothing left to do".
     """
-    now = now_utc()
-    second_ref = cli_env.connection_keychain_account("item-two")
-    second_token = "access-sandbox-second-fake"  # credential-shape: test vector
-    set_access_token(cli_env, second_ref, second_token)
-    with writer_connection(cli_env) as conn:
-        primary_key = conn.execute(
-            institutions.insert().values(
-                source_institution_id="ins_second",
-                name="Second Bank",
-                first_seen_at=now,
-                last_seen_at=now,
-            )
-        ).inserted_primary_key
-        assert primary_key is not None
-        conn.execute(
-            connections.insert().values(
-                institution_id=primary_key[0],
-                source_connection_id="item-two",
-                credential_ref=second_ref,
-                capabilities="[]",
-                requested_history_days=730,
-                status="active",
-                enrolled_at=now,
-                created_at=now,
-                updated_at=now,
-            )
-        )
+    second_token = _enroll_a_second_connection(cli_env)
     FakeClient.pages = [_page(added=[_txn("t1")], next_cursor="cursor-1")]
     # 🔴 An AGGREGATOR failure, not a missing credential. Both degrade the
     # connection, but they leave by different paths -- and a test that took the
@@ -420,6 +440,103 @@ def test_one_connection_failing_does_not_stop_the_others(
         }
     assert rows[1] == "active"
     assert rows[2] == "degraded"
+
+
+def test_a_datastore_failure_on_one_connection_leaves_the_others_to_sync(
+    cli_env: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 AC-4.1's hole: a locked datastore, not an aggregator refusal.
+
+    `_persist` takes the exclusive writer lock per page and does not wait, so an
+    ordinary `store backup` running beside a sync raises `AnotherWriterRunningError`
+    -- a `StoreError`, which is neither a `ConnectorError` nor a `DerivationError`.
+    It escaped the per-connection catch, escaped the run, and was reported as a
+    command that could not run at all, skipping every connection after it. The
+    requirement is that one broken connection never aborts another, and the
+    datastore was the counterexample.
+    """
+    second_token = _enroll_a_second_connection(cli_env)
+    FakeClient.pages = [_page(added=[_txn("t1")], next_cursor="cursor-1")]
+    real_persist = sync_run._persist
+
+    def persist(config: Config, fetched: FetchedResponse, connection_id: int) -> None:
+        if connection_id == 1:
+            raise AnotherWriterRunningError("another writer holds the datastore")
+        real_persist(config, fetched, connection_id)
+
+    monkeypatch.setattr(sync_run, "_persist", persist)
+
+    assert run(["sync", "run"]) == 1, "a locked datastore was reported as could-not-run"
+
+    with reader_connection(cli_env) as conn:
+        rows = {
+            int(r._mapping["connection_id"]): r._mapping["status"]
+            for r in conn.execute(select(connections)).all()
+        }
+    assert rows[1] == "degraded"
+    assert rows[2] == "active", "the second connection never got its turn"
+    assert second_token  # the second connection is the one that had to succeed
+    assert len(_txn_rows(cli_env)) == 1
+
+
+def test_a_mid_pagination_mutation_restarts_the_page_run_rather_than_degrading_it(
+    cli_env: Config,
+) -> None:
+    """🔴 Ordinary on a long backfill, and invisible in sandbox.
+
+    The aggregator raises this when the underlying data changes while a page run
+    is in flight, and documents the remedy as starting again from the last
+    cursor that was stored. Sandbox backfills are tiny and static, so tomorrow's
+    first production sync is the first time this can happen at all -- and left
+    unclassified it degrades the connection for the rest of the run, stopping
+    that institution's history where the mutation happened.
+
+    The loop is already built to do the right thing: it re-reads the cursor from
+    the datastore before every request, so retrying after page one has committed
+    IS the documented restart. Only the classification was missing.
+    """
+    FakeClient.pages = [
+        _page(added=[_txn("t1")], next_cursor="cursor-1", has_more=True),
+        TransactionsPaginationRestartError(
+            "the data changed while the page run was in flight", endpoint=TRANSACTIONS_SYNC
+        ),
+        _page(added=[_txn("t2")], next_cursor="cursor-2"),
+    ]
+
+    assert run(["sync", "run"]) == 0
+
+    assert _connection_row(cli_env)["status"] == "active"
+    assert {r["source_transaction_id"] for r in _txn_rows(cli_env)} == {"t1", "t2"}
+    assert FakeClient.calls == [None, "cursor-1", "cursor-1"], (
+        "the restarted page run did not resume from the cursor page one committed"
+    )
+    assert _cursor(cli_env) == "cursor-2"
+
+
+def test_a_page_run_that_never_stops_restarting_is_degraded_rather_than_hung(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The bound that keeps "restart" from meaning "loop forever".
+
+    A restart does not advance the page count, so a connection whose data never
+    settles would spin against the aggregator with nothing ever reported. A
+    nightly sync that never returns is a worse failure than one that says a
+    connection is degraded, because nothing downstream can tell it from a
+    machine that is merely slow.
+    """
+    FakeClient.fail_with = TransactionsPaginationRestartError(
+        "the data changed while the page run was in flight", endpoint=TRANSACTIONS_SYNC
+    )
+
+    assert run(["sync", "run"]) == 1
+
+    row = _connection_row(cli_env)
+    assert row["status"] == "degraded"
+    assert row["last_error_code"] == "TransactionsPaginationRestartError"
+    assert len(FakeClient.calls) == MAX_PAGINATION_RESTARTS + 1, (
+        "the restart budget is not what bounded the run"
+    )
+    assert "could not be synced" in capsys.readouterr().out
 
 
 def test_a_recovered_connection_stops_being_degraded(cli_env: Config) -> None:
