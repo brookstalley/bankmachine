@@ -877,12 +877,16 @@ a shell recipe that puts the key in history and in the process table. A refused 
 difference between the product path and the recipe it replaces — without it, the new command is the
 old defect with a nicer name.
 
-**AC-17.2 · The export names no destination of its own.** The operator supplies the path; the
-product never chooses one, never defaults to one, and never writes inside the data directory.
-*Why:* writing the key anywhere the *product* controls defeats the keychain, and that position is
-kept rather than overturned. What the ruling changed is that the operator may *ask*, not that the
-product may *decide* — and a default path is the product deciding, on the run where the operator did
-not think about it.
+**AC-17.2 · The export names no destination of its own, and refuses the one that would undo
+encryption at rest.** The operator supplies the path; the product never chooses one and never
+defaults to one. It refuses a destination inside the data directory. *Why:* writing the key anywhere
+the *product* controls defeats the keychain, and that position is kept rather than overturned. What
+the ruling changed is that the operator may *ask*, not that the product may *decide* — and a default
+path is the product deciding, on the run where the operator did not think about it. 🔴 The data
+directory is the single exception to "everywhere else is theirs", and it is not paternalism: the
+value of encryption at rest is that a copied data directory is noise, so a key file inside it makes
+the directory self-decrypting and one careless `cp -r`, backup sweep or synced folder carries both
+halves.
 
 **AC-17.3 · A candidate key is checked by opening the datastore with it.** Verification reports
 whether the candidate opens the store, and does not rest on comparing it to the keychain entry.

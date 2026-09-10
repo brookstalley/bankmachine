@@ -249,6 +249,22 @@ such source. A backup of the datastore without the key is a backup of noise.
 characters in the keychain; it belongs in the operator's password manager or a paper copy in a safe —
 somewhere that survives the machine's disk *and* the machine's keychain.
 
+```
+bankmachine store key export          # renders it; refuses a non-terminal stdout
+bankmachine store key export --to P   # writes 0600 to a path you name, if you'd rather not retype
+bankmachine store key verify          # confirms the copy you stored opens THIS datastore
+bankmachine store key import          # puts it back, on a machine whose keychain lost it
+```
+
+🔴 **`verify` is the half that is easy to skip and expensive to skip.** Shape validation catches a
+malformed key and never a *wrong* one: a transposed pair of hex digits is still 64 characters of
+valid hex and is simply a different key. Without this command there is no moment at which an
+operator can learn their stored copy is bad while it is still fixable — SQLCipher raises on first
+open, which is correct and useless, because that is the moment nothing can be done.
+
+`import` opens the datastore with the candidate before it writes the keychain entry, so a typo
+cannot replace a working key.
+
 The operator-facing form of this — the keychain recipe, and the moment in the cutover to run it,
 which is immediately after `store init` and before any data exists — is
 `docs/first-production-connection.md`, along with the ordered production procedure, the day-one
@@ -396,7 +412,7 @@ code; each is work the build sequence has not reached, except the first.
 
 | Gap | Why it matters |
 |---|---|
-| **Backup is not scheduled** (`#10`) | `store backup` exists and is verified, but nothing runs it. A backup command nobody invokes protects nothing. Wiring it into the same launchd agent as the sync is the obvious answer and is not yet specified |
+| **Backup is not scheduled** (`#10`) | `store backup` exists and is verified, but nothing runs it. A backup command nobody invokes protects nothing. 🔴 The remedy this row used to name — wire it into the sync's launchd agent — was corrected on 2026-09-10: that agent does not exist (build step 8), launchd is a design choice rather than a requirement (AC-ARCH.2 asks for a daily job that recovers a missed window), and nothing requires a backup cadence to ride on the sync's at all. What should schedule it is an open requirement |
 | **Restore has never been rehearsed** (`#10`) | The copy is known readable — the tests reopen it through the ordinary reader. The operator procedure around it is not. This is the procedure someone improvises under pressure against data that trying again cannot recover |
 | **The key is still backed up by hand** | The command cannot do this — writing the datastore key anywhere the product controls would defeat the keychain. It stays an operator instruction, and it is the half with no remedy |
 | **AC-ARCH.1 is not an automated test** | "A fresh clone works on a clean machine" is asserted, not checked, and it decays silently with every undocumented step someone adds |

@@ -41,6 +41,16 @@ def initialized(cli_env: Config) -> Config:
     return cli_env
 
 
+@pytest.fixture
+def outside_the_data_directory(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Somewhere an operator might actually keep an escrow file.
+
+    NOT `tmp_path`: that is the datastore's own directory here, and the export
+    refuses to write the plaintext key beside the ciphertext it decrypts.
+    """
+    return tmp_path_factory.mktemp("escrow")
+
+
 def _answer_prompt(monkeypatch: pytest.MonkeyPatch, key: str) -> None:
     """Stand in for the operator typing at the no-echo prompt."""
     monkeypatch.setattr("bankmachine.cli.store.getpass", lambda _prompt: key)
@@ -86,9 +96,9 @@ def test_export_refuses_a_stdout_that_is_not_a_terminal(
 
 
 def test_export_to_a_named_path_writes_a_file_only_the_operator_can_read(
-    initialized: Config, tmp_path: Path
+    initialized: Config, outside_the_data_directory: Path
 ) -> None:
-    destination = tmp_path / "escrow.key"
+    destination = outside_the_data_directory / "escrow.key"
 
     assert run(["store", "key", "export", "--to", str(destination)]) == 0
 
@@ -98,10 +108,10 @@ def test_export_to_a_named_path_writes_a_file_only_the_operator_can_read(
 
 
 def test_export_refuses_a_destination_that_already_exists(
-    initialized: Config, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    initialized: Config, outside_the_data_directory: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Same refusal `store backup` makes, for the same reason: never overwrite."""
-    destination = tmp_path / "escrow.key"
+    destination = outside_the_data_directory / "escrow.key"
     destination.write_text("something the operator cares about\n", encoding="utf-8")
 
     assert run(["store", "key", "export", "--to", str(destination)]) == 2
@@ -118,12 +128,18 @@ def test_export_writes_nothing_when_no_destination_is_named(
     The product never chooses a path. A default would be the product deciding on
     the run where the operator did not think about it.
     """
-    before = set(tmp_path.rglob("*"))
+    key = get_datastore_key(initialized)
     _stdout_is_a_terminal(monkeypatch, terminal=True)
 
     assert run(["store", "key", "export"]) == 0
 
-    assert set(tmp_path.rglob("*")) == before
+    # Asserted as "the key is in no file" rather than "no file appeared": that is
+    # the property AC-17.2 is actually about, and a set-equality check over the
+    # data directory would go amber on ordinary WAL churn instead.
+    written = [p for p in tmp_path.rglob("*") if p.is_file()]
+    assert written, "nothing on disk at all -- this test would pass without checking anything"
+    for path in written:
+        assert key not in path.read_bytes().decode("utf-8", errors="ignore"), path
 
 
 # --- AC-17.3: verify asks the datastore, not the keychain -------------------------
@@ -337,7 +353,7 @@ def test_a_refused_export_names_neither_the_key_nor_a_way_to_get_it(
 
 
 def test_a_key_survives_export_and_import_onto_a_keychain_that_lost_it(
-    initialized: Config, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    initialized: Config, monkeypatch: pytest.MonkeyPatch, outside_the_data_directory: Path
 ) -> None:
     """Export -> the keychain forgets -> import -> the datastore opens again.
 
@@ -345,7 +361,7 @@ def test_a_key_survives_export_and_import_onto_a_keychain_that_lost_it(
     rehearsal: a restore into the production path, against a key read back from
     wherever the operator actually stored it, stays owed.
     """
-    escrow = tmp_path / "escrow.key"
+    escrow = outside_the_data_directory / "escrow.key"
     assert run(["store", "key", "export", "--to", str(escrow)]) == 0
     stored = escrow.read_text(encoding="utf-8").strip()
 
@@ -426,3 +442,95 @@ def test_set_datastore_key_rejects_a_value_the_probe_would_have_accepted(
 
     with pytest.raises(SecretsError):
         set_datastore_key(initialized, "0x" + "a" * 62)
+
+
+# --- AC-17.7: one instruction, one answer, on every surface ------------------------
+
+
+@pytest.mark.parametrize("argv", [["store", "init"], ["store", "status"]])
+def test_no_operator_facing_command_hands_out_the_shell_recipe(
+    initialized: Config,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+) -> None:
+    """🔴 The recipe put the key in shell history, which AC-10.1 forbids.
+
+    It shipped because the product had no path of its own and an instruction
+    with no route is worse than a leaky one. FR-12 removed that excuse. Asserted
+    per surface rather than by grepping the source, because what AC-17.7
+    constrains is what the operator is TOLD, and a source scan would also fire
+    on the comment that explains why the recipe is gone.
+    """
+    assert run(argv) == 0
+
+    captured = capsys.readouterr()
+    assert "find-generic-password" not in captured.out
+    assert "find-generic-password" not in captured.err
+
+
+def test_every_surface_that_mentions_the_key_names_the_same_two_commands(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One instruction, one answer.
+
+    Three surfaces printed the recipe and a fourth printed no command at all, so
+    which answer the operator met depended on which command they happened to run.
+    """
+    assert run(["store", "init"]) == 0
+    minting = capsys.readouterr().out
+    assert run(["store", "status"]) == 0
+    standing = capsys.readouterr().out
+
+    for surface in (minting, standing):
+        assert "bankmachine store key export" in surface
+
+
+def test_export_refuses_to_write_the_key_into_the_data_directory(
+    initialized: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """🔴 A directory holding both halves is a directory that decrypts itself.
+
+    The whole value of encryption at rest is that a copied data directory is
+    noise. A key file sitting in it means one careless `cp -r`, backup sweep or
+    synced folder carries the ciphertext and the key together.
+    """
+    inside = initialized.datastore_path.parent / "key.txt"
+
+    assert run(["store", "key", "export", "--to", str(inside)]) == 2
+
+    assert not inside.exists()
+    err = capsys.readouterr().err
+    assert "decrypts itself" in err
+    assert get_datastore_key(initialized) not in err
+
+
+def test_export_refuses_a_subdirectory_of_the_data_directory_too(
+    initialized: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One level down is the same directory for every purpose that matters here."""
+    nested = initialized.datastore_path.parent / "logs" / "key.txt"
+
+    assert run(["store", "key", "export", "--to", str(nested)]) == 2
+
+    assert not nested.exists()
+    assert get_datastore_key(initialized) not in capsys.readouterr().err
+
+
+def test_the_missing_key_diagnosis_names_the_command_that_fixes_it(
+    initialized: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """🔴 AC-17.7 reaches the RESTORE direction, not only the export one.
+
+    This diagnosis is the most precise text the product has -- it refuses to
+    mint, and says exactly why -- and until FR-12 it ended in "restore the
+    keychain entry from your backup" with nothing to do that with. An
+    instruction with no command behind it is the defect this feature was filed
+    about; leaving it here would have fixed one direction and left the other.
+    """
+    delete_datastore_key(initialized)
+
+    assert run(["store", "init"]) == 2
+
+    err = capsys.readouterr().err
+    assert "bankmachine store key import" in err
+    assert "a fresh one would decrypt nothing" in err

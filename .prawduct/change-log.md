@@ -34,6 +34,55 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-10: The operator can get the datastore key out, check it, and put it back
+
+<!-- prawduct: scope=datastore-key-escrow -->
+
+**Why:** the datastore key cannot be recovered from the datastore, and `balances_daily` is the one
+series no re-sync rebuilds — so a lost key is permanent data loss with no remedy. The product warned
+about this on three surfaces and offered nothing to act on it.
+
+Two consequences. The product's own instruction named a shell recipe
+(`security find-generic-password … -w`) that puts the key in shell history, which **AC-10.1
+forbids** — so the criterion was being routed around rather than obeyed, in the product's own
+output. And there was no way to check a stored copy: shape validation catches a *malformed* key and
+never a *wrong* one, because a transposed pair of hex digits is still 64 characters of valid hex and
+is simply a different key. There was no moment at which an operator could learn their backup was bad
+while it was still fixable.
+
+**What shipped:** `bankmachine store key export | verify | import`, over one primitive — *does this
+candidate open this datastore*. Export refuses a non-TTY stdout; `--to <path>` writes `0600` to a
+path the operator names and never overwrites. Verify test-opens the datastore, so it answers with
+the keychain entry gone, which is the situation an incident actually presents. Import opens the
+store with the candidate before it writes the keychain, so a typo cannot replace a working key.
+Neither input verb takes a key as an argument, and both swallow trailing arguments rather than let
+argparse echo a mistyped key onto stderr.
+
+**Requirements:** AC-10.1 amended on the owner's ruling of 2026-09-10 — the operator owns exporting
+and preserving the key, the product owes the mechanism — and FR-12 / AC-17.1–17.8 written against
+it. The `security-model.md` norm went `in-transition` with the requirement and back to
+**steady-state** here, on the condition the transition itself set.
+
+🔴 **Two tests changed their assertions, and the warrant is recorded rather than assumed.**
+`test_init_tells_the_operator_to_back_the_minted_key_up_and_how_to_read_it` asserted the exact
+`security find-generic-password` string; it now asserts the exact `bankmachine store key export` and
+`store key verify` strings. `test_a_missing_key_names_the_state_and_both_remedies` asserted the prose
+"restore the keychain entry"; it now asserts `bankmachine store key import`. **Re-pointed, not
+relaxed:** each new assertion is at least as specific as the one it replaces, and AC-17.7 is what
+requires the change. A changed test assertion with no recorded warrant is indistinguishable from a
+weakened one, which is why this paragraph exists.
+
+**Found by running the thing, not by reading it.** A recovery drill against a scratch datastore —
+delete the keychain entry, confirm the store will not open, restore from an escrow file — showed
+that both "restore the keychain entry from your backup" messages still named no command. That is the
+exact defect #61 was filed about, fixed on the export side and left standing on the recovery side,
+and no test then in the suite could see it because both asserted the old prose.
+
+**Known limit, stated so it is not mistaken for coverage:** AC-17.8's automated half is a round-trip
+test. The **operator** rehearsal — a restore into the production path, against a key read back from
+wherever the operator actually stored it — is still owed and sandbox cannot rehearse it
+(`operational-spec.md` § Restore, #10).
+
 ## 2026-09-10: Production cutover hardening — what five reviews found the night before real accounts
 
 <!-- prawduct: scope=production-cutover-hardening -->

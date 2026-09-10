@@ -154,7 +154,19 @@ operator's path.
 ## Status
 
 - [x] Chunk 01 — the probe, and the three verbs
-- [ ] Chunk 02 — the instruction sweep, the artifacts, and the norm flip
+- [x] Chunk 02 — the instruction sweep, the artifacts, and the norm flip
 
 **Context:** requirements landed on `develop` at `bd7ffd0` (FR-12, AC-10.1 amendment, norm
-`in-transition`). This plan builds against them. Critic runs once, `cumulative`, after chunk 02.
+`in-transition`). Both chunks are built on `feature/datastore-key-escrow`; the norm is back to
+`steady-state` and AC-17.6 now has an enforcement artifact. Critic runs once, `cumulative`.
+
+**Two things the build added that the plan did not name, both recorded in their requirement:**
+
+- **AC-17.2 grew a refusal.** The plan said the export "never writes inside the data directory" and
+  the first implementation only declined to *default* there. A plaintext key beside the ciphertext
+  it decrypts makes the directory self-decrypting, so one careless `cp -r` carries both halves. The
+  export now refuses that destination and AC-17.2 says so.
+- **AC-17.7 reached the recovery direction.** Found by running a recovery drill, not by reading:
+  both "restore the keychain entry from your backup" messages still named no command — the exact
+  defect #61 was filed about, fixed on the export side and left standing on the restore side. No
+  test in the suite could see it, because two of them asserted the old prose.

@@ -141,9 +141,9 @@ def get_datastore_key(config: Config) -> str:
         # message names the state and both real remedies instead.
         raise DatastoreKeyMissingError(
             f"no datastore key in keychain {service}/{account}. A key cannot be recovered from an "
-            f"existing datastore: restore the keychain entry from your backup, or move the "
-            f"datastore aside. `bankmachine store init` creates a key only when no datastore "
-            f"exists yet"
+            f"existing datastore: restore it from your backup with `bankmachine store key import`, "
+            f"or move the datastore aside. `bankmachine store init` creates a key only when no "
+            f"datastore exists yet"
         )
     return _validate(stored, service=service, account=account)
 

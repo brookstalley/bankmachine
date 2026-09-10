@@ -211,10 +211,11 @@ def _print_key_backup_instruction(config: Config) -> None:
     also the last moment at which losing the key costs nothing -- there is no
     data yet.
 
-    It names the read-out command because otherwise the instruction asks for a
-    value the operator has no route to: nothing in this product prints the key,
-    which is deliberate, and the keychain is therefore the only place it exists.
-    The key is not interpolated here or anywhere else.
+    It names both commands, and the second is not decoration. Getting the key out
+    is the half an operator remembers to do; confirming that what they wrote down
+    is what the datastore actually takes is the half that fails silently, because
+    a transposed pair of hex digits is still 64 characters of valid hex and is
+    simply a different key. The key is not interpolated here or anywhere else.
     """
     print()
     print("BACK THE DATASTORE KEY UP NOW, WHILE THIS STORE IS STILL EMPTY.")
@@ -224,18 +225,12 @@ def _print_key_backup_instruction(config: Config) -> None:
     )
     print("  It cannot be derived from the datastore. Without it this store, and every")
     print("  backup copy of it, is unrecoverable ciphertext -- there is no remedy.")
-    print("  Nothing in this product prints the key. On macOS, read it out with")
-    print(f"    {_keychain_recipe(config)}")
-    print("  and put it in a password manager that survives this machine.")
+    print("  Read it out with")
+    print("    bankmachine store key export")
+    print("  put it in a password manager that survives this machine, and then confirm")
+    print("  what you stored actually opens this datastore with")
+    print("    bankmachine store key verify")
     print()
-
-
-def _keychain_recipe(config: Config) -> str:
-    """The one macOS command that reads the datastore key out for a password manager."""
-    return (
-        f"security find-generic-password -s {config.keychain_service} "
-        f"-a {config.keychain_account} -w"
-    )
 
 
 def _obtain_key(config: Config, *, datastore_existed: bool) -> bool:
@@ -261,10 +256,10 @@ def _obtain_key(config: Config, *, datastore_existed: bool) -> bool:
         raise SecretsError(
             f"a datastore exists at {config.datastore_path}, but keychain "
             f"{config.keychain_service}/{config.keychain_account} holds no key for it. The key "
-            f"cannot be recovered from the datastore. Restore the keychain entry from your "
-            f"backup, or move the datastore aside to start a new one. No key was generated: a "
-            f"fresh one would decrypt nothing and would hide this diagnosis behind an "
-            f"authentication failure."
+            f"cannot be recovered from the datastore. Restore it from your backup with "
+            f"`bankmachine store key import`, or move the datastore aside to start a new one. "
+            f"No key was generated: a fresh one would decrypt nothing and would hide this "
+            f"diagnosis behind an authentication failure."
         ) from exc
     return False
 
@@ -278,8 +273,8 @@ def cmd_status(config: Config, _args: argparse.Namespace) -> int:
     # the key is minted.
     print(
         f"datastore key:   keychain {config.keychain_service}/{config.keychain_account} -- "
-        f"this datastore is unrecoverable without it, and nothing here prints it. "
-        f"Read it with `{_keychain_recipe(config)}`"
+        f"this datastore is unrecoverable without it. `bankmachine store key export` "
+        f"reads it out; `bankmachine store key verify` checks the copy you stored"
     )
     return 0 if status.healthy else 1
 
@@ -353,8 +348,9 @@ def _print_backup(config: Config, report: BackupReport) -> None:
     # anywhere. A copy without it is noise that looks like a backup.
     logger.warning(
         "this copy is encrypted and is USELESS WITHOUT THE DATASTORE KEY, which lives in "
-        "keychain %s/%s and cannot be recovered if lost -- back the key up separately, "
-        "somewhere that survives both this disk and this keychain",
+        "keychain %s/%s and cannot be recovered if lost -- back the key up separately with "
+        "`bankmachine store key export`, somewhere that survives both this disk and this "
+        "keychain, and check it with `bankmachine store key verify`",
         config.keychain_service,
         config.keychain_account,
     )
@@ -362,25 +358,26 @@ def _print_backup(config: Config, report: BackupReport) -> None:
 
 def cmd_key_export(config: Config, args: argparse.Namespace) -> int:
     """Hand the operator the key, or refuse in a way that cannot be mistaken for success."""
-    key = get_datastore_key(config)
-    if args.to is not None:
-        _write_key_file(args.to, key)
-        print(f"wrote {args.to}, readable only by you.")
-        print("Put it in a password manager, check it with `bankmachine store key verify`,")
-        print("then delete the file -- it is plaintext until you do.")
-        return EXIT_OK
-
-    if not sys.stdout.isatty():
-        # 🔴 The refusal IS the command. Without it this is `security
-        # find-generic-password -w` with a nicer name: a key that can be
-        # redirected into a file or a pipe by accident has left the keychain
-        # incidentally, which is the thing AC-10.1 forbids. An export the
-        # operator asked for in a way nobody can misread is the thing it permits.
+    if args.to is None and not sys.stdout.isatty():
+        # 🔴 The refusal IS the command, and it comes before the key is read:
+        # without it this is `security find-generic-password -w` with a nicer
+        # name -- a key that can be redirected into a file or a pipe by accident
+        # has left the keychain incidentally, which is the thing AC-10.1 forbids.
+        # An export the operator asked for in a way nobody can misread is the
+        # thing it permits.
         raise KeyEscrowRefusedError(
             "refusing to print the datastore key to something that is not a terminal. "
             "A redirected or piped key is a key that left the keychain by accident. "
             "Use `--to <path>` to write a file deliberately"
         )
+
+    key = get_datastore_key(config)
+    if args.to is not None:
+        _write_key_file(args.to, key, config)
+        print(f"wrote {args.to}, readable only by you.")
+        print("Put it in a password manager, check it with `bankmachine store key verify`,")
+        print("then delete the file -- it is plaintext until you do.")
+        return EXIT_OK
 
     print(f"datastore key for keychain {config.keychain_service}/{config.keychain_account}")
     print(f"  {key}")
@@ -389,13 +386,14 @@ def cmd_key_export(config: Config, args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _write_key_file(destination: Path, key: str) -> None:
+def _write_key_file(destination: Path, key: str, config: Config) -> None:
     """Write the key to a path the operator named, readable only by them.
 
     `O_EXCL` rather than a prior existence check, and it matches `store backup`'s
     refusal: never overwrite a destination. The mode is on the `open` call rather
     than a later `chmod`, so the file is never briefly world-readable.
     """
+    _refuse_the_data_directory(destination, config)
     try:
         fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError as exc:
@@ -407,6 +405,33 @@ def _write_key_file(destination: Path, key: str) -> None:
         raise KeyEscrowRefusedError(f"could not write {destination}: {exc}") from exc
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(f"{key}\n")
+
+
+def _refuse_the_data_directory(destination: Path, config: Config) -> None:
+    """Refuse to put the plaintext key beside the ciphertext it decrypts.
+
+    🔴 The one destination the operator does not get to choose, and it is not
+    paternalism: the whole value of encryption at rest is that a copied data
+    directory is noise. A key file sitting in it makes the directory
+    self-decrypting, so a single careless `cp -r`, backup sweep or synced folder
+    carries both halves and the encryption stops meaning anything.
+
+    Everywhere else is theirs. AC-17.2 is that the PRODUCT never picks a
+    destination -- this refuses the one pick that would undo the product's own
+    guarantee, and it names the reason so the operator can pick again.
+    """
+    data_directory = config.datastore_path.parent.resolve()
+    try:
+        candidate = destination.resolve().parent
+    except OSError:  # an unresolvable path fails later, with a better message
+        return
+    if candidate == data_directory or data_directory in candidate.parents:
+        raise KeyEscrowRefusedError(
+            f"refusing to write the key inside {data_directory}, which is where the "
+            f"datastore it decrypts lives. A directory holding both is a directory that "
+            f"decrypts itself, and one careless copy of it carries both halves. "
+            f"Name a path somewhere else"
+        )
 
 
 def cmd_key_verify(config: Config, args: argparse.Namespace) -> int:
@@ -441,8 +466,10 @@ def cmd_key_import(config: Config, args: argparse.Namespace) -> int:
             f"{config.keychain_service}/{config.keychain_account} is untouched"
         )
     set_datastore_key(config, candidate)
-    print(f"restored the datastore key to keychain {config.keychain_service}/"
-          f"{config.keychain_account}, verified against {config.datastore_path}.")
+    print(
+        f"restored the datastore key to keychain {config.keychain_service}/"
+        f"{config.keychain_account}, verified against {config.datastore_path}."
+    )
     return EXIT_OK
 
 
