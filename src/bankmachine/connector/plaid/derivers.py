@@ -309,10 +309,13 @@ def derive_transactions_sync(
     rows makes them commit together because they are produced together -- there is
     no ordering left for anyone to get wrong.
 
-    🔴 **A response with no `next_cursor` does not move the cursor.** A
+    🔴 **A response with no `next_cursor` skips the CURSOR, not the page.** A
     `NOT_READY` reply carries an empty one *(measured, `api-notes-plaid.md` §17)*,
     and storing it would mean either "start from the beginning" or, worse,
-    overwriting a good cursor with nothing.
+    overwriting a good cursor with nothing. But that is a rule about the cursor
+    alone: a page carrying changes and no cursor keeps its rows and leaves the
+    cursor where it was, because discarding them would lose transactions the
+    aggregator has already handed over and has no reason to send again.
 
     Transaction rows are written here too, and the ordering is not incidental:
     the rows go in before the cursor, so a row that cannot be written stops the
@@ -328,11 +331,27 @@ def derive_transactions_sync(
             f"belongs to exactly one connection and nothing else can say which"
         )
     payload = _payload(response)
+    applied = _apply_transaction_changes(conn, response, context)
+
     next_cursor = payload.get("next_cursor")
     if not isinstance(next_cursor, str) or not next_cursor:
+        if applied:
+            # 🔴 A shape nothing has observed, and the reason the rows go in
+            # first. The guard is right for `NOT_READY`, which carries an empty
+            # cursor and no changes -- but standing before the change lists it
+            # discarded the rows of any page that carried both, with no error and
+            # no trace. A page like that saying `has_more` would then be
+            # re-fetched to the page ceiling and reported as stopped short, so
+            # the operator reads "run again to continue" about a run that never
+            # can.
+            _log.warning(
+                "raw response %s (%s) carried %d change(s) and no cursor; the changes are "
+                "applied and the cursor stays where it was",
+                response.raw_response_id,
+                response.endpoint,
+                applied,
+            )
         return
-
-    _apply_transaction_changes(conn, response, context)
 
     existing = conn.execute(
         select(sync_state.c.connection_id).where(
@@ -463,8 +482,11 @@ def _account_ids(conn: SAConnection, connection_id: int) -> dict[str, int]:
 
 def _apply_transaction_changes(
     conn: SAConnection, response: RawResponse, context: DerivationContext
-) -> None:
+) -> int:
     """`added`, `modified` and `removed`, in the one transaction the cursor rides.
+
+    Returns how many changes the page carried, which is what lets the caller tell
+    a page with nothing to say from a page whose rows would otherwise vanish.
 
     🔴 **Nothing here issues a DELETE.** AC-2.2 soft-deletes: a removed
     transaction keeps its row and gains a `removed_at`, because a transaction
@@ -475,12 +497,16 @@ def _apply_transaction_changes(
     payload = _payload(response)
     known = _account_ids(conn, response.connection_id)
 
-    for entry in _entries(payload, "added", response):
+    added = _entries(payload, "added", response)
+    modified = _entries(payload, "modified", response)
+    removed = _entries(payload, "removed", response)
+    for entry in added:
         _write_transaction(conn, entry, response, context, known, existing_ok=False)
-    for entry in _entries(payload, "modified", response):
+    for entry in modified:
         _write_transaction(conn, entry, response, context, known, existing_ok=True)
-    for entry in _entries(payload, "removed", response):
+    for entry in removed:
         _mark_removed(conn, entry, response, known)
+    return len(added) + len(modified) + len(removed)
 
 
 def _entries(payload: dict[str, Any], key: str, response: RawResponse) -> list[dict[str, Any]]:

@@ -9,6 +9,7 @@ POSITIVE amount**, and this product stores money leaving an account as negative.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import pytest
@@ -19,7 +20,13 @@ from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.store.derivation import DerivationError, apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
-from bankmachine.store.schema import connections, institutions, transactions
+from bankmachine.store.schema import (
+    TRANSACTIONS_DOMAIN,
+    connections,
+    institutions,
+    sync_state,
+    transactions,
+)
 from bankmachine.store.types import now_utc
 
 SOURCE_ACCOUNT = "acct-checking"
@@ -703,6 +710,42 @@ def test_a_transaction_for_an_unknown_account_is_refused(synced: Config) -> None
         _apply(synced, TRANSACTIONS_SYNC.path, _sync_body(added=[entry]))
 
     assert "no row for" in str(raised.value)
+
+
+def test_a_page_carrying_changes_but_no_cursor_applies_them_and_says_so(
+    synced: Config, caplog: pytest.LogCaptureFixture
+) -> None:
+    """🔴 The rows go in first; only the cursor write is skipped.
+
+    The empty-cursor guard is right -- a `NOT_READY` reply carries one, and
+    storing it would mean "start from the beginning" -- but it stood BEFORE the
+    change lists were applied, so any page carrying entries and no cursor had its
+    rows discarded with no error and no log line. If such a page also said
+    `has_more`, the loop re-fetched the identical page to its ceiling and then
+    reported that it had stopped short: an operator reading "run again to
+    continue" from a run that never can.
+
+    The rows are written, the cursor stays where it was, and the combination is
+    recorded, because a page shaped this way is one nothing has ever observed.
+    """
+    _apply(synced, TRANSACTIONS_SYNC.path, _sync_body(next_cursor="cursor-1"))
+
+    with caplog.at_level(logging.WARNING, logger="bankmachine"):
+        _apply(
+            synced,
+            TRANSACTIONS_SYNC.path,
+            _sync_body(added=[_txn(transaction_id="t1", amount="12.00")], next_cursor=""),
+        )
+
+    assert [row["source_transaction_id"] for row in _rows(synced)] == ["t1"]
+    with reader_connection(synced) as conn:
+        cursor = conn.execute(
+            select(sync_state.c.cursor).where(sync_state.c.domain == TRANSACTIONS_DOMAIN)
+        ).scalar_one()
+    assert cursor == "cursor-1", "a page with no cursor moved the cursor"
+    assert any("no cursor" in record.getMessage() for record in caplog.records), (
+        "a page carrying changes and no cursor left no trace"
+    )
 
 
 def test_a_transaction_in_an_unofficial_currency_derives_rather_than_failing_the_page(
