@@ -21,6 +21,7 @@ from unittest import mock
 import pytest
 
 from bankmachine import build_id, envelope, mcp, mcp_resources, query, signs
+from bankmachine.cli.exit_codes import EXIT_OK
 from bankmachine.config import Config
 from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS
@@ -883,6 +884,40 @@ def test_amount_fields_say_they_are_minor_units(initialized_config: Config) -> N
     assert all("amount" not in key or "minor_units" in key for key in rows[0])
 
 
+def test_a_transaction_row_carries_the_id_of_the_account_it_is_on(
+    initialized_config: Config,
+) -> None:
+    """🔴 `account` is a display name, and two accounts can share one.
+
+    Every other tool keys on `account_id`, and the tool descriptions send a
+    caller from a suspicious row to `get_coverage_report` or to a narrowed
+    `query_transactions` — both of which take the id. Without it on the row the
+    caller has a name that may match two accounts and no way to tell them apart,
+    so it either guesses or reports the wrong account. Real households hold two
+    accounts called "Checking", and `mask` is nullable.
+
+    Asserted as a join that actually completes, not as key presence: the id has
+    to be the one `list_accounts` publishes and the one the argument accepts.
+    """
+    _seed(initialized_config)
+
+    rows = _call(initialized_config, "query_transactions")["structuredContent"]["rows"]
+    accounts = _call(initialized_config, "list_accounts")["structuredContent"]["rows"]
+
+    ids = {row["account_id"] for row in rows}
+    assert ids, "the fixture returned no rows, so this checks nothing"
+    assert ids <= {account["account_id"] for account in accounts}, (
+        "a transaction names an account id list_accounts does not publish"
+    )
+    for row in rows:
+        narrowed = _call(
+            initialized_config, "query_transactions", {"account_id": row["account_id"]}
+        )["structuredContent"]["rows"]
+        assert row["transaction_id"] in {r["transaction_id"] for r in narrowed}, (
+            "the id on the row does not select the row when passed back as the argument"
+        )
+
+
 def test_a_failing_tool_reports_an_error_without_closing_the_session(
     initialized_config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -931,7 +966,153 @@ def test_a_failing_tool_reports_an_error_without_closing_the_session(
     assert "tools" in replies[2]["result"]
 
 
-def test_an_unknown_tool_is_refused_by_name(initialized_config: Config) -> None:
+def test_a_failure_serialising_the_answer_is_reported_without_closing_the_session(
+    initialized_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 The half of the boundary the tool `try` used to sit inside of.
+
+    Rendering the answer is part of answering the call, so a failure there is
+    the same event as a failure in the query: the client is waiting, and an
+    exception escaping instead ends `serve()` and takes the session with it.
+    The operator sees their tool disappear on one particular question, which is
+    the one outcome this module names as worse than any wrong answer.
+
+    Reachable without a bug in this product: SQLite's dynamic typing lets a BLOB
+    sit in a TEXT column, and a `bytes` in `currency` or `description` makes
+    `json.dumps` raise. Driven here through the answer's own renderer, which is
+    the first step outside the query and the step the query result cannot
+    protect.
+    """
+
+    class _UnrenderableAnswer:
+        def to_wire(self) -> dict[str, Any]:
+            raise TypeError("Object of type bytes is not JSON serializable")
+
+    monkeypatch.setattr(
+        query, "list_accounts", lambda *args, **kwargs: cast(Any, _UnrenderableAnswer())
+    )
+
+    replies = _converse(
+        initialized_config,
+        [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "list_accounts", "arguments": {}},
+            },
+            {"jsonrpc": "2.0", "id": 3, "method": "ping"},
+        ],
+    )
+
+    assert len(replies) == 3, "the request or the session after it went unanswered"
+    result = replies[1]["result"]
+    assert result["isError"] is True
+    assert result["structuredContent"]["error"]["code"] == "internal_error"
+    text = result["content"][0]["text"]
+    assert "TypeError" not in text and "bytes" not in text, "the exception crossed the boundary"
+    assert replies[2]["id"] == 3 and replies[2]["result"] == {}, (
+        "the pipe did not survive the failure, which is the tool disappearing mid-session"
+    )
+
+
+def test_a_failure_outside_a_tool_call_is_answered_rather_than_ending_the_session(
+    initialized_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tool `try` covers one method; the read loop covers every other one.
+
+    `initialize`, `tools/list` and the resource methods each assemble a reply
+    from this process's own state, and an exception in any of them escapes to
+    the loop. Answered as an internal error so the client's promise settles and
+    the next request is still served.
+    """
+
+    def explode() -> list[dict[str, Any]]:
+        raise RuntimeError("the tool surface fell over")
+
+    monkeypatch.setattr(mcp, "_tool_definitions", explode)
+
+    replies = _converse(
+        initialized_config,
+        [
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            {"jsonrpc": "2.0", "id": 2, "method": "ping"},
+        ],
+    )
+
+    assert len(replies) == 2, "the session ended instead of answering both frames"
+    assert replies[0]["id"] == 1
+    assert replies[0]["error"]["code"] == mcp._INTERNAL_ERROR
+    assert "fell over" not in replies[0]["error"]["message"], "the exception crossed the boundary"
+    assert replies[1]["id"] == 2 and replies[1]["result"] == {}
+
+
+def test_a_notification_that_fails_is_still_not_replied_to(
+    initialized_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 The last-resort catch must not turn a notification into a reply.
+
+    A JSON-RPC notification carries no `id` and takes no response at all, so a
+    failure while handling one is logged and dropped. Answering it would put a
+    frame on the wire the client has no promise waiting for, which is a protocol
+    error on this side and the reason the loop asks whether an `id` is present
+    rather than whether it is null.
+    """
+
+    def explode(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("handling the notification fell over")
+
+    monkeypatch.setattr(mcp, "_handle", explode)
+
+    replies = _converse(
+        initialized_config,
+        [
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+        ],
+    )
+
+    assert [reply["id"] for reply in replies] == [1], (
+        "a notification was answered, or the session ended before the next request"
+    )
+
+
+def test_a_closed_pipe_ends_the_session_cleanly(initialized_config: Config) -> None:
+    """🔴 The client going away is how a session ends, not a crash to report.
+
+    A client that exits between reading a request and reading its answer leaves
+    the write end broken. Unhandled, the traceback is the last thing in the
+    operator's log and the exit code says the server failed; caught, the loop
+    stops and reports the same success a clean end-of-stream reports.
+    """
+
+    class _ClosedPipe(io.StringIO):
+        def write(self, _text: str) -> int:
+            raise BrokenPipeError(32, "Broken pipe")
+
+    stdin = io.StringIO(
+        "\n".join(
+            json.dumps(request)
+            for request in (
+                {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                {"jsonrpc": "2.0", "id": 2, "method": "ping"},
+            )
+        )
+        + "\n"
+    )
+
+    assert mcp.serve(initialized_config, stdin=stdin, stdout=_ClosedPipe()) == EXIT_OK
+
+
+def test_an_unknown_tool_is_refused_as_a_bad_parameter(initialized_config: Config) -> None:
+    """🔴 The code changed from `-32601`, and the name it refuses did not.
+
+    `-32601` says the METHOD is not implemented, so a client classifying by code
+    concludes this server does not support `tools/call` at all and stops calling
+    it. The tool name is a parameter of a method this server does serve, and the
+    specification's own tools example answers an unknown one with `-32602`.
+    """
     replies = _converse(
         initialized_config,
         [
@@ -945,7 +1126,66 @@ def test_an_unknown_tool_is_refused_by_name(initialized_config: Config) -> None:
         ],
     )
 
-    assert replies[1]["error"]["code"] == -32601
+    assert replies[1]["error"]["code"] == -32602
+    assert "delete_everything" in replies[1]["error"]["message"], (
+        "the refusal no longer names the tool it rejected"
+    )
+
+
+def test_a_non_object_arguments_member_is_refused_as_a_bad_parameter(
+    initialized_config: Config,
+) -> None:
+    """`arguments` of the wrong type is a params problem, not a malformed request.
+
+    `-32600` describes the request OBJECT — a frame that is not a valid JSON-RPC
+    request at all. This frame is one, and the fault is in what it carries, so a
+    client is told to correct its parameters rather than its framing.
+    """
+    replies = _converse(
+        initialized_config,
+        [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "list_accounts", "arguments": ["since"]},
+            },
+            {"jsonrpc": "2.0", "id": 3, "method": "ping"},
+        ],
+    )
+
+    assert replies[1]["error"]["code"] == -32602
+    assert replies[2]["id"] == 3, "the session ended rather than answering the next request"
+
+
+def test_the_text_form_of_an_answer_is_compact_json(initialized_config: Config) -> None:
+    """🔴 Every answer is sent twice, so the second copy is paid for twice over.
+
+    Most clients put both `structuredContent` and the text block into the
+    model's context, and no human reads the text one — measured, a full page of
+    rows cost ~27% more as pretty-printed JSON than as compact, on a payload
+    already large enough to crowd out the question it was answering.
+
+    Asserted against the two renderings of THIS answer rather than against a
+    byte count, which would pin a fixture rather than the separator choice. A
+    substring sweep for `", "` cannot do it either: warning details are English
+    sentences and carry the sequence honestly.
+    """
+    _seed(initialized_config)
+
+    result = _call(initialized_config, "query_transactions")
+
+    text = result["content"][0]["text"]
+    wire = result["structuredContent"]
+    assert json.loads(text) == wire, "the two forms of one answer stopped agreeing"
+    assert "\n" not in text, "the text form is still pretty-printed"
+    assert len(text) == len(json.dumps(wire, separators=(",", ":"))), (
+        "the text form is padded, so it is not the compact rendering"
+    )
+    assert len(text) < len(json.dumps(wire, indent=2)), (
+        "the text form costs as much as the indented one it replaced"
+    )
 
 
 def test_both_content_forms_are_sent(initialized_config: Config) -> None:
@@ -1448,31 +1688,50 @@ def test_an_argument_the_tool_does_not_advertise_is_refused(initialized_config: 
     assert result["structuredContent"]["error"]["code"] == "invalid_argument"
 
 
-def test_the_instructions_name_every_field_the_envelope_actually_carries(
+def _delivered_guidance(config: Config) -> str:
+    """Everything a client can put in front of the model: the primer AND the resources.
+
+    🔴 The union, because the primer alone is no longer the whole statement and
+    holding it to the whole vocabulary would force the vocabulary back into a
+    text a client TRUNCATES. Measured: one client delivered 2,045 of 6,673
+    characters and cut mid-table, so what a longer primer buys is not coverage
+    but the appearance of it. The resources are served by URI and arrive whole
+    when they are asked for, so a field or a kind that lives there is reachable
+    in a way a cut paragraph is not — and the union is what nothing may fall out
+    of.
+    """
+    return "\n".join(
+        [mcp._instructions(config), *(document.text for document in mcp._reference_documents())]
+    )
+
+
+def test_what_the_server_delivers_names_every_field_the_envelope_actually_carries(
     initialized_config: Config,
 ) -> None:
     """🔴 A closed list in prose is one that stops matching the payload it describes.
 
-    The instructions are the ONE text a consuming agent reads before it calls
-    anything, and they enumerated the envelope as a closed set. Adding `build`
-    to the wire without adding it here would leave the only document the agent
-    sees actively denying the field exists -- which is exactly how a stale-build
+    What a consuming agent can read about this envelope is the handshake primer
+    plus the reference documents this server serves by URI. Adding `build` to
+    the wire and to none of them would leave every text the agent can reach
+    actively denying the field exists -- which is exactly how a stale-build
     round happens again, since `build` is what would have prevented the last one.
 
     Asserted against the real envelope rather than a second hand-written list,
-    because a second list is one that stops matching the first.
+    because a second list is one that stops matching the first. A name counts as
+    delivered when it appears as its own leaf -- how the primer writes it -- or
+    as the dotted path the envelope reference renders.
 
     🔴 **Over the UNION of every tool's envelope, and one level into it, never
     one sample.** A tool that carries neither `effective_window` nor
     `truncation` cannot discriminate a rule about them, and a scan of top-level
     keys alone cannot see a key nested inside a block — so a guard written
-    either way passes while the only text a consuming agent reads at handshake
-    denies a field exists. A check that samples one instance of the thing it
-    generalises over is a check whose bad news never arrives, which is the trap
-    `learnings.md` records twice.
+    either way passes while the text a consuming agent reads denies a field
+    exists. A check that samples one instance of the thing it generalises over
+    is a check whose bad news never arrives, which is the trap `learnings.md`
+    records twice.
     """
     _seed(initialized_config)
-    instructions = mcp._instructions(initialized_config)
+    delivered = _delivered_guidance(initialized_config)
 
     envelope: set[str] = set()
     for definition in mcp._tool_definitions():
@@ -1492,36 +1751,63 @@ def test_the_instructions_name_every_field_the_envelope_actually_carries(
         "coverage.transactions_in_effective_window",
     } <= envelope, "the union lost the keys this guard exists for, so it is back to sampling"
 
-    # A nested key is named by its own leaf: the instructions say `matching`,
-    # not `truncation.matching`, which is also how a consumer reads it off the
-    # payload.
-    missing = sorted(key for key in envelope if f"`{key.rsplit('.', 1)[-1]}`" not in instructions)
+    missing = sorted(
+        key
+        for key in envelope
+        if f"`{key}`" not in delivered and f"`{key.rsplit('.', 1)[-1]}`" not in delivered
+    )
 
     assert not missing, (
-        f"the envelope carries {missing} but the instructions never name them; "
-        f"an agent reading only the instructions does not know they exist"
+        f"the envelope carries {missing} and nothing this server delivers names them; "
+        f"an agent reading the primer and both resources does not know they exist"
     )
 
 
-def test_the_instructions_name_every_warning_kind_the_vocabulary_defines(
+def test_what_the_server_delivers_names_every_warning_kind_the_vocabulary_defines(
     initialized_config: Config,
 ) -> None:
-    """🔴 The kinds are the half an agent is told to branch on, and they were short by four.
+    """🔴 The kinds are the half an agent is told to branch on, and nothing pinned them.
 
-    The envelope guard above pins FIELDS. Nothing pinned KINDS, so the four
-    request-scoped kinds this cycle added were absent from the handshake text
-    while `warnings` was the thing that text tells the reader to check first.
-    Derived from the vocabulary rather than from a second list here, for the
-    reason the vocabulary exists at all.
+    The envelope guard above pins FIELDS. This one pins KINDS, over the same
+    union: a kind the vocabulary declares and no delivered text names is one an
+    agent is told to branch on and was never given. Derived from the vocabulary
+    rather than from a second list here, for the reason the vocabulary exists at
+    all.
     """
-    instructions = mcp._instructions(initialized_config)
+    delivered = _delivered_guidance(initialized_config)
 
-    missing = sorted(k for k in envelope.WARNING_KINDS if f"`{k}`" not in instructions)
+    missing = sorted(k for k in envelope.WARNING_KINDS if f"`{k}`" not in delivered)
 
     assert not missing, (
-        f"the vocabulary defines {missing} but the instructions never name them; "
+        f"the vocabulary defines {missing} and nothing this server delivers names them; "
         f"an agent told to read `warnings` cannot act on a kind it was never given"
     )
+
+
+def test_the_primer_fits_inside_what_a_client_actually_delivers(
+    initialized_config: Config,
+) -> None:
+    """🔴 The measurement this budget exists for: a client cut it, and said nothing.
+
+    One client handed the model 2,045 of 6,673 characters and stopped mid-table.
+    Everything past the cut — six of the warning kinds, the whole envelope table,
+    and the pointer telling the agent the reference resources exist — was never
+    read, and the surviving text reads complete. A primer that fits is the only
+    version of this text that is actually delivered.
+
+    🔴 The two resource URIs are asserted to be in the FIRST lines rather than
+    merely present, because a pointer that would be cut is a pointer that does
+    not exist — and it is the pointer that makes everything else reachable.
+    """
+    primer = mcp._instructions(initialized_config)
+
+    assert len(primer) <= mcp.INSTRUCTIONS_BUDGET, (
+        f"the primer is {len(primer)} characters against a budget of "
+        f"{mcp.INSTRUCTIONS_BUDGET}; a client that trims will hand the model a prefix of it"
+    )
+    opening = "\n".join(primer.splitlines()[:3])
+    for uri in (mcp_resources.ENVELOPE_URI, mcp_resources.WARNINGS_URI):
+        assert uri in opening, f"{uri} is not in the first three lines, so it can be cut"
 
 
 #: What `Implementation` -- the type of `serverInfo` -- declares, read from
@@ -2118,11 +2404,13 @@ def test_a_capped_answer_says_so_in_the_payload_a_consumer_reads(
 
     assert wire["truncation"]["returned"] == 10
     assert wire["truncation"]["matching"] == 133
+    assert wire["truncation"]["remaining"] == 133
     assert wire["truncation"]["truncated"] is True
     assert len(wire["rows"]) == 10, "the block disagrees with the rows beside it"
     assert _request_kinds(wire) == ["rows_truncated"]
     detail = next(w["detail"] for w in wire["warnings"] if w["kind"] == "rows_truncated")
-    assert "123 are missing" in detail
+    assert "133 transactions match this request" in detail
+    assert "123 of them are still missing" in detail
 
 
 def test_a_complete_answer_says_it_is_complete(initialized_config: Config) -> None:
@@ -2131,7 +2419,12 @@ def test_a_complete_answer_says_it_is_complete(initialized_config: Config) -> No
 
     wire = _call(initialized_config, "query_transactions")["structuredContent"]
 
-    assert wire["truncation"] == {"returned": 3, "matching": 3, "truncated": False}
+    assert wire["truncation"] == {
+        "returned": 3,
+        "remaining": 3,
+        "matching": 3,
+        "truncated": False,
+    }
     assert _request_kinds(wire) == []
 
 
@@ -2220,7 +2513,12 @@ def test_an_unreadable_store_still_reports_whether_the_tool_is_capped(
         assert "truncation" not in wire, tool
         return
 
-    assert wire["truncation"] == {"returned": 0, "matching": 0, "truncated": False}
+    assert wire["truncation"] == {
+        "returned": 0,
+        "remaining": 0,
+        "matching": 0,
+        "truncated": False,
+    }
     assert _request_kinds(wire) == [], tool
     assert any(w["kind"] == "partial" for w in wire["warnings"]), tool
 
@@ -2397,7 +2695,7 @@ def test_the_cursor_is_advertised_on_the_capped_tool_and_nowhere_else() -> None:
         assert "cursor" not in mcp._permitted_arguments(name), name
 
 
-def test_the_instructions_say_how_to_reach_what_a_truncated_answer_left_behind(
+def test_the_way_past_the_cap_is_named_everywhere_an_agent_might_look(
     initialized_config: Config,
 ) -> None:
     """🔴 `next_cursor` is nested inside `truncation`, so the envelope guard cannot see it.
@@ -2405,13 +2703,18 @@ def test_the_instructions_say_how_to_reach_what_a_truncated_answer_left_behind(
     That guard walks the TOP-LEVEL keys of each tool's payload; a field one
     level down is invisible to it, and a field that appears only on a truncated
     answer is invisible to a call it makes with no arguments. Both gaps point the
-    same way — the only text a consuming agent reads before it calls anything
-    would not mention the one field that gets it past the cap.
-    """
-    instructions = mcp._instructions(initialized_config)
+    same way — the one field that gets a caller past the cap could go unmentioned
+    on every surface an agent reads.
 
-    assert "`next_cursor`" in instructions
-    assert "`cursor`" in instructions
+    The primer has to name the field, because paging is the instruction it gives.
+    What to pass it back AS is detail, so it is asserted over the union the
+    server delivers rather than forced into a text a client trims.
+    """
+    primer = mcp._instructions(initialized_config)
+    delivered = _delivered_guidance(initialized_config)
+
+    assert "`next_cursor`" in primer
+    assert "`cursor`" in delivered
     assert mcp._TRUNCATION_NOTE.count("`next_cursor`") >= 1
 
 

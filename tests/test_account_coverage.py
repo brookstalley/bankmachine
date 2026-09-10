@@ -176,6 +176,55 @@ def _seed(
     return days
 
 
+def _cover_the_empty_account(config: Config) -> None:
+    """Give the second account one transaction, through the real deriver.
+
+    The store this fixture builds has exactly one uncovered account, so removing
+    its uncoveredness is the only way to reach the negative case — and it has to
+    be reached, because a warning asserted only where it fires says nothing
+    about whether it ever stops.
+    """
+    now = now_utc()
+    body = json.dumps(
+        {
+            "accounts": [],
+            "added": [
+                {
+                    "account_id": EMPTY,
+                    "transaction_id": "e0",
+                    "amount": "10.00",
+                    "iso_currency_code": "USD",
+                    "date": str(now.date()),
+                    "authorized_date": None,
+                    "pending": False,
+                    "pending_transaction_id": None,
+                    "name": "Mortgage payment",
+                    "merchant_name": None,
+                    "personal_finance_category": {
+                        "primary": "LOAN_PAYMENTS",
+                        "detailed": "LOAN_PAYMENTS_MORTGAGE_PAYMENT",
+                    },
+                }
+            ],
+            "modified": [],
+            "removed": [],
+            "next_cursor": "cursor-2",
+            "has_more": False,
+            "transactions_update_status": "HISTORICAL_UPDATE_COMPLETE",
+            "request_id": "req-sync-2",
+        }
+    ).encode()
+    with writer_connection(config) as conn:
+        apply_response(
+            conn,
+            connection_id=1,
+            endpoint=TRANSACTIONS_SYNC.path,
+            body=body,
+            received_at=now,
+            derivers=ALL_DERIVERS,
+        )
+
+
 def _rows_by_account(wire: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {row["name"]: row for row in wire["rows"]}
 
@@ -226,6 +275,42 @@ def test_listing_accounts_warns_when_one_of_them_has_no_coverage(
     # Names the id, because "some accounts have no data" is a warning whose
     # reader cannot act on it.
     assert "2" in detail
+
+
+def test_summarising_money_warns_when_an_account_in_scope_has_no_coverage(
+    initialized_config: Config,
+) -> None:
+    """🔴 The aggregate is the answer an agent is told to QUOTE, and it said nothing.
+
+    `money_summary` takes no `account_id`, so every account in the store is in
+    its scope — including one that has never had a transaction recorded. Its
+    contribution to every group is nothing, and without this warning that
+    nothing is indistinguishable from an account that was quiet. The three tools
+    beside it already say so; the one whose figure gets quoted did not.
+    """
+    _seed(initialized_config)
+
+    wire = _call(initialized_config, "money_summary", {})["structuredContent"]
+
+    assert "accounts_without_coverage" in _kinds(wire)
+    detail = next(c["detail"] for c in wire["warnings"] if c["kind"] == "accounts_without_coverage")
+    assert "2" in detail, "the warning does not name the account a reader would have to exclude"
+
+
+def test_summarising_money_over_a_fully_covered_store_raises_no_coverage_warning(
+    initialized_config: Config,
+) -> None:
+    """The reverse half, without which the warning would ride every aggregate alike.
+
+    A kind that fires on every answer teaches its reader to skip it, which is the
+    defect the connection-scoped kinds already measured.
+    """
+    _seed(initialized_config)
+    _cover_the_empty_account(initialized_config)
+
+    wire = _call(initialized_config, "money_summary", {})["structuredContent"]
+
+    assert "accounts_without_coverage" not in _kinds(wire)
 
 
 def test_querying_an_uncovered_account_warns_instead_of_answering_a_bare_empty(

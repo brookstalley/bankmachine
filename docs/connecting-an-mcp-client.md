@@ -107,13 +107,26 @@ Every response carries `environment`, `as_of`, `build`, `coverage`, `warnings` a
 **classifying** tool also carries `totals`. Absence of a key means that tool takes no window,
 returns every row it finds, or does not classify the money it reports.
 
-🔴 **`totals` is the one to read before quoting a spending figure.** `money_summary` splits every
-row by `flow_class` — `external_spend`, `internal_transfer`, `debt_service` — and `totals` carries
-the window's outflow under each, one entry per currency. Only `external_spend_outflow_minor_units`
-is spending: a transfer between the holder's own accounts never left, and a card payment settles
-purchases already counted under the categories they were spent in. The three sum to the window's
-total outflow, which is how you check them against the rows. Over the sandbox store the raw total
-is five times the money that actually went out the door.
+🔴 **`totals` is the one to read before quoting a money figure.** Each entry carries the window's
+`inflow_minor_units` and `outflow_minor_units` for one currency, and then splits that outflow by
+`flow_class` — `external_spend`, `internal_transfer`, `debt_service`. Quote `outflow_minor_units`
+when asked how much went out and `external_spend_outflow_minor_units` when asked about external
+spend, and **name the other two classes beside it**. The three sum to `outflow_minor_units`, which
+is how you check them against the rows. Over the sandbox store external spend is a fifth of the raw
+outflow.
+
+🔴 **The class says how the aggregator LABELLED a row, not where the money went.** It is read from
+one category and matches no counterparty leg, so `internal_transfer` covers an ATM withdrawal, a
+P2P payment, rent paid by ACH and an incoming paycheque as readily as a move between the holder's
+own accounts; `debt_service` covers mortgage, auto and student-loan payments as well as card
+payoff, and only a payment to an *enrolled* card settles purchases counted under their own
+categories. `inflow_minor_units` is inflow rather than income for the same reason: refunds are in
+it, and so is a paycheque the aggregator called a transfer.
+
+🔴 **`group_by=merchant` falls back to `description`** where the aggregator supplied no merchant
+name, so one merchant can split across several raw institution strings and each rollup understates
+it. And **a window is measured on the posting date**: a hold that posts in a later period moves
+into that period, so a total for a month you already asked about can change after the fact.
 
 🔴 **Each `totals` entry also states how much of itself has not settled.** `pending_transactions`
 and `pending_net_minor_units` are authorisation holds — money claimed but not yet taken, which can
@@ -130,11 +143,15 @@ carry `sign_convention`** per connection, with the counts it was judged on. **Ev
 carries `lifecycle`** with the dates behind it, and `coverage` states `accounts_not_active` and what
 those accounts contributed — totals **include** them, so quote that figure beside any net worth.
 
-The server's own `instructions` are the authority on that list — a test holds them against the union
-of every tool's live envelope and against the warning vocabulary, so they cannot fall behind the
-wire; this page is a copy and can. **Read the warnings before drawing a conclusion**: an answer
-can be perfectly well-formed and still be computed over incomplete data, and that is the failure this
-product exists to prevent.
+The server's own `instructions` **plus the two resources below** are the authority on that list — a
+test holds their union against every tool's live envelope and against the warning vocabulary, so
+nothing can fall behind the wire; this page is a copy and can. The `instructions` themselves are
+deliberately a short primer, because a client decides how much of them the model ever sees: one was
+measured delivering 2,045 of 6,673 characters and cutting mid-table, with the surviving text reading
+complete. So the primer opens with the two resource URIs and carries only what an agent cannot act
+correctly without; the detail is served. **Read the warnings before drawing a conclusion**: an
+answer can be perfectly well-formed and still be computed over incomplete data, and that is the
+failure this product exists to prevent.
 
 Each tool also publishes an `outputSchema`, which says *per tool* whether it carries a window or a
 cap — so a client can tell "this tool has no window" from "this answer happens not to have one"
@@ -149,11 +166,13 @@ nothing until it is wanted:
 | URI | What it is |
 |---|---|
 | `bankmachine://reference/warnings` | every warning kind, what it implies about the answer carrying it, and what to do about it |
-| `bankmachine://reference/envelope` | every envelope field and which tools carry it |
+| `bankmachine://reference/envelope` | every envelope field and which tools carry it, what the flow classes do and do not establish, why row text is untrusted, and what this server cannot answer at all |
 
 Both are generated from the code that produces the answers — the warning reference walks the
 vocabulary itself, the envelope reference renders from the published schemas — so neither can quietly
-fall behind the wire the way this page can.
+fall behind the wire the way this page can. 🔴 **They are where the detail lives, and the handshake
+primer points at them in its opening lines**, because a pointer a client would trim is a pointer
+that does not exist.
 
 ## What the handshake tells you
 
@@ -169,13 +188,18 @@ window the answer actually covered. Read the sibling against a windowed question
 `coverage.transactions` there gives you the whole store's count for a question that asked about a
 slice of it. The sibling is not narrowed by `account_id` either, so it is a fact about the *window*
 rather than about your filters; `truncation.matching` is the one that answers "how many rows did my
-whole request select".
+whole request select", and it reads the same on every page of a walk.
 
 🔴 **`truncation` is the one to check before you sum anything.** It carries `matching` (how many rows
-the request selects), `returned` (how many came back) and `truncated`. When `truncated` is true the
-rows are the **newest ones only**, so adding them up describes what came back rather than the window
-you asked about — measurement found a two-year card total understated by roughly 40% that way, with
-nothing in the payload saying so.
+the **whole request** selects), `remaining` (how many were still ahead of this page), `returned` (how
+many came back) and `truncated`. When `truncated` is true the rows are the **newest ones only**, so
+adding them up describes what came back rather than the window you asked about — measurement found a
+two-year card total understated by roughly 40% that way, with nothing in the payload saying so.
+
+🔴 **`matching` does not move as you page**, so it is the number to quote for "how many transactions
+match": on the last page of a 390-row walk it still reads 390. `remaining` is the one that falls,
+and `truncated` is `returned < remaining` — so **never** page on `returned < matching`, which stays
+true at the end of every walk.
 
 **To read the rest, page.** A truncated answer also carries `truncation.next_cursor`; hand it back as
 `query_transactions`'s `cursor` argument, with the same window and account, and keep going until
@@ -206,7 +230,8 @@ boundary it names — so the *absence* of one is information too:
 - `window_extends_past_coverage` — the window reaches past the covered end (today, or the last
   transaction when that is later).
 - `rows_truncated` — the request matched more rows than the cap returned, and the answer holds only
-  the newest of them. The detail says how many are missing and what to do about it.
+  the newest of them. The detail names how many rows the whole request matches, how many are still
+  unread, and what to do about it.
 - `counted_during_change` — a write landed between the row read and the count read, so the two
   describe moments a fraction apart. The rows are accurate as of the `as_of` stamp.
 - `accounts_without_coverage` — an account in scope has **never** had a transaction recorded. Its
@@ -240,5 +265,6 @@ Once connected, these are answerable directly:
 - "What did I spend on food last month?"
 - "Which of my connections is stale?"
 - "What's my current balance across all accounts?"
-- "Show me every transaction over $100 since August."
+- "Show me every transaction over $100 since August." *(There is no amount filter: this means
+  paging the whole window and filtering the rows client-side, and an answer should say so.)*
 - "Is any of this data incomplete?"
