@@ -1,5 +1,17 @@
 # MCP server — production go/no-go
 
+🔴 **Superseded in part — read this first.** The verdict, the measurements and the tool
+vocabulary above the *Cutover readiness* section are as of **2026-09-08** and are kept as the
+record of what was true then, not as guidance for today. Since then: `spending_summary` was merged
+into `money_summary`, five tools serve rather than four (`_tool_definitions()` in
+`src/bankmachine/mcp.py` is the roster), and the row cap on `query_transactions` is **500**
+(`MAX_ROWS` in `src/bankmachine/envelope.py`), not the 1000 this document reasons about. The live
+gate on what still blocks a cutover is `gh issue list --label blocks:production`, and the parts of
+this document still in force are § *Cutover readiness — checked 2026-09-09*, its § *The ordered
+answer*, and § *Day one in production*. The remaining defects it points at are being closed under
+`.prawduct/artifacts/build-plan-production-cutover-hardening.md`, and the operator procedure it
+sketches now lives in `docs/first-production-connection.md`.
+
 Date: 2026-09-08. Written by the acceptance session, black-box only: tool
 responses and tool descriptions, no source read, nothing fixed. Requested as
 input to a real decision about real accounts.

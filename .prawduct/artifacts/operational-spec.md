@@ -59,7 +59,7 @@ Norms. These bind future work; departure is a recorded decision, never silent
 | | |
 |---|---|
 | Platform | **macOS (Apple Silicon), native. Not containerized.** |
-| Runtime | Python — `requires-python >= 3.11`; the pinned interpreter is **3.14** |
+| Runtime | Python — `requires-python >= 3.14`, the same number as the pinned interpreter, because nothing here runs on another |
 | Package manager | `uv`, with `uv.lock` pinning the full dependency graph |
 | Install shape | A git clone plus `uv sync`. There is no published package |
 | Deploy target | **This machine.** No staging, no remote, nothing to roll out to |
@@ -224,6 +224,11 @@ such source. A backup of the datastore without the key is a backup of noise.
 **Therefore: back up the key and the datastore, and treat them as one unit.** The key is 64 hex
 characters in the keychain; it belongs in the operator's password manager or a paper copy in a safe —
 somewhere that survives the machine's disk *and* the machine's keychain.
+
+The operator-facing form of this — the keychain recipe, and the moment in the cutover to run it,
+which is immediately after `store init` and before any data exists — is
+`docs/first-production-connection.md`, along with the ordered production procedure, the day-one
+checks and the standing daily routine this section's guarantees depend on.
 
 ### What backup looks like *(built)*
 
