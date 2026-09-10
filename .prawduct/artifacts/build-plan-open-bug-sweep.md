@@ -126,7 +126,7 @@ amendment with its own rationale, and the coordinator writes it — not the dele
 
 - [x] **01 · Wave 1 — four independent file sets** *(delegated ×4)* — #62, #6, #81, #59
 - [x] **02 · The foundation: `rule-applied` gets its meaning, `ledger_date` gets a column** *(coordinator)* — #34's amendment, #80
-- [ ] **03 · Wave 2 — currency, connector hygiene, CLI exit codes** *(delegated ×3, in flight)*
+- [x] **03 · Wave 2 — currency, connector hygiene, CLI exit codes** *(delegated ×3)* — #86, #84, #28, #79, #75, #34 closed; **#82 partial**
 - [ ] **04 · The read path** *(coordinator)*
 - [ ] **05 · Convergence and the classifier** *(delegated + coordinator)*
 - [ ] **06 · Integration, backlog reconciliation** *(coordinator)*
@@ -135,7 +135,26 @@ amendment with its own rationale, and the coordinator writes it — not the dele
 change. Six items landed across five commits; the suite was green at 1126 after chunk 02 and all
 175 go-red cases still report RED.
 
-🔴 **#34 is amended but not yet closed.** The vocabulary now says what the kind means; it has no
+🔴 **#82 is PARTLY fixed and must not be closed.** The log half landed. The re-archive half was
+*not* built, and the reason reframes the item: a body digest would fire on nothing, because every
+response carries a per-request `request_id`, so two archives of one page are never the same bytes.
+Verified against all five repo fixtures. Had such a guard ever fired it would have been harmful —
+a deriver reads `received_at` off the row it is handed, so collapsing rows freezes
+`accounts.last_seen_date` and drifts a live account into looking `no_longer_reported`. The real
+residual (unbounded archive growth on a wedged connection) needs durable per-response
+derivation-failure state, i.e. a column, i.e. its own requirement. **File it; do not close #82.**
+
+🔴 **#34 is now closed** — the amendment landed in chunk 02 and its first two emitters landed with
+#86 and #84 in chunk 03. It also moved tuple: see the amendment's scope note.
+
+🔴 **The go-red harness caught three stale anchors and one deleted test at this integration.**
+A delegate removed `test_the_rebuild_stamps_the_column…` because its scenario is unreachable once
+the fixture seeds past migration 005 — which was true, and would have left the `store rebuild`
+remedy for `ledger_date` proved by nothing. Restored as
+`test_the_rebuild_stamps_the_ledger_dates_migration_005_could_only_leave_empty`, which nulls the
+column to reproduce exactly the file state 005 leaves, and AC-5.3 is re-pinned to it.
+
+**Old context (superseded):** #34 was amended but not yet closed. The vocabulary now says what the kind means; it has no
 emitter until #86 and #84 land in chunk 03. Closing it before then would be closing it on a
 carrier change alone, which is the half the issue explicitly says is not enough.
 
