@@ -554,6 +554,7 @@ class PlaidClient:
         client_user_id: str,
         country_codes: list[str],
         products: list[str],
+        optional_products: list[str] | None = None,
         hosted_url_lifetime_seconds: int = DEFAULT_HOSTED_URL_LIFETIME_SECONDS,
     ) -> LinkToken:
         """Open a Link session that will request `history_days` of history.
@@ -576,6 +577,14 @@ class PlaidClient:
                 f"The aggregator would reject it, and the window cannot be changed after "
                 f"enrollment"
             )
+        # `products` is the REQUIRED set: Link offers only institutions that support
+        # every member of it, so a product listed there narrows the picker with no
+        # error. `optional_products` is added to the Item wherever the institution
+        # supports it and narrows nothing, which is the shape a product this code
+        # never calls an endpoint for -- but wants discovered -- belongs in.
+        extra: dict[str, Any] = {}
+        if optional_products:
+            extra["optional_products"] = [Products(product) for product in optional_products]
         request = LinkTokenCreateRequest(
             client_name=LINK_CLIENT_NAME,
             language=LINK_LANGUAGE,
@@ -590,6 +599,7 @@ class PlaidClient:
             hosted_link=LinkTokenCreateHostedLink(
                 url_lifetime_seconds=hosted_url_lifetime_seconds,
             ),
+            **extra,
         )
         body = self._fetch_bytes(LINK_TOKEN_CREATE, self._api.link_token_create, request)
         payload = _payload(LINK_TOKEN_CREATE, body)
