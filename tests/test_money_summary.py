@@ -218,15 +218,69 @@ def test_rows_are_reported_per_currency_and_never_summed_across_them(
     assert len(eur) == 1 and eur[0]["outflow_minor_units"] == 500
 
 
-def test_the_aggregate_still_carries_no_truncation_block(initialized_config: Config) -> None:
-    """An aggregate is unpaginated by contract, bounded by its grouping rather
-    than a row cap — so the absence of `truncation` is the statement that it
-    returned everything it found.
+def test_the_aggregate_reports_truncation_rather_than_leaving_it_unsaid(
+    initialized_config: Config,
+) -> None:
+    """🔴 A CONTRACT CHANGE, and the reason the old contract could not hold.
+
+    This tool used to carry no `truncation` block at all, on the reasoning that
+    an aggregate is unpaginated by construction — bounded by its grouping rather
+    than by a row cap, so the absence of the block was itself the statement that
+    everything found was returned.
+
+    That held only while the grouping bounded anything. Keyed on a merchant
+    string that falls back to a per-transaction description, the group count
+    approaches the TRANSACTION count: the payload grows without limit and
+    `capped` reads false the whole way. An absence that means "nothing was cut"
+    is worth having; an absence that means "nobody checked" is the shape this
+    surface exists to refuse.
+
+    So the block is present and truthful. On a small store nothing is cut and
+    the block says so — which is strictly more than the old silence said,
+    because it distinguishes a complete answer from an unexamined one.
     """
     _seed(initialized_config)
     wire = _call(initialized_config, "money_summary", {})["structuredContent"]
-    assert "truncation" not in wire
+    assert "truncation" in wire, "the aggregate must say whether its group list was cut"
+    assert wire["truncation"]["truncated"] is False, (
+        "this store holds far fewer groups than the cap, so nothing was cut"
+    )
+    assert wire["truncation"]["returned"] == wire["truncation"]["matching"]
     assert "effective_window" in wire, "a windowed tool must say what it covered"
+
+
+def test_a_capped_group_list_does_not_shrink_the_totals_beside_it(
+    initialized_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 The hazard the cap creates, and the reason it is applied to the payload only.
+
+    `totals` is summed from the group rows BY CONSTRUCTION — that identity is
+    what makes the three flow classes add to the window's outflow, and it is
+    also the proof the classification partitions the rows rather than dropping
+    some. Cap the rows in SQL, or sum the totals from the capped list, and every
+    total silently shrinks to the visible groups while the answer still looks
+    complete.
+
+    Driven by lowering the cap rather than by seeding hundreds of groups: the
+    subject is what the cap does to the arithmetic, and a fixture large enough
+    to trip the real cap would take far longer to say the same thing.
+    """
+    _seed(initialized_config)
+    full = _call(initialized_config, "money_summary", {})["structuredContent"]
+    assert len(full["rows"]) > 1, "the fixture must produce more than one group to cap"
+
+    monkeypatch.setattr(query, "MAX_GROUPS", 1)
+    capped = _call(initialized_config, "money_summary", {})["structuredContent"]
+
+    assert len(capped["rows"]) == 1, "the cap did not bound the payload"
+    assert capped["truncation"]["truncated"] is True
+    assert capped["truncation"]["matching"] == full["truncation"]["matching"], (
+        "the cap changed how many groups the answer says it found"
+    )
+    assert capped["totals"] == full["totals"], (
+        "the totals shrank with the visible rows, so a capped answer under-reports the window "
+        "while still reading as complete"
+    )
 
 
 @pytest.mark.parametrize("grouping", ["category", "merchant", "account", "month"])

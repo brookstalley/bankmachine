@@ -123,6 +123,22 @@ _WINDOW_NOTE = (
 #: Shortened for the reason `_WINDOW_NOTE` is, and kept longer than it because
 #: the failure it prevents is silent arithmetic on a partial page rather than a
 #: misread empty one. The field-by-field detail is in the envelope reference.
+#: What a CAPPED-BUT-UNPAGED aggregate says about itself. Deliberately not
+#: `_TRUNCATION_NOTE`: that one instructs a caller to pass `next_cursor` back
+#: until `truncated` goes false, and this tool issues no cursor -- following it
+#: here would send an agent looking for a field that is never there. The remedy
+#: differs too, which is the substance rather than the wording: a cut ROW list is
+#: reached by paging, and a cut GROUP list is reached by asking a narrower
+#: question.
+_GROUP_CAP_NOTE = (
+    " 🔴 CAPPED, and NOT pageable: `truncation` says whether the group list was cut and how "
+    "many groups the window holds in total. There is no cursor -- narrow the window, filter "
+    "to an account, or group more coarsely. 🔴 `totals` is computed over EVERY group, never "
+    "over the visible ones, so a cut list never shrinks the window's figures: the rows are a "
+    "view and the totals are the answer."
+)
+
+
 _TRUNCATION_NOTE = (
     "CAPPED: `truncation` carries `matching` (what the WHOLE request selects, unchanged as "
     "you page), `remaining`, `returned` and `truncated`. 🔴 When `truncated` is true the rows "
@@ -903,7 +919,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "settling — so quote the settled part as the answer and the pending part as "
                 "a separate outstanding figure. `totals` also carries `expired_holds` and "
                 "`settled_from_hold`, which are why a figure over this window can differ "
-                "from one you were given earlier with no new activity in between. " + _WINDOW_NOTE
+                "from one you were given earlier with no new activity in between. "
+                + _WINDOW_NOTE
+                + _GROUP_CAP_NOTE
             ),
             "inputSchema": {
                 "type": "object",
@@ -983,7 +1001,12 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 windowed=True,
-                capped=False,
+                # The group list IS capped now: keyed on a merchant string that
+                # falls back to a per-transaction description, the group count
+                # approaches the transaction count. The cap bounds the payload
+                # only -- `totals` beside the rows is summed from every group,
+                # so a cut list never shrinks the window's figures.
+                capped=True,
                 totals=True,
             ),
         },

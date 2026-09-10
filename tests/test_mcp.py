@@ -2628,15 +2628,25 @@ def test_a_complete_answer_says_it_is_complete(initialized_config: Config) -> No
     assert _request_kinds(wire) == []
 
 
-def test_the_aggregate_carries_no_truncation_block_over_the_wire(
+def test_the_aggregate_says_whether_its_group_list_was_cut(
     initialized_config: Config,
 ) -> None:
-    """🔴 `api-contract.md` fixes aggregates as unpaginated, and absence is how that is said."""
+    """🔴 A CONTRACT CHANGE: the aggregate used to say this by SAYING NOTHING.
+
+    Absence meant "unpaginated by construction, bounded by the grouping". The
+    grouping stopped bounding anything once the merchant key could fall back to
+    a per-transaction description -- the group count approaches the transaction
+    count, and the payload grew without limit while nothing on it said so.
+
+    An absence meaning "nothing was cut" is worth having. An absence meaning
+    "nobody checked" is what this replaces.
+    """
     _seed_many(initialized_config, 130)
 
     wire = _call(initialized_config, "money_summary")["structuredContent"]
 
-    assert "truncation" not in wire
+    assert wire["truncation"]["truncated"] is False, "this store holds fewer groups than the cap"
+    assert wire["truncation"]["returned"] == wire["truncation"]["matching"]
     assert _request_kinds(wire) == []
 
 
@@ -2690,7 +2700,7 @@ def test_the_capped_tool_describes_its_cap_and_the_aggregate_does_not() -> None:
 
 @pytest.mark.parametrize(
     ("tool", "expects_truncation"),
-    [("query_transactions", True), ("money_summary", False), ("list_accounts", False)],
+    [("query_transactions", True), ("money_summary", True), ("list_accounts", False)],
 )
 def test_an_unreadable_store_still_reports_whether_the_tool_is_capped(
     config: Config, tool: str, expects_truncation: bool

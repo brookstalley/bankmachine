@@ -2498,6 +2498,20 @@ KNOWN_SOURCE_CATEGORIES: tuple[str, ...] = (
 )
 
 
+#: How many groups `money_summary` puts in one payload.
+#:
+#: 🔴 A cap on the PAYLOAD, never on the arithmetic. The totals beside the rows
+#: are summed from every group, so this bounds what a consumer receives without
+#: changing what the answer says the window came to -- and `truncation` says the
+#: list was cut, so a caller is never left inferring it from the length.
+#:
+#: Lower than `MAX_ROWS`: five hundred aggregate rows is already past what any
+#: consumer reads, and the grouping most likely to reach this is the one whose
+#: keys fragment, where the tail is single-transaction groups rather than
+#: findings.
+MAX_GROUPS = 200
+
+
 def _flow_class() -> ColumnElement[str]:
     """Which side of the household boundary this money crossed.
 
@@ -2668,13 +2682,17 @@ def money_summary(
         raise BadGroupingError(f"group_by must be one of {', '.join(GROUPINGS)}, not {group_by!r}")
     problem = _readable(config)
     if problem is not None:
-        # An aggregate is unpaginated by contract, bounded by the grouping
-        # rather than by a row cap, so there is no truncation to report. The
-        # totals block is present and EMPTY: this tool carries one, and an
-        # unreadable store is a reason for it to hold nothing rather than a
-        # reason for the key to vanish.
+        # Both blocks are present and EMPTY, on one rule: this tool carries them,
+        # and an unreadable store is a reason for them to hold nothing rather
+        # than a reason for a key to vanish. A consumer branching on the presence
+        # of `truncation` or `totals` must not have to handle a third state where
+        # the store simply could not be read.
         return _unusable(
-            config, problem, requested_window=(since, until), truncation=None, totals=[]
+            config,
+            problem,
+            requested_window=(since, until),
+            truncation=Truncation.over(returned=0, remaining=0, matching=0, resume_from=None),
+            totals=[],
         )
     with reader_connection(config) as conn:
         # 🔴 Read before the statement is built, because it is a PREDICATE on
@@ -2697,7 +2715,33 @@ def money_summary(
             )
             label = key
         elif group_by == "merchant":
-            key = func.coalesce(transactions.c.merchant_name, transactions.c.description, "UNKNOWN")
+            # 🔴 Case- and whitespace-normalized, so "AMAZON", "Amazon" and
+            # "Amazon  " are one merchant rather than three. The aggregator's
+            # merchant string is unvalidated free text and this is the whole of
+            # what can be normalized without guessing.
+            #
+            # 🔴 **Reference numbers are deliberately NOT stripped**, and that is
+            # the fragmentation this grouping still has. The description fallback
+            # carries per-transaction references, so a merchant with no
+            # `merchant_name` fragments into one group per transaction -- which
+            # the cap below makes bounded and visible rather than fatal. A
+            # stripper would fix it by merging on a guess, and the guess fails
+            # SILENTLY in the direction that loses money: store numbers and city
+            # suffixes are how genuinely different merchants differ, so
+            # collapsing them reports one total where there were two, with
+            # nothing on the answer to say it happened. An overcount of groups
+            # gets questioned; a merged one gets believed.
+            key = func.replace(
+                func.upper(
+                    func.trim(
+                        func.coalesce(
+                            transactions.c.merchant_name, transactions.c.description, "UNKNOWN"
+                        )
+                    )
+                ),
+                "  ",
+                " ",
+            )
             label = key
         elif group_by == "account":
             # The id is the key a caller can act on; the name is for reading.
@@ -2800,7 +2844,16 @@ def money_summary(
             .group_by("group_key", "group_label", transactions.c.currency, "flow_class")
             .order_by(func.sum(transactions.c.amount_minor))
         )
-        rows = [
+        # 🔴 EVERY group, then capped for the payload -- never capped in SQL.
+        # `totals` and the pending tallies below are summed from these rows BY
+        # CONSTRUCTION, which is what makes the three flow classes add to the
+        # window's outflow and what stops a total contradicting the rows under
+        # it. A `LIMIT` in the statement would silently shrink every one of them
+        # to the visible groups, and the answer would still look complete: an
+        # aggregate that under-reports its own total is the precise wrong number
+        # this surface exists to refuse. So the cap bounds the PAYLOAD, not the
+        # arithmetic.
+        every_group = [
             {
                 "group_key": str(r[0]),
                 "group_label": str(r[1]),
@@ -2815,18 +2868,23 @@ def money_summary(
             }
             for r in conn.execute(statement).all()
         ]
+        # Ordered by net ascending, so the largest outflows lead and a cut list
+        # keeps the groups a caller asked the question for.
+        rows = every_group[:MAX_GROUPS]
         pending = {
             currency: HoldTally(
                 transactions=sum(
-                    int(row["pending_transactions"]) for row in rows if row["currency"] == currency
+                    int(row["pending_transactions"])
+                    for row in every_group
+                    if row["currency"] == currency
                 ),
                 net_minor=sum(
                     int(row["pending_net_minor_units"])
-                    for row in rows
+                    for row in every_group
                     if row["currency"] == currency
                 ),
             )
-            for currency in {str(row["currency"]) for row in rows}
+            for currency in {str(row["currency"]) for row in every_group}
         }
         # 🔴 Store-wide, because this tool's scope is store-wide: it takes no
         # `account_id`, so every account contributes to every group it belongs
@@ -2847,9 +2905,25 @@ def money_summary(
             conn,
             rows,
             requested_window=(since, until),
-            truncation=None,
+            # 🔴 Reported, where this tool used to say `None` because "an
+            # aggregate is unpaginated by contract, bounded by the grouping".
+            # That held only while the grouping bounded anything: keyed on a
+            # merchant string that falls back to a per-transaction description,
+            # the group count approaches the TRANSACTION count, and the answer
+            # grows without limit while `capped` reads false.
+            truncation=Truncation.over(
+                returned=len(rows),
+                remaining=len(every_group),
+                matching=len(every_group),
+                resume_from=None,
+            ),
             totals=_flow_class_totals(
-                rows,
+                # 🔴 EVERY group, not the capped list beside it. The three flow
+                # classes must add to the window's outflow, and that identity is
+                # also the proof the classification partitions the rows rather
+                # than dropping some -- computing it over a truncated list would
+                # break both, quietly, in the direction of a smaller total.
+                every_group,
                 _hold_transitions(
                     conn,
                     since=since,
