@@ -722,3 +722,29 @@ third exemption fails the test rather than arriving quietly.
 as the subject. If it describes something your mechanism does not do, draft a ruling and price what
 refusing costs. If it describes something your mechanism *does* do, conform — the norm found a real
 problem, and an amendment that admits your case is the laundering `docs/norms.md` names.
+
+## `git add -A` stages what a tool changed under you, not what you changed: name the paths, or read the status output before the commit rather than after the review
+
+**A commit built with `git add -A` carries every modified tracked file, including ones a local tool
+rewrote while you worked. The files you edited are the ones you will proofread; the file something
+else edited is the one that ships unread. Stage by path, or read `git status` and account for every
+line before committing — the review is too late, because by then the change is history.**
+
+The dangerous case is not a stray scratch file — those are untracked and usually gitignored. It is a
+**tracked config file that a tool owns**, because it is already in the index, its diff is small, and
+nothing about it looks like your work.
+
+**Instances:**
+
+- **2026-09-10, `.claude/settings.json` in the backup fix.** A `git add -A` swept a local plugin
+  toggle into a commit about schema remedies, flipping `prawduct@prawduct` from `true` to `false` in
+  a **checked-in, shared** settings file. Merged to `develop`, every checkout would have run with
+  the governance plugin off — no gates, no Stop hook, no Critic — while `CLAUDE.md` went on
+  recording the opposite decision. Caught by the Critic at Goal 3, three rounds in. The first commit
+  of the same branch printed `git status` before committing and was clean; the second piped
+  `git add -A` straight into `git commit` and was not.
+
+**How to apply:** commit with explicit paths (`git commit -- <paths>`) for anything touching a
+config or dotfile directory, and when you do use `git add -A`, print `git status --short` and read
+every line as a question — *did I change this, and does the commit message account for it?* A line
+you cannot explain is the finding, not the noise.
