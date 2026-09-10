@@ -8,7 +8,7 @@ enforceable by a structural test rather than by review, and it is why
 There are exactly two roles, and role membership is a property of how a handle
 was constructed rather than of which command asked for it:
 
-* **Writer** -- `writer()` and `initializing_writer()`. Both route through one
+* **Writer** -- `writer()`, `initializing_writer()` and `copying_writer()`. All route through one
   private factory that takes the exclusive advisory lock *before* it returns a
   handle. There is no other way to obtain a connection that can write.
 * **Reader** -- every read-role handle comes from `_open_read_role`, which
@@ -219,6 +219,29 @@ if _MISSING_REMEDIES:  # pragma: no cover - import-time guard
     raise RuntimeError(f"DatastoreProblem members with no remedy: {sorted(_MISSING_REMEDIES)}")
 
 
+def schema_problem_for(version: int | None) -> DatastoreProblem | None:
+    """Which unhealthy state a recorded schema version puts a datastore in.
+
+    🔴 One home, because the three states take three different remedies and a
+    caller deciding for itself gets the common one right and the rare ones
+    wrong. `migrate()` is forward-only: "run the migrations" is correct for a
+    store BEHIND this build, does nothing for one AHEAD of it, and the operator
+    who runs it is told there was nothing to apply and never learns the real fix
+    is to upgrade the reader.
+
+    `None` means the version is the one this build serves.
+    """
+    if version is None:
+        return DatastoreProblem.NO_SCHEMA_VERSION
+    if version == SUPPORTED_SCHEMA_VERSION:
+        return None
+    return (
+        DatastoreProblem.SCHEMA_AHEAD_OF_BUILD
+        if version > SUPPORTED_SCHEMA_VERSION
+        else DatastoreProblem.SCHEMA_BEHIND_BUILD
+    )
+
+
 def remedy_for(problem: DatastoreProblem | None) -> str:
     """The action clause for one unhealthy state.
 
@@ -412,6 +435,33 @@ def initializing_writer(config: Config) -> Iterator[Connection]:
     typo'd path with a valid, empty, correctly-encrypted store.
     """
     with _writer(config, create=True) as conn:
+        yield conn
+
+
+@contextmanager
+def copying_writer(config: Config) -> Iterator[Connection]:
+    """The handle `store backup` takes: the writer lock, and no schema check.
+
+    🔴 The second and last exemption from the schema check, and the reasoning is
+    the norm's own. A process that does not recognize the schema version refuses
+    to *serve* -- because a reader that misreads a schema returns plausible,
+    structurally valid, wrong answers, and a writer writes them down. A backup
+    does neither. `VACUUM INTO` copies pages of ciphertext; it reads no table,
+    interprets no column and answers no question, so there is no answer for an
+    unrecognized schema to make wrong.
+
+    Refusing here costs something real: the only remaining way to copy such a
+    datastore is `cp`, which drops whatever is still in the WAL -- measured, at
+    300 rows -- and the newest of `balances_daily` is what a dropped WAL takes.
+
+    A named role rather than a `require_supported_schema=False` argument on
+    `writer`: an exemption within reach of every future caller is not an
+    exemption, and the norm it guards is correct for all of them.
+
+    The lock still applies. This goes through the one writer factory, so no sync
+    run can be committing while the copy is made.
+    """
+    with _writer(config, create=False) as conn:
         yield conn
 
 
@@ -623,20 +673,14 @@ def inspect(config: Config) -> DatastoreStatus:
             journal = conn.execute("PRAGMA journal_mode").fetchone()
             version = read_schema_version(conn)
             problem = None
-            reason = None
-            if version is None:
+            reason = schema_problem_for(version)
+            if reason is DatastoreProblem.NO_SCHEMA_VERSION:
                 problem = (
                     "no schema version recorded -- datastore is uninitialized, "
                     "or a migration did not complete"
                 )
-                reason = DatastoreProblem.NO_SCHEMA_VERSION
-            elif version != SUPPORTED_SCHEMA_VERSION:
+            elif reason is not None:
                 problem = f"schema version {version} is not served by this build"
-                reason = (
-                    DatastoreProblem.SCHEMA_AHEAD_OF_BUILD
-                    if version > SUPPORTED_SCHEMA_VERSION
-                    else DatastoreProblem.SCHEMA_BEHIND_BUILD
-                )
             return DatastoreStatus(
                 path=path,
                 exists=True,

@@ -21,6 +21,17 @@ factory takes the exclusive lock before it returns, so no sync run can be
 committing while the copy is made. Consistency is a consequence of the lock
 rather than of timing.
 
+The handle is `copying_writer`, not `writer`: a copy runs at ANY schema version.
+`VACUUM INTO` interprets nothing, so the check that stops a process serving a
+schema it does not recognize has nothing to protect here -- while refusing would
+leave `cp` as the only way to copy such a store, and `cp` drops the WAL. The
+reasoning lives on `copying_writer` in `store/connection.py`, beside the norm it
+rules at the edge of.
+
+Verification reads the copy back with `require_supported_schema=False` for the
+same reason: a copy taken at an unservable version is a good backup, and the
+step that proves it is one must be able to open it.
+
 WHAT THE COPY IS
 
 A single file. `VACUUM INTO` folds the WAL's contents into it, so the copy needs
@@ -95,7 +106,11 @@ class BackupReport:
 
     destination: Path
     bytes_written: int
-    schema_version: int
+    #: 🔴 Optional, and the null is a real state rather than a missing value: a
+    #: datastore whose migration died between creating the file and stamping the
+    #: version records none. That store is exactly the one most worth copying,
+    #: so the copy reports the absence rather than refusing over it.
+    schema_version: int | None
     source_path: Path
 
 
@@ -139,7 +154,7 @@ def back_up(config: Config, destination: Path) -> BackupReport:
         )
 
     logger.info("backup starting: %s -> %s", config.datastore_path, destination)
-    with connection.writer(config) as conn:
+    with connection.copying_writer(config) as conn:
         try:
             # A bound parameter, not an f-string: a destination path is operator
             # input and may contain a quote, and string-building the SQL would
@@ -177,7 +192,7 @@ def _verify(config: Config, destination: Path) -> BackupReport:
     """
     as_copy = dataclasses.replace(config, datastore_path=destination)
     try:
-        with connection.reader(as_copy) as conn:
+        with connection.reader(as_copy, require_supported_schema=False) as conn:
             version = connection.read_schema_version(conn)
             integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
     except StoreError as exc:
@@ -200,15 +215,14 @@ def _verify(config: Config, destination: Path) -> BackupReport:
             f"It is still on disk and is NOT a usable backup"
         )
 
-    if version is None:
-        # `reader` raises on an unsupported version before reaching here, so this
-        # is unreachable today. It is written out rather than cast away because
-        # the alternative is coercing None to an int, and the value being coerced
-        # would be the one that says whether the copy has a schema at all.
-        raise BackupUnverifiedError(
-            f"the copy at {destination} reports no schema version. "
-            f"It is still on disk and is NOT a usable backup"
-        )
+    # 🔴 A copy that records no schema version is REPORTED, not refused. That
+    # state is a datastore whose migration died between creating the file and
+    # stamping the version -- the one an operator most needs a copy of, and the
+    # one the old refusal reached by accident because the reader used to raise
+    # before this line. Refusing a faithful copy while leaving it on disk is the
+    # zero-byte hazard in another costume: a real file that the command says is
+    # not a backup. `integrity_check` above is what judges the copy; the version
+    # is reported so the operator knows what they are holding.
 
     report = BackupReport(
         destination=destination,
@@ -218,10 +232,15 @@ def _verify(config: Config, destination: Path) -> BackupReport:
     )
     # An unattended run leaves only an exit code otherwise, and the log
     # directory is the one place an operator can ask what was taken and when.
+    # 🔴 `%s`, not `%d`, for the version: it is optional now, and `%d` against
+    # None raises inside the handler -- which does not raise HERE. Logging
+    # swallows it, prints "--- Logging error ---" to stderr, and writes no
+    # record at all, so the one line an unattended run leaves behind goes
+    # missing for exactly the datastore this command was widened to copy.
     logger.info(
-        "backup verified: %s (%d bytes, schema version %d)",
+        "backup verified: %s (%d bytes, schema version %s)",
         report.destination,
         report.bytes_written,
-        report.schema_version,
+        report.schema_version if report.schema_version is not None else "none recorded",
     )
     return report

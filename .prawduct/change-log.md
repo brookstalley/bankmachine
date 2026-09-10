@@ -34,6 +34,61 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-10: A datastore can be backed up at any schema version
+
+<!-- prawduct: scope=backup-at-any-schema-version -->
+
+**Why:** `store backup` opened through the ordinary writer factory, so it inherited the check that
+stops a process serving a schema version it does not recognize — and a store already sitting at such
+a version could not be copied at all. The documented upgrade procedure worked around this by
+ordering the backup before `git pull`, taken with the old build. What it could not cover is the
+order being reversed, which `git pull` as muscle memory produces and which every development
+checkout produces on its own. The escape the spec offered for that case was `cp`, which the same
+document marks 🔴 do-not-use and disproves with a measured case: a source with a 2 MB hot WAL holding
+300 rows produced a `cp` copy short of every one of them. `balances_daily` is the series no
+aggregator backfills, and a dropped WAL takes the newest of it.
+
+**What changed:** `store backup` opens through a new `copying_writer` — the writer lock, no schema
+check — and verification reads the copy back with the reader's existing `require_supported_schema=False`.
+The command names a copy whose version this build cannot serve, so a sound backup is not mistaken
+for a broken one when `store status` calls the restored file unhealthy.
+
+🔴 **The note carries the remedy for its own state, not one sentence for both.** Migrations are
+forward-only: a copy BEHIND this build is migrated forward by `store init`, and a copy AHEAD of it
+is not — telling that operator to run it sends them to a command that applies nothing and reads as
+"the fix is broken". A new `schema_problem_for()` is the single classifier, and the note takes its
+action clause from `remedy_for`, the vocabulary every other unhealthy-store surface already uses.
+`inspect()` asks the same classifier instead of repeating it.
+
+🔴 **A datastore recording NO schema version is copied and reported, not refused.** That is a
+migration that died between creating the file and stamping the version — the state most worth
+holding a copy of, and one the old code refused only by accident, because the reader used to raise
+first. Refusing a faithful copy while leaving it on disk is the zero-byte hazard in another costume.
+`BackupReport.schema_version` is optional accordingly, rendered as "none recorded" at all three
+surfaces: the report line, the note, and the verified-backup log record.
+
+**The norm decision:** `architecture.md`'s fourth Direction norm governs this, and it is **ruled at
+the edge rather than amended**. "Serve" means answering queries or writing derived data; `VACUUM
+INTO` copies pages of ciphertext, reads no table and answers no question, so the norm's why — "it
+would return plausible, structurally valid, wrong answers" — has no purchase on it. The reader, the
+ordinary writer and `store rebuild` are unchanged. Amending the statement would have weakened a norm
+that is correct for every other caller.
+
+**How the exemption is held:** by discovery, not by a list. The enforcement test walks the module
+for handles that skip the check and asserts the exempt set is exactly the two named roles, so a
+third exemption fails the test rather than arriving quietly. Seen red through
+`verify_norms_go_red.py` by making `copying_writer` enforce the check.
+
+**Also asserted:** the WAL guarantee at an unservable version, with the `cp` negative control re-run
+rather than assumed to carry over — without it the fix would buy nothing over the workaround it
+replaces. And `operational-spec.md` § Rollback's "recovery is restore-from-backup" is now walked by
+a test: a genuinely older store, built by applying a truncated migration list, is backed up,
+restored to a fresh path, migrated forward by the ordinary runner, and its rows counted.
+
+**Found:** while rehearsing `docs/first-production-connection.md` § 2.3 against a sandbox store at
+schema 4 under a build serving 9. The limitation was already documented as a known one; what was
+wrong was the workaround, not the absence of a note.
+
 ## 2026-09-10: The operator can get the datastore key out, check it, and put it back
 
 <!-- prawduct: scope=datastore-key-escrow -->

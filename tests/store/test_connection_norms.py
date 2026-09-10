@@ -8,7 +8,10 @@ never been red is a claim, not a check.
 
 from __future__ import annotations
 
+import ast
+import inspect
 import os
+import pathlib
 import subprocess
 import sys
 import textwrap
@@ -389,6 +392,82 @@ def test_a_writer_refuses_an_unrecognized_schema_version(initialized_config: Con
         writer(initialized_config),
     ):
         pass
+
+
+def test_only_the_two_named_roles_are_exempt_from_the_schema_check(
+    initialized_config: Config,
+) -> None:
+    """🔴 The exemptions are discovered, not listed, so a third one cannot arrive quietly.
+
+    Two handles are permitted to open a version this build does not serve, and
+    each has a reason the norm's own why does not reach. `initializing_writer`
+    is the migration runner's: bringing an old datastore forward is the one job
+    that must open an old version. `copying_writer` is `store backup`'s:
+    `VACUUM INTO` copies pages of ciphertext and answers no question, so there
+    is no answer for an unrecognized schema to make wrong -- and refusing left
+    `cp`, which drops the WAL.
+
+    This walks the module rather than naming the handles it expects to refuse.
+    An enumeration would pass unchanged on the day someone adds a third handle,
+    which is the only day it matters.
+    """
+    exempt = {"initializing_writer", "copying_writer"}
+
+    handles = {
+        name
+        for name, value in vars(connection).items()
+        if not name.startswith("_")
+        and callable(value)
+        and hasattr(value, "__wrapped__")
+        and "config" in inspect.signature(value).parameters
+    }
+    assert exempt <= handles, f"a named exemption no longer exists: {exempt - handles}"
+
+    future = connection.SUPPORTED_SCHEMA_VERSION + 1
+    with writer(initialized_config) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        connection.stamp_schema_version(conn, future)
+        conn.execute("COMMIT")
+
+    for name in sorted(handles - exempt):
+        with pytest.raises(SchemaVersionUnsupportedError, match=str(future)):
+            with getattr(connection, name)(initialized_config):
+                pass
+
+    for name in sorted(exempt):
+        with getattr(connection, name)(initialized_config) as conn:
+            assert connection.read_schema_version(conn) == future
+
+    # 🔴 The behavioural walk above can only reach handles it knows how to CALL,
+    # which is every one taking a `Config` and no other. A handle with a
+    # different signature would open the datastore and never be tried. So the
+    # claim is closed at the source: any function that opens through `_writer`
+    # either checks the schema or is one of the two named roles, whatever its
+    # parameters look like.
+    tree = ast.parse(pathlib.Path(connection.__file__).read_text(encoding="utf-8"))
+    opens_the_datastore = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and any(
+            isinstance(call.func, ast.Name) and call.func.id == "_writer"
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call)
+        )
+    }
+    assert opens_the_datastore, "the source walk found no writer at all, so it proves nothing"
+
+    for name, node in sorted(opens_the_datastore.items()):
+        checks = any(
+            isinstance(call.func, ast.Name) and call.func.id == "_require_supported_schema"
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call)
+        )
+        assert checks or name in exempt, (
+            f"{name}() opens the datastore through the writer factory without checking the "
+            f"schema version, and is not one of the two roles ruled exempt. Either it checks, "
+            f"or the ruling in architecture.md grows a third entry and this set grows with it"
+        )
 
 
 def test_status_reports_an_unrecognized_schema_version_as_unhealthy(

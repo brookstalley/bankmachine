@@ -125,6 +125,15 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         f"{NORMS}::test_the_read_role_opens_read_only_at_the_file",
     ),
     (
+        "norm 4 (ruling): the copying handle is exempt from the schema check",
+        CONNECTION,
+        "    with _writer(config, create=False) as conn:\n        yield conn",
+        '    with _writer(config, create=False) as conn:\n'
+        '        _require_supported_schema(conn, config, consequence="sabotage")\n'
+        "        yield conn",
+        f"{NORMS}::test_only_the_two_named_roles_are_exempt_from_the_schema_check",
+    ),
+    (
         "norm 3 (construction): the non-creating writer mode cannot create",
         CONNECTION,
         'WRITER_MODE: Final = "rw"',

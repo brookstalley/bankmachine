@@ -684,3 +684,67 @@ requirement, and their requirement may say *delete means delete*.
 **How to apply:** at any preservation norm's edge, ask who wrote the row — not who wrote the field,
 and not whether the field looks derived. If the answer is "we did", the norm's why does not reach it
 and the ruling is already made here; record the instance and move on.
+
+## A norm's reach is its why, not its wording: a mechanism that produces no answers is outside a norm about wrong answers, and the ruling belongs at the edge rather than in the norm
+
+**When a norm blocks something it was plainly not written for, the fix is a ruling at its edge, not
+an amendment to its statement. Test the departure against the norm's *why*: if the why has no
+purchase on the case, the norm never reached it and saying so leaves the norm intact for everything
+it does reach. Amending the statement to admit your case weakens it everywhere.**
+
+The tell is that the norm's rationale, read aloud against your case, turns out to be about something
+your code does not do. `architecture.md`'s fourth Direction norm — *a process that does not recognize
+the datastore's schema version refuses to serve* — exists because "it would return plausible,
+structurally valid, wrong answers." `store backup` runs `VACUUM INTO`: a page-level copy of
+ciphertext that reads no table, interprets no column and answers no question. There is no answer for
+an unrecognized schema to make wrong. The norm was never about it.
+
+🔴 **And check what refusing costs, because that is the half a wording-only reading hides.** Refusing
+here left `cp` as the only way to copy such a store, and this repo has *measured* `cp` losing all 300
+rows of a hot WAL — so the norm, read past its why, was pushing operators toward the one method the
+same document calls unsafe.
+
+**The exemption is then held by discovery, not by a list** (see [[Guarantees by construction]]): the
+enforcement test walks the module for handles that skip the check and asserts the exempt set, so a
+third exemption fails the test rather than arriving quietly.
+
+**Instances:**
+
+- **2026-09-10, `store backup` at an unservable schema version.** Found while rehearsing
+  `docs/first-production-connection.md` § 2.3 against a sandbox store at schema 4 under a build
+  serving 9. Recorded as a ruling on the norm rather than an amendment; reader, ordinary writer and
+  `store rebuild` unchanged. 🔴 The limitation was **already documented** in `operational-spec.md`
+  and the upgrade procedure worked around it correctly by ordering the backup before `git pull` —
+  so the defect was never "nobody noticed", it was that the workaround stopped existing the moment
+  an operator did the two steps in the other order.
+
+**How to apply:** when a norm refuses your change, read its Why sentence aloud with your mechanism
+as the subject. If it describes something your mechanism does not do, draft a ruling and price what
+refusing costs. If it describes something your mechanism *does* do, conform — the norm found a real
+problem, and an amendment that admits your case is the laundering `docs/norms.md` names.
+
+## `git add -A` stages what a tool changed under you, not what you changed: name the paths, or read the status output before the commit rather than after the review
+
+**A commit built with `git add -A` carries every modified tracked file, including ones a local tool
+rewrote while you worked. The files you edited are the ones you will proofread; the file something
+else edited is the one that ships unread. Stage by path, or read `git status` and account for every
+line before committing — the review is too late, because by then the change is history.**
+
+The dangerous case is not a stray scratch file — those are untracked and usually gitignored. It is a
+**tracked config file that a tool owns**, because it is already in the index, its diff is small, and
+nothing about it looks like your work.
+
+**Instances:**
+
+- **2026-09-10, `.claude/settings.json` in the backup fix.** A `git add -A` swept a local plugin
+  toggle into a commit about schema remedies, flipping `prawduct@prawduct` from `true` to `false` in
+  a **checked-in, shared** settings file. Merged to `develop`, every checkout would have run with
+  the governance plugin off — no gates, no Stop hook, no Critic — while `CLAUDE.md` went on
+  recording the opposite decision. Caught by the Critic at Goal 3, three rounds in. The first commit
+  of the same branch printed `git status` before committing and was clean; the second piped
+  `git add -A` straight into `git commit` and was not.
+
+**How to apply:** commit with explicit paths (`git commit -- <paths>`) for anything touching a
+config or dotfile directory, and when you do use `git add -A`, print `git status --short` and read
+every line as a question — *did I change this, and does the commit message account for it?* A line
+you cannot explain is the finding, not the noise.

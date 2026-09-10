@@ -355,8 +355,30 @@ def _print_backup(config: Config, report: BackupReport) -> None:
     print(f"source:          {report.source_path}")
     print(f"backup:          {report.destination}")
     print(f"bytes:           {report.bytes_written}")
-    print(f"schema version:  {report.schema_version}")
+    # "none recorded" rather than "None": the absence is a state the operator has
+    # to act on, and a bare Python repr in a terminal reads as a bug in the tool.
+    version = report.schema_version
+    print(f"schema version:  {version if version is not None else 'none recorded'}")
     print("verified:        yes -- reopened with the datastore key, integrity_check ok")
+    problem = connection.schema_problem_for(version)
+    if problem is not None:
+        # The copy is sound and this line is not a warning about it. It exists
+        # because a verified backup at a version this build cannot open is a
+        # restorable file that `store status` will call unhealthy the moment it
+        # is put back -- and an operator mid-recovery reading that, with no
+        # warning that it was expected, has every reason to think the restore
+        # failed.
+        #
+        # 🔴 The remedy comes from `remedy_for`, never from a sentence written
+        # here. A copy BEHIND this build is migrated forward; one AHEAD of it is
+        # not, and telling that operator to run `store init` sends them to a
+        # command that applies nothing and reads as "the fix is broken". Two
+        # states, two remedies, and one place that knows which is which.
+        print(
+            f"note:            this copy is at schema version "
+            f"{version if version is not None else 'none recorded'}; this build serves "
+            f"{connection.SUPPORTED_SCHEMA_VERSION}. {connection.remedy_for(problem)}"
+        )
     # Loud, every time, and not conditional on anything. The key is the half of
     # a backup that has no other source: an aggregator secret can be re-read
     # from the vendor's dashboard, a datastore key cannot be re-read from

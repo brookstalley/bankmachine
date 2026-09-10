@@ -179,9 +179,10 @@ does not recognize the datastore's version refuses to serve, so the datastore mu
 
 1. `launchctl unload` the sync agent, and stop the MCP server (a client disconnect is enough; the
    server is a subprocess started at connect time).
-2. `bankmachine store backup` — 🔴 **before** the migration, because `store backup` opens through the
-   ordinary writer factory and cannot back up a datastore at a version this build does not serve.
-   After the migration the old build can no longer produce one.
+2. `bankmachine store backup`. Taking it here rather than after step 3 is the tidier order, because
+   a copy at the version you are still running is one you can open without migrating it first — but
+   it is no longer load-bearing. A store already sitting at a version this build does not serve is
+   still copyable, which is the case reached by `git pull` before the backup.
 3. `git pull && uv sync`.
 4. `bankmachine store init` — the migration runner is idempotent and applies only what is pending.
 5. `bankmachine store status` — exit 0, and the reported schema version is the new one.
@@ -306,10 +307,18 @@ command's own test asserts that gap, so the guarantee is checked rather than cla
 leaves the machine as ciphertext with no export step. FileVault does not cover a backup; this does.
 A wrong key raises rather than returning garbage.
 
-**Known limitation:** `store backup` requires a datastore at a schema version this build serves,
-because it opens through the ordinary writer factory. Backing up *before* a migration that has not
-been written yet is therefore not available — copy the three files by hand for that case, with no
-process running.
+🔴 **A copy runs at any schema version, including one this build does not serve.** `store backup`
+opens through `copying_writer` rather than the ordinary writer factory: a page-level copy answers no
+question, so the check that stops a process serving an unrecognized schema has nothing to protect
+here (`architecture.md` § Direction, the fourth norm's 2026-09-10 ruling). This is what makes 🔴 "do
+not use `cp`" unconditional — there is no longer a case the command cannot cover. The copy reports
+the version it was taken at, and says so when this build cannot serve it — 🔴 with the remedy for
+**that** state rather than one sentence for both: a copy BEHIND this build is migrated forward by
+`store init`, and a copy AHEAD of it is not, because migrations are forward-only. The note takes its
+action clause from `remedy_for`, the vocabulary every other unhealthy-store surface uses, so the two
+cannot drift apart. A copy recording **no** version is reported rather than refused: that is a
+migration that died between creating the file and stamping the version, which is the state most
+worth holding a copy of.
 
 **Still manual:** nothing schedules this. The command exists; running it is the operator's, and
 automating it is not yet specified.
