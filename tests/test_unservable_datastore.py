@@ -728,6 +728,12 @@ def test_no_cli_command_prescribes_store_init_where_it_is_wrong(
     monkeypatch.setenv("BANKMACHINE_KEYCHAIN_SERVICE", cfg.keychain_service)
     monkeypatch.setenv("BANKMACHINE_ENVIRONMENT", cfg.environment)
     monkeypatch.setenv("BANKMACHINE_PLAID_CLIENT_ID", "test-client-id")
+    # The datastore and the keychain were overridden and the log and the config
+    # file were not, so `load_config()` resolved those two from the developer's
+    # own environment -- and this test's temp paths were written into the real
+    # log file that becomes the production log.
+    monkeypatch.setenv("BANKMACHINE_LOG_DIR", str(cfg.log_dir))
+    monkeypatch.setenv("BANKMACHINE_CONFIG", str(tmp_path / "absent.toml"))
     try:
         _state_builders()[problem](cfg)
         capsys.readouterr()

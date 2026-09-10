@@ -9,8 +9,9 @@ plausible assumption, and a mock returns the assumption.
 from __future__ import annotations
 
 import json
+import os
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,91 @@ def initialized_config(config: Config) -> Config:
     set_datastore_key(config, generate_datastore_key())
     migrate(config)
     return config
+
+
+#: The variables that decide where a `load_config()` call lands. Written out
+#: rather than discovered by prefix so that a seventh is a decision somebody
+#: takes in this file, beside the guard that reads them.
+CONFIGURATION_ENVIRONMENT = (
+    "BANKMACHINE_CONFIG",
+    "BANKMACHINE_DATASTORE_PATH",
+    "BANKMACHINE_ENVIRONMENT",
+    "BANKMACHINE_KEYCHAIN_SERVICE",
+    "BANKMACHINE_LOG_DIR",
+    "BANKMACHINE_PLAID_CLIENT_ID",
+)
+
+#: The variables whose value is a path this suite must never let escape the
+#: pytest temp tree.
+_PATH_VALUED = ("BANKMACHINE_CONFIG", "BANKMACHINE_DATASTORE_PATH", "BANKMACHINE_LOG_DIR")
+
+
+@pytest.fixture(autouse=True)
+def _no_test_resolves_its_paths_from_the_operators_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[None]:
+    """Fail a test that pointed the product at anything outside the pytest temp tree.
+
+    🔴 **The failure this exists to catch has already happened, and it was
+    silent.** One test overrode the datastore path and the keychain service and
+    stopped there, so its `load_config()` resolved `log_dir` from the
+    developer's real environment -- and pytest temp paths were written into the
+    operator's live `~/.local/state/bankmachine/logs/bankmachine.log`, the file
+    that becomes the production log. Nothing failed. Nothing could: the test
+    asserted on what the command printed, and where the log went was not part of
+    any assertion anywhere.
+
+    **Two rules, and the smaller one is the one that would have caught it.**
+    A test that sets `BANKMACHINE_DATASTORE_PATH` is driving the product from
+    the environment, and the log follows the datastore or it follows the
+    operator -- there is no third option -- so `BANKMACHINE_LOG_DIR` must be set
+    too. The second rule is the general form: any of these variables that names
+    a path must name one inside the pytest temp tree.
+
+    Deliberately NOT a rule that `BANKMACHINE_CONFIG` must be set. It is the
+    right thing for a CLI fixture to do and every one of them does it, but the
+    leak was the log, and a guard that fails tests for a second reason is a
+    guard that gets read as noise the first time it fires for the wrong one.
+
+    **It takes `monkeypatch` so that it can still see what the test set.**
+    Finalizers run in reverse order of setup: requesting `monkeypatch` here
+    forces it to be created first, which puts its undo *after* this check rather
+    than before it, where there would be nothing left to look at.
+    """
+    yield
+
+    complaint = configuration_leak(os.environ, tmp_path_factory.getbasetemp())
+    if complaint is not None:
+        raise AssertionError(complaint)
+
+
+def configuration_leak(environ: Mapping[str, str], base: Path) -> str | None:
+    """What escaped the temp tree, or `None`. Public so it can be driven directly.
+
+    A guard nobody has watched fire is a claim rather than a check, and an
+    autouse fixture is the hardest kind to watch: reddening it means writing a
+    test that deliberately leaks, which is the thing this file exists to stop.
+    Separating the judgment from the fixture lets both controls be ordinary
+    assertions (`tests/test_config.py`).
+    """
+    set_here = {name: environ[name] for name in CONFIGURATION_ENVIRONMENT if name in environ}
+
+    if "BANKMACHINE_DATASTORE_PATH" in set_here and "BANKMACHINE_LOG_DIR" not in set_here:
+        return (
+            "this test pointed BANKMACHINE_DATASTORE_PATH at a temporary store but left "
+            "BANKMACHINE_LOG_DIR unset, so its logging went to the operator's real log "
+            "directory. Set both, under tmp_path, the way every CLI fixture here does."
+        )
+
+    for name in _PATH_VALUED:
+        value = set_here.get(name)
+        if value is not None and not Path(value).is_relative_to(base):
+            return (
+                f"{name} is {value}, which is outside the pytest temp tree at {base}. "
+                f"A test that resolves configuration from the environment must resolve it "
+                f"to somewhere disposable."
+            )
+    return None
 
 
 @pytest.fixture(autouse=True)
