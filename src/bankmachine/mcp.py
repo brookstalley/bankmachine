@@ -1112,6 +1112,39 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             "this still carries the measurement so nothing is hidden"
                         ),
                     },
+                    "interior_gaps": {
+                        "type": "integer",
+                        "description": (
+                            "holes INSIDE this account's history — runs where the feed stopped "
+                            "and restarted — measured against its own cadence. Present and 0, "
+                            "never omitted. 🔴 `days_silent` cannot see these: it measures from "
+                            "the last transaction to today, so a three-month hole mid-history "
+                            "leaves it at 1 while `money_summary` group_by=month shows a "
+                            "spending collapse that never happened. This is the count as "
+                            "MEASURED; the list beside it may be shorter"
+                        ),
+                    },
+                    "interior_gap_detail": {
+                        "type": "array",
+                        "description": (
+                            "the widest of those gaps, each with the dates it runs between, its "
+                            "length in days, and its `ratio` against this account's cadence. "
+                            "🔴 Numbers rather than a flag, for the reason `silence_ratio` is: a "
+                            "3.1x gap and a 40x gap are not the same finding. Capped, so a "
+                            "shorter list than `interior_gaps` means the rest were narrower"
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "from": {"type": "string"},
+                                "to": {"type": "string"},
+                                "days": {"type": "integer"},
+                                "ratio": {"type": "number"},
+                            },
+                            "required": ["from", "to", "days", "ratio"],
+                            "additionalProperties": False,
+                        },
+                    },
                     "stranded_holds": {
                         "type": "integer",
                         "description": (

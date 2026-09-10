@@ -2113,6 +2113,74 @@ def list_transactions(
         )
 
 
+#: How many interior gaps one account reports before the list is cut. A report
+#: naming forty holes on one account is one nobody reads, and the operator's
+#: move is the same after the first few: go look at that account. The COUNT is
+#: not capped -- only the enumeration -- so a caller can still tell a truncated
+#: list from a complete one.
+MAX_INTERIOR_GAPS_PER_ACCOUNT = 10
+
+#: An interior gap is a silence longer than three of this account's own cycles,
+#: AND at least a week. Both conditions, because either alone misfires: the
+#: multiple alone flags an ordinary long weekend on an account posting daily
+#: (cadence 1, so any four quiet days), and the floor alone flags every normal
+#: month on an account that posts monthly. One is noise on the busiest accounts,
+#: the other noise on the quietest.
+INTERIOR_GAP_CADENCE_MULTIPLE = 3.0
+INTERIOR_GAP_MINIMUM_DAYS = 7
+
+
+def _interior_gaps(dates: Sequence[CalendarDate], cadence: float | None) -> list[dict[str, Any]]:
+    """The holes INSIDE an account's history, measured against its own cadence.
+
+    🔴 **Only trailing silence was ever computed.** `days_silent` measures from
+    the last transaction to today, so a three-month hole in the middle of a
+    history leaves it at 1 and `silence_exceeds_cadence` false -- while
+    `money_summary` with `group_by=month` shows a spending collapse that never
+    happened. A feed that stopped and restarted is invisible to a measure that
+    only looks at the end.
+
+    🔴 **Measured on `posted_date`, never `ledger_date`.** A gap is a question
+    about DELIVERY -- did the feed stop -- so it must be measured on the date
+    that tracks arrival. On the economic date a settlement could fill a delivery
+    gap that really happened, which is the same split `ledger_date` establishes
+    read from its other side.
+
+    🔴 **Reported as numbers, not flags**, for the reason `silence_ratio` is: a
+    3.1x gap and a 40x gap are not the same finding, and a boolean says they
+    are. Each carries its own ratio so a caller can weigh them.
+
+    Cadence is the caller's already-floored divisor, reused unchanged. A second
+    notion of cadence in one report is how the report starts contradicting
+    itself.
+    """
+    if cadence is None or len(dates) < 2:
+        return []
+    threshold = max(cadence, 1.0) * INTERIOR_GAP_CADENCE_MULTIPLE
+    gaps: list[dict[str, Any]] = []
+    for earlier, later in zip(dates, dates[1:], strict=False):
+        days = (later - earlier).days
+        if days > threshold and days >= INTERIOR_GAP_MINIMUM_DAYS:
+            gaps.append(
+                {
+                    "from": earlier.isoformat(),
+                    "to": later.isoformat(),
+                    "days": days,
+                    "ratio": round(days / max(cadence, 1.0), 3),
+                }
+            )
+    # Widest first, so a truncated list keeps the gaps worth looking at rather
+    # than whichever happened to fall earliest in the history.
+    #
+    # 🔴 Returns EVERY gap; the cap is applied where the list is emitted, never
+    # here. The caller reports the count from this list, so capping inside would
+    # make the count agree with the truncated list and the truncation would stop
+    # being visible -- an account with forty holes would report ten, which is
+    # the undercount this whole report exists to surface.
+    gaps.sort(key=lambda gap: (-int(gap["days"]), str(gap["from"])))
+    return gaps
+
+
 def _median_interval(days: list[int]) -> float | None:
     """The middle gap between consecutive transactions, or None when there is none.
 
@@ -2278,6 +2346,8 @@ def coverage_report(config: Config) -> Answer:
             ratio = (
                 None if cadence is None or days_silent is None else round(days_silent / cadence, 3)
             )
+            all_gaps = _interior_gaps(dates, cadence)
+            gaps = all_gaps[:MAX_INTERIOR_GAPS_PER_ACCOUNT]
             rows.append(
                 {
                     "account_id": account_id,
@@ -2311,6 +2381,13 @@ def coverage_report(config: Config) -> Answer:
                     "median_interval_days": median,
                     "days_silent": days_silent,
                     "silence_ratio": ratio,
+                    # Present on every row, and an empty list is a real answer:
+                    # an account with an unbroken history is stating that, and a
+                    # missing key would make a consumer guess whether it meant
+                    # none or not-measured. `interior_gaps` is the count as
+                    # MEASURED; the list beside it may be shorter.
+                    "interior_gaps": len(all_gaps),
+                    "interior_gap_detail": gaps,
                     # 🔴 One full missed cycle, because it is the only
                     # non-arbitrary unit. Choosing 0.9 so the borderline pair
                     # flags would reinvent the constant the ruling removed;

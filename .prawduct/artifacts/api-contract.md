@@ -654,7 +654,7 @@ a caller had to ask for.
 
 **`get_coverage_report` is the verification surface built on the same producer**, and carries the
 analysis `list_accounts` does not: `median_interval_days` (this account's own posting cadence),
-`days_silent`, `silence_ratio`, `silence_exceeds_cadence`, and `source_breakdown` by provenance.
+`days_silent`, `silence_ratio`, `silence_exceeds_cadence`, `interior_gaps` and `interior_gap_detail`, and `source_breakdown` by provenance.
 🔴 **One producer feeds both** — built twice they can disagree, and a verification surface that
 contradicts the analysis surface is worse than one that is absent.
 
@@ -918,6 +918,11 @@ without a second call — and carries the analysis `list_accounts` does not.
 | `median_interval_days` | number, nullable | this account's own posting cadence in days; null under two transactions, because no interval exists rather than because it posts daily. `0` is a real answer and means the opposite of null: the account posts more than once a day |
 | `days_silent` | integer, nullable | days since the last recorded transaction; null when there is none |
 | `silence_ratio` | number, nullable | `days_silent` against this account's own cadence, the divisor floored at one day. A NUMBER rather than a flag on purpose: 28 days silent on a 30-day cycle is genuinely borderline, and a boolean is what would hide that |
+| `interior_gaps` | integer | Holes INSIDE this account's history — runs where the feed stopped and restarted — counted against its own cadence: longer than three cycles AND at least seven days. Both conditions, because the multiple alone flags a long weekend on a daily account and the floor alone flags every normal month on a monthly one. 🔴 `days_silent` cannot see these at all: it measures from the last transaction to today, so a three-month hole mid-history leaves it at 1 while a monthly total shows a collapse that never happened. Present and 0, never omitted. This is the count as MEASURED |
+| `interior_gap_detail` | array | The widest of those gaps, each one an object of `from`, `to`, `days` and `ratio`, where `ratio` is the gap against this account's cadence. Numbers rather than a flag, for the same reason as `silence_ratio`. Capped per account, so a list shorter than `interior_gaps` means the remaining gaps were narrower than the ones shown |
+| `from` | string | On an `interior_gap_detail` entry: the last date the feed posted before the gap |
+| `to` | string | On an `interior_gap_detail` entry: the first date it posted after it |
+| `days` | integer | On an `interior_gap_detail` entry: the gap's length. The evidence under `ratio`, so a caller can apply its own threshold rather than this one |
 | `silence_exceeds_cadence` | boolean | a full posting cycle has been missed (ratio above 1) by an account still being reported. 🔴 Always false for a non-active account, whose silence is closure rather than a hole — `silence_ratio` beside it still carries the measurement, so nothing is hidden |
 | `stranded_holds` | integer | authorisation holds on this account still unsettled past any ordinary hold lifetime. Present and `0`, never omitted. A hold this old usually means the merchant never captured it, so the money is neither spent nor available |
 | `oldest_stranded_hold` | object, nullable | the worst of them, so the operator can go and look at it; null when there are none, and 🔴 also null for a non-active account, whose holds can never settle and can never be cleared. `stranded_holds` beside it still carries the count, so the measurement is not withheld — only the call to action nobody could answer |

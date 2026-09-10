@@ -17,7 +17,7 @@ to be quiet in the window asked about.
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Any
 
 import pytest
@@ -608,3 +608,98 @@ def test_a_busy_account_that_posted_today_is_not_reported_silent(
     assert row["days_silent"] == 0
     assert row["silence_ratio"] == 0.0
     assert row["silence_exceeds_cadence"] is False
+
+
+# --------------------------------------------------------------------------
+# Holes in the middle of a history, which trailing silence cannot see
+# --------------------------------------------------------------------------
+
+
+def _gaps(cadence: float | None, *day_offsets: int) -> list[dict[str, Any]]:
+    """Interior gaps over a history given as day offsets from an arbitrary start."""
+    from bankmachine.store.types import calendar_date
+
+    base = date(2026, 1, 1)
+    dates = [calendar_date(base + timedelta(days=offset)) for offset in day_offsets]
+    return query._interior_gaps(dates, cadence)
+
+
+def test_a_hole_in_the_middle_of_a_history_is_found_where_trailing_silence_is_blind() -> None:
+    """🔴 The defect, stated as the measurement that misses it.
+
+    `days_silent` runs from the last transaction to today, so an account that
+    went quiet for three months and then resumed reports 1 day silent and
+    `silence_exceeds_cadence` false -- while `money_summary` with
+    `group_by=month` shows a spending collapse for those months that never
+    happened. The feed stopped; the spending did not. Nothing in the report
+    could distinguish those two until this.
+    """
+    # Daily-ish account: posts every day, then a 90-day hole, then daily again.
+    offsets = [0, 1, 2, 3, 93, 94, 95, 96]
+    gaps = _gaps(1.0, *offsets)
+
+    assert len(gaps) == 1, f"expected the one hole, saw {gaps}"
+    assert gaps[0]["days"] == 90
+    assert gaps[0]["from"] == "2026-01-04"
+    assert gaps[0]["to"] == "2026-04-04"
+    assert gaps[0]["ratio"] == 90.0
+
+
+def test_a_long_weekend_on_a_daily_account_is_not_a_gap() -> None:
+    """The floor's whole job. Without it, cadence 1 makes any four quiet days a finding.
+
+    An account posting daily is the busiest class there is, and it is the class
+    a bare cadence multiple turns into noise -- which is how a report ends up
+    with findings nobody reads.
+    """
+    assert _gaps(1.0, 0, 1, 2, 6, 7) == []
+
+
+def test_an_ordinary_month_on_a_monthly_account_is_not_a_gap() -> None:
+    """The multiple's whole job, and the mirror of the case above.
+
+    A seven-day floor alone would flag every single cycle of an account that
+    posts once a month -- noise on the quietest accounts instead of the busiest.
+    Both conditions exist because either alone misfires, in opposite directions.
+    """
+    assert _gaps(30.0, 0, 30, 61, 91, 122) == []
+
+
+def test_a_missed_quarter_on_a_monthly_account_is_a_gap() -> None:
+    """And the monthly account's real failure is still caught."""
+    gaps = _gaps(30.0, 0, 30, 130, 160)
+    assert len(gaps) == 1
+    assert gaps[0]["days"] == 100
+
+
+def test_an_account_with_no_cadence_reports_no_gaps_rather_than_guessing() -> None:
+    """Fewer than two transactions is no interval, and no interval is not zero.
+
+    Zero would read as "posts every day" and make every subsequent quiet week a
+    finding on an account nobody has any rhythm for.
+    """
+    assert _gaps(None, 0, 500) == []
+    assert _gaps(1.0, 0) == []
+
+
+def test_the_widest_gaps_survive_the_cap_and_the_count_does_not_shrink_with_the_list() -> None:
+    """🔴 The count is as MEASURED; only the enumeration is capped.
+
+    Capping inside the measurement would make the count agree with the truncated
+    list, and the truncation would stop being visible -- an account with forty
+    holes would report ten, which is the undercount this report exists to
+    surface. So this asserts the two are allowed to disagree, and that what
+    survives is the widest rather than the earliest.
+    """
+    # Twelve gaps of increasing width on a daily account.
+    offsets = [0]
+    for width in range(10, 22):
+        offsets.append(offsets[-1] + width)
+    gaps = _gaps(1.0, *offsets)
+
+    assert len(gaps) == 12, "the measurement itself must not be capped"
+    capped = gaps[: query.MAX_INTERIOR_GAPS_PER_ACCOUNT]
+    assert len(capped) == query.MAX_INTERIOR_GAPS_PER_ACCOUNT
+    assert [gap["days"] for gap in capped] == sorted((gap["days"] for gap in gaps), reverse=True)[
+        : query.MAX_INTERIOR_GAPS_PER_ACCOUNT
+    ], "the cap kept the earliest gaps, not the widest"
