@@ -602,3 +602,34 @@ def test_the_trust_store_is_the_pinned_bundle_and_not_the_environments(
     assert kwargs["cert_reqs"] == ssl.CERT_REQUIRED
     assert client._api_client.configuration.verify_ssl is True
     assert client._api_client.configuration.assert_hostname is None
+
+
+# --------------------------------------------------------------------------
+# What the sync request asks for
+# --------------------------------------------------------------------------
+
+
+def test_every_sync_request_asks_for_the_banks_own_memo(client_config: Config) -> None:
+    """🔴 `original_description` is opt-in, and the archive cannot be re-fetched.
+
+    `store/raw.py` exists because an aggregator's history window is not a thing
+    you get back: a field absent from the response bytes is absent from the
+    archive forever, and turning the option on later only affects rows fetched
+    later. The raw bank memo is frequently the only thing that identifies an ACH
+    or a transfer, so it is asked for from the first page on.
+
+    Asserted on the REQUEST rather than on a response, because the response is
+    the half that cannot be recovered once it has been fetched without it.
+    """
+    response = FakeHttpResponse(b'{"added": [], "next_cursor": "c"}')
+    seen: dict[str, Any] = {}
+
+    def invoke(request: Any, **kwargs: Any) -> FakeHttpResponse:
+        seen["request"] = request
+        return response
+
+    with _client(client_config) as client:
+        client._api.transactions_sync = invoke
+        client.transactions_sync("access-token", cursor=None)
+
+    assert seen["request"].options.include_original_description is True

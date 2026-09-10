@@ -49,6 +49,7 @@ from plaid.model.link_token_get_request import LinkTokenGetRequest
 from plaid.model.link_token_transactions import LinkTokenTransactions
 from plaid.model.products import Products
 from plaid.model.transactions_sync_request import TransactionsSyncRequest
+from plaid.model.transactions_sync_request_options import TransactionsSyncRequestOptions
 
 from bankmachine.config import MAX_HISTORY_DAYS, Config
 from bankmachine.connector import (
@@ -781,7 +782,18 @@ class PlaidClient:
         forgot it would silently re-fetch all history on every run, and the cost
         would show up as a rate limit rather than as a wrong answer.
         """
-        request = TransactionsSyncRequest(access_token=access_token, count=count)
+        request = TransactionsSyncRequest(
+            access_token=access_token,
+            count=count,
+            # 🔴 `include_original_description` is opt-in and the bytes it adds
+            # cannot be re-fetched. `store/raw.py` archives what the aggregator
+            # said because an aggregator's history window is not a thing you get
+            # back, so a field left out of the response is out of the archive
+            # permanently -- turning this on later would only affect rows fetched
+            # later. The raw bank memo is frequently the only thing that
+            # identifies an ACH or a transfer.
+            options=TransactionsSyncRequestOptions(include_original_description=True),
+        )
         if cursor is not None:
             request.cursor = cursor
         return self._fetch(
