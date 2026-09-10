@@ -21,6 +21,7 @@ from unittest import mock
 import pytest
 
 from bankmachine import build_id, envelope, mcp, mcp_resources, query, signs
+from bankmachine.cli.exit_codes import EXIT_OK
 from bankmachine.config import Config
 from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS
@@ -931,7 +932,153 @@ def test_a_failing_tool_reports_an_error_without_closing_the_session(
     assert "tools" in replies[2]["result"]
 
 
-def test_an_unknown_tool_is_refused_by_name(initialized_config: Config) -> None:
+def test_a_failure_serialising_the_answer_is_reported_without_closing_the_session(
+    initialized_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 The half of the boundary the tool `try` used to sit inside of.
+
+    Rendering the answer is part of answering the call, so a failure there is
+    the same event as a failure in the query: the client is waiting, and an
+    exception escaping instead ends `serve()` and takes the session with it.
+    The operator sees their tool disappear on one particular question, which is
+    the one outcome this module names as worse than any wrong answer.
+
+    Reachable without a bug in this product: SQLite's dynamic typing lets a BLOB
+    sit in a TEXT column, and a `bytes` in `currency` or `description` makes
+    `json.dumps` raise. Driven here through the answer's own renderer, which is
+    the first step outside the query and the step the query result cannot
+    protect.
+    """
+
+    class _UnrenderableAnswer:
+        def to_wire(self) -> dict[str, Any]:
+            raise TypeError("Object of type bytes is not JSON serializable")
+
+    monkeypatch.setattr(
+        query, "list_accounts", lambda *args, **kwargs: cast(Any, _UnrenderableAnswer())
+    )
+
+    replies = _converse(
+        initialized_config,
+        [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "list_accounts", "arguments": {}},
+            },
+            {"jsonrpc": "2.0", "id": 3, "method": "ping"},
+        ],
+    )
+
+    assert len(replies) == 3, "the request or the session after it went unanswered"
+    result = replies[1]["result"]
+    assert result["isError"] is True
+    assert result["structuredContent"]["error"]["code"] == "internal_error"
+    text = result["content"][0]["text"]
+    assert "TypeError" not in text and "bytes" not in text, "the exception crossed the boundary"
+    assert replies[2]["id"] == 3 and replies[2]["result"] == {}, (
+        "the pipe did not survive the failure, which is the tool disappearing mid-session"
+    )
+
+
+def test_a_failure_outside_a_tool_call_is_answered_rather_than_ending_the_session(
+    initialized_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tool `try` covers one method; the read loop covers every other one.
+
+    `initialize`, `tools/list` and the resource methods each assemble a reply
+    from this process's own state, and an exception in any of them escapes to
+    the loop. Answered as an internal error so the client's promise settles and
+    the next request is still served.
+    """
+
+    def explode() -> list[dict[str, Any]]:
+        raise RuntimeError("the tool surface fell over")
+
+    monkeypatch.setattr(mcp, "_tool_definitions", explode)
+
+    replies = _converse(
+        initialized_config,
+        [
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            {"jsonrpc": "2.0", "id": 2, "method": "ping"},
+        ],
+    )
+
+    assert len(replies) == 2, "the session ended instead of answering both frames"
+    assert replies[0]["id"] == 1
+    assert replies[0]["error"]["code"] == mcp._INTERNAL_ERROR
+    assert "fell over" not in replies[0]["error"]["message"], "the exception crossed the boundary"
+    assert replies[1]["id"] == 2 and replies[1]["result"] == {}
+
+
+def test_a_notification_that_fails_is_still_not_replied_to(
+    initialized_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 The last-resort catch must not turn a notification into a reply.
+
+    A JSON-RPC notification carries no `id` and takes no response at all, so a
+    failure while handling one is logged and dropped. Answering it would put a
+    frame on the wire the client has no promise waiting for, which is a protocol
+    error on this side and the reason the loop asks whether an `id` is present
+    rather than whether it is null.
+    """
+
+    def explode(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("handling the notification fell over")
+
+    monkeypatch.setattr(mcp, "_handle", explode)
+
+    replies = _converse(
+        initialized_config,
+        [
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+        ],
+    )
+
+    assert [reply["id"] for reply in replies] == [1], (
+        "a notification was answered, or the session ended before the next request"
+    )
+
+
+def test_a_closed_pipe_ends_the_session_cleanly(initialized_config: Config) -> None:
+    """🔴 The client going away is how a session ends, not a crash to report.
+
+    A client that exits between reading a request and reading its answer leaves
+    the write end broken. Unhandled, the traceback is the last thing in the
+    operator's log and the exit code says the server failed; caught, the loop
+    stops and reports the same success a clean end-of-stream reports.
+    """
+
+    class _ClosedPipe(io.StringIO):
+        def write(self, _text: str) -> int:
+            raise BrokenPipeError(32, "Broken pipe")
+
+    stdin = io.StringIO(
+        "\n".join(
+            json.dumps(request)
+            for request in (
+                {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                {"jsonrpc": "2.0", "id": 2, "method": "ping"},
+            )
+        )
+        + "\n"
+    )
+
+    assert mcp.serve(initialized_config, stdin=stdin, stdout=_ClosedPipe()) == EXIT_OK
+
+
+def test_an_unknown_tool_is_refused_as_a_bad_parameter(initialized_config: Config) -> None:
+    """🔴 The code changed from `-32601`, and the name it refuses did not.
+
+    `-32601` says the METHOD is not implemented, so a client classifying by code
+    concludes this server does not support `tools/call` at all and stops calling
+    it. The tool name is a parameter of a method this server does serve, and the
+    specification's own tools example answers an unknown one with `-32602`.
+    """
     replies = _converse(
         initialized_config,
         [
@@ -945,7 +1092,66 @@ def test_an_unknown_tool_is_refused_by_name(initialized_config: Config) -> None:
         ],
     )
 
-    assert replies[1]["error"]["code"] == -32601
+    assert replies[1]["error"]["code"] == -32602
+    assert "delete_everything" in replies[1]["error"]["message"], (
+        "the refusal no longer names the tool it rejected"
+    )
+
+
+def test_a_non_object_arguments_member_is_refused_as_a_bad_parameter(
+    initialized_config: Config,
+) -> None:
+    """`arguments` of the wrong type is a params problem, not a malformed request.
+
+    `-32600` describes the request OBJECT — a frame that is not a valid JSON-RPC
+    request at all. This frame is one, and the fault is in what it carries, so a
+    client is told to correct its parameters rather than its framing.
+    """
+    replies = _converse(
+        initialized_config,
+        [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "list_accounts", "arguments": ["since"]},
+            },
+            {"jsonrpc": "2.0", "id": 3, "method": "ping"},
+        ],
+    )
+
+    assert replies[1]["error"]["code"] == -32602
+    assert replies[2]["id"] == 3, "the session ended rather than answering the next request"
+
+
+def test_the_text_form_of_an_answer_is_compact_json(initialized_config: Config) -> None:
+    """🔴 Every answer is sent twice, so the second copy is paid for twice over.
+
+    Most clients put both `structuredContent` and the text block into the
+    model's context, and no human reads the text one — measured, a full page of
+    rows cost ~27% more as pretty-printed JSON than as compact, on a payload
+    already large enough to crowd out the question it was answering.
+
+    Asserted against the two renderings of THIS answer rather than against a
+    byte count, which would pin a fixture rather than the separator choice. A
+    substring sweep for `", "` cannot do it either: warning details are English
+    sentences and carry the sequence honestly.
+    """
+    _seed(initialized_config)
+
+    result = _call(initialized_config, "query_transactions")
+
+    text = result["content"][0]["text"]
+    wire = result["structuredContent"]
+    assert json.loads(text) == wire, "the two forms of one answer stopped agreeing"
+    assert "\n" not in text, "the text form is still pretty-printed"
+    assert len(text) == len(json.dumps(wire, separators=(",", ":"))), (
+        "the text form is padded, so it is not the compact rendering"
+    )
+    assert len(text) < len(json.dumps(wire, indent=2)), (
+        "the text form costs as much as the indented one it replaced"
+    )
 
 
 def test_both_content_forms_are_sent(initialized_config: Config) -> None:

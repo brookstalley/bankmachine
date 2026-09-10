@@ -1610,15 +1610,32 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
         name = params.get("name")
         arguments = params.get("arguments") or {}
         if not isinstance(name, str) or not isinstance(arguments, dict):
-            return _error(message_id, _INVALID_REQUEST, "tools/call needs a name and arguments")
+            # 🔴 `_INVALID_PARAMS`, not `_INVALID_REQUEST`. The latter describes
+            # the request OBJECT -- a frame that is not a valid JSON-RPC request
+            # at all -- and this one is. The fault is in what it carries, so the
+            # client is told to correct its parameters rather than its framing.
+            return _error(message_id, _INVALID_PARAMS, "tools/call needs a name and arguments")
         if name not in _tool_names():
             # Resolved BEFORE the call, so that a `KeyError` raised anywhere
             # BENEATH the query layer is not answered "no tool named
             # 'money_summary'" -- which is a false statement about a tool that
             # exists, delivered as a protocol error nobody can act on.
-            return _error(message_id, _METHOD_NOT_FOUND, f"no tool named {name!r}")
+            #
+            # 🔴 `_INVALID_PARAMS` rather than `_METHOD_NOT_FOUND`: the tool name
+            # is a PARAMETER of `tools/call`, a method this server does serve.
+            # `-32601` says the method itself is unimplemented, so a client that
+            # classifies by code concludes tool calls are unsupported here and
+            # stops making them -- one unknown name costing the whole surface.
+            return _error(message_id, _INVALID_PARAMS, f"no tool named {name!r}")
         try:
             answer = _dispatch_tool(config, name, arguments)
+            # 🔴 Rendering is INSIDE the guard, because rendering is part of
+            # answering the call. SQLite's dynamic typing lets a BLOB sit in a
+            # TEXT column, so a `bytes` in `currency` or `description` makes this
+            # raise on a perfectly ordinary question -- and outside the guard
+            # that ends the read loop, which the client sees as its tool
+            # vanishing on one particular request rather than failing.
+            result = _tool_result(answer.to_wire())
         except query.DatastoreUnservableError as exc:
             # 🔴 Ahead of both catches below, and carrying its OWN code rather
             # than falling through to `internal_error`. The distinction the code
@@ -1675,23 +1692,32 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
                 f"{name} could not be answered. The failure has been logged; "
                 f"`bankmachine store status` reports whether the datastore is readable.",
             )
-        wire = answer.to_wire()
-        return _result(
-            message_id,
-            {
-                # Both forms: `structuredContent` is what a client parses, and
-                # `content` is what one that only renders text will show. Sending
-                # only the first leaves older clients with an empty result.
-                "content": [{"type": "text", "text": json.dumps(wire, indent=2)}],
-                "structuredContent": wire,
-                "isError": False,
-            },
-        )
+        return _result(message_id, result)
 
     if method in ("ping",):
         return _result(message_id, {})
 
     return _error(message_id, _METHOD_NOT_FOUND, f"unsupported method {method!r}")
+
+
+def _tool_result(wire: dict[str, Any]) -> dict[str, Any]:
+    """One answer in both forms the protocol accepts.
+
+    `structuredContent` is what a client parses; `content` is what one that only
+    renders text will show, and sending only the first leaves those clients with
+    an empty result.
+
+    🔴 **The text copy is COMPACT.** It is a second copy of a payload no human
+    reads, and most clients put both into the model's context — measured, a full
+    page of rows cost about 27% more as pretty-printed JSON, on an answer already
+    large enough to crowd out the question it was answering. The separators are
+    the whole of the saving; the bytes are the same JSON either way.
+    """
+    return {
+        "content": [{"type": "text", "text": json.dumps(wire, separators=(",", ":"))}],
+        "structuredContent": wire,
+        "isError": False,
+    }
 
 
 def _tool_error(message_id: Any, code: str, remedy: str) -> dict[str, Any]:
@@ -1735,10 +1761,45 @@ def serve(config: Config, *, stdin: IO[str], stdout: IO[str]) -> int:
     without a subprocess -- the handshake is the part most likely to be subtly
     wrong, and it should be exercised by something that runs on every commit.
     """
-    for message in _read_messages(stdin, stdout):
-        reply = _handle(config, message)
-        if reply is not None:
-            _write(stdout, reply)
+    try:
+        for message in _read_messages(stdin, stdout):
+            try:
+                reply = _handle(config, message)
+            except Exception:  # prawduct:allow prawduct/broad-except -- see below
+                # 🔴 The last resort under the WHOLE boundary, not just under a
+                # tool call. `initialize`, `tools/list` and the resource methods
+                # each assemble a reply from this process's own state, and an
+                # exception in any of them escapes to here -- where, uncaught, it
+                # ends the loop and the client sees its tool disappear rather
+                # than fail. That is the one outcome this module names as worse
+                # than any wrong answer.
+                #
+                # 🔴 The exception never crosses the boundary. `api-contract.md`
+                # § Error Model: no stack traces and no internal identifiers. The
+                # detail goes to the log, where redaction applies.
+                logger.exception("a request could not be handled")
+                reply = (
+                    # A notification takes no reply at all, so a failure while
+                    # handling one is logged and dropped. Answering it would put
+                    # a frame on the wire the client has no promise waiting for.
+                    None
+                    if "id" not in message
+                    else _error(
+                        message.get("id"),
+                        _INTERNAL_ERROR,
+                        "the request could not be handled. The failure has been logged",
+                    )
+                )
+            if reply is not None:
+                _write(stdout, reply)
+    except _PipeClosedError:
+        # 🔴 The client going away is how a session ends, not a failure to
+        # report: it exited between sending a request and reading the answer, so
+        # there is nobody left to tell. Caught around the WHOLE loop rather than
+        # around this function's own `_write`, because the read loop writes too
+        # -- its parse refusals go out through the same pipe, and a break there
+        # would unwind `serve()` with a traceback for the same client behaviour.
+        logger.info("the client closed the pipe; ending the session")
     return EXIT_OK
 
 
@@ -1808,9 +1869,25 @@ def _read_messages(stdin: IO[str], stdout: IO[str]) -> Iterator[dict[str, Any]]:
         yield message
 
 
+class _PipeClosedError(RuntimeError):
+    """The client went away while a frame was being written to it.
+
+    Raised rather than handled at the write, because every writer here is deep
+    inside a loop whose only correct response is to stop: there is no reader
+    left to tell, and no answer worth assembling for one. `serve()` is the one
+    place that knows how a session ends, so it is the one place that decides.
+    """
+
+
 def _write(stdout: IO[str], payload: dict[str, Any]) -> None:
-    stdout.write(json.dumps(payload) + "\n")
-    stdout.flush()
+    try:
+        stdout.write(json.dumps(payload) + "\n")
+        stdout.flush()
+    except (BrokenPipeError, ValueError) as exc:
+        # `BrokenPipeError` is the reading half closing under a live handle;
+        # `ValueError` is the same event one step later, when the stream object
+        # itself has been closed. Both mean the client is gone.
+        raise _PipeClosedError() from exc
 
 
 def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
