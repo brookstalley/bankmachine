@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 
 import pytest
@@ -87,6 +88,44 @@ def test_the_datastore_key_is_never_printed(
     log_file: Path = cli_env.log_dir / "bankmachine.log"
     if log_file.exists():
         assert key not in log_file.read_text(encoding="utf-8")
+
+
+def test_everything_the_product_creates_is_readable_only_by_the_operator(
+    config: Config, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The security model claims OS file permissions as a control; this is the claim.
+
+    Rooted at a directory the PRODUCT creates rather than at `tmp_path`, which
+    pytest already makes 0700 -- a test that asserted on `tmp_path` would pass
+    with no umask set at all and prove nothing.
+
+    Every file here is either the ciphertext, its journal, or the plaintext log
+    that carries paths, institution ids and SQL text. The log is the one with
+    real content at 0644, so it is asserted beside the datastore rather than
+    left to a separate test.
+    """
+    datastore = tmp_path / "state" / "store.db"
+    log_dir = tmp_path / "state" / "logs"
+    monkeypatch.setenv("BANKMACHINE_DATASTORE_PATH", str(datastore))
+    monkeypatch.setenv("BANKMACHINE_LOG_DIR", str(log_dir))
+    monkeypatch.setenv("BANKMACHINE_KEYCHAIN_SERVICE", config.keychain_service)
+    monkeypatch.setenv("BANKMACHINE_ENVIRONMENT", config.environment)
+    monkeypatch.setenv("BANKMACHINE_CONFIG", str(tmp_path / "absent.toml"))
+
+    assert run(["store", "init"]) == 0
+
+    def mode(path: Path) -> str:
+        return oct(stat.S_IMODE(path.stat().st_mode))
+
+    assert mode(datastore) == oct(0o600)
+    assert mode(datastore.parent) == oct(0o700)
+    assert mode(log_dir) == oct(0o700)
+    assert mode(log_dir / "bankmachine.log") == oct(0o600)
+    # The journal files hold pages that have not reached the datastore yet, so
+    # they are as sensitive as it is. They exist only while a writer has been
+    # open, which `store init` guarantees.
+    for journal in sorted(datastore.parent.glob("store.db-*")):
+        assert mode(journal) == oct(0o600), journal
 
 
 def test_init_refuses_to_mint_a_key_for_a_datastore_it_cannot_decrypt(

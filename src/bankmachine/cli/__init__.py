@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -56,6 +57,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run(argv: Sequence[str] | None = None) -> int:
+    # 🔴 The one place file permissions are decided, and it is here rather than
+    # at each `open` on purpose. The datastore, its WAL and shm, the plaintext
+    # log, a backup copy and every directory holding them are created by five
+    # different modules; a `chmod` after each one leaves a window in which the
+    # file already exists group- and world-readable, and a rule spread over five
+    # call sites is one the sixth forgets. Under the inherited default (022)
+    # every one of them lands 0644, which makes the "another local user is
+    # stopped by OS file permissions" control a claim rather than a fact -- and
+    # the log is plaintext, carrying paths, institution ids and SQL text.
+    #
+    # Every command, `bankmachine mcp` included, is a subparser of the parser
+    # built below, so this single statement covers the whole product.
+    os.umask(0o077)
+
     parser = build_parser()
     args = parser.parse_args(argv)
 
