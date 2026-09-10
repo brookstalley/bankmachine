@@ -1053,6 +1053,27 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         f"{TRUNCATION_TESTS}::test_a_count_that_lags_the_rows_is_reconciled_rather_than_refused",
     ),
     (
+        # The break leaves the aggregate computing the roster verdicts and
+        # raising nothing about them, which is the state the tool shipped in:
+        # the one answer an agent is told to quote was the one carrying no
+        # lifecycle caveat.
+        "AC-12.8: the aggregate names the accounts that stopped being reported",
+        QUERY,
+        "        not_active = [entry for entry in lifecycle.values() if not entry.active]\n"
+        "        uncovered = [entry for entry in _account_coverage(conn).values()",
+        "        not_active: list[AccountLifecycle] = []\n"
+        "        uncovered = [entry for entry in _account_coverage(conn).values()",
+        f"{LIFECYCLE_TESTS}::test_a_money_summary_spanning_an_account_that_went_quiet_says_so",
+    ),
+    (
+        "#19: the aggregate names an account that has never had a transaction",
+        QUERY,
+        "        uncovered = [entry for entry in _account_coverage(conn).values() "
+        "if entry.uncovered]",
+        "        uncovered: list[AccountCoverage] = []",
+        f"{COVERAGE_TESTS}::test_summarising_money_warns_when_an_account_in_scope_has_no_coverage",
+    ),
+    (
         # The break makes the whole-request count take the keyset predicate the
         # page count takes, which is the meaning `matching` used to carry: the
         # figure then falls page by page and an agent quoting the last page
@@ -1566,8 +1587,9 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-14.5: an aggregate over an inverted connection says so",
         QUERY,
-        "                _pending_caveat(pending) + signs.caveats(conn, since=since, until=until)",
-        "                _pending_caveat(pending)",
+        "                + _pending_caveat(pending)\n"
+        "                + signs.caveats(conn, since=since, until=until)",
+        "                + _pending_caveat(pending)",
         f"{SIGN_TESTS}::test_an_aggregate_over_a_flagged_connection_says_so",
     ),
     (

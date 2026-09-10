@@ -2441,6 +2441,20 @@ def money_summary(
             )
             for currency in {str(row["currency"]) for row in rows}
         }
+        # 🔴 Store-wide, because this tool's scope is store-wide: it takes no
+        # `account_id`, so every account contributes to every group it belongs
+        # in, and an account that stopped being reported mid-window contributes
+        # nothing for the rest of it. That silence is what the two caveats name.
+        # Without them the figure an agent is told to QUOTE was the one answer on
+        # this surface carrying no lifecycle or coverage caveat at all: a card
+        # de-selected on the first of a month reads as a 40% drop in spending,
+        # well-formed and unexplained.
+        # One walk, used twice -- the caveat below and the envelope's non-active
+        # figures, which `_answer` would otherwise derive from a second
+        # observation of the same fact.
+        lifecycle = _account_lifecycle(conn)
+        not_active = [entry for entry in lifecycle.values() if not entry.active]
+        uncovered = [entry for entry in _account_coverage(conn).values() if entry.uncovered]
         return _answer(
             config,
             conn,
@@ -2454,8 +2468,13 @@ def money_summary(
             # at once, and a reader given only one of them would treat the other
             # as settled.
             extra_caveats=(
-                _pending_caveat(pending) + signs.caveats(conn, since=since, until=until)
+                _uncovered_caveat(uncovered)
+                + _not_active_caveat(not_active)
+                + _roster_observed_empty_caveat(not_active)
+                + _pending_caveat(pending)
+                + signs.caveats(conn, since=since, until=until)
             ),
+            lifecycle=lifecycle,
         )
 
 
