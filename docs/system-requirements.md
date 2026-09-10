@@ -877,12 +877,16 @@ a shell recipe that puts the key in history and in the process table. A refused 
 difference between the product path and the recipe it replaces — without it, the new command is the
 old defect with a nicer name.
 
-**AC-17.2 · The export names no destination of its own.** The operator supplies the path; the
-product never chooses one, never defaults to one, and never writes inside the data directory.
-*Why:* writing the key anywhere the *product* controls defeats the keychain, and that position is
-kept rather than overturned. What the ruling changed is that the operator may *ask*, not that the
-product may *decide* — and a default path is the product deciding, on the run where the operator did
-not think about it.
+**AC-17.2 · The export names no destination of its own, and refuses the one that would undo
+encryption at rest.** The operator supplies the path; the product never chooses one and never
+defaults to one. It refuses a destination inside the data directory. *Why:* writing the key anywhere
+the *product* controls defeats the keychain, and that position is kept rather than overturned. What
+the ruling changed is that the operator may *ask*, not that the product may *decide* — and a default
+path is the product deciding, on the run where the operator did not think about it. 🔴 The data
+directory is the single exception to "everywhere else is theirs", and it is not paternalism: the
+value of encryption at rest is that a copied data directory is noise, so a key file inside it makes
+the directory self-decrypting and one careless `cp -r`, backup sweep or synced folder carries both
+halves.
 
 **AC-17.3 · A candidate key is checked by opening the datastore with it.** Verification reports
 whether the candidate opens the store, and does not rest on comparing it to the keychain entry.
@@ -912,20 +916,31 @@ key is ever emitted, and it is printed, never logged. *Why:* the guarantee is cu
 caller is the moment a structural guarantee becomes a rule somebody has to keep, and the moment to
 say so is before the caller exists.
 
-**AC-17.7 · The printed instruction names the product's own command.** Every surface that tells the
-operator to back the key up names the command rather than a shell recipe — `store init` at minting,
-`store status` as the standing line, and `store backup`, which today names the chore and no command
-at all. *Why:* three surfaces print the recipe and a fourth prints none, so which answer the operator
-meets depends on which command they happened to run. One instruction, one answer.
+**AC-17.7 · Every instruction about the key names the command that carries it out — in both
+directions.** Backing the key up: `store init` at minting, `store status` as the standing line,
+`store backup`, and the README's quick start. **Restoring it:** every diagnosis that tells an
+operator to put a key back names `store key import`. No surface hands out a shell recipe that would
+put the key in shell history, and that is checked over tracked documents as well as over command
+output. *Why:* the surfaces disagreed, so which answer the operator met depended on which command
+they happened to run. 🔴 **The restore direction is named explicitly because it was the half that
+got missed**: the export side was fixed first and "restore the keychain entry from your backup" was
+left standing with nothing behind it — the very defect this requirement exists to end, surviving
+inside its own fix. 🔴 **And the check has to read documents, not just output**: a guard that runs
+commands and inspects what they print structurally cannot see a README, which is where the recipe
+and a now-false "nothing in this product ever prints it" outlived the first pass.
 
 **AC-17.8 · The round trip is covered by a test, and the human half stays owed.** A test exports a
-key, restores it into a keychain that does not hold it, and opens a datastore written under it. This
-does **not** discharge the operator rehearsal — a restore into the production path, against a key
-read back from wherever the operator stored it, remains unwalked and sandbox cannot rehearse it
-(`operational-spec.md` § Restore; #10). *Why:* the automated half and the human half fail
-differently. The test catches a broken round trip; only a person catches an instruction that reads
-clearly and cannot be followed under pressure. Claiming the first discharges the second is how the
-rehearsal quietly stops being owed.
+key, restores it into a keychain that does not hold it, and opens a datastore written under it.
+*Why:* the automated half and the human half fail differently. The test catches a broken round trip;
+only a person catches an instruction that reads clearly and cannot be followed under pressure.
+Claiming the first discharges the second is how the rehearsal quietly stops being owed.
+
+🔴 **What stays owed got narrower when these paths shipped, and the reason is worth keeping.** The
+keychain-loss drill was recorded as unrehearsable because it needs a store whose keychain entry is
+gone, and that state had no exit — restoring the entry was an instruction with no command behind it.
+It is now walkable against sandbox at zero cost (`docs/first-production-connection.md` § 2.3), and
+was walked 2026-09-10. What remains is a restore into the **production** path, and a round trip
+through the operator's own storage rather than a file the drill wrote.
 
 ---
 

@@ -249,6 +249,22 @@ such source. A backup of the datastore without the key is a backup of noise.
 characters in the keychain; it belongs in the operator's password manager or a paper copy in a safe —
 somewhere that survives the machine's disk *and* the machine's keychain.
 
+```
+bankmachine store key export          # renders it; refuses a non-terminal stdout
+bankmachine store key export --to P   # writes 0600 to a path you name, if you'd rather not retype
+bankmachine store key verify          # confirms the copy you stored opens THIS datastore
+bankmachine store key import          # puts it back, on a machine whose keychain lost it
+```
+
+🔴 **`verify` is the half that is easy to skip and expensive to skip.** Shape validation catches a
+malformed key and never a *wrong* one: a transposed pair of hex digits is still 64 characters of
+valid hex and is simply a different key. Without this command there is no moment at which an
+operator can learn their stored copy is bad while it is still fixable — SQLCipher raises on first
+open, which is correct and useless, because that is the moment nothing can be done.
+
+`import` opens the datastore with the candidate before it writes the keychain entry, so a typo
+cannot replace a working key.
+
 The operator-facing form of this — the keychain recipe, and the moment in the cutover to run it,
 which is immediately after `store init` and before any data exists — is
 `docs/first-production-connection.md`, along with the ordered production procedure, the day-one
@@ -300,12 +316,24 @@ automating it is not yet specified.
 
 ### Restore
 
-Copy the backup to the configured datastore path, ensure the key is in the keychain under the right
-account **for that environment**, then `bankmachine store status`. A copy made by `store backup` is a
-single file, so there is no WAL or shm to keep with it and no way to restore a partial set.
+Copy the backup to the configured datastore path, put the key back in the keychain under the right
+account **for that environment**, then `bankmachine store status`:
+
+```
+cp <backup> <datastore path>          # the configured path for THIS environment
+bankmachine store key import          # prompts; refuses a key that does not open the copy
+bankmachine store status
+```
+
+A copy made by `store backup` is a single file, so there is no WAL or shm to keep with it and no way
+to restore a partial set.
 
 A wrong key **raises rather than returning garbage** *(verified)*, so a mismatched restore fails
-loudly instead of presenting an empty or corrupt store as a working one.
+loudly instead of presenting an empty or corrupt store as a working one. 🔴 **`store key import`
+makes that failure arrive one step earlier and one step safer**: it opens the copy with the
+candidate before it writes the keychain, so a mistyped key is refused rather than stored, and
+whatever key was already there is untouched. Before FR-12 this step was an instruction — *restore
+the keychain entry from your backup* — with no command behind it.
 
 **Walked against sandbox on 2026-09-10** (`docs/first-production-connection.md` § 2.3): backup
 verified, the copy opened at the configured path, `healthy: yes`. What that walk added to the
@@ -315,9 +343,18 @@ mode and the writer factory is what sets `PRAGMA journal_mode = WAL`. It flips o
 writer open. An operator mid-recovery who reads `delete` where the healthy-store description
 promises `wal` has not found a failed restore.
 
-🔴 **Still unwalked: a restore into the *production* path, and a restore against a key read back
-from wherever the operator stored it** rather than one already sitting in the keychain. The key
-half is the one that actually fails in an incident, and sandbox cannot rehearse it.
+**The key half is now rehearsable, and was rehearsed 2026-09-10.** It was recorded here as
+unrehearsable, and that was true while nothing could put a key back: the drill needs a store whose
+keychain entry is *gone*, and before FR-12 that state had no exit. `store key export` → delete the
+keychain entry → `store key verify` → `store key import` → `store status` walks it end to end
+against sandbox at zero cost, and does. A two-character transposition was also injected and caught,
+which is the failure the drill exists to prove is catchable.
+
+🔴 **Still unwalked, and narrower than the claim it replaces: a restore into the *production*
+path, and a round trip through the operator's OWN storage** — a password manager entry, a sheet of
+paper — rather than through a file the drill wrote. The first needs production. The second is about
+the operator's process rather than the product's mechanism, which is exactly why `store key verify`
+exists and why `docs/first-production-connection.md` § 3.3 ends in it.
 
 ### RPO / RTO
 
@@ -396,9 +433,9 @@ code; each is work the build sequence has not reached, except the first.
 
 | Gap | Why it matters |
 |---|---|
-| **Backup is not scheduled** (`#10`) | `store backup` exists and is verified, but nothing runs it. A backup command nobody invokes protects nothing. Wiring it into the same launchd agent as the sync is the obvious answer and is not yet specified |
-| **Restore has never been rehearsed** (`#10`) | The copy is known readable — the tests reopen it through the ordinary reader. The operator procedure around it is not. This is the procedure someone improvises under pressure against data that trying again cannot recover |
-| **The key is still backed up by hand** | The command cannot do this — writing the datastore key anywhere the product controls would defeat the keychain. It stays an operator instruction, and it is the half with no remedy |
+| **Backup is not scheduled** (`#10`) | `store backup` exists and is verified, but nothing runs it. A backup command nobody invokes protects nothing. 🔴 The remedy this row used to name — wire it into the sync's launchd agent — was corrected on 2026-09-10: that agent does not exist (build step 8), launchd is a design choice rather than a requirement (AC-ARCH.2 asks for a daily job that recovers a missed window), and nothing requires a backup cadence to ride on the sync's at all. What should schedule it is an open requirement |
+| **Restore is rehearsed against sandbox, not against production** (`#10`) | 🔴 **This row said "has never been rehearsed" and that stopped being true on 2026-09-10** — § Restore records the walk, including the keychain-loss drill FR-12 made possible. What is still owed is narrower: a restore into the **production** path, and a round trip through the operator's own storage rather than a file a drill wrote. Keeping the old wording here would have told an operator not to bother trying the thing that now works |
+| **The key is exported by a command, and preserved by the operator** | 🔴 **This row said the key backup was "the half with no remedy" and that is now wrong**: `store key export`, `verify` and `import` shipped under FR-12 on the owner's ruling of 2026-09-10. The position it was defending survives and is narrower — the product still never chooses where the key goes, and refuses to write it inside the data directory — but the operator is no longer told to preserve a value they have no route to. What remains theirs is the storage medium, which is why `verify` exists |
 | **AC-ARCH.1 is not an automated test** | "A fresh clone works on a clean machine" is asserted, not checked, and it decays silently with every undocumented step someone adds |
 | **launchd agent not built** (step 8) | Including the missed-window recovery case, which must be verified by firing it for real rather than simulated |
 | **No runbooks** (`#10` covers restore) | See above |

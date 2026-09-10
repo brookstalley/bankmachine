@@ -1310,6 +1310,9 @@ means *this may break*, and for the other three it means *this does not exist ye
 - `bankmachine store status` — stable
 - `bankmachine store rebuild` — stable
 - `bankmachine store backup` — experimental
+- `bankmachine store key export` — experimental
+- `bankmachine store key verify` — experimental
+- `bankmachine store key import` — experimental
 - `bankmachine sync shell` — stable
 - `bankmachine connector check` — experimental
 - `bankmachine connector set-secret` — experimental
@@ -1325,9 +1328,17 @@ The `connector` commands are `experimental` because the connector is mid-build (
 command shape may still move; `store init`/`status`/`rebuild` and `sync shell` shipped in step 1 and
 are depended on. 🔴 **`store backup` is `experimental` despite being a `store` command**, because
 the inventory's criterion is *shipped and depended on*, not *which noun it starts with* — it was
-written on 2026-09-07, nothing schedules it yet, and its restore path has never been rehearsed. The
+written on 2026-09-07 and nothing schedules it yet; its restore path was rehearsed against sandbox
+on 2026-09-10 but never against production. The
 `Retention:` rule defers removal of a `stable` member to a major, so grading a day-old command
 `stable` would bind the surface to a shape nobody has used in anger.
+
+🔴 **The three `store key` verbs are `experimental` by that same criterion, and one of them carries a
+guarantee the tier does not weaken.** They shipped 2026-09-10 under FR-12 and no operator has yet
+recovered a real machine with them. What is NOT provisional is `export`'s refusal to write to a
+non-terminal stdout: it is what keeps AC-10.1 true now that the key can leave the keychain at all,
+so it is a property of the contract rather than of this tier. A future revision may change the
+verbs' names or output; it may not make the export quietly pipeable.
 
 **MCP resources** — the reference surface, served by URI so an agent reads it without spending a
 tool call. Both `experimental`, for the same reason the tools are:

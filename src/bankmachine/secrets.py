@@ -57,33 +57,93 @@ class AggregatorCredentialMissingError(SecretsError):
     """
 
 
+class KeyEscrowRefusedError(SecretsError):
+    """An escrow operation was refused because performing it would leak the key.
+
+    Its own type because its remedy is unlike the others here: nothing is
+    missing and nothing is unreachable -- the operator is being told that the
+    way they asked would have leaked the key, and to ask a different way.
+
+    It is DEFINED here and raised in `cli/store.py`, which is deliberate and
+    worth stating plainly rather than dressing up: the conditions are all
+    properties of an invocation (a redirected stdout, an unnamed destination, a
+    path inside the data directory), and those live at the command surface. What
+    belongs in this module is the vocabulary, so the refusal is recognisably a
+    secrets failure to every `except` that already catches one.
+    """
+
+
 def generate_datastore_key() -> str:
     """A fresh 256-bit key as lowercase hex."""
     return token_hex(KEY_BYTES)
 
 
-def _validate(key: str, *, service: str, account: str) -> str:
-    """Reject anything SQLCipher would silently accept as a different key.
+def validate_candidate_key(key: str) -> str:
+    """Check a key the operator supplied, before anything tries to open a store with it.
 
-    The value is never included in the message -- a malformed key is still a
-    key, and the exception text reaches logs.
+    Separate from `_validate` because the message is the whole point. `_validate`
+    names the keychain entry holding a bad value, which is right for a key
+    already stored and wrong for one being offered by hand.
+
+    🔴 And an unchecked candidate fails in a way that misleads. SQLCipher uses
+    the quoted value as a raw key ONLY when it is exactly the right number of hex
+    digits, and otherwise treats it as a passphrase to run through its KDF -- so
+    a candidate with a typo'd length does not report "that is not a key", it
+    reports that the datastore did not open. True, useless, and indistinguishable
+    from a correct key offered against the wrong datastore.
+    """
+    candidate = key.strip()
+    return _check_shape(
+        candidate,
+        wrong_length=(
+            f"that is {len(candidate)} characters; a datastore key is exactly "
+            f"{KEY_HEX_LENGTH} hex characters. Nothing was checked against the datastore"
+        ),
+        not_hex=(
+            "that is not hexadecimal; a datastore key is 64 characters of 0-9 and a-f. "
+            "Nothing was checked against the datastore"
+        ),
+    )
+
+
+def _check_shape(key: str, *, wrong_length: str, not_hex: str) -> str:
+    """The one shape test. Two callers, because only the WORDING differs.
+
+    A key already in the keychain and a key someone just typed fail for the same
+    reason and need different sentences -- one names the entry holding a bad
+    value, the other tells a person what they just mistyped. The test itself must
+    not fork: two copies of a security check drift, and the copy that drifts is
+    the one nobody is looking at.
+
+    A full match on the hex alphabet, not `int(key, 16)`. `int` is a parser
+    rather than a predicate: it accepts an `0x` prefix, `_` separators, a sign
+    and surrounding whitespace, so `"0x" + "a" * 62` is 64 characters and passes
+    both checks. SQLCipher uses the quoted value as a raw key only when it is
+    exactly the right number of hex digits and otherwise treats it as a
+    passphrase to run through its KDF -- which is the one class of value this
+    function exists to reject, because the store then works until the KDF's
+    default parameters change under it.
+
+    The value is never included in either message -- a malformed key is still a
+    key, and exception text reaches logs.
     """
     if len(key) != KEY_HEX_LENGTH:
-        raise SecretsError(
+        raise SecretsError(wrong_length)
+    if not _HEX_KEY.fullmatch(key):
+        raise SecretsError(not_hex)
+    return key.lower()
+
+
+def _validate(key: str, *, service: str, account: str) -> str:
+    """Reject anything SQLCipher would silently accept as a different key."""
+    return _check_shape(
+        key,
+        wrong_length=(
             f"datastore key in {service}/{account} is {len(key)} characters, "
             f"expected {KEY_HEX_LENGTH} hex characters"
-        )
-    # A full match on the hex alphabet, not `int(key, 16)`. `int` is a parser
-    # rather than a predicate: it accepts an `0x` prefix, `_` separators, a sign
-    # and surrounding whitespace, so `"0x" + "a" * 62` is 64 characters and
-    # passes both checks. SQLCipher uses the quoted value as a raw key only when
-    # it is exactly the right number of hex digits and otherwise treats it as a
-    # passphrase to run through its KDF -- which is the one class of value this
-    # function exists to reject, because the store then works until the KDF's
-    # default parameters change under it.
-    if not _HEX_KEY.fullmatch(key):
-        raise SecretsError(f"datastore key in {service}/{account} is not hexadecimal")
-    return key.lower()
+        ),
+        not_hex=f"datastore key in {service}/{account} is not hexadecimal",
+    )
 
 
 def get_datastore_key(config: Config) -> str:
@@ -101,9 +161,9 @@ def get_datastore_key(config: Config) -> str:
         # message names the state and both real remedies instead.
         raise DatastoreKeyMissingError(
             f"no datastore key in keychain {service}/{account}. A key cannot be recovered from an "
-            f"existing datastore: restore the keychain entry from your backup, or move the "
-            f"datastore aside. `bankmachine store init` creates a key only when no datastore "
-            f"exists yet"
+            f"existing datastore: restore it from your backup with `bankmachine store key import`, "
+            f"or move the datastore aside. `bankmachine store init` creates a key only when no "
+            f"datastore exists yet"
         )
     return _validate(stored, service=service, account=account)
 

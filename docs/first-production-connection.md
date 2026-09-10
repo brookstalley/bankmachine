@@ -61,21 +61,29 @@ it cannot be raised later without removing and re-linking the connection (`_conf
 skim past it tomorrow, when it is the last correctable moment.
 (`.prawduct/operator-verification.md`, VRF-003.)
 
-**2.2 Read the sandbox datastore key out of the keychain.**
+**2.2 Read the sandbox datastore key out, and check it back.**
 
 ```sh
-security find-generic-password -s bankmachine -a datastore:sandbox -w
+uv run bankmachine store key export
+uv run bankmachine store key verify
 ```
 
-**Nothing in this product prints the key.** `store init` logs only *that* a key was generated;
-`cmd_init` in `src/bankmachine/cli/store.py` never receives its value, and `get_datastore_key` has
-no printing caller. So the retrieval above is the whole recovery path, and it is worth having done
-once on a key that does not matter. The service name is `BANKMACHINE_KEYCHAIN_SERVICE` (default
-`bankmachine`); the account name is built by `Config.keychain_account`
-(in `src/bankmachine/config.py`) as `datastore:<environment>`.
+`export` renders the key to your terminal and **refuses a redirected or piped stdout** — a key you
+can capture by accident is a key that left the keychain by accident. If you would rather not retype
+64 characters, `--to <path>` writes a file only you can read, at a path you name; delete it once it
+is in your password manager.
 
-*Failure looks like:* nothing returned, or an error naming the account — check the service and the
-environment suffix rather than assuming the key is gone.
+🔴 **Then run `verify`, and do it here, on the key that does not matter.** It prompts for the key
+and opens the datastore with it. This is the step that catches the failure nothing else can: a
+transposed pair of hex digits is still 64 characters of valid hex and is simply a different key, so
+a bad transcription looks exactly like a good one right up until the day the store will not open.
+
+The service name is `BANKMACHINE_KEYCHAIN_SERVICE` (default `bankmachine`); the account name is
+built by `Config.keychain_account` (in `src/bankmachine/config.py`) as `datastore:<environment>`.
+
+*Failure looks like:* an error naming the account — check the service and the environment suffix
+rather than assuming the key is gone. Or `DOES NOT MATCH` from `verify`, which means what you pasted
+is not what this datastore takes; `export` again and compare.
 
 **2.3 Rehearse a backup and a restore against a scratch store.**
 
@@ -89,6 +97,21 @@ key to check it (its `--help` says so). The restore direction — copy a backup 
 — was walked against sandbox on 2026-09-10 and works; the first production sync is what starts
 accumulating the one series no re-sync can rebuild, which is why it is worth having walked before
 then (`.prawduct/artifacts/operational-spec.md`, § Restore).
+
+🔴 **Rehearse the half that actually fails in an incident, too — losing the keychain entry.** It
+costs nothing here and there is no other time you will do it calmly:
+
+```sh
+uv run bankmachine store key export --to /tmp/rehearse.key
+security delete-generic-password -s bankmachine -a datastore:sandbox
+uv run bankmachine store status                 # unhealthy, and says exactly why
+uv run bankmachine store key import             # paste from /tmp/rehearse.key
+uv run bankmachine store status                 # healthy again
+rm /tmp/rehearse.key
+```
+
+`store init` will refuse to mint a new key over the existing datastore, which is correct and is the
+behaviour you want to have seen once before it happens for real.
 
 🔴 **A freshly restored copy reads `journal mode: delete`, not `wal`, and that is expected.** SQLite's
 backup API writes the destination in the default journal mode; the product's writer factory sets
@@ -175,11 +198,23 @@ step is here to prove that rather than to trust it.)*
 ### 3.3 🔴 Back up the datastore key, now, before there is any data
 
 ```sh
-security find-generic-password -s bankmachine -a datastore:production -w
+uv run bankmachine store key export
 ```
 
-Put those 64 hex characters in a password manager, and ideally on paper. Then verify you can read
-them back from where you put them.
+Put those 64 hex characters in a password manager, and ideally on paper. Then read them back from
+where you put them and confirm they are right — not by eye, by asking the datastore:
+
+```sh
+uv run bankmachine store key verify
+```
+
+🔴 **Do not skip the second command.** Reading your copy back proves you can read it; it does not
+prove you wrote it down correctly, and a single wrong character in 64 is silent until the day it is
+fatal. `verify` is the only thing that closes that gap, and it costs ten seconds here.
+
+If a future machine's keychain has lost the key, `bankmachine store key import` puts it back — it
+opens the datastore with what you paste before it writes anything, so a typo cannot overwrite a
+working entry.
 
 **Why here and not later.** The key cannot be recovered from the datastore, and a backup of the
 datastore without it is a backup of noise (`.prawduct/artifacts/operational-spec.md`, § Backup &
@@ -188,7 +223,7 @@ backfills — that a lost keychain destroys permanently. Right now the store is 
 getting this wrong is zero, which is exactly why it is the moment to practise it.
 
 `store init` prints this instruction when it mints a key, and `store status` repeats a one-line
-reminder. Neither prints the key itself, and neither ever will.
+reminder. Both name these commands, so the instruction and the way to follow it stay together.
 
 ### 3.4 Prove the credentials reach the real host
 
@@ -411,7 +446,8 @@ false alarm and, worse, treats `1` and `2` as one thing — which is precisely t
 
 🔴 **Never `cp` the datastore.** It runs in WAL mode, so copying `store.db` alone silently loses
 whatever is still in `store.db-wal` — a measured `cp` of a source with a hot WAL lost every one of
-300 rows. The copy `store backup` writes is ciphertext and is useless without the key from step 3.3.
+300 rows. The copy `store backup` writes is ciphertext and is useless without the key from step 3.3
+— which is why that step ends in `store key verify` rather than in a transcription you hope is right.
 
 **5.2 When a connection breaks.** `sync run` records the failure against that one connection and
 keeps going; the run exits 1 and `connections list` shows the connection degraded.

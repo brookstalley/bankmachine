@@ -44,7 +44,12 @@ def test_a_missing_key_names_the_state_and_both_remedies(config: Config) -> None
         get_datastore_key(config)
     message = str(excinfo.value)
     assert "cannot be recovered from an existing datastore" in message
-    assert "restore the keychain entry" in message
+    # 🔴 This asserted the prose "restore the keychain entry" until FR-12 shipped
+    # a command that does it. Re-pointed, not relaxed: AC-17.7 requires the
+    # remedy to be named, and "restore it from your backup" with nothing to
+    # restore it WITH is the defect #61 was filed about, left standing on the
+    # recovery side.
+    assert "bankmachine store key import" in message
     assert "only when no datastore exists yet" in message
 
 

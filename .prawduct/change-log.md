@@ -34,6 +34,105 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-10: The operator can get the datastore key out, check it, and put it back
+
+<!-- prawduct: scope=datastore-key-escrow -->
+
+**Why:** the datastore key cannot be recovered from the datastore, and `balances_daily` is the one
+series no re-sync rebuilds — so a lost key is permanent data loss with no remedy. The product warned
+about this on three surfaces and offered nothing to act on it.
+
+Two consequences. The product's own instruction named a shell recipe
+(`security find-generic-password … -w`) that puts the key in shell history, which **AC-10.1
+forbids** — so the criterion was being routed around rather than obeyed, in the product's own
+output. And there was no way to check a stored copy: shape validation catches a *malformed* key and
+never a *wrong* one, because a transposed pair of hex digits is still 64 characters of valid hex and
+is simply a different key. There was no moment at which an operator could learn their backup was bad
+while it was still fixable.
+
+**What shipped:** `bankmachine store key export | verify | import`, over one primitive — *does this
+candidate open this datastore*. Export refuses a non-TTY stdout; `--to <path>` writes `0600` to a
+path the operator names and never overwrites. Verify test-opens the datastore, so it answers with
+the keychain entry gone, which is the situation an incident actually presents. Import opens the
+store with the candidate before it writes the keychain, so a typo cannot replace a working key.
+Neither input verb takes a key as an argument, and both swallow trailing arguments rather than let
+argparse echo a mistyped key onto stderr.
+
+**Requirements:** AC-10.1 amended on the owner's ruling of 2026-09-10 — the operator owns exporting
+and preserving the key, the product owes the mechanism — and FR-12 / AC-17.1–17.8 written against
+it. The `security-model.md` norm went `in-transition` with the requirement and back to
+**steady-state** here, on the condition the transition itself set.
+
+🔴 **Two tests changed their assertions, and the warrant is recorded rather than assumed.**
+`test_init_tells_the_operator_to_back_the_minted_key_up_and_how_to_read_it` asserted the exact
+`security find-generic-password` string; it now asserts the exact `bankmachine store key export` and
+`store key verify` strings. `test_a_missing_key_names_the_state_and_both_remedies` asserted the prose
+"restore the keychain entry"; it now asserts `bankmachine store key import`. **Re-pointed, not
+relaxed:** each new assertion is at least as specific as the one it replaces, and AC-17.7 is what
+requires the change. A changed test assertion with no recorded warrant is indistinguishable from a
+weakened one, which is why this paragraph exists.
+
+**Found by running the thing, not by reading it.** A recovery drill against a scratch datastore —
+delete the keychain entry, confirm the store will not open, restore from an escrow file — showed
+that both "restore the keychain entry from your backup" messages still named no command. That is the
+exact defect #61 was filed about, fixed on the export side and left standing on the recovery side,
+and no test then in the suite could see it because both asserted the old prose.
+
+🔴 **The Critic caught a hole in the primitive that every test in the first cut walked straight
+past.** `opens_with` treated "the first read succeeded" as "the key decrypts this datastore". SQLite
+reads a **pageless** file — a truncated copy, an interrupted restore, a `store init` killed between
+creating the file and writing to it — as a valid empty schema, so the read succeeds without page 1
+ever being touched, SQLCipher's codec is never invoked, and **no key is tested**. `verify` would have
+printed MATCHES for an arbitrary candidate in exactly the state an incident presents, and `import`
+would then have stored that unverified key over a working keychain entry — the overwrite AC-17.5's
+rationale exists to prevent. Reproduced before fixing: two different random keys both "opened" a
+zero-length file. `opens_with` now requires positive evidence that a page was decrypted and raises on
+a pageless file, because that is a fact about the file rather than an answer about the key. It also
+validates the candidate at the seam, so a malformed value cannot come back as a confident False.
+
+🔴 **A second Critic round found the same defect class on the surface a new operator reads first.**
+The README's quick start still carried the shell recipe *and* the sentence "Nothing in this product
+ever prints it" — a claim this very commit falsified. Three reviewers landed on it independently.
+The root cause is worth keeping: the surface census in the discovery document enumerated three
+surfaces (`store init`, `store status`, the operator guide) and never included the README, and the
+guard written for AC-17.7 reads command **output**, so it structurally could not see a tracked
+document. The fix is both — the README, and a guard that scans tracked markdown for the recipe
+inside a runnable code fence, with a positive control and prose deliberately left alone so the
+records can still describe what they replaced.
+
+**Four more from the same round, each a real gap rather than a style note.** The never-an-argument
+refusal was attached per-verb, so `store key <64-hex>`, `store key export <key>` and
+`store key import --key=<value>` all still echoed the secret through argparse's own error — onto a
+stderr a scheduled runner captures, *before* `configure_logging` installs the redaction. That is now
+a `RedactingParser` at the root of the whole CLI, reusing the formatter's shape-keyed `redact`, so
+the existing norm reaches a surface it had never covered and every future subcommand inherits it.
+`opens_with` was hand-building a read-role handle and silently dropping `PRAGMA query_only = ON` and
+the `OperationalError` translation. `import` reported a key mismatch as exit 2 while `verify`
+reported the identical fact as exit 1 — it is 1 in both places now, because the command ran and
+found a problem. And the escrow paths recorded nothing on success: a key leaving the keychain is the
+most consequential thing this product does to a secret, and only the failures were legible.
+
+🔴 **A third round caught the fix regressing the remediation it was written to deliver.** Closing
+the argparse echo removed the per-verb catch-all, and with it the sentence telling an operator that
+the key they just typed is now in their shell history — on exactly the two invocations that used to
+say so. The assertion guarding that string was deleted in the same commit that widened the test from
+two cases to five, so nothing was left to notice. **Redacting is half the job:** the value is kept
+off stderr, and the copy already in the operator's history is theirs to clear and nobody else's to
+find. The remediation now fires off the fact that the scrub CHANGED something, so it reaches every
+command and every argument shape rather than the handful anyone thought to guard, and the assertion
+is back on all five cases.
+
+**The read-role open is modelled once.** `opens_with` had been a second hand-built copy, and it had
+already drifted — losing `PRAGMA query_only` and the `OperationalError` translation. The two entry
+points differ in exactly one thing, where the key comes from, and that is now an argument rather
+than a second copy of the open. `connection.py`'s module docstring said `reader()` was the only
+read-role construction site; it says what is true instead.
+
+**Known limit, stated so it is not mistaken for coverage:** AC-17.8's automated half is a round-trip
+test. The **operator** rehearsal — a restore into the production path, against a key read back from
+wherever the operator actually stored it — is still owed and sandbox cannot rehearse it
+(`operational-spec.md` § Restore, #10).
+
 ## 2026-09-10: Production cutover hardening — what five reviews found the night before real accounts
 
 <!-- prawduct: scope=production-cutover-hardening -->

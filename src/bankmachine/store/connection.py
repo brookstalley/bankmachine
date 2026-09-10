@@ -11,10 +11,14 @@ was constructed rather than of which command asked for it:
 * **Writer** -- `writer()` and `initializing_writer()`. Both route through one
   private factory that takes the exclusive advisory lock *before* it returns a
   handle. There is no other way to obtain a connection that can write.
-* **Reader** -- `reader()`. Opened `mode=ro` at the file, so the refusal lives
-  in the file handle where SQL cannot reach it, with `PRAGMA query_only=ON` as a
-  second layer. It holds no snapshot beyond the statement that needs it, and it
-  never falls back to a writable handle.
+* **Reader** -- every read-role handle comes from `_open_read_role`, which
+  `reader()` and `opens_with()` are the two entry points to. Opened `mode=ro` at
+  the file, so the refusal lives in the file handle where SQL cannot reach it,
+  with `PRAGMA query_only=ON` as a second layer. It holds no snapshot beyond the
+  statement that needs it, and it never falls back to a writable handle. The two
+  entry points differ in ONE thing -- where the key comes from, the keychain or
+  an operator's candidate -- and that difference is an argument, not a second
+  copy of the open.
 """
 
 from __future__ import annotations
@@ -22,7 +26,7 @@ from __future__ import annotations
 import fcntl
 import os
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -31,7 +35,7 @@ from typing import Final
 from sqlcipher3 import dbapi2
 
 from bankmachine.config import Config
-from bankmachine.secrets import SecretsError, get_datastore_key
+from bankmachine.secrets import SecretsError, get_datastore_key, validate_candidate_key
 
 Connection = dbapi2.Connection
 
@@ -411,19 +415,22 @@ def initializing_writer(config: Config) -> Iterator[Connection]:
         yield conn
 
 
-@contextmanager
-def reader(config: Config, *, require_supported_schema: bool = True) -> Iterator[Connection]:
-    """A read-only handle. Every statement is its own snapshot.
+def _open_read_role(config: Config, key: str) -> Connection:
+    """The one place a read-role handle is constructed.
 
-    The connection is opened in autocommit, so no read transaction spans two
-    statements and none survives an idle moment -- the property that keeps a
-    long-lived reader from starving WAL checkpointing.
+    🔴 Two callers, and the second is why this exists as a function. `reader()`
+    takes the key from the keychain; `opens_with()` is handed a candidate and
+    must not. That single difference had been enough to justify a second copy of
+    the open, and the copy immediately drifted -- it lost `PRAGMA query_only`
+    and the `OperationalError` translation, so a read-role handle held half the
+    norm and a driver error escaped the layer that turns it into a `StoreError`.
+    The difference is the ARGUMENT. Everything else is the role, and the role is
+    written once.
+
+    `mode=ro` puts the refusal in the file handle where SQL cannot reach it;
+    `query_only` is the second layer; autocommit is what keeps a reader from
+    holding a snapshot across statements and starving WAL checkpointing.
     """
-    if not config.datastore_path.exists():
-        raise DatastoreMissingError(
-            f"no datastore at {config.datastore_path} -- run `bankmachine store init`"
-        )
-    key = get_datastore_key(config)
     try:
         conn = dbapi2.connect(
             _uri(config.datastore_path, READ_ROLE_MODE),
@@ -440,9 +447,25 @@ def reader(config: Config, *, require_supported_schema: bool = True) -> Iterator
             f"{config.datastore_path} could not be opened read-only ({exc}). Not retried "
             f"read-write: that would restore the writes this handle exists to refuse"
         ) from exc
+    _key_and_prepare(conn, config, key)
+    conn.execute("PRAGMA query_only = ON")
+    return conn
+
+
+@contextmanager
+def reader(config: Config, *, require_supported_schema: bool = True) -> Iterator[Connection]:
+    """A read-only handle. Every statement is its own snapshot.
+
+    The connection is opened in autocommit, so no read transaction spans two
+    statements and none survives an idle moment -- the property that keeps a
+    long-lived reader from starving WAL checkpointing.
+    """
+    if not config.datastore_path.exists():
+        raise DatastoreMissingError(
+            f"no datastore at {config.datastore_path} -- run `bankmachine store init`"
+        )
+    conn = _open_read_role(config, get_datastore_key(config))
     try:
-        _key_and_prepare(conn, config, key)
-        conn.execute("PRAGMA query_only = ON")
         if require_supported_schema:
             _require_supported_schema(
                 conn,
@@ -452,6 +475,72 @@ def reader(config: Config, *, require_supported_schema: bool = True) -> Iterator
         yield conn
     finally:
         conn.close()
+
+
+def opens_with(config: Config, key: str) -> bool:
+    """Whether `key` decrypts the datastore. The question key escrow is actually about.
+
+    🔴 Deliberately NOT built on `reader()`: that fetches the key from the
+    keychain, which is the one thing a candidate key must not do. The seam is
+    `_key_and_prepare`, which already takes an explicit key, and
+    `_diagnose_first_read`, which already tells a wrong key apart from a
+    datastore that cannot be read at all. Nothing here adds a diagnosis.
+
+    🔴 The schema version is deliberately NOT required. Restoring an older
+    backup onto a newer build is a real path, the key is correct there, and
+    refusing to say whether a key works because the schema is old fails the
+    operator in the exact scenario the command exists for.
+
+    Returns False ONLY for a key the datastore rejects. A missing or unreadable
+    datastore raises instead: neither is an answer about the key, and reporting
+    "no" for a hot WAL this process cannot open would send the operator to
+    restore a keychain entry that was never the problem.
+
+    🔴 True requires POSITIVE evidence that a page was decrypted, and the reason
+    is a state an incident actually produces. SQLite reads a file with no pages
+    -- a truncated copy, an interrupted restore, a `store init` killed between
+    creating the file and writing to it -- as a valid empty schema: the first
+    read succeeds without page 1 ever being touched, so SQLCipher's codec is
+    never invoked and NO KEY IS TESTED. Answering True there would have
+    `store key verify` print MATCHES for an arbitrary candidate, and
+    `store key import` -- whose whole warrant is that verification precedes the
+    write -- store that unverified key over a working keychain entry. So a
+    pageless file raises rather than answering: it is a fact about the file, not
+    about the key.
+
+    The candidate is validated here rather than only in the callers. SQLCipher
+    runs anything that is not exactly 64 hex digits through its KDF, so a
+    malformed value would come back as a confident False -- "this key does not
+    open the datastore" about something that is not a key at all.
+    """
+    key = validate_candidate_key(key)
+    if not config.datastore_path.exists():
+        raise DatastoreMissingError(
+            f"no datastore at {config.datastore_path} -- there is nothing to check a key against. "
+            f"A key can only be verified against the datastore it is supposed to open"
+        )
+    if config.datastore_path.stat().st_size == 0:
+        raise DatastoreUnreadableError(
+            f"{config.datastore_path} is empty -- it holds no pages, so nothing was ever "
+            f"encrypted with any key and no key can be checked against it. This is a truncated "
+            f"copy or an interrupted restore, not a key problem: replace the file from a backup "
+            f"taken with `bankmachine store backup`"
+        )
+    try:
+        conn = _open_read_role(config, key)
+    except DatastoreKeyRejectedError:
+        return False
+    try:
+        if conn.execute("SELECT count(*) FROM sqlite_master").fetchone()[0] == 0:
+            raise DatastoreUnreadableError(
+                f"{config.datastore_path} has no schema -- no page was decrypted, so this run "
+                f"tested no key. A datastore this build can serve always carries a schema; a "
+                f"file that does not is an incomplete copy, not a wrong key"
+            )
+        return True
+    finally:
+        with suppress(dbapi2.Error):
+            conn.close()
 
 
 def read_schema_version(conn: Connection) -> int | None:

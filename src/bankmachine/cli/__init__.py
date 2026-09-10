@@ -18,6 +18,7 @@ from bankmachine.cli import store as store_commands
 from bankmachine.cli import sync as sync_commands
 from bankmachine.cli.enroll import EnrollmentError
 from bankmachine.cli.exit_codes import EXIT_ERROR, EXIT_OK, EXIT_RUN_AGAIN, EXIT_UNHEALTHY
+from bankmachine.cli.parser import RedactingParser
 from bankmachine.config import Config, ConfigError, load_config
 from bankmachine.connector import ConnectorError
 from bankmachine.logging_setup import configure_logging, get_logger, log_startup
@@ -42,7 +43,7 @@ _FILE_ONLY = {"file_only": True}
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = RedactingParser(
         prog="bankmachine",
         description="Read-only local-first personal finance datastore. It never moves money.",
     )
@@ -54,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="config file to read (default: $BANKMACHINE_CONFIG, else the documented default)",
     )
     parser.add_argument("--verbose", action="store_true", help="log at DEBUG instead of INFO")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command", required=True, parser_class=RedactingParser)
     store_commands.add_arguments(subparsers)
     connector_commands.add_arguments(subparsers)
     enroll_commands.add_arguments(subparsers)
@@ -80,7 +81,18 @@ def run(argv: Sequence[str] | None = None) -> int:
     os.umask(0o077)
 
     parser = build_parser()
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except SecretsError as exc:
+        # 🔴 Parsing normally reports its own errors and exits, echoing the
+        # offending token. The `store key` group refuses to do that -- an
+        # argument there may BE the datastore key -- so it raises instead, and
+        # this is the only place that can catch it: it happens before the
+        # configuration is loaded, so before the log file has a destination and
+        # before the formatter's redaction is installed. Exit 2, "could not
+        # run", which is what a usage failure is.
+        print(f"bankmachine: {exc}", file=sys.stderr)
+        return EXIT_ERROR
 
     try:
         config: Config = load_config(config_path=args.config)

@@ -79,11 +79,17 @@ def test_init_tells_the_operator_to_back_the_minted_key_up_and_how_to_read_it(
 ) -> None:
     """The one moment the operator is guaranteed to be looking at this command.
 
-    A datastore key cannot be recovered from the datastore, and nothing in this
-    product prints it -- so the instruction has to name the keychain entry AND
-    the command that reads it, or the operator is told to preserve a value they
-    have no route to. On stdout rather than in the log because the log is the
-    channel nobody reads on the day they run `store init`.
+    A datastore key cannot be recovered from the datastore, so the instruction
+    has to name the keychain entry AND a command that acts on it, or the operator
+    is told to preserve a value they have no route to. On stdout rather than in
+    the log because the log is the channel nobody reads on the day they run
+    `store init`.
+
+    🔴 This asserted a `security find-generic-password` recipe until FR-12
+    shipped `store key`. Re-pointed, not relaxed: AC-17.7 requires every surface
+    to name the product's own command, and the recipe it replaced put the key in
+    shell history, which AC-10.1 forbids. Both commands are asserted because
+    exporting without checking is the half that fails silently.
     """
     assert run(["store", "init"]) == 0
     out = capsys.readouterr().out
@@ -91,10 +97,9 @@ def test_init_tells_the_operator_to_back_the_minted_key_up_and_how_to_read_it(
     assert "unrecoverable" in out.lower()
     assert cli_env.keychain_service in out
     assert cli_env.keychain_account in out
-    assert (
-        f"security find-generic-password -s {cli_env.keychain_service} "
-        f"-a {cli_env.keychain_account} -w"
-    ) in out
+    assert "bankmachine store key export" in out
+    assert "bankmachine store key verify" in out
+    assert "find-generic-password" not in out
 
 
 def test_the_backup_instruction_is_printed_only_where_a_key_was_minted(
@@ -128,6 +133,9 @@ def test_status_reminds_the_operator_where_the_key_is_and_that_it_is_the_only_co
 
     assert "unrecoverable" in out.lower()
     assert f"{cli_env.keychain_service}/{cli_env.keychain_account}" in out
+    # AC-17.7 -- the standing reminder names the commands, not a shell recipe.
+    assert "bankmachine store key export" in out
+    assert "find-generic-password" not in out
 
 
 def test_the_datastore_key_is_never_printed(
@@ -334,6 +342,9 @@ def test_backup_warns_that_the_copy_is_useless_without_the_key(
     warnings = "\n".join(r.getMessage() for r in caplog.records if r.levelname == "WARNING")
     assert "USELESS WITHOUT THE DATASTORE KEY" in warnings
     assert cli_env.keychain_service in warnings
+    # AC-17.7 -- this was the one surface that named the chore and no command,
+    # so which answer the operator met depended on which command they had run.
+    assert "bankmachine store key export" in warnings
 
 
 def test_backup_refuses_an_existing_destination_with_exit_2(

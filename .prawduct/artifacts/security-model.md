@@ -35,7 +35,9 @@ code already implements, so no retroactivity decision applies.
   screen share, and a support paste. Confining the keychain to one module is what makes the rule
   checkable rather than a habit — and *a `KeyError` naming the account is fine; the value never is*,
   because exception text reaches logs by paths nobody planned.
-  Status: **in-transition**, tracking #61.
+  Status: **steady-state** since 2026-09-10, on the condition the transition set: FR-12's paths
+  exist, the shell recipe is gone from `cli/store.py` and the operator docs, and AC-17.6 has a
+  mechanism.
 
   > **Amendment (2026-09-10, owner ruling).** *Statement:* the datastore key — and **only** the
   > datastore key — may leave the keychain by a deliberate, operator-initiated export to a
@@ -54,14 +56,19 @@ code already implements, so no retroactivity decision applies.
   > key, so the product's own instruction pointed at a shell recipe that puts it in history — the
   > rule intact on paper, broken in practice, on the one secret whose loss is unrecoverable.
   >
-  > *Interim rule, until FR-12 ships:* the shell recipe stays, because withdrawing it would leave
-  > the operator with no path at all, which is strictly worse. It is a known departure with a filed
-  > remedy, not an accepted practice.
+  > *Retroactivity:* none owed — no shipped code exported a key when this was written.
   >
-  > *Retroactivity:* none owed — no shipped code exports a key.
+  > *Transition closed 2026-09-10.* `store key export | verify | import` shipped, `_keychain_recipe`
+  > was deleted rather than left unused, and every surface that mentions the key now names the
+  > commands. The interim rule — keep the recipe, because withdrawing it would leave the operator
+  > with no path at all — is discharged and does not apply to anything.
   >
-  > *Flips to steady-state when* FR-12's paths exist and AC-17.6 has a mechanism, at which point the
-  > recipe comes out of `cli/store.py` and the operator docs (AC-17.7).
+  > 🔴 **What enforces the untouched half is new and is worth naming, because the old mechanism
+  > could not see it.** `tests/test_logging_setup.py` proves no secret reaches a *log*; it is blind
+  > to a caller that legitimately *prints* one, and FR-12 created the first such caller.
+  > `tests/cli/test_store_key_commands.py` covers that gap per verb — the key in no log file, no
+  > stderr and no refusal message — and the log-absence assertions carry a negative control, because
+  > a check reading a file that was never written passes forever.
 
 - **Log redaction happens at the formatter, over-redacts by design, and is keyed to credential
   shape rather than to any one vendor's token prefix.**

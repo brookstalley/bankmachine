@@ -407,9 +407,13 @@ about *keeping* it, and it is not on the `blocks:production` query:
 
 **The first production sync starts accumulating the one series no re-sync can rebuild**
 (`balances_daily`, per § RPO / RTO in `operational-spec.md`) **while nothing schedules a backup and
-the restore procedure has never been rehearsed by a human** (`#10`; `operational-spec.md` § Restore).
-Add the fact that the datastore key has no recovery path, and day one in production is the day the
-cost of those two open items stops being theoretical. In sandbox, losing the store costs a re-sync.
+the restore procedure has been rehearsed only against sandbox** (`#10`; `operational-spec.md`
+§ Restore — walked 2026-09-10, keychain-loss drill included, production path still unwalked).
+🔴 **The datastore key half of this has since been answered and this paragraph is narrower than it
+was:** `store key export | verify | import` shipped 2026-09-10 under FR-12, so the key has a
+supported recovery path and a way to check a stored copy before it is needed. What is unchanged is
+the backup schedule — nothing runs `store backup` — so day one in production is still the day that
+open item stops being theoretical. In sandbox, losing the store costs a re-sync.
 In production it costs the balance history permanently.
 
 ### 🔴 The irreversible step is the one whose operator check is still pending
