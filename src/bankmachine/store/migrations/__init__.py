@@ -23,6 +23,7 @@ from bankmachine.store.connection import (
 )
 from bankmachine.store.migrations.account_last_seen import apply_account_last_seen
 from bankmachine.store.migrations.core_schema import apply_core_schema
+from bankmachine.store.migrations.ledger_date import apply_ledger_date
 from bankmachine.store.migrations.roster_observed import apply_roster_observed
 
 logger = get_logger("store.migrations")
@@ -60,6 +61,11 @@ MIGRATIONS: Sequence[Migration] = (
         version=4,
         name="record when a connection's roster was observed",
         apply=apply_roster_observed,
+    ),
+    Migration(
+        version=5,
+        name="record the day a transaction's money was committed",
+        apply=apply_ledger_date,
     ),
 )
 

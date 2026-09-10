@@ -1352,10 +1352,16 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # again, so the documented fix would fail on the store it is for.
         "AC-5.3: a newly-populated column bumps the derivation version",
         pathlib.Path("src/bankmachine/store/derivation.py"),
+        "DERIVATION_VERSION = 4",
         "DERIVATION_VERSION = 3",
-        "DERIVATION_VERSION = 2",
-        f"{LIFECYCLE_TESTS}::"
-        "test_a_store_derived_before_the_roster_column_rebuilds_instead_of_rolling_back",
+        # 🔴 Pinned to the UPGRADE test, not the lifecycle one. The lifecycle
+        # test's store is stamped two versions back, so `change_was_expected`
+        # stays true under a single reverted bump and the mutation passes -- the
+        # guard reads green while proving nothing. The upgrade fixture stamps its
+        # rows at exactly one version back, which is the operator's real
+        # situation and the only gap a single reverted bump closes.
+        "tests/store/test_upgrading_a_populated_store.py::"
+        "test_the_rebuild_stamps_the_column_the_migration_could_only_leave_empty",
     ),
     (
         "AC-12.7: a non-active account's silence is closure, not a coverage finding",

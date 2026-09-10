@@ -79,6 +79,48 @@ def _is_short(granted: Any, requested: Any) -> bool:
     return granted is not None and requested is not None and int(granted) < int(requested)
 
 
+def _unstamped_ledger_date_caveat(conn: SAConnection) -> list[Caveat]:
+    """The notice that this store holds rows no window can measure yet.
+
+    🔴 **`ledger_date` is nullable, and a null is silently EXCLUDED by every
+    window predicate.** `ledger_date >= since` is NULL on such a row, not true,
+    so a store upgraded but not yet rebuilt answers every windowed question over
+    a subset of its transactions -- and answers it as though that subset were
+    all of them. An undercount that reads as complete is this product's named
+    primary failure mode, so the one thing this must not do is stay quiet.
+
+    🔴 **And it must not be repaired by coalescing to `posted_date` either.**
+    That fallback returns exactly the number the column exists to stop being
+    wrong -- a settled hold's posting date, in the month it moved to -- and
+    returns it invisibly. Disclosed and excluded is recoverable; included and
+    wrong is not.
+
+    Connection-scoped rather than request-scoped, because it is standing state of
+    the datastore rather than a property of the question asked. It names the
+    remedy, because unlike most warnings on this surface there is one and the
+    operator can run it: `bankmachine store rebuild` replays the archived
+    responses and stamps every row.
+    """
+    unstamped = conn.execute(
+        select(func.count())
+        .select_from(transactions)
+        .where(transactions.c.removed_at.is_(None), transactions.c.ledger_date.is_(None))
+    ).scalar_one()
+    if not unstamped:
+        return []
+    return [
+        Caveat(
+            kind="partial",
+            detail=(
+                f"{unstamped} transaction(s) carry no ledger date, so they predate this build "
+                f"and the datastore has not been rebuilt since. Every windowed total here "
+                f"EXCLUDES them and is therefore a floor, not a measurement -- run "
+                f"`bankmachine store rebuild` to stamp them from the archived responses"
+            ),
+        )
+    ]
+
+
 def _pipeline_warnings(conn: SAConnection, now: UtcInstant) -> list[Caveat]:
     """Everything wrong with the data underneath any answer.
 
@@ -86,7 +128,7 @@ def _pipeline_warnings(conn: SAConnection, now: UtcInstant) -> list[Caveat]:
     datastore at the moment it was read, and a cache would make them describe
     some earlier moment while the rows described this one.
     """
-    warnings: list[Caveat] = []
+    warnings: list[Caveat] = _unstamped_ledger_date_caveat(conn)
     rows = conn.execute(
         select(
             connections.c.connection_id,
@@ -1369,9 +1411,9 @@ def _transaction_filters(
     """
     filters: list[Any] = [] if include_removed else [transactions.c.removed_at.is_(None)]
     if since is not None:
-        filters.append(transactions.c.posted_date >= since)
+        filters.append(transactions.c.ledger_date >= since)
     if until is not None:
-        filters.append(transactions.c.posted_date <= until)
+        filters.append(transactions.c.ledger_date <= until)
     if account_id is not None:
         filters.append(transactions.c.account_id == account_id)
     if after is not None:
@@ -1388,9 +1430,9 @@ def _transaction_filters(
         # time: strictly older, or the same day and further down the tie-break.
         filters.append(
             or_(
-                transactions.c.posted_date < after.posted_date,
+                transactions.c.ledger_date < after.ledger_date,
                 and_(
-                    transactions.c.posted_date == after.posted_date,
+                    transactions.c.ledger_date == after.ledger_date,
                     transactions.c.transaction_id < after.transaction_id,
                 ),
             )
@@ -1427,7 +1469,7 @@ STRANDED_HOLD_AFTER_DAYS = 30
 
 
 def _stranded_cutoff(today: CalendarDate) -> CalendarDate:
-    """The newest `posted_date` a still-pending row may carry and not be stranded.
+    """The newest `ledger_date` a still-pending row may carry and not be stranded.
 
     🔴 One definition of the boundary for two evaluators. The producer below
     tests it in SQL and a caller may test it against rows already in hand; two
@@ -1445,6 +1487,10 @@ class StrandedHold:
     account_id: int
     transaction_id: int
     posted_date: CalendarDate
+    #: 🔴 What the threshold is measured on, and what `days_pending` counts
+    #: from. Beside `posted_date` rather than instead of it: the wire field
+    #: already means the source's own date and a consumer reads it as that.
+    ledger_date: CalendarDate
     days_pending: int
     amount_minor: int
     currency: str
@@ -1473,9 +1519,10 @@ def _stranded_holds(conn: SAConnection, *, today: CalendarDate) -> list[Stranded
         select(
             transactions.c.account_id,
             transactions.c.transaction_id,
-            transactions.c.posted_date,
+            transactions.c.ledger_date,
             transactions.c.amount_minor,
             transactions.c.currency,
+            transactions.c.posted_date,
         )
         .select_from(transactions.join(accounts))
         .where(
@@ -1491,15 +1538,27 @@ def _stranded_holds(conn: SAConnection, *, today: CalendarDate) -> list[Stranded
             # institution already took back. The guarantee belongs where it cannot
             # be forgotten.
             transactions.c.removed_at.is_(None),
-            transactions.c.posted_date < cutoff,
+            # 🔴 Measured on `ledger_date`: how long an authorisation has been
+            # outstanding is a question about the money, not about delivery. For
+            # a row that is still pending the two dates agree today, because the
+            # source's date has not moved yet -- so this changes no current
+            # answer and stays correct if it ever does.
+            #
+            # 🔴 A row whose `ledger_date` is null fails this predicate and drops
+            # out, which is the same silent exclusion `_unstamped_ledger_date_
+            # caveat` discloses on every answer. It is a floor here too: an
+            # un-rebuilt store under-reports stranded holds rather than
+            # inventing them, and the notice says the rebuild is owed.
+            transactions.c.ledger_date < cutoff,
         )
-        .order_by(transactions.c.posted_date, transactions.c.transaction_id)
+        .order_by(transactions.c.ledger_date, transactions.c.transaction_id)
     ).all()
     return [
         StrandedHold(
             account_id=int(row[0]),
             transaction_id=int(row[1]),
-            posted_date=calendar_date(row[2]),
+            posted_date=calendar_date(row[5]),
+            ledger_date=calendar_date(row[2]),
             days_pending=(today - calendar_date(row[2])).days,
             amount_minor=int(row[3]),
             currency=str(row[4]),
@@ -1704,10 +1763,16 @@ def list_transactions(
                 transactions.c.pending,
                 transactions.c.source_category_primary,
                 transactions.c.category_override,
+                # 🔴 Emitted BESIDE `posted_date`, never instead of it, and the
+                # rows are ordered on this one. A caller handed rows sorted by a
+                # date the payload does not carry cannot check the order it was
+                # given, and the two differ exactly where it matters -- a hold
+                # authorised in one month and posted in the next.
+                transactions.c.ledger_date,
             )
             .select_from(source)
             .where(*filters)
-            .order_by(transactions.c.posted_date.desc(), transactions.c.transaction_id.desc())
+            .order_by(transactions.c.ledger_date.desc(), transactions.c.transaction_id.desc())
             .limit(max(1, min(limit, MAX_ROWS)))
         )
         selected = conn.execute(statement).all()
@@ -1722,6 +1787,18 @@ def list_transactions(
                 "account_id": int(r[1]),
                 "account": r[2],
                 "date": str(r[3]),
+                # 🔴 ADDITIVE, and `date` keeps its meaning. `date` is the
+                # source's own posting date and a consumer already reads it as
+                # that; silently repointing it at the economic date would change
+                # a shipped field's meaning without changing its name, which is
+                # the one evolution this contract forbids.
+                #
+                # 🔴 Null means "this row predates the split and the store has
+                # not been rebuilt" -- NOT "committed on the posting date". It
+                # is not coalesced away, because the fallback would answer with
+                # exactly the number this column exists to stop being wrong, and
+                # would do it invisibly.
+                "ledger_date": None if r[11] is None else str(r[11]),
                 "description": r[4],
                 "merchant": r[5],
                 "amount_minor_units": int(r[6]),
@@ -1766,7 +1843,7 @@ def list_transactions(
             None
             if not selected
             else Cursor.issued_for(
-                posted_date=selected[-1][3],
+                ledger_date=selected[-1][11],
                 transaction_id=int(selected[-1][0]),
                 since=since,
                 until=until,
@@ -1889,6 +1966,7 @@ def _oldest_stranded(holds: Sequence[StrandedHold], *, active: bool) -> dict[str
     return {
         "transaction_id": worst.transaction_id,
         "posted_date": iso_or_none(worst.posted_date),
+        "ledger_date": iso_or_none(worst.ledger_date),
         "days_pending": worst.days_pending,
         "amount_minor_units": worst.amount_minor,
         "currency": worst.currency,
@@ -2356,10 +2434,16 @@ def money_summary(
             key = _flow_class()
             label = key
         else:
-            # `posted_date` is stored as `YYYY-MM-DD` text that sorts as a date,
-            # so the month is its first seven characters -- no date arithmetic,
-            # and no dialect function to disagree about.
-            key = func.substr(transactions.c.posted_date, 1, 7)
+            # 🔴 The month a figure belongs to is an ECONOMIC question, so it is
+            # taken from `ledger_date`. Grouped on `posted_date`, a hold
+            # authorised on 06-28 and posted on 07-02 leaves June's total after
+            # it settles, and the same window asked twice a week apart returns
+            # two different Junes with nothing on the answer to say why.
+            #
+            # Stored as `YYYY-MM-DD` text that sorts as a date, so the month is
+            # its first seven characters -- no date arithmetic, and no dialect
+            # function to disagree about.
+            key = func.substr(transactions.c.ledger_date, 1, 7)
             label = key
 
         statement = (

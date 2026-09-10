@@ -667,7 +667,36 @@ def _write_transaction(
                 "raw response %s modified a transaction with no local row; inserting it",
                 response.raw_response_id,
             )
-        conn.execute(insert(transactions).values(first_seen_at=response.received_at, **values))
+        conn.execute(
+            insert(transactions).values(
+                first_seen_at=response.received_at,
+                # 🔴 The day this money was committed from the account holder's
+                # point of view, stamped ONCE here and named on no other path.
+                #
+                # The aggregator's `date` -- which `posted_date` mirrors -- is
+                # the transaction date while a charge is pending and the POSTING
+                # date once it settles. So a hold authorised on 06-28 and posted
+                # on 07-02 moves between months on its own, and every window
+                # measured on `posted_date` reports a different June depending
+                # on when it is asked. This column does not move.
+                #
+                # 🔴 That it is absent from `values`, rather than filtered out of
+                # the update below, is the whole mechanism: an UPDATE cannot
+                # carry a column no dictionary contains. A later exclusion list
+                # would be one edit away from being forgotten, and the symptom
+                # -- a settled hold silently changing period again -- is
+                # invisible in every total it corrupts.
+                #
+                # `authorized_date` is nullable and null for institutions that do
+                # not report it, which is why the window is measured on this
+                # coalesced column rather than on `authorized_date` itself: a
+                # total measured on a nullable field would count some rows by
+                # when the money was committed and others by when it cleared,
+                # with nothing telling a caller which.
+                ledger_date=values["authorized_date"] or values["posted_date"],
+                **values,
+            )
+        )
         return
     conn.execute(
         update(transactions)

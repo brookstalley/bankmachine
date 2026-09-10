@@ -819,7 +819,31 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             "the account's display name, which identifies nothing on its own"
                         ),
                     },
-                    "date": {"type": "string"},
+                    "date": {
+                        "type": "string",
+                        "description": (
+                            "the POSTING date, as the institution reports it. 🔴 It MOVES: a "
+                            "charge carries its authorisation date while pending and its "
+                            "posting date once it settles, so the same transaction can change "
+                            "this value between two syncs. Use it to answer *when did this "
+                            "arrive*; use `ledger_date` to answer *which period does this "
+                            "money belong to*"
+                        ),
+                    },
+                    "ledger_date": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "the day the money was committed from the account holder's point "
+                            "of view -- the authorisation date where the institution reports "
+                            "one, else the posting date. Stamped once and NEVER moved by "
+                            "settlement, which is what makes a monthly total stable; rows are "
+                            "ordered on it and the window filters on it. 🔴 null means this row "
+                            "predates the column and the datastore has not been rebuilt -- it "
+                            "does NOT mean the money was committed on the posting date. A null "
+                            "row is excluded from every window here, and a `partial` warning "
+                            "on the answer says how many and what to run"
+                        ),
+                    },
                     "description": {
                         "type": "string",
                         "description": "the institution's own string, and the authoritative one",
@@ -1109,6 +1133,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "properties": {
                             "transaction_id": {"type": "integer"},
                             "posted_date": {"type": ["string", "null"]},
+                            "ledger_date": {"type": ["string", "null"]},
                             "days_pending": {"type": "integer"},
                             "amount_minor_units": {"type": "integer"},
                             "currency": {"type": "string"},
@@ -1116,6 +1141,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "required": [
                             "transaction_id",
                             "posted_date",
+                            "ledger_date",
                             "days_pending",
                             "amount_minor_units",
                             "currency",

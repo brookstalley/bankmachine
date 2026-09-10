@@ -225,6 +225,17 @@ transactions = Table(
     Column("removed_at", UtcInstantColumn, nullable=True),
     Column("first_seen_at", UtcInstantColumn, nullable=False),
     Column("updated_at", UtcInstantColumn, nullable=False),
+    # 🔴 Declared LAST, and not beside `posted_date` where the split it makes
+    # would read far better: migration 005 adds it with `ALTER TABLE`, which
+    # appends, and this metadata is compared to the migrated database
+    # column-by-column in order. Two correct descriptions of one correct
+    # database must not disagree about position.
+    #
+    # Nullable because there is no constant default that is correct -- the value
+    # is `COALESCE(authorized_date, posted_date)` per row -- so a null means
+    # "predates the split, not yet rebuilt", never "committed on the posting
+    # date". `store rebuild` fills it from the archive.
+    Column("ledger_date", CalendarDateColumn, nullable=True),
 )
 
 Index(

@@ -61,7 +61,7 @@ _POSSIBLE = st.integers(min_value=0, max_value=10_000).flatmap(
 #: which one of these properties exists to police, is exactly the thing that
 #: changes between them.
 _A_CURSOR = Cursor.issued_for(
-    posted_date=date(2026, 5, 4),
+    ledger_date=date(2026, 5, 4),
     transaction_id=7,
     since=None,
     until=None,
@@ -373,7 +373,7 @@ def test_the_count_and_the_row_query_select_from_the_same_predicates(
         # exactly this shape — an extraction that can quietly find nothing turns
         # a strict equality into a tautology — so the operand is checked before
         # it is compared.
-        assert "posted_date < ?" in _where_of(rows_sql), (
+        assert f"{_KEYSET_COLUMN} < ?" in _where_of(rows_sql), (
             "the keyset predicate never reached the row query, so the comparison "
             "below would agree about a filter neither statement has"
         )
@@ -384,6 +384,15 @@ def test_the_count_and_the_row_query_select_from_the_same_predicates(
     assert _from_of(count_sql) == _from_of(rows_sql), (
         "the count and the row query read different tables, so one can admit a row the other drops"
     )
+
+
+#: The column the keyset predicate compares on, read off `Cursor` rather than
+#: typed. Spelled by hand it goes stale the moment the window's column moves,
+#: and it fails by reporting a live predicate as a missing one -- which reads as
+#: the very defect this file exists to catch.
+_KEYSET_COLUMN = next(
+    field for field in envelope.Cursor.__dataclass_fields__ if field.endswith("_date")
+)
 
 
 def _shared_predicate_texts(
@@ -457,10 +466,19 @@ def test_every_reader_of_transactions_shares_the_one_predicate_list(
     query.list_transactions(seeded_config, since=since, until=until, limit=MAX_ROWS)
     query.money_summary(seeded_config, since=since, until=until)
 
+    # 🔴 The window column is DERIVED from the one predicate list, never retyped.
+    # It was spelled `posted_date` here while `_shared_predicate_texts` above read
+    # the real list, so when the window moved to `ledger_date` this filter matched
+    # nothing and the assertion failed claiming every reader had vanished. A test
+    # that names a column by hand reports the rename as a missing reader.
+    since_fragment = next(fragment for fragment in fragments if ">=" in fragment)
+    window_column = since_fragment.split(">=")[0].split(".")[-1].strip()
     windowed = [
         sql
         for sql in captured_sql
-        if "transactions" in sql and "posted_date >=" in sql and "posted_date <=" in sql
+        if "transactions" in sql
+        and f"{window_column} >=" in sql
+        and f"{window_column} <=" in sql
     ]
     # The row query, its count, one coverage count per windowed call, the
     # aggregate, and the two hold tallies. Asserted as a floor so an added reader
@@ -641,17 +659,17 @@ def _oracle_count(
     """
     clauses: list[Any] = [transactions.c.removed_at.is_(None)]
     if since is not None:
-        clauses.append(transactions.c.posted_date >= since)
+        clauses.append(transactions.c.ledger_date >= since)
     if until is not None:
-        clauses.append(transactions.c.posted_date <= until)
+        clauses.append(transactions.c.ledger_date <= until)
     if account_id is not None:
         clauses.append(transactions.c.account_id == account_id)
     if after is not None:
         clauses.append(
             or_(
-                transactions.c.posted_date < after.posted_date,
+                transactions.c.ledger_date < after.ledger_date,
                 and_(
-                    transactions.c.posted_date == after.posted_date,
+                    transactions.c.ledger_date == after.ledger_date,
                     transactions.c.transaction_id < after.transaction_id,
                 ),
             )
@@ -675,7 +693,7 @@ def _resume_midway(since: date | None, until: date | None, account_id: int | Non
     two rows on, so the tie-break carries it.
     """
     return Cursor.issued_for(
-        posted_date=now_utc().date() - timedelta(days=_DAYS // 3),
+        ledger_date=now_utc().date() - timedelta(days=_DAYS // 3),
         transaction_id=_TOTAL // 2,
         since=since,
         until=until,
@@ -1031,7 +1049,7 @@ def test_a_row_removed_between_the_two_reads_answers_rather_than_failing(
             target = writer.execute(
                 select(transactions.c.transaction_id)
                 .where(transactions.c.removed_at.is_(None))
-                .order_by(transactions.c.posted_date.desc())
+                .order_by(transactions.c.ledger_date.desc())
                 .limit(1)
             ).scalar_one()
             writer.execute(
@@ -1090,7 +1108,7 @@ def test_a_cursor_survives_its_wire_form_unchanged(
     than at one point.
     """
     cursor = Cursor.issued_for(
-        posted_date=posted,
+        ledger_date=posted,
         transaction_id=transaction_id,
         since=since,
         until=until,
@@ -1141,7 +1159,7 @@ def _forged_depth(depth: int) -> str:
         (_forged("a string"), "a JSON string rather than an object"),
         (_forged({"d": "2026-01-01", "t": 1, "q": _UNFILTERED}), "no scheme tag"),
         (
-            _forged({"v": 2, "d": "2026-01-01", "t": 1, "q": _UNFILTERED}),
+            _forged({"v": 3, "d": "2026-01-01", "t": 1, "q": _UNFILTERED}),
             "a scheme this build has never issued",
         ),
         (
@@ -1215,7 +1233,7 @@ def test_a_cursor_is_usable_only_against_the_request_that_issued_it(
     by two lists written from the same mental model as the code.
     """
     wire = Cursor.issued_for(
-        posted_date=date(2026, 5, 4),
+        ledger_date=date(2026, 5, 4),
         transaction_id=7,
         since=issued_for[0],
         until=issued_for[1],
@@ -1233,7 +1251,7 @@ def test_a_cursor_is_usable_only_against_the_request_that_issued_it(
     if presented_with == issued_for:
         resumed = _resume()
         assert resumed is not None
-        assert (resumed.posted_date, resumed.transaction_id) == (date(2026, 5, 4), 7)
+        assert (resumed.ledger_date, resumed.transaction_id) == (date(2026, 5, 4), 7)
         return
 
     with pytest.raises(envelope.MalformedCursorError):
@@ -1281,9 +1299,9 @@ def _oracle_ids(
     """
     clauses: list[Any] = [transactions.c.removed_at.is_(None)]
     if since is not None:
-        clauses.append(transactions.c.posted_date >= since)
+        clauses.append(transactions.c.ledger_date >= since)
     if until is not None:
-        clauses.append(transactions.c.posted_date <= until)
+        clauses.append(transactions.c.ledger_date <= until)
     if account_id is not None:
         clauses.append(transactions.c.account_id == account_id)
     with reader_connection(config) as conn:
@@ -1293,7 +1311,7 @@ def _oracle_ids(
                 select(transactions.c.transaction_id)
                 .where(*clauses)
                 .order_by(
-                    transactions.c.posted_date.desc(),
+                    transactions.c.ledger_date.desc(),
                     transactions.c.transaction_id.desc(),
                 )
             ).all()

@@ -473,7 +473,7 @@ _CURSOR_REFUSAL = (
 #: and a payload read under the wrong shape would resume at a position that
 #: means something else. Tagged, a cursor from a shape this build does not know
 #: is refused rather than misread.
-_CURSOR_SCHEME = 1
+_CURSOR_SCHEME = 2
 
 
 def _request_fingerprint(*, since: date | None, until: date | None, account_id: int | None) -> str:
@@ -503,12 +503,20 @@ class Cursor:
     """Where a page stopped, in the one total order transactions come back in.
 
     🔴 **A keyset, never an offset**, and the difference is this work cycle's
-    own subject. `ORDER BY posted_date DESC, transaction_id DESC` is already a
+    own subject. `ORDER BY ledger_date DESC, transaction_id DESC` is already a
     total order, so "everything after this row" is a predicate rather than a
     count of rows to skip. An offset is not: a sync inserting a row between two
     pages shifts every later page by one, so a caller walking them sees one row
     twice and never sees another — a paged answer that reads as complete and is
     not.
+
+    🔴 **The position is a `ledger_date`, and it has to be.** The window filter,
+    the order clause and this predicate are three descriptions of one total
+    order; a cursor naming a column the other two no longer sort on resumes at a
+    position that means something else. `posted_date` moves when a hold settles,
+    so a keyset built on it would shift under a walking caller precisely on the
+    rows most likely to change between two pages — the offset failure above,
+    reached through the fix that was supposed to remove it.
 
     Opaque on the wire. The encoding is reversible rather than signed because
     there is nothing here to protect — the position names a row the request's
@@ -516,7 +524,7 @@ class Cursor:
     that does not belong to this question is refused instead of answered.
     """
 
-    posted_date: date
+    ledger_date: date
     transaction_id: int
     #: The fingerprint of the request this cursor was issued for. Compared when a
     #: cursor comes back; never used to select a row.
@@ -526,7 +534,7 @@ class Cursor:
     def issued_for(
         cls,
         *,
-        posted_date: date,
+        ledger_date: date,
         transaction_id: int,
         since: date | None,
         until: date | None,
@@ -534,7 +542,7 @@ class Cursor:
     ) -> Cursor:
         """The only route that should build one, so the fingerprint cannot be forgotten."""
         return cls(
-            posted_date=posted_date,
+            ledger_date=ledger_date,
             transaction_id=transaction_id,
             request=_request_fingerprint(since=since, until=until, account_id=account_id),
         )
@@ -549,7 +557,7 @@ class Cursor:
         payload = json.dumps(
             {
                 "v": _CURSOR_SCHEME,
-                "d": self.posted_date.isoformat(),
+                "d": self.ledger_date.isoformat(),
                 "t": self.transaction_id,
                 "q": self.request,
             },
@@ -579,22 +587,22 @@ class Cursor:
             raise MalformedCursorError(_CURSOR_REFUSAL) from None
         if not isinstance(payload, dict) or payload.get("v") != _CURSOR_SCHEME:
             raise MalformedCursorError(_CURSOR_REFUSAL)
-        posted, transaction_id, request = payload.get("d"), payload.get("t"), payload.get("q")
+        ledger, transaction_id, request = payload.get("d"), payload.get("t"), payload.get("q")
         # 🔴 `bool` is an `int` in Python and JSON `true` decodes to one, so the
         # bool check is not defensive noise: without it a payload carrying
         # `"t": true` would resume at transaction 1 rather than being refused.
         if (
-            not isinstance(posted, str)
+            not isinstance(ledger, str)
             or isinstance(transaction_id, bool)
             or not isinstance(transaction_id, int)
             or not isinstance(request, str)
         ):
             raise MalformedCursorError(_CURSOR_REFUSAL)
         try:
-            posted_date = date.fromisoformat(posted)
+            ledger_date = date.fromisoformat(ledger)
         except ValueError:
             raise MalformedCursorError(_CURSOR_REFUSAL) from None
-        return cls(posted_date=posted_date, transaction_id=transaction_id, request=request)
+        return cls(ledger_date=ledger_date, transaction_id=transaction_id, request=request)
 
 
 def parse_cursor(
