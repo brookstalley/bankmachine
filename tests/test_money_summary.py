@@ -1166,3 +1166,84 @@ def test_the_reviews_scenario_answers_as_ruled(initialized_config: Config) -> No
     assert income >= 600000, (
         "the paycheque is external value entering the household, not a transfer"
     )
+
+
+# --------------------------------------------------------------------------
+# The fallback notice, on the answer rather than in the function behind it
+# --------------------------------------------------------------------------
+
+
+def _unmatched_notices(wire: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        warning
+        for warning in wire["warnings"]
+        if warning["kind"] == "partial" and "transfer-shaped" in warning["detail"]
+    ]
+
+
+def test_an_answer_says_how_many_transfer_shaped_rows_fell_back_to_spending(
+    initialized_config: Config,
+) -> None:
+    """🔴 Asserted on the ANSWER, because that is where the contract promises it.
+
+    The store function behind this was already pinned, and that is not the same
+    guarantee: the call site in `query` could be deleted with every one of those
+    tests still green, while `api-contract.md` promises the warning and three
+    served surfaces tell an agent to read it as the signal that the classifier
+    fell back rather than concluded.
+
+    The review scenario seeds ACH rent, which is transfer-shaped and has no
+    counterparty here, so the notice must fire and must count it.
+
+    🔴 It seeds an ATM withdrawal too, and that row is NOT counted — which is
+    the distinction worth pinning. `TRANSFER_OUT_WITHDRAWAL` is not
+    transfer-shaped at all: cash out of a machine is definitionally not a
+    movement to another account the household holds, so it reaches
+    `external_spend` by classification rather than by fallback. Counting it here
+    would tell an agent the classifier was unsure about a row it was certain of.
+    """
+    _seed_the_review_scenario(initialized_config)
+
+    notices = _unmatched_notices(_wire(initialized_config))
+
+    assert len(notices) == 1, "the answer does not say the classifier fell back"
+    assert "1 transfer-shaped" in notices[0]["detail"], (
+        "the notice does not name how many rows fell back, which is the number an agent is "
+        "told to read -- and an ATM withdrawal must not be among them"
+    )
+    assert "nobody enrolled" in notices[0]["detail"], (
+        "the notice does not say the counterparty may simply be unenrolled, so a reader takes "
+        "the fallback for a finding"
+    )
+
+
+def test_the_notice_counts_the_window_it_rides_and_not_the_store(
+    initialized_config: Config,
+) -> None:
+    """A count true of the store and quoted on a window is a precise wrong number.
+
+    The unmatched rows sit on today's date, so a window that ends well before
+    them contains none — and the notice must either not fire or not count them.
+    """
+    _seed_the_review_scenario(initialized_config)
+
+    notices = _unmatched_notices(_wire(initialized_config, since="2020-01-01", until="2020-12-31"))
+
+    assert not notices, (
+        "a window holding no transfer-shaped rows still carried a fallback count, so the "
+        "figure describes the store rather than the answer beside it"
+    )
+
+
+def test_an_answer_whose_every_leg_pairs_carries_no_fallback_notice(
+    initialized_config: Config,
+) -> None:
+    """🔴 Silence, so the ABSENCE of the notice is information too.
+
+    An agent told nothing fell back can quote the spending figure without a
+    caveat. That only works if a store whose transfers all matched stays quiet —
+    a notice present on every answer is the one a reader learns to skip.
+    """
+    _seed_every_flow_class(initialized_config)
+
+    assert not _unmatched_notices(_wire(initialized_config))
