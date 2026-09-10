@@ -5,6 +5,25 @@ financial data from Plaid into an encrypted local datastore and serves it to an 
 over MCP, so you can ask period-over-period questions without a browser or a CSV in
 the loop. It is a data pipeline: no budgeting, forecasting, categorization or advice.
 
+## Read this first
+
+**1. This connects to your real bank accounts.** Through Plaid, with your own credentials.
+Real balances, real transactions, real merchant names — the actual ledger, not a copy of it.
+Sandbox is the default and uses fake data; production is a deliberate, separate procedure.
+
+**2. Using the MCP server sends your financial data to your AI provider.** Every tool call
+hands rows to whatever model your client is wired to. If that is a hosted model, your
+transactions go to that company under their terms, not this project's. Check your settings for
+training, personalization, retention and human review before you connect anything. This is not
+a side effect — it is what the product does.
+
+**3. Read the code before you run it. Have your AI read it too.** By design bankmachine does
+not phone home: no telemetry, no analytics, no error reporting, and the only network destination
+is Plaid's API. That claim is worth exactly as much as your own verification of it, so verify it.
+`tests/preferences/test_only_the_connector_reaches_the_network.py` is where it is enforced, and it
+has limits it states itself — it cannot see a subprocess shelling out, or a dependency phoning
+home on its own.
+
 **It never moves money.** There is no write path to any bank or aggregator, and no
 mutation tools on the MCP surface.
 
