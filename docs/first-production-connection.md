@@ -187,7 +187,9 @@ the hosted URL's own lifetime are one number** (`--help`: "how long to wait for 
 to be completed, and how long the URL stays usable"). The default is 900 seconds. A first
 production link can involve an OAuth redirect to the bank, a password reset, an SMS code, an
 in-app approval and sometimes a device registration; 15 minutes is not generous for that, so raise
-it deliberately with `--timeout`.
+it deliberately with `--timeout`. The aggregator's own accepted range for the hosted URL's lifetime
+is not declared by its SDK (`LinkTokenCreateHostedLink.url_lifetime_seconds` carries no bound), so
+if `/link/token/create` refuses the value, lower it rather than assuming the link is broken.
 
 *Expect on success:* `linked <id>: <institution>`, `requested history: 730 days`, and
 
