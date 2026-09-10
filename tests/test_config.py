@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from bankmachine.config import APP_NAME, ConfigError, default_config_path, load_config
+from conftest import configuration_leak
 
 
 def test_defaults_land_under_the_documented_base_directories(tmp_path: Path) -> None:
@@ -160,3 +161,72 @@ def test_a_connection_cap_below_one_is_refused_not_clamped(
         load_config()
 
     assert "at least 1" in str(raised.value)
+
+
+# --------------------------------------------------------------------------- #
+# The suite's own isolation: which environments resolve to somewhere disposable.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_datastore_override_without_a_log_override_is_reported_as_a_leak(
+    tmp_path: Path,
+) -> None:
+    """The exact shape that wrote pytest paths into the operator's production log.
+
+    Four variables overridden, six needed: `log_dir` fell through to the
+    developer's real environment and the log file went with it. The test that
+    did this asserted on what the command printed, so nothing about it was ever
+    going to fail.
+    """
+    complaint = configuration_leak(
+        {
+            "BANKMACHINE_DATASTORE_PATH": str(tmp_path / "store.db"),
+            "BANKMACHINE_KEYCHAIN_SERVICE": "bankmachine-test",
+            "BANKMACHINE_ENVIRONMENT": "sandbox",
+        },
+        tmp_path,
+    )
+
+    assert complaint is not None
+    assert "BANKMACHINE_LOG_DIR" in complaint
+
+
+def test_a_path_outside_the_temp_tree_is_reported_as_a_leak(tmp_path: Path) -> None:
+    """The general form: a disposable path is the only kind a test may name."""
+    complaint = configuration_leak(
+        {
+            "BANKMACHINE_DATASTORE_PATH": str(tmp_path / "store.db"),
+            "BANKMACHINE_LOG_DIR": "/Users/somebody/.local/state/bankmachine/logs",
+        },
+        tmp_path,
+    )
+
+    assert complaint is not None
+    assert "BANKMACHINE_LOG_DIR" in complaint
+
+
+def test_the_isolated_environment_every_cli_fixture_sets_is_not_reported(tmp_path: Path) -> None:
+    """The negative control. A guard that flags everything is not a guard.
+
+    This is the six-variable block the CLI fixtures use, so a change that made
+    the check fire on conforming tests fails here rather than across the suite.
+    """
+    assert (
+        configuration_leak(
+            {
+                "BANKMACHINE_CONFIG": str(tmp_path / "absent.toml"),
+                "BANKMACHINE_DATASTORE_PATH": str(tmp_path / "store.db"),
+                "BANKMACHINE_ENVIRONMENT": "sandbox",
+                "BANKMACHINE_KEYCHAIN_SERVICE": "bankmachine-test",
+                "BANKMACHINE_LOG_DIR": str(tmp_path / "logs"),
+                "BANKMACHINE_PLAID_CLIENT_ID": "test-client-id",
+            },
+            tmp_path,
+        )
+        is None
+    )
+
+
+def test_a_test_that_sets_nothing_is_not_reported(tmp_path: Path) -> None:
+    """Most of the suite constructs a `Config` directly and never touches the environment."""
+    assert configuration_leak({}, tmp_path) is None
