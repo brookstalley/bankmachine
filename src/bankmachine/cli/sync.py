@@ -46,7 +46,7 @@ from typing import Final, Protocol
 
 from bankmachine.cli import sync_run
 from bankmachine.config import Config
-from bankmachine.logging_setup import redact
+from bankmachine.logging_setup import redact, redact_free_text
 from bankmachine.store import connection
 
 with contextlib.suppress(ImportError):  # readline is absent on some platforms
@@ -136,7 +136,48 @@ def run_shell(
 
     with connection.reader(config) as conn:
         _print_banner(config, out_stream)
-        return _repl(conn, in_stream, out_stream, interactive=interactive)
+        return _repl(
+            conn,
+            in_stream,
+            out_stream,
+            interactive=interactive,
+            identifiers=_schema_identifiers(conn),
+        )
+
+
+def _schema_identifiers(conn: connection.Connection) -> frozenset[str]:
+    """Every table, view, index and column name this datastore actually holds.
+
+    This is what tells structure from value in the free text this command
+    writes back -- the statement it echoes and the errors it reports -- and it
+    is a property of the store rather than a list kept beside the redactor, so
+    it cannot fall behind a migration.
+
+    Read once, when the shell opens, because the prompt must hold no snapshot
+    between statements and the echo runs on the path that has nothing to
+    release one. A migration applied under a live shell only adds names, and a
+    name this set has not heard of is over-redacted -- the direction this
+    surface is already wrong in.
+
+    A failure here is not caught. A datastore whose schema cannot be listed has
+    nothing this prompt could usefully be opened against, and every dot-command
+    reads the same table.
+    """
+    names = {
+        str(name)
+        for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE name IS NOT NULL")
+    }
+    # `pragma_table_info` as a table-valued function, so the table name is bound
+    # rather than pasted into a PRAGMA that cannot take a parameter.
+    names.update(
+        str(name)
+        for (name,) in conn.execute(
+            "SELECT ti.name FROM sqlite_master AS m "
+            "JOIN pragma_table_info(m.name) AS ti "
+            "WHERE m.type IN ('table', 'view')"
+        )
+    )
+    return frozenset(names)
 
 
 def _print_banner(config: Config, out: OutputStream) -> None:
@@ -151,13 +192,24 @@ def _print_banner(config: Config, out: OutputStream) -> None:
 
 
 def _repl(
-    conn: connection.Connection, stdin: InputStream, out: OutputStream, *, interactive: bool
+    conn: connection.Connection,
+    stdin: InputStream,
+    out: OutputStream,
+    *,
+    interactive: bool,
+    identifiers: frozenset[str],
 ) -> int:
     """Read a statement, run it, release whatever it held, repeat."""
     buffered = ""
     while True:
         try:
-            line = _read_line(CONTINUATION if buffered else PROMPT, stdin, out, interactive)
+            line = _read_line(
+                CONTINUATION if buffered else PROMPT,
+                stdin,
+                out,
+                interactive,
+                identifiers,
+            )
         except EOFError:
             if interactive:
                 print(file=out)
@@ -177,18 +229,24 @@ def _repl(
             if not stripped:
                 continue
             if stripped.startswith("."):
-                if _meta_command(conn, stripped, out):
+                if _meta_command(conn, stripped, out, identifiers):
                     return 0
                 continue
 
         buffered = f"{buffered}\n{line}" if buffered else line
         if not connection.statement_is_complete(buffered):
             continue
-        _execute(conn, buffered, out)
+        _execute(conn, buffered, out, identifiers)
         buffered = ""
 
 
-def _read_line(prompt: str, stdin: InputStream, out: OutputStream, interactive: bool) -> str:
+def _read_line(
+    prompt: str,
+    stdin: InputStream,
+    out: OutputStream,
+    interactive: bool,
+    identifiers: frozenset[str],
+) -> str:
     """One line of input, from a terminal or from whatever is feeding the shell.
 
     `input()` is used only for a terminal, because that is what carries the
@@ -211,13 +269,18 @@ def _read_line(prompt: str, stdin: InputStream, out: OutputStream, interactive: 
     # The echo is redacted like everything else the shell writes. It is output
     # on the stream AC-10.3 governs, and a transcript is the most likely thing
     # here to be committed or pasted into a bug report -- a token typed into a
-    # query is still a token once it has been written down.
+    # query is still a token once it has been written down. What a statement
+    # names in this datastore is structure and survives; everything else in it
+    # keeps the value rule, so the operator reads back the query they typed
+    # rather than a row of blanks where their columns were.
     typed = line.rstrip("\n")
-    print(redact(typed), file=out)
+    print(redact_free_text(typed, identifiers), file=out)
     return typed
 
 
-def _meta_command(conn: connection.Connection, line: str, out: OutputStream) -> bool:
+def _meta_command(
+    conn: connection.Connection, line: str, out: OutputStream, identifiers: frozenset[str]
+) -> bool:
     """Run a dot-command. Returns whether the shell should exit."""
     parts = line.split()
     name = parts[0]
@@ -231,15 +294,21 @@ def _meta_command(conn: connection.Connection, line: str, out: OutputStream) -> 
             "SELECT name FROM sqlite_master WHERE type = 'table' "
             "AND name NOT LIKE 'sqlite_%' ORDER BY name;",
             out,
+            identifiers,
         )
     elif name == ".schema":
-        _print_schema(conn, parts[1] if len(parts) > 1 else None, out)
+        _print_schema(conn, parts[1] if len(parts) > 1 else None, out, identifiers)
     else:
         print(f"unknown command {name} -- .help lists them", file=out)
     return False
 
 
-def _print_schema(conn: connection.Connection, table: str | None, out: OutputStream) -> None:
+def _print_schema(
+    conn: connection.Connection,
+    table: str | None,
+    out: OutputStream,
+    identifiers: frozenset[str],
+) -> None:
     """The stored DDL, printed as DDL rather than squeezed into a table cell.
 
     Schema text is **not** a redaction surface, and that is a property rather
@@ -271,7 +340,7 @@ def _print_schema(conn: connection.Connection, table: str | None, out: OutputStr
                 (table,),
             ).fetchall()
     except connection.DriverError as exc:
-        print(f"error: {redact(str(exc))}", file=out)
+        print(f"error: {redact_free_text(str(exc), identifiers)}", file=out)
         return
     finally:
         _release_snapshot(conn, out)
@@ -286,7 +355,9 @@ def _print_schema(conn: connection.Connection, table: str | None, out: OutputStr
         print(f"{sql.strip()};", file=out)
 
 
-def _execute(conn: connection.Connection, statement: str, out: OutputStream) -> None:
+def _execute(
+    conn: connection.Connection, statement: str, out: OutputStream, identifiers: frozenset[str]
+) -> None:
     """Run one statement and render whatever it produced.
 
     A failure prints a sentence and the prompt comes back. The shell is the
@@ -304,8 +375,10 @@ def _execute(conn: connection.Connection, statement: str, out: OutputStream) -> 
             _print_table([str(column[0]) for column in cursor.description], cursor.fetchall(), out)
     except connection.DriverError as exc:
         # The message is redacted too: SQLite quotes the offending value back in
-        # several of its errors, and a mistyped token is still a token.
-        print(f"error: {redact(str(exc))}", file=out)
+        # several of its errors, and a mistyped token is still a token. It also
+        # quotes the identifier it could not resolve, which is the whole
+        # diagnosis -- so names this datastore holds survive the redaction.
+        print(f"error: {redact_free_text(str(exc), identifiers)}", file=out)
     finally:
         _release_snapshot(conn, out)
 
@@ -380,8 +453,10 @@ def _render(value: object) -> str:
     than a mechanism yet -- so over-redaction is the direction to be wrong in
     here. Correlating a row with its response does not need the digest: the
     integer `raw_response_id` foreign key is the join, and it is not redacted.
-    Schema text is the surface where this rule is wrong, and `_print_schema`
-    is where that is handled.
+    A cell is a value and nothing else, which is why it takes the bare rule
+    while the two surfaces that carry structure do not: `_print_schema` prints
+    `sqlite_master` unredacted, and free text is redacted against the names
+    this datastore holds.
     """
     if value is None:
         return NULL_DISPLAY

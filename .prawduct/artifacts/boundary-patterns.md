@@ -112,8 +112,8 @@ SQL reaches the datastore (AC-ARCH.6).
 adds nothing of its own to the refusal — `mode=ro` at the file is what makes
 `PRAGMA query_only = OFF` typed at this prompt harmless. Everything it writes,
 including the statement it echoes back in a piped session, goes through
-`logging_setup.redact`, so AC-10.3 has one rule for values rather than one per
-surface. Two boundaries make that rule precise:
+`logging_setup`'s redaction, so AC-10.3 has one rule for values rather than one
+per surface. Three boundaries make that rule precise:
 
 - **Values, not numbers.** Money here is an INTEGER of minor units while an
   account number is TEXT (`accounts.mask`), so redacting integers would blank a
@@ -126,18 +126,27 @@ surface. Two boundaries make that rule precise:
   destroys it instead: `_OPAQUE` blanks any 32-plus character run, and
   `source_investment_transaction_id` is exactly 32, so the column name came out
   `[REDACTED]` until this split.
+- **Free text, separated by the store rather than by shape.** The echoed
+  statement and driver error messages mix structure and value inside one
+  string, and no *shape* tells the two apart — so the separator is the store
+  itself. `_schema_identifiers` reads every table, view, index and column name
+  out of `sqlite_master` once, when the shell opens, and
+  `logging_setup.redact_free_text` spares a run that names one of them.
+  `SELECT source_investment_transaction_id FROM investment_transactions;`
+  echoes intact, and `no such column: <that name>` names the column.
 
-**The residual: free text the operator typed.** The echoed statement and driver
-error messages are mixtures of structure and value, and no property separates
-the two inside one string — so they keep the value rule, and a schema
-identifier over 32 characters is blanked in them. Typing
-`SELECT source_investment_transaction_id FROM investment_transactions;` echoes
-as `SELECT [REDACTED] FROM ...`, and `no such column: <that name>` reads
-`no such column: [REDACTED]`. Over-redaction is the safe direction here and the
-result is still usable, but it is a real wart on this surface's core use rather
-than a free choice. The idea worth trying, if it is worth fixing: redact free
-text against the datastore's own `sqlite_master` identifiers, which is a
-property of this store rather than a hand-maintained allow-list. Filed as #6.
+🔴 **That narrowing is held to three properties, and each one is what keeps it
+from sparing a secret.** Only the opaque rule takes the exemption, so a value
+introduced as a credential is blanked whatever it looks like — `access_token=`
+followed by a column name is still `[REDACTED]`. It matches a *whole* run, so a
+token that merely contains a column name is still blanked. And it spares only
+what **this** datastore holds, all of which was authored by this repo's
+migrations — where `tests/preferences/test_no_credentials_tracked.py` and
+`test_no_provider_identity.py` between them already refuse a credential-shaped
+string and a roster name, so there is nothing in that set to spare. A name the
+set has not heard of — an identifier-shaped thing the operator typed, or a
+column a migration added under a live prompt — is over-redacted, which is the
+direction this surface stays wrong in.
 
 Row values keep bare-length matching, cost included: `raw_responses.body_sha256`
 is 64 hex characters and is blanked. That is the direction to be wrong in while

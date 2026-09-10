@@ -15,6 +15,13 @@ They over-redact, and that is the chosen direction. A filesystem path holding a
 legibility; the alternative -- requiring high entropy before redacting -- trades
 that back for the chance of a real token slipping through. Under the documented
 default paths no ordinary path is long enough in one segment to trip it.
+
+One surface cannot pay that price: free text that mixes this project's own
+schema with operator-typed values, where the shape rule blanks the structure
+along with the values. `redact_free_text` takes the set of names the datastore
+actually holds and spares those, and only those. It is a second entry point
+rather than a change to the rule, because a log line has no store behind it to
+ask -- so the formatter's rule stays exactly where it is.
 """
 
 from __future__ import annotations
@@ -22,6 +29,7 @@ from __future__ import annotations
 import logging
 import re
 import sys
+from collections.abc import Collection
 from pathlib import Path
 from typing import Final
 
@@ -56,8 +64,36 @@ _LONG_DIGITS = re.compile(r"\b\d{8,}\b")
 
 def redact(text: str) -> str:
     """Scrub credentials and account numbers from a line of text."""
+    return redact_free_text(text, ())
+
+
+def redact_free_text(text: str, identifiers: Collection[str]) -> str:
+    """Scrub a line that mixes structure with values, sparing this store's own names.
+
+    A statement echoed back at a prompt, or a driver's error sentence, carries
+    schema identifiers and operator-typed values inside one string, and no
+    shape tells the two apart: `source_investment_transaction_id` is exactly
+    the 32-character run `_OPAQUE` blanks. `identifiers` is what separates
+    them, and the caller reads it from the datastore's own `sqlite_master`
+    rather than keeping a list here -- so a column a future migration adds is
+    spared without anyone remembering to come back and say so.
+
+    🔴 **The exemption is narrow in three ways, and each is what keeps it from
+    sparing a secret.** It belongs to the opaque rule alone, so a value
+    introduced as a credential is still blanked whatever it looks like. It
+    matches a whole run, so a token that merely contains a column name is still
+    blanked. And it spares only what *this* datastore holds -- every one of
+    those names was authored by this repo's migrations, where
+    `tests/preferences/test_no_credentials_tracked.py` and
+    `test_no_provider_identity.py` between them already refuse a
+    credential-shaped string and a roster name.
+
+    The comparison is case-insensitive because SQL identifiers are: a column
+    typed in capitals is the same column.
+    """
+    known = {name.casefold() for name in identifiers}
     text = _SENSITIVE_KEY.sub(lambda m: f"{m.group(1)}{m.group(2)}{REDACTED}", text)
-    text = _OPAQUE.sub(REDACTED, text)
+    text = _OPAQUE.sub(lambda m: m.group(0) if m.group(0).casefold() in known else REDACTED, text)
     return _LONG_DIGITS.sub(lambda m: f"****{m.group(0)[-4:]}", text)
 
 
