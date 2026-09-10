@@ -818,7 +818,33 @@ many accounts with different coverage windows, and an institution-level summary 
 
 **AC-10.1** — Aggregator credentials, all access tokens, **and the datastore encryption key** live in
 the OS keychain, accessed at runtime. Never in the repo, never in a plaintext dotfile, never in
-shell history, never in a log line.
+shell history, never in a log line. **A deliberate, operator-initiated export of the datastore key
+is the one exception, and FR-12 is its whole extent.**
+
+> **Amendment (2026-09-10, owner ruling).** The final sentence read *"Never in the repo, never in a
+> plaintext dotfile, never in shell history, never in a log line"* with no exception, and the
+> product contradicted it in its own output.
+>
+> 🔴 **What forced the amendment is that the criterion was already being routed around rather than
+> honoured.** The datastore key cannot be recovered from the datastore, so the product tells the
+> operator to back it up — at minting, on every `store status`, and twice in
+> `docs/first-production-connection.md`. Having no export path of its own, it named a shell recipe
+> (`security find-generic-password … -w`) that prints the key to stdout and lands in shell history.
+> `cli/store.py` says why in a docstring: it names the recipe "because otherwise the instruction
+> asks for a value the operator has no route to." An AC that ships contradicted is worse than an
+> amended one, because the next reader believes it.
+>
+> **The ruling: the operator owns exporting and preserving the key; the product owes a mechanism to
+> export, check, and restore it.** The bound is that the operator *initiates* and the operator
+> *names the destination* — a path the operator chose is not the product controlling anything,
+> which is the distinction the original sentence could not draw. Everything the sentence forbids
+> incidentally — a dotfile the product writes, a default location, a log line, an exception message,
+> a `repr` — it still forbids, and AC-17.2 and AC-17.6 are where that is stated positively.
+>
+> *Retroactivity:* none owed. No shipped code exports a key today; the amendment licenses FR-12
+> rather than excusing anything already written.
+
+
 
 **AC-10.2** — `.gitignore` covers data, logs, and any credential path. Verified by a test that greps
 a fresh `git ls-files` for token-shaped strings.
@@ -832,6 +858,74 @@ destinations are the aggregator's API hosts.
 
 **AC-10.6** — Sandbox vs. production is an **explicit config flag, logged loudly at every startup.**
 Syncing fixture data into the real datastore must be hard to do by accident.
+
+### FR-12 · Datastore key escrow
+
+*Derived in `.prawduct/artifacts/discovery-datastore-key-escrow.md` (#61), on the owner's ruling of
+2026-09-10 recorded in AC-10.1's amendment above. Its assumptions are recorded as **vetoable** in
+that document; an assumption the owner rejects retires the criteria resting on it.*
+
+🔴 **The key cannot be recovered from the datastore, and `balances_daily` is the one series no
+re-sync rebuilds** (`operational-spec.md` § RPO / RTO). A lost key is therefore permanent data loss
+with no remedy, and these criteria are the product's only answer to it.
+
+**AC-17.1 · The product hands the operator the key, and refuses to do it by accident.** An export
+path exists. It renders the key to an interactive terminal and **refuses a non-TTY stdout**; it
+writes a file only when the operator explicitly asks with a destination, at `0600`. *Why:* the
+instruction the product prints has had no command behind it, so every operator who followed it used
+a shell recipe that puts the key in history and in the process table. A refused pipe is the entire
+difference between the product path and the recipe it replaces — without it, the new command is the
+old defect with a nicer name.
+
+**AC-17.2 · The export names no destination of its own.** The operator supplies the path; the
+product never chooses one, never defaults to one, and never writes inside the data directory.
+*Why:* writing the key anywhere the *product* controls defeats the keychain, and that position is
+kept rather than overturned. What the ruling changed is that the operator may *ask*, not that the
+product may *decide* — and a default path is the product deciding, on the run where the operator did
+not think about it.
+
+**AC-17.3 · A candidate key is checked by opening the datastore with it.** Verification reports
+whether the candidate opens the store, and does not rest on comparing it to the keychain entry.
+*Why:* two independent reasons, either sufficient. Validation catches malformed and never wrong — a
+transposed pair of hex digits is still 64 characters and still pure hex, so it passes every check
+the product makes and is simply a different key. And verification has to answer in the state an
+incident actually presents, which is keychain absent; a comparison has nothing to compare against
+precisely then.
+
+**AC-17.4 · A candidate key never arrives on a command line.** Verification and restore read their
+candidate by prompt, not by argument. *Why:* an argument lands in shell history and in the process
+table — the failure AC-10.1 names, and the reason the shell recipe was never an acceptable permanent
+answer. A command that fixed the export direction and reintroduced the same leak on the input
+direction would have moved the defect, not closed it.
+
+**AC-17.5 · Restore verifies before it writes.** The restore path opens the datastore with the
+candidate and writes the keychain entry only if it opens. Where no datastore is present to check
+against, it says so rather than silently accepting. *Why:* `store init` already refuses to mint a
+key for an existing datastore, because a fresh one would decrypt nothing and would hide that exact
+diagnosis behind an authentication failure. A restore that wrote first would reintroduce it from the
+other direction, and would additionally overwrite a working entry with a typo.
+
+**AC-17.6 · The secrecy guarantee holds across all three paths.** The key reaches no log line, no
+exception message, and no `repr` on any of them. The export's rendered output is the only place a
+key is ever emitted, and it is printed, never logged. *Why:* the guarantee is currently
+**structural** — one module imports the keychain, and no caller prints. Adding the first printing
+caller is the moment a structural guarantee becomes a rule somebody has to keep, and the moment to
+say so is before the caller exists.
+
+**AC-17.7 · The printed instruction names the product's own command.** Every surface that tells the
+operator to back the key up names the command rather than a shell recipe — `store init` at minting,
+`store status` as the standing line, and `store backup`, which today names the chore and no command
+at all. *Why:* three surfaces print the recipe and a fourth prints none, so which answer the operator
+meets depends on which command they happened to run. One instruction, one answer.
+
+**AC-17.8 · The round trip is covered by a test, and the human half stays owed.** A test exports a
+key, restores it into a keychain that does not hold it, and opens a datastore written under it. This
+does **not** discharge the operator rehearsal — a restore into the production path, against a key
+read back from wherever the operator stored it, remains unwalked and sandbox cannot rehearse it
+(`operational-spec.md` § Restore; #10). *Why:* the automated half and the human half fail
+differently. The test catches a broken round trip; only a person catches an instruction that reads
+clearly and cannot be followed under pressure. Claiming the first discharges the second is how the
+rehearsal quietly stops being owed.
 
 ---
 

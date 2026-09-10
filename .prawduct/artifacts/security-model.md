@@ -35,7 +35,33 @@ code already implements, so no retroactivity decision applies.
   screen share, and a support paste. Confining the keychain to one module is what makes the rule
   checkable rather than a habit — and *a `KeyError` naming the account is fine; the value never is*,
   because exception text reaches logs by paths nobody planned.
-  Status: steady-state.
+  Status: **in-transition**, tracking #61.
+
+  > **Amendment (2026-09-10, owner ruling).** *Statement:* the datastore key — and **only** the
+  > datastore key — may leave the keychain by a deliberate, operator-initiated export to a
+  > destination the operator names. AC-10.1 and FR-12 (`docs/system-requirements.md` § 6) are the
+  > extent of it.
+  >
+  > 🔴 **What the amendment does not touch is the part a reader will over-generalize.** *Nothing
+  > returns a secret into a log line, an exception message, or a `repr`* is untouched and applies
+  > with full force to the new paths — AC-17.6 restates it there for exactly that reason. An
+  > aggregator secret and an access token remain unexportable, and their reason is unchanged: both
+  > have another source (a vendor dashboard, a re-enrolment), so neither needs escrow and neither
+  > gets it. The datastore key is the one secret with **no other source at all**, which is what
+  > earns it the exception and simultaneously bounds the exception to it.
+  >
+  > *Why:* the rule was being routed around rather than obeyed. Nothing in the product printed the
+  > key, so the product's own instruction pointed at a shell recipe that puts it in history — the
+  > rule intact on paper, broken in practice, on the one secret whose loss is unrecoverable.
+  >
+  > *Interim rule, until FR-12 ships:* the shell recipe stays, because withdrawing it would leave
+  > the operator with no path at all, which is strictly worse. It is a known departure with a filed
+  > remedy, not an accepted practice.
+  >
+  > *Retroactivity:* none owed — no shipped code exports a key.
+  >
+  > *Flips to steady-state when* FR-12's paths exist and AC-17.6 has a mechanism, at which point the
+  > recipe comes out of `cli/store.py` and the operator docs (AC-17.7).
 
 - **Log redaction happens at the formatter, over-redacts by design, and is keyed to credential
   shape rather than to any one vendor's token prefix.**
@@ -198,7 +224,10 @@ Each row marked **Yes** is handled in `api-contract.md` § Security, not duplica
 
 🔴 **AC-10.1 — the aggregator credentials, all access tokens, and the datastore encryption key live in
 the OS keychain**, accessed at runtime. Never in the repo, never in a plaintext dotfile, never in
-shell history, never in a log line.
+shell history, never in a log line — **with one exception, amended in on the owner's ruling of
+2026-09-10: a deliberate, operator-initiated export of the datastore key to a destination the
+operator names.** Its extent is FR-12; § Direction above carries the amendment and the interim rule
+that holds until FR-12 ships.
 
 `src/bankmachine/secrets.py` is **the only module that imports `keyring`**. Everything else asks it, so
 the one part of the system that is genuinely painful to port lives behind a single interface. Nothing
