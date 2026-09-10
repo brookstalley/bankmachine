@@ -421,7 +421,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "the sign convention: a liability balance is stored negative",
         CONNECTOR_DERIVERS,
-        '    if balance_class == "liability" and current > 0:',
+        '    if balance_class == "liability":',
         "    if False:",
         f"{DERIVER_TESTS}::test_a_liability_reported_positive_is_stored_negative",
     ),
@@ -710,8 +710,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-2.1: an empty next_cursor never overwrites a good one",
         CONNECTOR_DERIVERS,
-        "    if not isinstance(next_cursor, str) or not next_cursor:\n        return",
-        "    if False:\n        return",
+        "    if not isinstance(next_cursor, str) or not next_cursor:",
+        "    if False:",
         f"{SYNC_CURSOR_TESTS}::test_a_not_ready_response_does_not_move_the_cursor",
     ),
     (
@@ -1041,16 +1041,49 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "C1 truncation: `truncated` is true exactly when rows are missing",
         ENVELOPE,
-        "        return self.returned < self.matching",
-        "        return self.returned <= self.matching",
+        "        return self.returned < self.remaining",
+        "        return self.returned <= self.remaining",
         f"{TRUNCATION_TESTS}::test_an_untruncated_answer_reports_false_and_equal_counts",
     ),
     (
-        "C1 truncation: `matching` is floored at the rows already in hand",
+        "C1 truncation: the counts are floored at the rows already in hand",
         ENVELOPE,
-        "            matching=max(counted, returned),",
-        "            matching=counted,",
+        "        left = max(remaining, returned)",
+        "        left = remaining",
         f"{TRUNCATION_TESTS}::test_a_count_that_lags_the_rows_is_reconciled_rather_than_refused",
+    ),
+    (
+        # The break leaves the aggregate computing the roster verdicts and
+        # raising nothing about them, which is the state the tool shipped in:
+        # the one answer an agent is told to quote was the one carrying no
+        # lifecycle caveat.
+        "AC-12.8: the aggregate names the accounts that stopped being reported",
+        QUERY,
+        "        not_active = [entry for entry in lifecycle.values() if not entry.active]\n"
+        "        uncovered = [entry for entry in _account_coverage(conn).values()",
+        "        not_active: list[AccountLifecycle] = []\n"
+        "        uncovered = [entry for entry in _account_coverage(conn).values()",
+        f"{LIFECYCLE_TESTS}::test_a_money_summary_spanning_an_account_that_went_quiet_says_so",
+    ),
+    (
+        "#19: the aggregate names an account that has never had a transaction",
+        QUERY,
+        "        uncovered = [entry for entry in _account_coverage(conn).values() "
+        "if entry.uncovered]",
+        "        uncovered: list[AccountCoverage] = []",
+        f"{COVERAGE_TESTS}::test_summarising_money_warns_when_an_account_in_scope_has_no_coverage",
+    ),
+    (
+        # The break makes the whole-request count take the keyset predicate the
+        # page count takes, which is the meaning `matching` used to carry: the
+        # figure then falls page by page and an agent quoting the last page
+        # answers with the size of that page.
+        "truncation: `matching` counts the whole request, cursor or no cursor",
+        QUERY,
+        "                        since=since, until=until, account_id=account_id, after=None",
+        "                        since=since, until=until, account_id=account_id, after=after",
+        f"{TRUNCATION_TESTS}::"
+        "test_a_cursor_narrows_what_is_left_and_leaves_the_whole_request_count_alone",
     ),
     (
         "C1 cursor: a cursor rides an answer only when there is a next page",
@@ -1554,8 +1587,9 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-14.5: an aggregate over an inverted connection says so",
         QUERY,
-        "                _pending_caveat(pending) + signs.caveats(conn, since=since, until=until)",
-        "                _pending_caveat(pending)",
+        "                + _pending_caveat(pending)\n"
+        "                + signs.caveats(conn, since=since, until=until)",
+        "                + _pending_caveat(pending)",
         f"{SIGN_TESTS}::test_an_aggregate_over_a_flagged_connection_says_so",
     ),
     (

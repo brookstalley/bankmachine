@@ -10,6 +10,15 @@ Accumulated wisdom from building this product. Entries use "When X, do Y because
 
 ---
 
+## Measure what the client delivers, not what the server sends
+
+**When a server's `instructions` (or any text a client forwards to a model) carries guidance that
+matters, measure the text the CLIENT actually hands the model — because a client may truncate at a
+budget the server never sees, and every test that holds the string in-process passes while the model
+reads a third of it.**
+
+---
+
 ## Review coverage
 
 **When work should be reviewable, land it on a feature branch and review it BEFORE pushing to the

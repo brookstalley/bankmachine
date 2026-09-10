@@ -16,6 +16,7 @@ deletes a row the archive could not recreate.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -162,12 +163,26 @@ def derive_transactions_recategorized(
     _derive_transactions(conn, response, context, describe=str.upper)
 
 
+def derive_transactions_reidentified(
+    conn: SAConnection, response: RawResponse, context: DerivationContext
+) -> None:
+    """A deriver that no longer emits the rows under the identities it used to.
+
+    A real reason for it: the source identity was being taken from the wrong
+    field, and a later build corrected it. The replay then produces rows that
+    are not the ones the operator corrected, which is the case where a preserved
+    column has nowhere to land.
+    """
+    _derive_transactions(conn, response, context, describe=str, identify="{}-v2".format)
+
+
 def _derive_transactions(
     conn: SAConnection,
     response: RawResponse,
     context: DerivationContext,
     *,
     describe: Callable[[str], str],
+    identify: Callable[[str], str] = str,
 ) -> None:
     payload = json.loads(response.body)
     account_id = int(
@@ -181,7 +196,7 @@ def _derive_transactions(
     for entry in payload["transactions"]:
         values = {
             "account_id": account_id,
-            "source_transaction_id": entry["id"],
+            "source_transaction_id": identify(entry["id"]),
             "pending": 0,
             "posted_date": calendar_date(date.fromisoformat(entry["posted"])),
             "amount_minor": minor_units(entry["amount_minor"]),
@@ -221,6 +236,11 @@ DERIVERS: Mapping[str, Deriver] = {
 RECATEGORIZED: Mapping[str, Deriver] = {
     ACCOUNTS_ENDPOINT: derive_accounts,
     TRANSACTIONS_ENDPOINT: derive_transactions_recategorized,
+}
+
+REIDENTIFIED: Mapping[str, Deriver] = {
+    ACCOUNTS_ENDPOINT: derive_accounts,
+    TRANSACTIONS_ENDPOINT: derive_transactions_reidentified,
 }
 
 
@@ -499,6 +519,70 @@ def test_a_changed_derivation_version_makes_the_difference_a_recorded_one(
         assert list(recorded) == [shipped, shipped + 1]
         stamps = conn.execute(select(transactions.c.derivation_version_id).distinct()).scalars()
         assert list(stamps) == [report.derivation_version_id]
+
+
+def test_a_rebuild_preserves_an_operator_override_the_archive_cannot_recreate(
+    initialized_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 The one column the archive was never going to bring back.
+
+    `transactions` carries a `raw_response_id`, so a rebuild empties it -- and
+    `category_override` is the operator's own correction, which no deriver
+    writes and no response contains. The digest guard would normally catch the
+    loss, but a changed derivation version is the usual REASON to rebuild, and
+    that is exactly the state in which the guard treats a content change as
+    expected. So the rebuild reported success and every override was gone, with
+    `money_summary(group_by="category")` quietly answering with the source's
+    categories again.
+    """
+    apply_corpus(initialized_config, A_CORPUS)
+    with writer_engine(initialized_config) as engine, engine.connect() as conn, transaction(conn):
+        conn.execute(
+            update(transactions)
+            .where(transactions.c.source_transaction_id == "t-1")
+            .values(category_override="Sabbatical")
+        )
+    monkeypatch.setattr(derivation, "DERIVATION_VERSION", derivation.DERIVATION_VERSION + 1)
+
+    report = rebuild(initialized_config, derivers=RECATEGORIZED)
+
+    assert report.change_was_expected
+    with reading(initialized_config) as conn:
+        overrides = {
+            str(row[0]): row[1]
+            for row in conn.execute(
+                select(transactions.c.source_transaction_id, transactions.c.category_override)
+            ).all()
+        }
+    assert overrides["t-1"] == "Sabbatical", "the rebuild reported success and lost the override"
+    assert overrides["t-2"] is None, "an override was applied to a row that never had one"
+
+
+def test_an_override_whose_row_the_replay_cannot_recreate_is_reported_not_dropped(
+    initialized_config: Config, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A correction with nowhere to land is a loss, and losses are said out loud.
+
+    The row it belonged to is not in the rebuilt table -- the response that
+    produced it was pruned, or a changed deriver no longer emits it -- so there
+    is nothing to carry the override onto. Restoring it against some other row
+    would be worse than losing it; saying which correction was lost is what lets
+    the operator put it back.
+    """
+    apply_corpus(initialized_config, A_CORPUS)
+    with writer_engine(initialized_config) as engine, engine.connect() as conn, transaction(conn):
+        conn.execute(
+            update(transactions)
+            .where(transactions.c.source_transaction_id == "t-1")
+            .values(category_override="Sabbatical")
+        )
+
+    with caplog.at_level(logging.WARNING, logger="bankmachine"):
+        rebuild(initialized_config, derivers=REIDENTIFIED, accept_content_change=True)
+
+    assert any("category_override" in record.getMessage() for record in caplog.records), (
+        "an operator correction was dropped with nothing recording that it happened"
+    )
 
 
 def test_a_response_no_deriver_understands_stops_the_whole_rebuild(

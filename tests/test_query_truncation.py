@@ -5,7 +5,7 @@
 hand-built boundary matrix while three real bugs stayed live: a matrix is
 written by the same mind, at the same sitting, from the same mental model as the
 code, so it reproduces the code's blind spot. The escape is to assert the RULE
-rather than enumerate instances — `truncated` iff `returned < matching` cannot be
+rather than enumerate instances — `truncated` iff `returned < remaining` cannot be
 written from a mental model of which requests truncate, so it does not inherit
 one.
 
@@ -46,9 +46,10 @@ from bankmachine.store.types import now_utc
 # The invariants — written before the matrix, and the reason for the ordering
 # --------------------------------------------------------------------------
 
-#: Any two row counts where the answer is possible at all. `returned > matching`
-#: is excluded here because it is not a truncation, it is a contradiction, and it
-#: has its own test one function down.
+#: Any two row counts where the answer is possible at all -- drawn as one figure
+#: because an unpaged request's two counts ARE one figure. `returned` above the
+#: count is excluded here because it is not a truncation, it is a contradiction,
+#: and it has its own test one function down.
 _POSSIBLE = st.integers(min_value=0, max_value=10_000).flatmap(
     lambda matching: st.tuples(st.integers(min_value=0, max_value=matching), st.just(matching))
 )
@@ -79,7 +80,9 @@ def test_truncated_is_true_exactly_when_rows_are_missing(
     that disagreed with its own two numbers would be believed over them.
     """
     returned, matching = counts
-    truncation = Truncation.over(returned=returned, counted=matching, resume_from=resume_from)
+    truncation = Truncation.over(
+        returned=returned, remaining=matching, matching=matching, resume_from=resume_from
+    )
 
     assert truncation.truncated == (returned < matching)
     assert truncation.returned <= truncation.matching
@@ -99,7 +102,9 @@ def test_a_caveat_rides_every_truncated_answer_and_no_complete_one(
     invisible.
     """
     returned, matching = counts
-    truncation = Truncation.over(returned=returned, counted=matching, resume_from=resume_from)
+    truncation = Truncation.over(
+        returned=returned, remaining=matching, matching=matching, resume_from=resume_from
+    )
 
     kinds = [c.kind for c in truncation.caveats]
 
@@ -118,12 +123,44 @@ def test_the_caveat_never_quotes_a_figure_the_block_beside_it_denies(
     numbers look wrong.
     """
     returned, matching = counts
-    truncation = Truncation.over(returned=returned, counted=matching, resume_from=resume_from)
+    truncation = Truncation.over(
+        returned=returned, remaining=matching, matching=matching, resume_from=resume_from
+    )
 
     for caveat in truncation.caveats:
-        assert f"{matching} transactions match" in caveat.detail
-        assert f"newest {returned} are returned" in caveat.detail
-        assert f"{matching - returned} are missing" in caveat.detail
+        assert f"{matching} transactions match this request" in caveat.detail
+        assert f"newest {returned} of the {matching} still unread" in caveat.detail
+        assert f"{matching - returned} of them are still missing" in caveat.detail
+
+
+@given(
+    returned=st.integers(min_value=0, max_value=500),
+    unread=st.integers(min_value=0, max_value=500),
+    behind=st.integers(min_value=0, max_value=500),
+)
+def test_the_caveat_names_the_whole_request_and_what_is_left_of_it(
+    returned: int, unread: int, behind: int
+) -> None:
+    """🔴 The two counts in one sentence, on a page that is not the first.
+
+    The property above draws `remaining == matching`, which is every unpaged
+    call and no paged one — so it could not tell the two figures apart, and a
+    sentence quoting the paged count as "match this request" would satisfy it
+    forever. A caller reads this sentence precisely when the numbers look wrong,
+    and the number it will quote is the whole-request one.
+    """
+    remaining = returned + unread
+    truncation = Truncation.over(
+        returned=returned,
+        remaining=remaining,
+        matching=remaining + behind,
+        resume_from=_A_CURSOR,
+    )
+
+    for caveat in truncation.caveats:
+        assert f"{remaining + behind} transactions match this request" in caveat.detail
+        assert f"newest {returned} of the {remaining} still unread" in caveat.detail
+        assert f"{unread} of them are still missing" in caveat.detail
 
 
 @given(
@@ -151,9 +188,12 @@ def test_a_count_that_lags_the_rows_is_reconciled_rather_than_refused(
     the skew rides out as its own caveat.
     """
     counted = max(0, returned - removed)
-    truncation = Truncation.over(returned=returned, counted=counted, resume_from=None)
+    truncation = Truncation.over(
+        returned=returned, remaining=counted, matching=counted, resume_from=None
+    )
 
-    assert truncation.matching == returned, "a count below the rows contradicts the payload"
+    assert truncation.remaining == returned, "a count below the rows contradicts the payload"
+    assert truncation.matching == returned, "the whole-request count fell below its own page"
     assert truncation.truncated is False, "no rows are being hidden when the count lags"
     assert truncation.counted_during_change is True
     assert [c.kind for c in truncation.caveats] == ["counted_during_change"]
@@ -166,7 +206,9 @@ def test_a_count_that_matches_or_exceeds_the_rows_reports_no_change() -> None:
     all over again — measurement already showed what that does to a reader.
     """
     for returned, counted in ((0, 0), (3, 3), (100, 144), (500, 500)):
-        truncation = Truncation.over(returned=returned, counted=counted, resume_from=None)
+        truncation = Truncation.over(
+            returned=returned, remaining=counted, matching=counted, resume_from=None
+        )
 
         assert truncation.counted_during_change is False, (returned, counted)
         assert "counted_during_change" not in [c.kind for c in truncation.caveats]
@@ -189,7 +231,9 @@ def test_the_remedy_is_one_the_caller_can_actually_follow(
     because the boundary is the thing most likely to move.
     """
     returned, matching = counts
-    truncation = Truncation.over(returned=returned, counted=matching, resume_from=resume_from)
+    truncation = Truncation.over(
+        returned=returned, remaining=matching, matching=matching, resume_from=resume_from
+    )
 
     for caveat in truncation.caveats:
         offers_a_bigger_limit = "raise `limit`" in caveat.detail
@@ -208,7 +252,9 @@ def test_the_remedy_names_the_ceiling_the_code_enforces() -> None:
     caveat tells a caller what to raise `limit` to, so it must read the same
     constant the query clamps against.
     """
-    detail = Truncation.over(returned=1, counted=2, resume_from=None).caveats[0].detail
+    detail = (
+        Truncation.over(returned=1, remaining=2, matching=2, resume_from=None).caveats[0].detail
+    )
 
     assert f"at most {MAX_ROWS}" in detail
 
@@ -647,7 +693,9 @@ def test_the_truncation_invariant_holds_over_every_request_this_store_can_answer
     Four rules, each of which has a way to be violated silently:
 
     - `returned` equals the rows actually in the payload (not the limit asked for)
-    - `matching` equals an independently derived count
+    - `remaining` equals an independently derived count taken FROM the cursor
+    - `matching` equals the same count taken WITHOUT the cursor, so it is a fact
+      about the request rather than about how far through it the caller is
     - `truncated` iff rows are missing
     - a `rows_truncated` warning rides every truncated answer and no complete one
     """
@@ -695,14 +743,21 @@ def test_the_truncation_invariant_holds_over_every_request_this_store_can_answer
                         assert truncation is not None, where
 
                         assert truncation.returned == len(answer.rows), where
-                        assert truncation.matching == _oracle_count(
+                        assert truncation.remaining == _oracle_count(
                             seeded_config,
                             since=since,
                             until=until,
                             account_id=account_id,
                             after=after,
                         ), where
-                        assert truncation.truncated == (len(answer.rows) < truncation.matching), (
+                        assert truncation.matching == _oracle_count(
+                            seeded_config,
+                            since=since,
+                            until=until,
+                            account_id=account_id,
+                            after=None,
+                        ), where
+                        assert truncation.truncated == (len(answer.rows) < truncation.remaining), (
                             where
                         )
 
@@ -736,7 +791,7 @@ def test_a_capped_answer_returns_the_limit_and_says_how_many_it_left_behind(
     assert answer.truncation is not None
 
     assert answer.truncation.returned == 100
-    assert answer.truncation.matching == _TOTAL
+    assert answer.truncation.matching == answer.truncation.remaining == _TOTAL
     assert answer.truncation.truncated is True
     assert answer.truncation.matching > answer.truncation.returned
 
@@ -748,6 +803,7 @@ def test_an_untruncated_answer_reports_false_and_equal_counts(seeded_config: Con
 
     assert answer.truncation.truncated is False
     assert answer.truncation.returned == answer.truncation.matching == _TOTAL
+    assert answer.truncation.remaining == _TOTAL
     assert [w.kind for w in answer.warnings if w.kind in envelope.REQUEST_SCOPED_KINDS] == []
 
 
@@ -937,6 +993,7 @@ def test_a_capped_tool_still_reports_the_block_when_the_store_cannot_be_read(
 
     assert answer.truncation is not None
     assert answer.truncation.returned == 0
+    assert answer.truncation.remaining == 0
     assert answer.truncation.matching == 0
     assert answer.truncation.truncated is False
     assert [w.kind for w in answer.warnings] == ["partial"]
@@ -995,7 +1052,8 @@ def test_a_row_removed_between_the_two_reads_answers_rather_than_failing(
 
     # The answer exists at all — the point of the finding.
     assert answer.truncation.returned == len(answer.rows) == _TOTAL
-    # The count came back one short; `matching` floors at the rows observed.
+    # The count came back one short; both figures floor at the rows observed.
+    assert answer.truncation.remaining == _TOTAL
     assert answer.truncation.matching == _TOTAL
     assert answer.truncation.truncated is False, "no rows are hidden when the count lags"
     assert answer.truncation.counted_during_change is True
@@ -1198,7 +1256,9 @@ def test_a_cursor_rides_exactly_the_answers_that_have_a_next_page(
     excused beside it.
     """
     returned, matching = counts
-    truncation = Truncation.over(returned=returned, counted=matching, resume_from=resume_from)
+    truncation = Truncation.over(
+        returned=returned, remaining=matching, matching=matching, resume_from=resume_from
+    )
 
     assert (truncation.next_cursor is not None) == (
         truncation.truncated and resume_from is not None
@@ -1336,18 +1396,24 @@ def test_only_the_last_page_of_a_walk_reads_as_complete(
     assert [w.kind for w in pages[-1].warnings if w.kind in envelope.REQUEST_SCOPED_KINDS] == []
 
 
-def test_a_cursor_narrows_matching_to_the_rows_still_ahead(seeded_config: Config) -> None:
-    """🔴 What `matching` means on page two, which is the decision the walk rests on.
+def test_a_cursor_narrows_what_is_left_and_leaves_the_whole_request_count_alone(
+    seeded_config: Config,
+) -> None:
+    """🔴 The two counts a paged walk needs, and why they cannot be one number.
 
-    Counting the whole result set behind every page would leave `truncated` true
-    on the final page forever, so a caller paging until it went false would never
-    stop and would ask for a page that does not exist. The cursor narrows the
-    count exactly as `since` does, and the two numbers stay a statement about
-    THIS request.
+    `remaining` has to fall, or `truncated` stays true on the final page forever
+    and a caller paging until it went false would ask for a page that does not
+    exist. `matching` has to hold still, or the same name answers a different
+    question on every page — measured on the sandbox store, a walk reported
+    390, 290, 190, 90 under one name, with
+    `coverage.transactions_in_effective_window` beside it reading 390
+    throughout. An agent quoting the last page answered "90 transactions" to a
+    question about the whole year, and nothing in the payload said which figure
+    to believe.
     """
     first = query.list_transactions(seeded_config, limit=10)
     assert first.truncation is not None
-    assert first.truncation.matching == _TOTAL
+    assert first.truncation.matching == first.truncation.remaining == _TOTAL
     assert first.truncation.next_cursor is not None
 
     second = query.list_transactions(
@@ -1359,8 +1425,30 @@ def test_a_cursor_narrows_matching_to_the_rows_still_ahead(seeded_config: Config
     )
 
     assert second.truncation is not None
-    assert second.truncation.matching == _TOTAL - 10
     assert second.truncation.returned == 10
+    assert second.truncation.remaining == _TOTAL - 10
+    assert second.truncation.matching == _TOTAL, "the whole-request count moved as the caller paged"
+
+
+def test_the_whole_request_count_reads_the_same_on_every_page_of_a_walk(
+    seeded_config: Config,
+) -> None:
+    """The same rule over a walk to exhaustion, which is where the last page is.
+
+    The two-page check above cannot reach the page that ENDS the walk, and that
+    is the page an agent quotes: `truncated` is false there, no caveat rides it,
+    and under the old meaning `matching` had fallen to the size of that final
+    page. Asserted across every page, and against `coverage`'s own window count
+    so the answer cannot contradict itself.
+    """
+    _, pages = _walk(seeded_config, page_size=40)
+
+    assert len(pages) > 2, "the walk did not reach a final page, so this checks nothing"
+    blocks = [page.truncation for page in pages]
+    assert all(block is not None for block in blocks)
+    assert {block.matching for block in blocks if block is not None} == {_TOTAL}
+    assert {page.coverage["transactions_in_effective_window"] for page in pages} == {_TOTAL}
+    assert [block.truncated for block in blocks if block is not None][-1] is False
 
 
 def test_the_window_scoped_coverage_does_not_shrink_as_a_caller_pages(

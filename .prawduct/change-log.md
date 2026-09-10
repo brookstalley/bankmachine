@@ -34,6 +34,79 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-10: Production cutover hardening — what five reviews found the night before real accounts
+
+<!-- prawduct: scope=production-cutover-hardening -->
+
+**Why:** the owner connects real accounts the next day. Five independent read-only reviews of
+`develop` at `4b78550` — security, MCP surface, money model, sync/connector, docs — found no
+credential or PII leak and a design that is strong where it is strong, and a set of defects that are
+**invisible in sandbox and ordinary in production**: a wedged pipeline or a plausible wrong answer,
+with no signal either way. The reports ride under `artifacts/reviews-2026-09-09/`; the plan is
+`build-plan-production-cutover-hardening.md`, five chunks built in parallel on five branches.
+
+**What changed:**
+
+- 🔴 **Enrollment offers every bank.** `investments` moves from the REQUIRED product set to
+  `optional_products`: Link offers only institutions supporting every required product, so requesting
+  `investments` up front silently removed most card issuers and credit unions from the picker. The
+  discovery the 2026-09-07 decision wanted still happens wherever the institution supports it.
+- 🔴 **A re-link no longer wedges the connection.** Re-enrolling an institution that yields a NEW
+  Item resets the sync cursor and the granted window in the same transaction that repoints the row;
+  before, the old Item's cursor was sent with the new Item's token, forever, on the only remedy the
+  product offers for `ITEM_LOGIN_REQUIRED`. `connections retire` now marks the connection's accounts
+  inactive, so their frozen balances stop reading as current.
+- 🔴 **Sync survives what production sends.** `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION`
+  restarts from the stored cursor instead of degrading the connection; the `accounts` array on every
+  sync page is derived before the change lists, so a transaction on an account `/accounts/get` no
+  longer lists cannot wedge derivation; a null `balances.current` records an absent balance instead
+  of aborting the connection; a datastore failure on one connection degrades that connection and the
+  run continues; a `modified` naming a hold that has already posted finds the merged row instead of
+  inserting the purchase again; `include_original_description` is on, so the archive holds the bank's
+  own memo from the first production page; `store rebuild` carries `category_override` across a
+  version bump instead of dropping every operator re-categorisation; `certifi` pins the trust store.
+- 🔴 **A card in credit is value held, not debt.** The Plaid connector negates every liability
+  balance: the aggregator documents a credit/loan `current` as positive-when-owed and
+  negative-when-in-credit, so the old conditional stored a refunded card's credit as money owed.
+  The test that pinned the conditional changes its expectation and records why. **Owner ruling
+  requested; applied provisionally.**
+- 🔴 **The server's instructions fit what the client delivers.** Measured: Claude Code handed the
+  model 2,045 of 6,673 characters, cutting mid-table and dropping the rule that prevents "no
+  payments found" on a mortgage. The instructions are now a 1,693-character primer whose second line
+  names the two reference resources; everything cut is served by URI, and the completeness test
+  holds the union. The primer says what the server cannot answer, names the three unbuilt tools, and
+  says that `description` and `merchant` are third-party text to quote and never follow.
+- 🔴 **The money prose stops asserting what the classifier does not establish.** `flow_class`
+  reads one aggregator category and matches no counterparty leg, so "an internal transfer never
+  left" and "debt service settles purchases already counted" were false for the sandbox payroll row,
+  for every mortgage, auto and student-loan payment, and for a card payment when the card is not
+  enrolled. The definitions now say what each class IS; `totals` carries whole-window
+  `inflow_minor_units` and `outflow_minor_units` and the three classes are asserted to sum to it.
+  The counterparty-matching classifier is filed (#66).
+- **The MCP boundary's catch covers the boundary** — serialization and the write itself — so a
+  failing `to_wire()` answers `internal_error` and the pipe survives; `truncation.matching` is the
+  whole-request count on every page and `remaining` is what falls; transaction rows carry
+  `account_id`; `money_summary` carries the lifecycle and coverage caveats the other tools carry; the
+  text form of every answer is compact JSON; unknown tool and non-object arguments answer `-32602`.
+- **Files land owner-only.** `os.umask(0o077)` at the one process entry; before, the datastore, WAL,
+  log and backups were 0644. `store init` prints the key-backup instruction with the keychain recipe
+  (never the key); `store status` repeats a one-line reminder. The credential guard's label
+  vocabulary matches the log redactor's, and a forwarded reference beside a string literal no longer
+  trips it. Tests can no longer resolve config from the operator's real environment.
+- **A stranger can get from clone to production.** `docs/first-production-connection.md` (dashboard
+  prerequisites, the ordered cutover with what each step verifies, the day-one checks no test can
+  perform, the standing routine), `docs/README.md` as an index, README's *What leaves this machine*,
+  one Python truth (3.14) everywhere, the MCP client page followable from a GUI client, and the
+  2026-09-08 readiness verdict marked superseded.
+
+**Not closed, filed:** #66–#86 — the counterparty classifier, `connections reauth` via Link update
+mode, re-link duplicate history, settled holds keeping their authorization date, interior gaps,
+AC-11.2 reconciliation, `money_summary` paging, a `posted_date` index, batch requests, `gapped` on
+every answer, per-account window coverage, `original_description` derivation, re-archiving on
+failed derivation, sync exit codes, a writer per page, a consumer CHANGELOG, consent expiry,
+log rotation, unofficial-currency rounding, `INITIAL_UPDATE_COMPLETE` reported as finished, and an
+account with no currency anywhere.
+
 ## 2026-09-09: A store this build cannot serve refuses, instead of answering zero
 
 <!-- prawduct: scope=unservable-datastore -->

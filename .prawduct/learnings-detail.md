@@ -3,6 +3,18 @@
 <!-- The bodies behind `learnings.md`'s rule index. One `## ` heading here per rule there,
      spelled the same way. The index is what gets read; this is what gets checked. -->
 
+## Measure what the client delivers, not what the server sends
+
+**Instances:**
+
+- *2026-09-10, the MCP primer.* `mcp.py` served 6,673 characters of instructions with a table of
+  warning kinds and the rule that prevents "no payments found" on a mortgage; two tests held the
+  string against the vocabulary and both were green. Claude Code's system prompt showed
+  `… [truncated]` after 2,045 characters — the reviewer measured it from the coordinator's own
+  context. The fix was a 1,693-character primer whose second line names the resources that carry the
+  rest, and a test that holds the union of primer and resources. Reviews:
+  `artifacts/reviews-2026-09-09/review-mcp.md` finding 1.
+
 ## Write a guard from the failure's point of view, not the fix's
 
 **Instances (2026-09-09, `production-blocker-findings`) — three more, each failing differently, and

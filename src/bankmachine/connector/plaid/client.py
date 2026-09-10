@@ -32,6 +32,7 @@ import time
 from collections.abc import Callable
 from typing import Any, Final
 
+import certifi
 import plaid
 import urllib3.exceptions
 from plaid.api import plaid_api
@@ -48,6 +49,7 @@ from plaid.model.link_token_get_request import LinkTokenGetRequest
 from plaid.model.link_token_transactions import LinkTokenTransactions
 from plaid.model.products import Products
 from plaid.model.transactions_sync_request import TransactionsSyncRequest
+from plaid.model.transactions_sync_request_options import TransactionsSyncRequestOptions
 
 from bankmachine.config import MAX_HISTORY_DAYS, Config
 from bankmachine.connector import (
@@ -331,6 +333,15 @@ class PlaidClient:
         configuration = plaid.Configuration(
             host=_host_for(config.environment),
             api_key={"clientId": config.plaid_client_id, "secret": secret},
+            # 🔴 The anchor set is named rather than left to OpenSSL's defaults,
+            # which honour `SSL_CERT_FILE` and `SSL_CERT_DIR`. This product's
+            # documented setup step is `source .env`, so the shell that runs a
+            # sync routinely imports environment -- and a stray export from
+            # another project would then narrow or replace the trust anchors for
+            # the one channel that carries live credentials, with no symptom
+            # until an interception succeeds. `certifi` is a file on disk that
+            # the lockfile controls, not a network destination.
+            ssl_ca_cert=certifi.where(),
         )
         # Held so `close()` can return the pool's sockets rather than leaving
         # them to the garbage collector; a CLI process that exits immediately
@@ -554,6 +565,7 @@ class PlaidClient:
         client_user_id: str,
         country_codes: list[str],
         products: list[str],
+        optional_products: list[str] | None = None,
         hosted_url_lifetime_seconds: int = DEFAULT_HOSTED_URL_LIFETIME_SECONDS,
     ) -> LinkToken:
         """Open a Link session that will request `history_days` of history.
@@ -576,6 +588,14 @@ class PlaidClient:
                 f"The aggregator would reject it, and the window cannot be changed after "
                 f"enrollment"
             )
+        # `products` is the REQUIRED set: Link offers only institutions that support
+        # every member of it, so a product listed there narrows the picker with no
+        # error. `optional_products` is added to the Item wherever the institution
+        # supports it and narrows nothing, which is the shape a product this code
+        # never calls an endpoint for -- but wants discovered -- belongs in.
+        extra: dict[str, Any] = {}
+        if optional_products:
+            extra["optional_products"] = [Products(product) for product in optional_products]
         request = LinkTokenCreateRequest(
             client_name=LINK_CLIENT_NAME,
             language=LINK_LANGUAGE,
@@ -590,6 +610,7 @@ class PlaidClient:
             hosted_link=LinkTokenCreateHostedLink(
                 url_lifetime_seconds=hosted_url_lifetime_seconds,
             ),
+            **extra,
         )
         body = self._fetch_bytes(LINK_TOKEN_CREATE, self._api.link_token_create, request)
         payload = _payload(LINK_TOKEN_CREATE, body)
@@ -761,7 +782,18 @@ class PlaidClient:
         forgot it would silently re-fetch all history on every run, and the cost
         would show up as a rate limit rather than as a wrong answer.
         """
-        request = TransactionsSyncRequest(access_token=access_token, count=count)
+        request = TransactionsSyncRequest(
+            access_token=access_token,
+            count=count,
+            # 🔴 `include_original_description` is opt-in and the bytes it adds
+            # cannot be re-fetched. `store/raw.py` archives what the aggregator
+            # said because an aggregator's history window is not a thing you get
+            # back, so a field left out of the response is out of the archive
+            # permanently -- turning this on later would only affect rows fetched
+            # later. The raw bank memo is frequently the only thing that
+            # identifies an ACH or a transfer.
+            options=TransactionsSyncRequestOptions(include_original_description=True),
+        )
         if cursor is not None:
             request.cursor = cursor
         return self._fetch(

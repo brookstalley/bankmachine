@@ -935,6 +935,29 @@ def test_a_rebuild_does_not_undo_the_operators_declaration(
     assert _rows(initialized_config)[f"Account {DROPPED}"]["lifecycle"] == "closed"
 
 
+def test_retiring_a_connection_leaves_the_store_rebuildable(initialized_config: Config) -> None:
+    """🔴 The shipped retire path, against the trap `_declare_closed` documents.
+
+    `updated_at` is inside `content_digest` and is derivation-owned, so a retire
+    that stamped it would leave a same-version `store rebuild` unable to
+    reproduce `accounts` from the archive -- and the docs tell an operator to run
+    exactly that rebuild for a connection that is not syncing. Driven through the
+    command's own write rather than a stand-in, so the column set it touches is
+    the one under test.
+    """
+    from bankmachine.cli.connections import _mark_retired
+
+    _shrinking_roster(initialized_config)
+    with writer_connection(initialized_config) as conn:
+        _mark_retired(conn, connection_id=1, now=now_utc())
+
+    rebuild(initialized_config, derivers=ALL_DERIVERS)
+
+    rows = _rows(initialized_config)
+    assert rows[f"Account {KEPT}"]["lifecycle"] == "closed"
+    assert rows[f"Account {DROPPED}"]["lifecycle"] == "closed"
+
+
 #: The derivation version that shipped before `_record_roster_observation` existed.
 #: 🔴 A fixed historical fact, deliberately not written as `DERIVATION_VERSION - 1`:
 #: a relative stamp moves with the constant, so the archived rows and the running
@@ -1202,6 +1225,59 @@ def test_the_warning_names_the_accounts_and_which_kind_each_one_is(
 
     assert "declared closed by the operator" in detail
     assert "no longer listed by their institution" in detail
+
+
+def test_a_money_summary_spanning_an_account_that_went_quiet_says_so(
+    initialized_config: Config,
+) -> None:
+    """🔴 The period total is the figure an agent quotes, and it carried no caveat.
+
+    An institution stops listing a card mid-window. `money_summary(group_by=
+    "month")` then shows that card's spending through the month it went quiet
+    and roughly nothing after, with the store knowing exactly why and the answer
+    not saying: the drop reads as the operator having spent less. Every other
+    tool on this surface already names the account; the aggregate is the one
+    whose number gets repeated.
+    """
+    _shrinking_roster(initialized_config)
+
+    wire = _wire(initialized_config, "money_summary")
+
+    assert "account_no_longer_active" in _kinds(wire)
+    detail = next(c["detail"] for c in wire["warnings"] if c["kind"] == "account_no_longer_active")
+    assert "no longer listed" in detail
+    assert "de-selection from sharing" in detail, (
+        "the aggregate's warning must carry the same ambiguity the account rows carry, "
+        "or a reader takes it as a closure claim"
+    )
+
+
+def test_a_money_summary_over_a_healthy_roster_does_not_carry_the_warning(
+    initialized_config: Config,
+) -> None:
+    """The reverse half on the aggregate, for the reason its sibling below states."""
+    connection_id = _enroll(initialized_config)
+    _observe(initialized_config, connection_id, [KEPT], at=now_utc())
+
+    assert "account_no_longer_active" not in _kinds(_wire(initialized_config, "money_summary"))
+
+
+def test_the_aggregate_counts_the_non_active_accounts_it_was_computed_over(
+    initialized_config: Config,
+) -> None:
+    """🔴 The warning and the envelope figures have to come from ONE derivation.
+
+    `coverage.accounts_not_active` used to be derived inside the envelope while
+    the aggregate raised no lifecycle caveat at all, so the two halves of AC-12.8
+    could disagree about the same store with nothing to reconcile them. One walk
+    feeds both, which is what makes the count the warning's own evidence.
+    """
+    _shrinking_roster(initialized_config)
+
+    wire = _wire(initialized_config, "money_summary")
+
+    assert wire["coverage"]["accounts_not_active"] == 1
+    assert "account_no_longer_active" in _kinds(wire)
 
 
 def test_a_request_that_holds_no_non_active_account_does_not_carry_the_warning(

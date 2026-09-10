@@ -1,6 +1,6 @@
 # Build vs. Adopt — Investigation and Recommendation
 
-**Date:** 2026-09-05 · **Author:** Claude Code (session 1, pre-scaffold)
+**Date:** 2026-09-05 · **Stage:** session 1, pre-scaffold
 **Question asked:** clone-and-run an existing project, fork one, or build clean-slate?
 **Answer:** **Build clean-slate in Python.** Harvest `mbafford/plaid-sync`'s Plaid-client layer as
 an attributed reference. Do not fork anything.

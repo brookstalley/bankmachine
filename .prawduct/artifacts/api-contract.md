@@ -376,9 +376,12 @@ tool today; aggregates carry no block, because the row cap does not apply to the
 
 **`returned` is the count of rows actually in the payload**, derived from the rows themselves rather
 than from the caller's `limit` — a `limit` above the hard cap is clamped, so the two are not the same
-number. **`matching` is the count the request selects**, over the same predicates and the same tables
-as the row query. **`truncated` is `returned < matching`**, derived rather than stored: a third
-number can disagree with the other two, and a derived one cannot.
+number. **`matching` is the count the WHOLE request selects**, over the same predicates and the same
+tables as the row query, and it does not move as a caller pages. **`remaining` is what was still
+ahead of this page** — the same count taken from the cursor's position onward, equal to `matching` on
+an unpaged call. **`truncated` is `returned < remaining`**, derived rather than stored: a stored flag
+can disagree with the counts beside it, and a derived one cannot. 🔴 It turns on `remaining` rather
+than on `matching` because only `remaining` falls to the rows in hand on the last page.
 
 🔴 **The measured harm this closes.** An acceptance round found the documented default of `limit: 100`
 silently dropping ~16 months of one account's history, and a caller summing a two-year card total
@@ -395,9 +398,10 @@ advice the answer's own `returned` contradicts.
 The read handle is opened in autocommit — `store/connection.py`: *"every statement is its own
 snapshot"* — and the scheduled sync writer soft-deletes transactions while the MCP reader may be
 mid-query. So a row counted in the first statement and removed before the second makes the count come
-back *below* the rows already in hand. **That is a data condition, not an error:** `matching` floors
+back *below* the rows already in hand. **That is a data condition, not an error:** `remaining` floors
 at `returned`, because those rows were observed to match and reporting fewer would contradict the
-payload beside them; `truncated` is then false, which is true, since nothing is being hidden. The
+payload beside them, and `matching` floors at `remaining` for the same reason one level out;
+`truncated` is then false, which is true, since nothing is being hidden. The
 skew is not smoothed away — `counted_during_change` announces it, so a consumer comparing two calls
 seconds apart knows a write landed between them. **Refusing to answer here would be the wrong
 trade**: it would turn a harmless skew into a failed tool call, which the Direction above forbids in
@@ -407,11 +411,13 @@ as many words.
 `.prawduct/artifacts/mcp-count-latency-2026-09-08.md`, which records that these are single-process
 warm-cache medians on one developer machine rather than a portable benchmark (2026-09-08, synthetic
 stores, 14 accounts over 24 months):
-the `matching` count runs at roughly the cost of the row query itself — ~1ms at 10k rows, ~89ms at
+each count runs at roughly the cost of the row query itself — ~1ms at 10k rows, ~89ms at
 200k — and a full `query_transactions` call lands at ~18ms / ~435ms respectively, inside the ~1s
 target in `nonfunctional-requirements.md` with room to spare at volumes well beyond a real 24-month
-store. **`matching` therefore ships exact**; the approximate-count fallback that was held in reserve
-is not needed and is not built.
+store. **The counts therefore ship exact**; the approximate-count fallback that was held in reserve
+is not needed and is not built. A *paged* call takes a second count so that `matching` can stand for
+the whole request; at the 200k figure above that is one further ~89ms on a call already measured at
+~435ms — still inside the target, and paid only by the requests that page.
 
 ### A truncated answer carries the route to the rest (#17)
 
@@ -422,10 +428,16 @@ present. **The key's presence is the loop condition**: a consumer pages while it
 when it is gone, without comparing two counts to decide. Visibility without a route past the cap
 would have left the honest answer still unobtainable, which is why #17 needed both halves.
 
-**`cursor` narrows the request the way `since` does.** `matching` counts what is left from the
-cursor's position onward, not what lies behind every page — a count over the whole result set would
-leave `truncated` true on the final page forever and a caller paging until it went false would never
-stop.
+**`cursor` narrows the rows and `remaining`, and leaves `matching` alone.** `remaining` counts what
+is left from the cursor's position onward, which is what makes `truncated` go false on the page that
+exhausts the window — a loop condition taken over the whole result set would stay true forever and a
+caller paging until it went false would never stop. `matching` counts what the whole request selects
+and reads the same on every page, because it is the figure a caller QUOTES: measured on the sandbox
+store, one name carrying the paged count reported 390, 290, 190, 90 across a walk while
+`coverage.transactions_in_effective_window` beside it read 390 throughout, so the answer contradicted
+itself and an agent quoting the final page answered "90 transactions" to a question about the year.
+🔴 **The two are separate counts and only a paged request pays for both:** an unpaged call asks one
+question, so `remaining` and `matching` are one statement and one query.
 
 🔴 **A keyset, never an offset.** The cursor is opaque state over `(posted_date, transaction_id)`,
 the total order rows already come back in. An offset shifts under a concurrent sync — one insert
@@ -446,8 +458,8 @@ measurement already refuted raising it — 74.2% of rows are dropped at full cov
 human would pick fixes this.
 
 🔴 **A walk that ends on a `counted_during_change` page may have stopped early.** That warning means
-the count came back below the rows already in hand, so `matching` floored at `returned`, `truncated`
-read false, and no cursor was issued — correct for the numbers in the payload, and possibly short of
+the count came back below the rows already in hand, so `remaining` floored at `returned`,
+`truncated` read false, and no cursor was issued — correct for the numbers in the payload, and possibly short of
 the window if enough rows were removed mid-walk. The warning is the telling: ask again for a count
 taken after the change. Refusing to answer instead would turn a harmless skew into a failed tool
 call, which the Direction above forbids.
@@ -490,10 +502,12 @@ own principle: an overcount gets questioned and an undercount gets believed.
 ### A classifying tool carries `totals`, per currency, and the three add up
 
 🔴 **`money_summary` gains a `totals` block** — one entry per currency, carrying the window's
-*outflow* under each of the three classes. `external_spend_outflow_minor_units` is the figure to
-quote when asked what was spent; the other two are money that never left the holder's accounts or
-that settles purchases already counted under the categories they were spent in, so summing all
-three double-counts.
+`inflow_minor_units` and `outflow_minor_units` and then splitting that *outflow* under each of the
+three classes. Quote `outflow_minor_units` when asked how much went out and
+`external_spend_outflow_minor_units` when asked about external spend, and **name the other two
+classes beside it**: the split describes the outflow rather than filtering it, and the classifier
+reads one aggregator category without matching a counterparty leg, so a mortgage payment and an ATM
+withdrawal are money out under labels that do not say so.
 
 🔴 **Measured against the sandbox store on 2026-09-09, over its full 24 months:** $267,692.77 of
 outflow, of which $164,400.00 is internal transfer and $50,484.00 is debt service — leaving
@@ -719,8 +733,9 @@ here.
 | Field | Type | Means |
 |---|---|---|
 | `returned` | integer | rows actually in this payload, counted from the rows themselves rather than from the caller's `limit` |
-| `matching` | integer | rows the request selects, over the same predicates and tables as the row query. Floors at `returned` |
-| `truncated` | boolean | `returned < matching`, derived rather than stored |
+| `remaining` | integer | rows this request still had ahead of it when this page began — the whole result set on an unpaged call, and what lies from the cursor's position onward on a resumed one. It falls as a caller pages and reaches `returned` on the last page. Floors at `returned` |
+| `matching` | integer | rows the WHOLE request selects, over the same predicates and tables as the row query with the cursor predicate deliberately left off. 🔴 It does **not** move as a caller pages, so `returned` stays below it on the final page and `returned < matching` is not a loop condition. This is the figure to quote for "how many transactions match". Floors at `remaining` |
+| `truncated` | boolean | `returned < remaining`, derived rather than stored |
 | `next_cursor` | string | opaque state to pass back as `cursor` for the next page. Present when and only when `truncated` is true, so its presence is the loop condition |
 
 **Fields — `rows[]`** *(`list_accounts`)*.
@@ -750,10 +765,11 @@ here.
 | Field | Type | Means |
 |---|---|---|
 | `transaction_id` | integer | this store's own id for the transaction. Opaque, and the id `get_coverage_report`'s `oldest_stranded_hold` names when it points at one |
+| `account_id` | integer | this store's id for the account the transaction is on — the same value `list_accounts` publishes, `get_coverage_report` keys on, and the `account_id` argument takes. 🔴 It is the only join between a row and the account it belongs to: `account` beside it is display text that two accounts can share |
 | `account` | string | the NAME of the account the transaction is on, not its id. 🔴 It is display text and not a key — filter with the `account_id` argument, which is what selects rows; two accounts can carry the same name and this field would not tell them apart |
 | `date` | string | the transaction's posted date, `YYYY-MM-DD`. A CALENDAR FACT and never an instant (§ Conventions), and the field the effective window is applied to. Every returned row's `date` lies inside `effective_window.effective` |
 | `description` | string | the institution's own string for the transaction, and 🔴 **the authoritative one.** When it and `merchant` disagree, this is the one that came from the bank |
-| `merchant` | string, nullable | the aggregator's guess at a merchant name, 🔴 **unvalidated** — it is a normalisation the aggregator performed and this product did not check. Null when it offered none. Grouping `money_summary` by merchant falls back to `description` where this is null |
+| `merchant` | string, nullable | the aggregator's guess at a merchant name, 🔴 **unvalidated** — it is a normalisation the aggregator performed and this product did not check. Null when it offered none. Grouping `money_summary` by merchant falls back to `description` where this is null, so one merchant can split across several raw institution strings and each rollup understates it |
 | `amount_minor_units` | integer | the amount in MINOR UNITS, signed from the account holder's point of view: negative is money out |
 | `currency` | string | the currency the amount is in |
 | `pending` | boolean | this row is an authorisation hold that has not settled. A pending amount can settle at a different figure or expire without settling, so a total computed over these rows can move with no new activity — which is what `includes_pending_rows` warns about |
@@ -767,7 +783,7 @@ here.
 | `group_key` | string | the group this row is for, 🔴 **always a string whatever the grouping** — an account id rendered as text under `group_by=account`, a `YYYY-MM` month under `month`, the category or merchant name under those, and the flow class itself under `flow_class`. It is the key to act on: under `account` it is the value `query_transactions(account_id=…)` takes, once read as an integer |
 | `group_label` | string | the same group, named for reading. Equal to `group_key` under every grouping except `account`, where the key is the id and the label is the account's name. Never a second key — two accounts can share a label |
 | `currency` | string | the currency this row's figures are in. Rows are per currency, because a figure summed across currencies is not a wrong number, it is not a number |
-| `flow_class` | string | `external_spend`, `internal_transfer` or `debt_service` — a GROUPING DIMENSION under every value of `group_by`, so one month or one account can return up to three rows. Read from the source category only, never from an override |
+| `flow_class` | string | `external_spend`, `internal_transfer` or `debt_service` — a GROUPING DIMENSION under every value of `group_by`, so one month or one account can return up to three rows. Read from the source category only, never from an override. 🔴 It says how the AGGREGATOR labelled the row and not where the money went: nothing matches a counterparty leg |
 | `transactions` | integer | how many transactions this group holds. 🔴 A per-group count, and a different figure from `coverage.transactions`, which is store-wide and never narrowed by the question asked |
 | `inflow_minor_units` | integer | money IN over this window for this group, 🔴 **a POSITIVE MAGNITUDE** in minor units — not operator-signed. The sign convention is carried by `net_minor_units`; these two are the halves it is made of |
 | `outflow_minor_units` | integer | money OUT over this window for this group, likewise a positive magnitude. It is the figure the `totals` block decomposes by flow class |
@@ -780,9 +796,11 @@ here.
 | Field | Type | Means |
 |---|---|---|
 | `currency` | string | the currency this entry's figures are in. One entry per currency, never one integer across currencies |
-| `external_spend_outflow_minor_units` | integer | 🔴 **the figure to quote when asked what was spent.** Money that actually left the household, as a positive magnitude in minor units |
-| `internal_transfer_outflow_minor_units` | integer | outflow that only moved between the holder's own accounts, a positive magnitude. It never left, so adding it to spending overstates spending — on the sandbox store it is the larger part of the gap measured in § *A classifying tool carries `totals`* |
-| `debt_service_outflow_minor_units` | integer | outflow that serviced a debt, a positive magnitude. It settles purchases already counted under the categories they were spent in, so adding it to spending double-counts them |
+| `inflow_minor_units` | integer | everything that came IN over the whole window in this currency, a positive magnitude. 🔴 **Inflow is not income:** refunds sit in it under `external_spend`, and a paycheque can sit in it under `internal_transfer` |
+| `outflow_minor_units` | integer | everything that went OUT over the whole window in this currency, a positive magnitude and before any classification. 🔴 **The figure to quote when asked how much went out** |
+| `external_spend_outflow_minor_units` | integer | the part of `outflow_minor_units` the aggregator categorised as neither a transfer nor a loan payment — the closest figure to external spend, and a residual rather than a verification |
+| `internal_transfer_outflow_minor_units` | integer | the part the aggregator categorised as a transfer; 🔴 **not verified against an enrolled counterparty.** That label covers a move between the holder's own accounts, and equally an ATM withdrawal, a P2P payment, and rent paid by ACH. On the sandbox store it is the larger part of the gap measured in § *A classifying tool carries `totals`* |
+| `debt_service_outflow_minor_units` | integer | the part the aggregator categorised as a loan or card payment. A card payment settles purchases counted under their own categories **only if that card is enrolled**; a mortgage, auto or student-loan payment is money out |
 | `pending_transactions` | integer | how many of the rows behind these totals are authorisation holds that have not settled. `0` is a real answer |
 | `pending_net_minor_units` | integer | what those holds come to, SIGNED — the amount these totals could move by when the holds settle or expire, with no new activity at all |
 | `expired_holds` | integer | holds in this window that were withdrawn without ever posting. 🔴 They are EXCLUDED from every figure here, so a total that shrank against an earlier answer is explained by this rather than by missing data |
@@ -790,10 +808,10 @@ here.
 | `settled_from_hold` | integer | rows in this window whose amount arrived by settling an earlier hold. A settlement may differ from the hold, so these are the rows whose contribution *changed* rather than appeared — which is why they are counted apart from `expired_holds` rather than with them |
 | `settled_from_hold_net_minor_units` | integer | what those settled rows come to, signed |
 
-🔴 **The three outflow figures add up to the window's total outflow in that currency, and that
-identity is the contract** — it is what proves the classification *partitions* the rows rather than
-quietly dropping some. Summing all three as "spending" is the error the decomposition exists to
-prevent.
+🔴 **The three class figures add up to `outflow_minor_units` in that currency, and that identity is
+the contract** — it is what proves the classification *partitions* the rows rather than quietly
+dropping some, and it is why the whole-window figure is published beside them rather than left to a
+caller to add up.
 
 **Fields — `rows[]`** *(`get_pipeline_health`)*.
 

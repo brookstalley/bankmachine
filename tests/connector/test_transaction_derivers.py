@@ -9,6 +9,7 @@ POSITIVE amount**, and this product stores money leaving an account as negative.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import pytest
@@ -19,32 +20,42 @@ from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.store.derivation import DerivationError, apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
-from bankmachine.store.schema import connections, institutions, transactions
+from bankmachine.store.schema import (
+    TRANSACTIONS_DOMAIN,
+    accounts,
+    connections,
+    institutions,
+    sync_state,
+    transactions,
+)
 from bankmachine.store.types import now_utc
 
 SOURCE_ACCOUNT = "acct-checking"
 CONNECTION_ID = 1
 
 
+def _account_entry(account_id: str = SOURCE_ACCOUNT, *, name: str = "Plaid Checking") -> Any:
+    """One account in the shape both `/accounts/get` and `/transactions/sync` send it."""
+    return {
+        "account_id": account_id,
+        "name": name,
+        "official_name": "Plaid Gold Checking",
+        "mask": "0000",
+        "type": "depository",
+        "subtype": "checking",
+        "balances": {
+            "current": "110.94",
+            "available": "100.00",
+            "limit": None,
+            "iso_currency_code": "USD",
+        },
+    }
+
+
 def _accounts_body() -> bytes:
     return json.dumps(
         {
-            "accounts": [
-                {
-                    "account_id": SOURCE_ACCOUNT,
-                    "name": "Plaid Checking",
-                    "official_name": "Plaid Gold Checking",
-                    "mask": "0000",
-                    "type": "depository",
-                    "subtype": "checking",
-                    "balances": {
-                        "current": "110.94",
-                        "available": "100.00",
-                        "limit": None,
-                        "iso_currency_code": "USD",
-                    },
-                }
-            ],
+            "accounts": [_account_entry()],
             "item": {"item_id": "item-x"},
             "request_id": "req-accounts",
         }
@@ -83,6 +94,7 @@ def _txn(
 
 def _sync_body(
     *,
+    accounts_listed: list[Any] | None = None,
     added: list[dict[str, Any]] | None = None,
     modified: list[dict[str, Any]] | None = None,
     removed: list[dict[str, Any]] | None = None,
@@ -90,7 +102,7 @@ def _sync_body(
 ) -> bytes:
     return json.dumps(
         {
-            "accounts": [],
+            "accounts": accounts_listed or [],
             "added": added or [],
             "modified": modified or [],
             "removed": removed or [],
@@ -143,6 +155,11 @@ def _apply(config: Config, endpoint: str, body: bytes) -> None:
             received_at=now_utc(),
             derivers=ALL_DERIVERS,
         )
+
+
+def _connection_row(config: Config) -> Any:
+    with reader_connection(config) as conn:
+        return conn.execute(select(connections)).one()._mapping
 
 
 def _rows(config: Config) -> list[Any]:
@@ -386,6 +403,109 @@ def test_replaying_a_posting_transaction_does_not_insert_a_second_row(synced: Co
     assert len(_rows(synced)) == 1
 
 
+def test_a_modification_naming_a_hold_that_has_already_posted_inserts_nothing(
+    synced: Config,
+) -> None:
+    """🔴 The same purchase counted twice, with nothing on either row to say so.
+
+    Once the posting has been applied, the merged row answers to the POSTED id --
+    its `source_transaction_id` was overwritten by the transition. A later
+    `modified` entry naming the hold's id therefore finds nothing under its own
+    identity, and it carries no `pending_transaction_id` of its own for the
+    second lookup to use, so the hold is inserted a second time as a live row.
+    The purchase is then in the ledger twice, disclosed as an ordinary pending
+    row rather than as a duplicate.
+
+    `source_pending_transaction_id` is the column that still holds the hold's id
+    on the merged row, and it is what the third lookup reads.
+    """
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(added=[_txn(transaction_id="pend-1", amount="2000.00", pending=True)]),
+    )
+    merged_row_id = _rows(synced)[0]["transaction_id"]
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(
+            added=[
+                _txn(
+                    transaction_id="post-1",
+                    amount="2145.00",
+                    pending_transaction_id="pend-1",
+                )
+            ]
+        ),
+    )
+
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(
+            modified=[_txn(transaction_id="pend-1", amount="2000.00", pending=True)],
+        ),
+    )
+
+    rows = _rows(synced)
+    live = [row for row in rows if row["removed_at"] is None]
+    assert len(live) == 1, "one purchase, two live rows"
+    assert live[0]["transaction_id"] == merged_row_id
+    assert live[0]["source_pending_transaction_id"] == "pend-1"
+    # 🔴 The posting is not undone by a change to the hold it absorbed. A row
+    # sent back to `pending` under the hold's identity would also be the row a
+    # later `removed: pend-1` soft-deleted -- and the whole purchase would leave
+    # the ledger.
+    assert live[0]["source_transaction_id"] == "post-1"
+    assert live[0]["pending"] == 0
+    assert live[0]["amount_minor"] == -214500
+
+
+def test_the_hold_being_retired_after_that_does_not_take_the_purchase_with_it(
+    synced: Config,
+) -> None:
+    """The step after the merge, which is where getting the identity wrong shows.
+
+    The aggregator retires a hold once its posting has settled. If a modification
+    of that hold had been allowed to move the merged row back under the hold's
+    id, this removal would find it and soft-delete the purchase itself -- the
+    $2,145 leaves every total, and the row that says why is stamped `removed`.
+    """
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(added=[_txn(transaction_id="pend-1", amount="2000.00", pending=True)]),
+    )
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(
+            added=[
+                _txn(
+                    transaction_id="post-1",
+                    amount="2145.00",
+                    pending_transaction_id="pend-1",
+                )
+            ]
+        ),
+    )
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(modified=[_txn(transaction_id="pend-1", amount="2000.00", pending=True)]),
+    )
+
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(removed=[{"transaction_id": "pend-1", "account_id": SOURCE_ACCOUNT}]),
+    )
+
+    live = [row for row in _rows(synced) if row["removed_at"] is None]
+    assert len(live) == 1, "retiring the hold removed the purchase it had become"
+    assert live[0]["source_transaction_id"] == "post-1"
+
+
 def test_a_settlement_that_changes_the_amount_updates_it_in_place(synced: Config) -> None:
     """🔴 AC-13.2 — the ORDINARY settlement, and the one nothing here reached.
 
@@ -600,6 +720,175 @@ def test_a_transaction_for_an_unknown_account_is_refused(synced: Config) -> None
         _apply(synced, TRANSACTIONS_SYNC.path, _sync_body(added=[entry]))
 
     assert "no row for" in str(raised.value)
+
+
+def test_a_page_carrying_changes_but_no_cursor_applies_them_and_says_so(
+    synced: Config, caplog: pytest.LogCaptureFixture
+) -> None:
+    """🔴 The rows go in first; only the cursor write is skipped.
+
+    The empty-cursor guard is right -- a `NOT_READY` reply carries one, and
+    storing it would mean "start from the beginning" -- but it stood BEFORE the
+    change lists were applied, so any page carrying entries and no cursor had its
+    rows discarded with no error and no log line. If such a page also said
+    `has_more`, the loop re-fetched the identical page to its ceiling and then
+    reported that it had stopped short: an operator reading "run again to
+    continue" from a run that never can.
+
+    The rows are written, the cursor stays where it was, and the combination is
+    recorded, because a page shaped this way is one nothing has ever observed.
+    """
+    _apply(synced, TRANSACTIONS_SYNC.path, _sync_body(next_cursor="cursor-1"))
+
+    with caplog.at_level(logging.WARNING, logger="bankmachine"):
+        _apply(
+            synced,
+            TRANSACTIONS_SYNC.path,
+            _sync_body(added=[_txn(transaction_id="t1", amount="12.00")], next_cursor=""),
+        )
+
+    assert [row["source_transaction_id"] for row in _rows(synced)] == ["t1"]
+    with reader_connection(synced) as conn:
+        cursor = conn.execute(
+            select(sync_state.c.cursor).where(sync_state.c.domain == TRANSACTIONS_DOMAIN)
+        ).scalar_one()
+    assert cursor == "cursor-1", "a page with no cursor moved the cursor"
+    assert any("no cursor" in record.getMessage() for record in caplog.records), (
+        "a page carrying changes and no cursor left no trace"
+    )
+
+
+def test_a_transaction_in_an_unofficial_currency_derives_rather_than_failing_the_page(
+    synced: Config,
+) -> None:
+    """The inconsistency that let an account exist while none of its rows could derive.
+
+    The aggregator sets `iso_currency_code: null` and populates
+    `unofficial_currency_code` for cryptocurrencies and other non-ISO
+    instruments. Balances already read both; transactions read only the ISO
+    field, so a row of that shape refused the whole page -- the cursor never
+    advanced past it and the connection degraded on every run afterwards.
+
+    The code is stored as the aggregator sent it, so the currency groups
+    separately in every total rather than being folded in with the ISO ones.
+    """
+    entry = _txn(transaction_id="t1", amount="12.00")
+    entry["iso_currency_code"] = None
+    entry["unofficial_currency_code"] = "BTC"
+
+    _apply(synced, TRANSACTIONS_SYNC.path, _sync_body(added=[entry]))
+
+    row = _rows(synced)[0]
+    assert row["currency"] == "BTC"
+    assert row["amount_minor"] == -1200
+
+
+def test_a_transaction_in_no_stated_currency_at_all_is_still_refused(synced: Config) -> None:
+    """The control: the fallback widens what counts as stated, not what counts as known.
+
+    An amount whose unit nothing named is how a total silently mixes two of them,
+    and that refusal is the same one the balance path makes.
+    """
+    entry = _txn(transaction_id="t1", amount="12.00")
+    entry["iso_currency_code"] = None
+    entry["unofficial_currency_code"] = None
+
+    with pytest.raises(DerivationError, match="currency"):
+        _apply(synced, TRANSACTIONS_SYNC.path, _sync_body(added=[entry]))
+
+
+def test_an_account_the_sync_response_names_is_derived_before_its_transactions(
+    synced: Config,
+) -> None:
+    """🔴 The permanent wedge, and the roster that was riding the same body.
+
+    An account closed, de-selected in Account Select, or no longer shared drops
+    out of `/accounts/get` while `/transactions/sync` keeps emitting deltas for
+    its rows. The page then failed forever: the raw body committed, the
+    derivation rolled back, the cursor never moved, and the next run re-fetched
+    and re-archived the identical page. The archive itself became unrebuildable,
+    so the one recovery tool failed on the same response.
+
+    The aggregator is telling you which accounts these transactions belong to,
+    in the same body -- so the roster it carries is derived before the change
+    lists that depend on it.
+    """
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(
+            accounts_listed=[_account_entry(), _account_entry("acct-savings", name="Savings")],
+            added=[_txn(transaction_id="t1", amount="12.00") | {"account_id": "acct-savings"}],
+            next_cursor="cursor-2",
+        ),
+    )
+
+    with reader_connection(synced) as conn:
+        derived = set(conn.execute(select(accounts.c.source_account_id)).scalars())
+        cursor = conn.execute(
+            select(sync_state.c.cursor).where(sync_state.c.domain == TRANSACTIONS_DOMAIN)
+        ).scalar_one()
+    assert derived == {SOURCE_ACCOUNT, "acct-savings"}
+    assert len(_rows(synced)) == 1
+    assert cursor == "cursor-2", "the cursor did not advance past the page it applied"
+
+
+def test_a_sync_page_does_not_claim_the_roster_was_observed(synced: Config) -> None:
+    """🔴 A sync body's `accounts` array is not a roster read.
+
+    It names the accounts these transactions belong to, which is not the same
+    statement as *this is every account this connection has*. Recording it as an
+    observation would make AC-12.5's absence test compare accounts against a
+    date no roster read produced -- and a connection whose sync page landed after
+    midnight would report every account of its own last roster as behind it.
+    """
+    before = _connection_row(synced)["roster_observed_date"]
+
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(
+            accounts_listed=[_account_entry("savings", name="Savings")],
+            next_cursor="cursor-2",
+        ),
+    )
+
+    assert _connection_row(synced)["roster_observed_date"] == before
+    with reader_connection(synced) as conn:
+        seen = conn.execute(
+            select(accounts.c.last_seen_date).where(accounts.c.source_account_id == "savings")
+        ).scalar_one()
+    assert seen is None, "an account learned from a sync page claims a roster observation"
+
+
+def test_a_removal_naming_an_account_this_system_does_not_have_is_a_no_op(
+    synced: Config, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The docstring `_mark_removed` already had, made true.
+
+    A soft delete of a row this system does not hold has nothing to do -- and
+    refusing instead stopped the cursor, so the connection stayed at that page
+    for good. A rebuild replaying removals whose original page predates the
+    archive meets the same shape.
+    """
+    with caplog.at_level(logging.INFO, logger="bankmachine"):
+        _apply(
+            synced,
+            TRANSACTIONS_SYNC.path,
+            _sync_body(
+                removed=[{"transaction_id": "gone", "account_id": "acct-never-derived"}],
+                next_cursor="cursor-2",
+            ),
+        )
+
+    with reader_connection(synced) as conn:
+        cursor = conn.execute(
+            select(sync_state.c.cursor).where(sync_state.c.domain == TRANSACTIONS_DOMAIN)
+        ).scalar_one()
+    assert cursor == "cursor-2", "a removal for an unknown account stopped the cursor"
+    assert any("no row for" in record.getMessage() for record in caplog.records), (
+        "a removal was skipped with nothing recording that it happened"
+    )
 
 
 def test_a_malformed_change_list_is_refused_not_read_as_empty(synced: Config) -> None:

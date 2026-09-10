@@ -31,13 +31,22 @@ from sqlalchemy.engine import Connection as SAConnection
 
 from bankmachine.cli.exit_codes import EXIT_OK, EXIT_UNHEALTHY
 from bankmachine.config import Config
-from bankmachine.connector import ConnectorError, FetchedResponse
+from bankmachine.connector import (
+    ConnectorError,
+    FetchedResponse,
+    TransactionsPaginationRestartError,
+)
 from bankmachine.connector.plaid.client import PlaidClient
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.logging_setup import get_logger
 from bankmachine.secrets import SecretsError, get_access_token, get_plaid_secret
-from bankmachine.store.connection import DatastoreMissingError, inspect, remedy_for
-from bankmachine.store.derivation import DerivationError, apply_response
+from bankmachine.store.connection import (
+    DatastoreMissingError,
+    StoreError,
+    inspect,
+    remedy_for,
+)
+from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, transaction, writer_connection
 from bankmachine.store.schema import (
     TRANSACTIONS_DOMAIN,
@@ -72,6 +81,16 @@ NOT_READY_DELAYS: tuple[float, ...] = (2.0, 5.0, 15.0, 30.0, 60.0)
 #: runaway pager on a bad cursor would otherwise loop until the rate limit, and
 #: a bounded run that says it stopped early is easier to reason about.
 MAX_PAGES_PER_RUN = 500
+
+#: How many times one connection's page run may start over within one run.
+#:
+#: A restart re-reads the cursor and re-fetches, so it does not advance the page
+#: count -- which means an unbounded one is a sync that never returns, and a
+#: nightly job that never returns is indistinguishable from a slow machine.
+#: Five, because the aggregator raises this when its own data moved under the
+#: page run, and data that has moved five times in the seconds one run takes is
+#: not settling on its own; the next run is the better retry.
+MAX_PAGINATION_RESTARTS = 5
 
 
 @dataclass(slots=True)
@@ -228,6 +247,7 @@ def _sync_one(
         return _degrade(config, outcome, "CREDENTIAL_UNREADABLE", str(exc))
 
     attempt = 0
+    restarts = 0
     try:
         with PlaidClient(config, secret) as client:
             # 🔴 Accounts first, every run. The transactions deriver refuses a row
@@ -246,9 +266,31 @@ def _sync_one(
 
             while outcome.pages < MAX_PAGES_PER_RUN:
                 cursor = _cursor_for(config, connection_id)
-                fetched = client.transactions_sync(
-                    access_token, cursor=cursor, connection_id=connection_id
-                )
+                try:
+                    fetched = client.transactions_sync(
+                        access_token, cursor=cursor, connection_id=connection_id
+                    )
+                except TransactionsPaginationRestartError:
+                    # 🔴 The aggregator's data moved while this page run was in
+                    # flight, and its documented remedy is to begin again from
+                    # the last cursor that was stored. That is what the next
+                    # iteration does: the cursor is re-read from the datastore
+                    # every page, and a page that failed committed nothing. It is
+                    # ordinary on a long initial backfill and cannot happen in
+                    # sandbox, where backfills are tiny and static -- so a
+                    # connection degraded here would stop at whichever page the
+                    # first real backfill happened to be mutated on.
+                    restarts += 1
+                    if restarts > MAX_PAGINATION_RESTARTS:
+                        raise
+                    logger.info(
+                        "connection %d restarted its page run from the last stored cursor "
+                        "(restart %d of %d)",
+                        connection_id,
+                        restarts,
+                        MAX_PAGINATION_RESTARTS,
+                    )
+                    continue
                 status = _update_status(fetched)
 
                 # 🔴 Before `has_more`, always. See this module's docstring.
@@ -287,7 +329,14 @@ def _sync_one(
                     connection_id,
                     MAX_PAGES_PER_RUN,
                 )
-    except (ConnectorError, DerivationError) as exc:
+    except (ConnectorError, StoreError) as exc:
+        # 🔴 `StoreError`, not `DerivationError`. `_persist` takes the exclusive
+        # writer lock per page and does not wait, so an ordinary `store backup`
+        # running beside a sync raises `AnotherWriterRunningError` -- a sibling
+        # of `DerivationError` rather than a subclass, which escaped this catch,
+        # escaped the run, and was reported as a command that could not run at
+        # all. Every connection after the locked one was then skipped, which is
+        # the one thing AC-4.1 says must never happen.
         return _degrade(config, outcome, type(exc).__name__, str(exc))
 
     if outcome.historical_complete:

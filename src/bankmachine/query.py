@@ -1376,10 +1376,12 @@ def _transaction_filters(
         filters.append(transactions.c.account_id == account_id)
     if after is not None:
         # 🔴 The keyset predicate belongs in the SHARED list, not on the row
-        # query alone. `matching` is the count of what this request selects, and
+        # query alone. `truncation.remaining` is what `truncated` turns on, and
         # a page whose count ignored the cursor would report the whole result
         # set behind every page — so `truncated` would stay true on the last one
-        # and a caller paging until it went false would never stop.
+        # and a caller paging until it went false would never stop. The
+        # whole-request figure a caller QUOTES is taken separately, with this
+        # predicate deliberately left off.
         #
         # Spelled as an explicit disjunction rather than as a row-value
         # comparison, because it mirrors the ORDER BY beside it one clause at a
@@ -1656,10 +1658,11 @@ def list_transactions(
     """Transactions in a window, newest first. Soft-deleted rows are excluded.
 
     `after` resumes a paged walk at the row a previous answer's `next_cursor`
-    named. It narrows this request the way `since` does — `matching` counts what
-    is left from that position, so `truncated` reads false on the page that
-    exhausts the window and the caller has a terminating condition rather than a
-    number to compare.
+    named. It narrows the rows and `truncation.remaining`, so `truncated` reads
+    false on the page that exhausts the window and the caller has a terminating
+    condition rather than a number to compare — while `truncation.matching`
+    stays the count of what the whole request selects and reads the same on
+    every page of the walk.
     """
     problem = _readable(config)
     if problem is not None:
@@ -1671,7 +1674,7 @@ def list_transactions(
             # matched and nothing was dropped. The key stays present because its
             # absence would say this tool returns everything it finds, and there
             # is no page to resume from because there was no page.
-            truncation=Truncation.over(returned=0, counted=0, resume_from=None),
+            truncation=Truncation.over(returned=0, remaining=0, matching=0, resume_from=None),
         )
     with reader_connection(config) as conn:
         # 🔴 Ordered AFTER the readability check on purpose: an unreadable store
@@ -1691,6 +1694,7 @@ def list_transactions(
         statement = (
             select(
                 transactions.c.transaction_id,
+                transactions.c.account_id,
                 accounts.c.name.label("account"),
                 transactions.c.posted_date,
                 transactions.c.description,
@@ -1710,21 +1714,49 @@ def list_transactions(
         rows = [
             {
                 "transaction_id": int(r[0]),
-                "account": r[1],
-                "date": str(r[2]),
-                "description": r[3],
-                "merchant": r[4],
-                "amount_minor_units": int(r[5]),
-                "currency": r[6],
-                "pending": bool(r[7]),
-                "category": r[9] or r[8],
-                "category_is_override": r[9] is not None,
+                # 🔴 Beside the display name, never instead of it. `account` is
+                # the institution's own text and two accounts can carry the same
+                # one, so it identifies nothing -- and every follow-up this
+                # surface sends a caller on, from `get_coverage_report` to a
+                # narrowed `query_transactions`, is keyed on the id.
+                "account_id": int(r[1]),
+                "account": r[2],
+                "date": str(r[3]),
+                "description": r[4],
+                "merchant": r[5],
+                "amount_minor_units": int(r[6]),
+                "currency": r[7],
+                "pending": bool(r[8]),
+                "category": r[10] or r[9],
+                "category_is_override": r[10] is not None,
             }
             for r in selected
         ]
-        matching = conn.execute(
+        remaining = conn.execute(
             select(func.count()).select_from(source).where(*filters)
         ).scalar_one()
+        # 🔴 A SECOND count, taken without the keyset predicate, and only when a
+        # cursor was passed. `remaining` answers "did this page leave anything
+        # behind", which is the caller's loop condition and must fall to the
+        # rows in hand on the last page. `matching` answers "how many rows does
+        # my request select", which a caller quotes -- and a figure that fell
+        # 390, 290, 190, 90 across a walk under that name gave an agent reading
+        # the last page a confident "90" for a question about the year, with
+        # `coverage.transactions_in_effective_window` beside it still saying
+        # 390. An unpaged request asks one question, so it pays for one count.
+        matching = (
+            remaining
+            if after is None
+            else conn.execute(
+                select(func.count())
+                .select_from(source)
+                .where(
+                    *_transaction_filters(
+                        since=since, until=until, account_id=account_id, after=None
+                    )
+                )
+            ).scalar_one()
+        )
         # 🔴 Built from the LAST ROW THE STATEMENT RETURNED, in the column types
         # the order clause sorts on -- never re-parsed from the wire dict beside
         # it, whose `date` is already a string. A cursor rebuilt from the
@@ -1734,7 +1766,7 @@ def list_transactions(
             None
             if not selected
             else Cursor.issued_for(
-                posted_date=selected[-1][2],
+                posted_date=selected[-1][3],
                 transaction_id=int(selected[-1][0]),
                 since=since,
                 until=until,
@@ -1796,7 +1828,10 @@ def list_transactions(
             # `returned` is derived from the rows themselves rather than from
             # `limit`, so it cannot claim a count the payload does not contain.
             truncation=Truncation.over(
-                returned=len(rows), counted=matching, resume_from=resume_from
+                returned=len(rows),
+                remaining=remaining,
+                matching=matching,
+                resume_from=resume_from,
             ),
             extra_caveats=(
                 _uncovered_caveat(uncovered)
@@ -2066,14 +2101,19 @@ GROUPINGS: tuple[str, ...] = ("category", "merchant", "account", "month", "flow_
 #: is a code change with a diff, not a silent rewrite of history.
 FLOW_CLASSES: tuple[str, ...] = ("external_spend", "internal_transfer", "debt_service")
 
-#: The holder moving their own money between their own accounts. Measured at 61%
-#: of the two-year total -- $164,400 of $267,693 -- which is why a raw outflow
-#: figure over this store reads several times what was actually spent.
+#: What the aggregator categorised as a transfer. 🔴 **A transfer by ITS label,
+#: not a movement verified between two enrolled accounts** -- nothing here
+#: matches a counterparty leg, and this store's own payroll deposit arrives
+#: categorised `TRANSFER_IN`. Measured at 61% of the two-year total -- $164,400
+#: of $267,693 -- which is why a raw outflow figure over this store reads
+#: several times what was actually spent, and why the split is published rather
+#: than applied.
 _INTERNAL_TRANSFER_CATEGORIES: frozenset[str] = frozenset({"TRANSFER_IN", "TRANSFER_OUT"})
 
-#: Servicing a debt rather than buying anything. Measured as ~100% credit-card
-#: payoff, which is a DOUBLE count: the card purchases the payment settles are
-#: already counted under the categories they were spent in.
+#: Loan and card payments. 🔴 The primary category covers mortgage, auto,
+#: student-loan and personal-loan payments as well as credit-card payoff -- so
+#: only the last is the double count a card's own purchases create, and only
+#: then if that card is enrolled. The rest is money out of the household.
 _DEBT_SERVICE_CATEGORIES: frozenset[str] = frozenset({"LOAN_PAYMENTS"})
 
 #: Every `source_category_primary` this mapping has actually been designed
@@ -2148,7 +2188,7 @@ def _flow_class() -> ColumnElement[str]:
 def _flow_class_totals(
     rows: list[dict[str, Any]], transitions: HoldTransitions
 ) -> list[dict[str, Any]]:
-    """The window's OUTFLOW split three ways, per currency, and how much is a hold.
+    """The window's money in and out, per currency, with the outflow split three ways.
 
     🔴 **The three flow classes are summed from the rows this answer returns,
     never from a second query.** A second read against a live store is taken at a
@@ -2191,12 +2231,25 @@ def _flow_class_totals(
         return totals.setdefault(
             currency,
             {f"{flow}_outflow_minor_units": 0 for flow in FLOW_CLASSES}
-            | {"pending_transactions": 0, "pending_net_minor_units": 0},
+            | {
+                "inflow_minor_units": 0,
+                "outflow_minor_units": 0,
+                "pending_transactions": 0,
+                "pending_net_minor_units": 0,
+            },
         )
 
     for row in rows:
         entry = entry_for(str(row["currency"]))
         entry[f"{row['flow_class']}_outflow_minor_units"] += int(row["outflow_minor_units"])
+        # 🔴 The whole window's two directions, summed from the same rows as the
+        # classes above so the identity between them holds by construction. They
+        # exist because the questions a caller actually asks are "how much went
+        # out" and "how much came in", and until they were published the only
+        # answer to either was a class figure that excludes a mortgage payment
+        # and an ATM withdrawal, or a sum the caller had to take over rows.
+        entry["inflow_minor_units"] += int(row["inflow_minor_units"])
+        entry["outflow_minor_units"] += int(row["outflow_minor_units"])
         entry["pending_transactions"] += int(row["pending_transactions"])
         entry["pending_net_minor_units"] += int(row["pending_net_minor_units"])
     for currency in transitions.currencies():
@@ -2406,6 +2459,20 @@ def money_summary(
             )
             for currency in {str(row["currency"]) for row in rows}
         }
+        # 🔴 Store-wide, because this tool's scope is store-wide: it takes no
+        # `account_id`, so every account contributes to every group it belongs
+        # in, and an account that stopped being reported mid-window contributes
+        # nothing for the rest of it. That silence is what the two caveats name.
+        # Without them the figure an agent is told to QUOTE was the one answer on
+        # this surface carrying no lifecycle or coverage caveat at all: a card
+        # de-selected on the first of a month reads as a 40% drop in spending,
+        # well-formed and unexplained.
+        # One walk, used twice -- the caveat below and the envelope's non-active
+        # figures, which `_answer` would otherwise derive from a second
+        # observation of the same fact.
+        lifecycle = _account_lifecycle(conn)
+        not_active = [entry for entry in lifecycle.values() if not entry.active]
+        uncovered = [entry for entry in _account_coverage(conn).values() if entry.uncovered]
         return _answer(
             config,
             conn,
@@ -2419,8 +2486,13 @@ def money_summary(
             # at once, and a reader given only one of them would treat the other
             # as settled.
             extra_caveats=(
-                _pending_caveat(pending) + signs.caveats(conn, since=since, until=until)
+                _uncovered_caveat(uncovered)
+                + _not_active_caveat(not_active)
+                + _roster_observed_empty_caveat(not_active)
+                + _pending_caveat(pending)
+                + signs.caveats(conn, since=since, until=until)
             ),
+            lifecycle=lifecycle,
         )
 
 
