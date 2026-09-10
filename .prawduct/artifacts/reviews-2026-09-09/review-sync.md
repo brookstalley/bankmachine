@@ -270,7 +270,7 @@ Assert the other account's balance is written, the null-balance account still ge
 **`src/bankmachine/connector/plaid/client.py:764`**
 
 ```python
-request = TransactionsSyncRequest(access_token=access_token, count=count)
+request = TransactionsSyncRequest(count=count, ...)   # the token argument elided for the leak guard
 ```
 
 No `options` at all. Probed the installed SDK:
