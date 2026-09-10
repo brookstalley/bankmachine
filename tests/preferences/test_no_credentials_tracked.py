@@ -70,11 +70,51 @@ _RAW_KEY = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{64}(?![0-9a-fA-F])")
 #: assignment in `.env.example` is the shape this must NOT match.
 #: The quote is captured, not skipped, because whether the value was quoted is
 #: the whole discrimination in `_is_a_variable_reference` below.
+#:
+#: 🔴 **The vocabulary is the log redactor's** (`logging_setup._SENSITIVE_KEY`),
+#: because the two rules answer the same question about the same values and the
+#: narrower one is the hole. `client_id` is the one deliberate omission: this
+#: product treats it as configuration rather than a secret, gives it an
+#: environment variable, and documents it in a tracked `.env.example`.
+#:
+#: 🔴 **Lookarounds rather than `\b`, and that is the whole point of the label
+#: half.** `_` is a word character, so `\bsecret` refuses to match
+#: `plaid_secret = ...` and `BANKMACHINE_PLAID_SECRET=...` -- which are the two
+#: spellings the aggregator secret is most likely to be pasted under, since the
+#: design deliberately gives that value no environment variable of its own.
+#: Excluding only an adjacent ALPHANUMERIC keeps those, and still keeps `key`
+#: out of `keychain_service` and `monkeypatch`.
 _LABELLED = re.compile(
-    r"(?:access[_-]?token|client[_-]?secret|api[_-]?key|password|passwd)"
+    r"(?<![A-Za-z0-9])"
+    r"(?:access[_-]?token|refresh[_-]?token|client[_-]?secret|api[_-]?key"
+    r"|password|passwd|secret|token|key)"
+    r"(?![A-Za-z0-9])"
     r"\s*[=:]\s*([\"']?)([A-Za-z0-9_\-]{12,})",
     re.IGNORECASE,
 )
+
+#: Every label above, in the spellings a leak would plausibly wear. A label
+#: nobody has ever seen match is a label that may not match, so each one is a
+#: positive control below.
+_LABELS = (
+    "access_token",
+    "access-token",
+    "refresh_token",
+    "client_secret",
+    "api_key",
+    "apikey",
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "key",
+    "plaid_secret",
+    "BANKMACHINE_PLAID_SECRET",
+)
+
+#: A credential-shaped value: long enough, high enough entropy, no placeholder
+#: prefix. Held once so the controls below carry no shape of their own.
+_A_SECRET_SHAPE = "5a1b2c3d4e5f60718293a4b5c6d7e8"  # credential-shape: test vector
 
 
 def _is_a_variable_reference(
@@ -308,6 +348,33 @@ def test_the_scan_can_actually_find_each_shape() -> None:
     )
     found = _findings(planted, REPO_ROOT / "planted.txt")
     assert len(found) >= 3, f"the patterns missed a planted credential: {found}"
+
+
+@pytest.mark.parametrize("label", _LABELS)
+def test_every_label_the_guard_claims_is_one_it_actually_catches(label: str) -> None:
+    """One positive control per label, in both file shapes a leak lands in.
+
+    The guard grew this vocabulary because the narrow one missed the credential
+    most likely to be pasted somewhere convenient -- the aggregator secret, the
+    one value with no environment variable of its own. A label added to the
+    alternation and never exercised is indistinguishable from one that does not
+    match, and this is the file where that mistake would be invisible.
+    """
+    assert _findings(f'{label} = "{_A_SECRET_SHAPE}"', REPO_ROOT / "config.toml"), label
+    assert _findings(f"{label}={_A_SECRET_SHAPE}", REPO_ROOT / ".env"), label
+
+
+def test_a_label_buried_inside_an_ordinary_identifier_is_not_a_label() -> None:
+    """The negative control the widened vocabulary needs to stay usable.
+
+    `key` lives inside `keychain_service` and `monkeypatch`, and `token` inside
+    `tokenizer`. A guard that fires on ordinary code is a guard someone narrows
+    in irritation later, which is how a security check dies quietly -- so the
+    boundary that keeps those out is asserted, not assumed.
+    """
+    assert not _findings("keychain_service = bankmachine-test-abc", REPO_ROOT / "config.toml")
+    assert not _findings("monkeypatch = something_long_here", REPO_ROOT / "config.toml")
+    assert not _findings("tokenizer: a_long_value_here", REPO_ROOT / "config.toml")
 
 
 def test_the_placeholder_and_hash_exemptions_do_not_swallow_a_real_secret() -> None:
