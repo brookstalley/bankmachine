@@ -32,7 +32,13 @@ LEDGER = date(2026, 6, 10)
 
 
 def _enrol(conn: SAConnection, *, count: int) -> None:
-    """`count` enrolled accounts on one connection, plus one import-only account."""
+    """`count` enrolled accounts on one connection, plus one import-only account.
+
+    🔴 The import-only account is what makes the `connection_id IS NOT NULL`
+    restriction exercisable: this store holds no counterparty feed for an
+    operator-imported account, so a row on one can never be SHOWN to have a
+    matching leg, and showing it is the whole test.
+    """
     now = now_utc()
     conn.execute(
         insert(institutions).values(
@@ -70,6 +76,22 @@ def _enrol(conn: SAConnection, *, count: int) -> None:
                 updated_at=now,
             )
         )
+    conn.execute(
+        insert(accounts).values(
+            institution_id=1,
+            connection_id=None,
+            source_account_id=None,
+            name="Imported Ledger",
+            account_type="depository",
+            balance_class="asset",
+            currency="USD",
+            lifecycle_status="active",
+            first_seen_date=calendar_date(LEDGER),
+            source="manual",
+            created_at=now,
+            updated_at=now,
+        )
+    )
 
 
 def _row(
@@ -311,3 +333,111 @@ def test_a_different_currency_is_not_the_other_leg(store: Config) -> None:
         transfers.pair_transfers(conn)
 
     assert all(pid is None for pid in _pairs(store).values())
+
+
+# --------------------------------------------------------------------------
+# The fallback tally an answer carries, which three surfaces tell agents to read
+# --------------------------------------------------------------------------
+
+
+def test_the_unmatched_tally_counts_only_the_window_it_was_asked_about(store: Config) -> None:
+    """🔴 Scoped to the answer, or it is a true number about something else.
+
+    The count rides a WINDOWED answer and says how many transfer-shaped rows in
+    it fell back to spending. A store-wide count would report "12 rows here fell
+    back" on a window containing none of them, and a caller cannot tell those
+    apart — a figure that is true of something other than the answer beside it
+    is the precise wrong number this surface exists to refuse.
+    """
+    with writer_connection(store) as conn:
+        # Inside the window: no counterparty, so it falls back.
+        _row(conn, account_id=1, amount=-90_00, day=0)
+        # Far outside it: also unmatched, and must not be counted here.
+        _row(conn, account_id=1, amount=-91_00, day=200)
+        transfers.pair_transfers(conn)
+
+    with reader_connection(store) as conn:
+        inside = transfers.unmatched_transfer_shaped(
+            conn,
+            transfers.TRANSFER_SHAPED_DETAILED,
+            since=LEDGER,
+            until=LEDGER + timedelta(days=7),
+        )
+        everything = transfers.unmatched_transfer_shaped(
+            conn, transfers.TRANSFER_SHAPED_DETAILED, since=None, until=None
+        )
+    assert inside == 1, "the tally counted a row outside the window it was asked about"
+    assert everything == 2, "the unbounded tally lost a row that is really there"
+
+
+def test_a_matched_pair_is_not_counted_as_a_fallback(store: Config) -> None:
+    """Silence when nothing fell back, so its absence is information too.
+
+    An agent told the count is zero can quote the spending figure without a
+    caveat. That only works if a matched transfer never appears in it.
+    """
+    with writer_connection(store) as conn:
+        _row(conn, account_id=1, amount=-65_00)
+        _row(conn, account_id=2, amount=65_00, detailed="TRANSFER_IN_ACCOUNT_TRANSFER")
+        transfers.pair_transfers(conn)
+
+    with reader_connection(store) as conn:
+        assert (
+            transfers.unmatched_transfer_shaped(
+                conn, transfers.TRANSFER_SHAPED_DETAILED, since=None, until=None
+            )
+            == 0
+        )
+
+
+def test_a_paycheque_is_never_paired_however_well_an_amount_happens_to_match(
+    store: Config,
+) -> None:
+    """🔴 The exclusion this module's own docstring calls load-bearing.
+
+    Wages arriving are external value ENTERING the household, whatever the
+    aggregator's transfer-shaped naming suggests — classifying the payroll row
+    as an internal transfer is what made income read $0 on this surface. It is
+    excluded by not being a pairing candidate at all, so an accidental
+    amount-and-date collision cannot bring it back through the other door.
+    """
+    with writer_connection(store) as conn:
+        _row(conn, account_id=1, amount=200_00, detailed="TRANSFER_IN_PAYROLL")
+        _row(conn, account_id=2, amount=-200_00, detailed="TRANSFER_OUT_ACCOUNT_TRANSFER")
+        transfers.pair_transfers(conn)
+
+    with reader_connection(store) as conn:
+        by_category = {
+            str(row[0]): row[1]
+            for row in conn.execute(
+                select(transactions.c.source_category_detailed, transactions.c.transfer_pair_id)
+            ).all()
+        }
+    assert by_category["TRANSFER_IN_PAYROLL"] is None, (
+        "a paycheque was paired, so income can be classified away as an internal transfer again"
+    )
+    assert by_category["TRANSFER_OUT_ACCOUNT_TRANSFER"] is None, (
+        "the outgoing leg paired against a paycheque, which is not its counterparty"
+    )
+
+
+def test_a_row_on_an_import_only_account_is_never_a_leg(store: Config) -> None:
+    """🔴 The restriction the fixture exists to make exercisable.
+
+    An import-only account is operator-owned and this store holds no
+    counterparty feed for it, so a row on one cannot be shown to have a matching
+    leg — and being shown is the whole test. Pairing it on shape alone would
+    exclude money from spending on the strength of a file somebody imported.
+    """
+    with writer_connection(store) as conn:
+        imported = conn.execute(
+            select(accounts.c.account_id).where(accounts.c.connection_id.is_(None))
+        ).scalar_one()
+        _row(conn, account_id=int(imported), amount=-45_00)
+        _row(conn, account_id=1, amount=45_00, detailed="TRANSFER_IN_ACCOUNT_TRANSFER")
+        transfers.pair_transfers(conn)
+
+    assert all(pid is None for pid in _pairs(store).values()), (
+        "a row on an account with no connection was paired, so an imported file can classify "
+        "money out of the spending figure"
+    )

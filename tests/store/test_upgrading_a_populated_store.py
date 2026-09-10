@@ -1018,6 +1018,43 @@ def test_the_rebuild_stamps_the_ledger_dates_migration_005_could_only_leave_empt
     )
 
 
+def test_the_rebuild_pairs_the_transfers_migration_009_could_only_leave_empty(
+    populated_at_the_previous_version: Config,
+) -> None:
+    """🔴 The remedy `transactions.transfer_pair_id` is owed, over a POPULATED store.
+
+    Its two sibling columns each have this test and this one did not, which is
+    the gap worth closing rather than the assertion worth adding: the pairing is
+    what two of the three flow classes are read from, so a rebuild that failed
+    to recompute it would leave every transfer on an upgraded store classified
+    as money that left the household — a wrong spending figure on a store that
+    had done nothing but upgrade.
+
+    🔴 The seeded bodies carry no transfer pair, so what this proves is the
+    weaker and more important half: the rebuild RUNS the pairing pass rather
+    than skipping it, and leaves the column in the state the data supports
+    rather than in whatever state the migration left.
+    """
+    migrate(populated_at_the_previous_version)
+    with writer_connection(populated_at_the_previous_version) as conn:
+        conn.execute(update(transactions).values(transfer_pair_id=999))
+
+    with reader_connection(populated_at_the_previous_version) as conn:
+        assert {row for row in conn.execute(select(transactions.c.transfer_pair_id)).scalars()} == {
+            999
+        }, "the fixture did not stand in a pairing for the rebuild to overwrite"
+
+    rebuild(populated_at_the_previous_version, derivers=ALL_DERIVERS)
+
+    with reader_connection(populated_at_the_previous_version) as conn:
+        after = list(conn.execute(select(transactions.c.transfer_pair_id)).scalars())
+    assert after, "the rebuild removed the rows it was meant to re-pair"
+    assert all(value is None for value in after), (
+        "the rebuild left a pairing the data does not support, so an upgraded store classifies "
+        "money as an internal transfer on the strength of a value nothing recomputed"
+    )
+
+
 def test_the_rebuild_stamps_the_lineage_migration_007_could_only_leave_empty(
     populated_at_the_previous_version: Config,
 ) -> None:

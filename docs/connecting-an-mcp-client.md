@@ -158,8 +158,10 @@ alongside wages. There is no income figure on this surface.
 
 🔴 **`group_by=merchant` falls back to `description`** where the aggregator supplied no merchant
 name, so one merchant can split across several raw institution strings and each rollup understates
-it. And **a window is measured on the posting date**: a hold that posts in a later period moves
-into that period, so a total for a month you already asked about can change after the fact.
+it. And **a window is measured on `ledger_date`** — the day the money was committed, stamped once
+and never moved by settlement — so a hold that posts in a later period does *not* move between
+periods, and a total for a month you already asked about is stable. The `date` on a transaction
+row is the posting date and still moves; `ledger_date` rides beside it.
 
 🔴 **Each `totals` entry also states how much of itself has not settled.** `pending_transactions`
 and `pending_net_minor_units` are authorisation holds — money claimed but not yet taken, which can

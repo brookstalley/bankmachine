@@ -581,9 +581,11 @@ own principle: an overcount gets questioned and an undercount gets believed.
 `inflow_minor_units` and `outflow_minor_units` and then splitting that *outflow* under each of the
 three classes. Quote `outflow_minor_units` when asked how much went out and
 `external_spend_outflow_minor_units` when asked about external spend, and **name the other two
-classes beside it**: the split describes the outflow rather than filtering it, and the classifier
-reads one aggregator category without matching a counterparty leg, so a mortgage payment and an ATM
-withdrawal are money out under labels that do not say so.
+classes beside it**: the split describes the outflow rather than filtering it. 🔴 Since the
+2026-09-10 amendment the classifier matches a counterparty leg, so a mortgage payment to an
+unenrolled lender and an ATM withdrawal ARE `external_spend` and need no allowance made for them.
+What still needs saying is the other direction: a transfer-shaped row whose counterparty is an
+account nobody enrolled counts as spending, and the answer's `partial` warning says how many.
 
 🔴 **Measured against the sandbox store on 2026-09-09, over its full 24 months:** $267,692.77 of
 outflow, of which $164,400.00 is internal transfer and $50,484.00 is debt service — leaving
@@ -893,7 +895,7 @@ here.
 | `inflow_minor_units` | integer | everything that came IN over the whole window in this currency, a positive magnitude. 🔴 **Inflow is not income:** refunds sit in it under `external_spend`, and a paycheque can sit in it under `internal_transfer` |
 | `outflow_minor_units` | integer | everything that went OUT over the whole window in this currency, a positive magnitude and before any classification. 🔴 **The figure to quote when asked how much went out** |
 | `external_spend_outflow_minor_units` | integer | the part of `outflow_minor_units` the aggregator categorised as neither a transfer nor a loan payment — the closest figure to external spend, and a residual rather than a verification |
-| `internal_transfer_outflow_minor_units` | integer | the part the aggregator categorised as a transfer; 🔴 **not verified against an enrolled counterparty.** That label covers a move between the holder's own accounts, and equally an ATM withdrawal, a P2P payment, and rent paid by ACH. On the sandbox store it is the larger part of the gap measured in § *A classifying tool carries `totals`* |
+| `internal_transfer_outflow_minor_units` | integer | the part that moved between two accounts THIS STORE HOLDS, 🔴 **matched leg to leg** — equal magnitude, opposite sign, a different enrolled account, same currency, within three days. An ATM withdrawal, a P2P payment and rent paid by ACH are NOT in it; they are `external_spend`, because from the household's point of view that money is gone |
 | `debt_service_outflow_minor_units` | integer | the part the aggregator categorised as a loan or card payment. A card payment settles purchases counted under their own categories **only if that card is enrolled**; a mortgage, auto or student-loan payment is money out |
 | `pending_transactions` | integer | how many of the rows behind these totals are authorisation holds that have not settled. `0` is a real answer |
 | `pending_net_minor_units` | integer | what those holds come to, SIGNED — the amount these totals could move by when the holds settle or expire, with no new activity at all |

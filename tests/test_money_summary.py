@@ -9,6 +9,7 @@ what `api-contract.md` § Direction's fourth norm draws a tool boundary on.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -552,21 +553,24 @@ def test_the_three_class_outflows_add_up_to_the_windows_outflow(
         ), entry
 
 
-def test_the_payload_does_not_claim_a_transfer_never_left_or_a_debt_was_already_counted(
+def test_no_surface_still_disclaims_what_the_classifier_now_establishes(
     initialized_config: Config,
 ) -> None:
-    """🔴 The classifier reads one aggregator category and matches no counterparty.
+    """🔴 The classifier matches a counterparty leg, so the old disclaimers are false.
 
-    So `internal_transfer` means *the aggregator called it a transfer* — which in
-    this very store includes the payroll deposit — and `debt_service` covers
-    mortgage, auto and student-loan payments, which are money out rather than the
-    settlement of purchases counted elsewhere. Text asserting otherwise is a
-    claim about the household that the classification does not establish, and it
-    understates spending: the direction the contract records as the one that gets
-    believed.
+    `internal_transfer` and `debt_service` both require the other side to be an
+    account this store holds, and the window is measured on `ledger_date`. Text
+    still saying the class "matches no counterparty leg", that it is "not
+    verified against an enrolled counterparty", or that a window follows the
+    posting date is now a claim BELOW what the classification establishes — and
+    it understates, which the contract records as the direction that gets
+    believed. An agent reading it discounts a figure that is sound.
 
-    Asserted over every surface an agent can read, because the sentence was in
+    Asserted over every surface an agent can read, because the sentence lived in
     all of them and fixing the one a reviewer names is what buys a second round.
+    🔴 That is not hypothetical here: the first pass at this corrected four
+    surfaces, missed a fifth, and the guard added beside it was exact-case while
+    the survivor was lowercase — so it passed over its own subject.
     """
     _seed_every_flow_class(initialized_config)
     definition = next(d for d in mcp._tool_definitions() if d["name"] == "money_summary")
@@ -598,16 +602,38 @@ def test_the_payload_does_not_claim_a_transfer_never_left_or_a_debt_was_already_
             f"{name} still tells a client the class is unverified, so an agent will discount a "
             f"figure that is now established"
         )
-        assert "POSTING date" not in text, (
+        # 🔴 Case-INSENSITIVE, and the reason is a miss this guard already had:
+        # it was written as an exact-case check, the surviving copy in the client
+        # guide was lowercase, and the assertion passed over the very instance it
+        # was added to catch. A guard that reads green against its own subject is
+        # worse than no guard.
+        # 🔴 The CLAIM, not the phrase. "posting date" appears legitimately --
+        # `date` on a row IS the posting date and surfaces have to say so -- and
+        # a blunt substring check would have forced that true sentence out to
+        # stay green. What must be absent is the claim about the WINDOW.
+        window_claim = re.compile(r"window is measured on the posting date", re.IGNORECASE)
+        assert not window_claim.search(text), (
             f"{name} still says the window is measured on the posting date; it is measured on "
             f"`ledger_date`, which settlement does not move"
         )
+        # And the positive, on the surfaces that EXPLAIN the window rather than
+        # pointing at one that does: removing a false claim must not leave
+        # silence, because an agent will supply the meaning the old prose
+        # asserted. The output schema is a field list for an aggregate whose
+        # rows carry no date column, and the handshake instructions deliberately
+        # point at the reference documents instead of restating them -- neither
+        # has anything to say here, so neither is asked to.
+        if name in {"tool description", "resources", "client guide"}:
+            assert "ledger_date" in text, (
+                f"{name} no longer says the window is measured on the posting date and does not "
+                f"say what it IS measured on"
+            )
 
 
 def test_every_surface_says_what_the_flow_classes_do_and_do_not_establish(
     initialized_config: Config,
 ) -> None:
-    """The positive half: correcting the false claim must not leave silence.
+    """Each surface says what the class now establishes, and what it still cannot.
 
     An agent that reads "internal_transfer" with nothing beside it supplies a
     meaning of its own, and the one it will reach for is the one the label
