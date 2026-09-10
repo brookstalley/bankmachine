@@ -159,4 +159,5 @@ settings file a broad `git add` had swept in). Four Critic rounds; the last retu
 **Not built here, deliberately:** nothing pins `enabledPlugins["prawduct@prawduct"]` to `true`, so
 the sweep that flipped it would flip it again. The remedy that landed is procedural (a
 `learnings.md` entry); a `tests/preferences/` guard is the stronger one and is judgeable work, so it
-belongs in a chunk of its own rather than riding this one. Filed to the backlog.
+belongs in a chunk of its own rather than riding this one. Filed as **#88**
+(`stage: ready`, effort S, `affected: .claude/settings.json, tests/preferences`).
