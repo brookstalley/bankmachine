@@ -122,11 +122,13 @@ _WINDOW_NOTE = (
 #: the failure it prevents is silent arithmetic on a partial page rather than a
 #: misread empty one. The field-by-field detail is in the envelope reference.
 _TRUNCATION_NOTE = (
-    "CAPPED: `truncation` carries `matching`, `returned` and `truncated`. 🔴 When `truncated` "
-    "is true the rows are the NEWEST ones only, so summing or counting them describes what "
-    "came back rather than the window you asked about. Pass `next_cursor` back as `cursor` "
-    "with the SAME window and account until `truncated` is false -- that is the only route "
-    "reaching every matching row. Narrowing the window or raising `limit` moves the cap; "
+    "CAPPED: `truncation` carries `matching` (what the WHOLE request selects, unchanged as "
+    "you page), `remaining`, `returned` and `truncated`. 🔴 When `truncated` is true the rows "
+    "are the NEWEST ones only, so summing or counting them describes what came back rather "
+    "than the window you asked about. Pass `next_cursor` back as `cursor` with the SAME "
+    "window and account until `truncated` is false -- that is the only route reaching every "
+    "matching row, and `truncated` is the loop condition because `returned` stays below "
+    "`matching` on the last page. Narrowing the window or raising `limit` moves the cap; "
     "paging removes it."
 )
 
@@ -348,17 +350,37 @@ def _output_schema(
         properties["truncation"] = {
             "type": "object",
             "description": (
-                "how many rows matched, how many came back, and therefore whether rows were "
-                "left behind. `next_cursor` is present when and only when there is another "
-                "page to read"
+                "how many rows the request selects, how many came back, and therefore "
+                "whether rows were left behind. `next_cursor` is present when and only when "
+                "there is another page to read"
             ),
             "properties": {
-                "returned": {"type": "integer"},
-                "matching": {"type": "integer"},
-                "truncated": {"type": "boolean"},
+                "returned": {"type": "integer", "description": "rows in THIS payload"},
+                "remaining": {
+                    "type": "integer",
+                    "description": (
+                        "rows this request still had ahead of it when this page began, so it "
+                        "falls as you page and reaches `returned` on the last page. This is "
+                        "the one `truncated` is derived from"
+                    ),
+                },
+                "matching": {
+                    "type": "integer",
+                    "description": (
+                        "how many rows the WHOLE request selects. 🔴 It does NOT change as "
+                        "you page, so `returned` stays below it on the final page -- read "
+                        "`truncated`, never `returned < matching`, to decide whether to ask "
+                        "for another page. This is the figure to quote for 'how many "
+                        "transactions match'"
+                    ),
+                },
+                "truncated": {
+                    "type": "boolean",
+                    "description": "`returned < remaining`: this page left rows behind",
+                },
                 "next_cursor": {"type": "string"},
             },
-            "required": ["returned", "matching", "truncated"],
+            "required": ["returned", "remaining", "matching", "truncated"],
             "additionalProperties": False,
         }
         required.append("truncation")
@@ -1439,7 +1461,8 @@ def _instructions(config: Config) -> str:
         f"adds `transactions_in_effective_window` inside `coverage`, the count to read against "
         f"a windowed question. That count ignores `account_id`, so it is a fact about the "
         f"window rather than about your filters; `matching` is the one narrowed by them.\n\n"
-        f"A CAPPED tool adds `truncation` (`matching`, `returned`, `truncated`). 🔴 **When "
+        f"A CAPPED tool adds `truncation` (`matching`, `remaining`, `returned`, `truncated`). "
+        f"🔴 **When "
         f"`truncated` is true the rows are the NEWEST ones only**, so summing them describes "
         f"what came back rather than the window you asked about. Pass `next_cursor` back as "
         f"`cursor` with the SAME window and account, and keep going until `truncated` is "

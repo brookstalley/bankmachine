@@ -1041,16 +1041,28 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "C1 truncation: `truncated` is true exactly when rows are missing",
         ENVELOPE,
-        "        return self.returned < self.matching",
-        "        return self.returned <= self.matching",
+        "        return self.returned < self.remaining",
+        "        return self.returned <= self.remaining",
         f"{TRUNCATION_TESTS}::test_an_untruncated_answer_reports_false_and_equal_counts",
     ),
     (
-        "C1 truncation: `matching` is floored at the rows already in hand",
+        "C1 truncation: the counts are floored at the rows already in hand",
         ENVELOPE,
-        "            matching=max(counted, returned),",
-        "            matching=counted,",
+        "        left = max(remaining, returned)",
+        "        left = remaining",
         f"{TRUNCATION_TESTS}::test_a_count_that_lags_the_rows_is_reconciled_rather_than_refused",
+    ),
+    (
+        # The break makes the whole-request count take the keyset predicate the
+        # page count takes, which is the meaning `matching` used to carry: the
+        # figure then falls page by page and an agent quoting the last page
+        # answers with the size of that page.
+        "truncation: `matching` counts the whole request, cursor or no cursor",
+        QUERY,
+        "                        since=since, until=until, account_id=account_id, after=None",
+        "                        since=since, until=until, account_id=account_id, after=after",
+        f"{TRUNCATION_TESTS}::"
+        "test_a_cursor_narrows_what_is_left_and_leaves_the_whole_request_count_alone",
     ),
     (
         "C1 cursor: a cursor rides an answer only when there is a next page",

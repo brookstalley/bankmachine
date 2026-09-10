@@ -376,9 +376,12 @@ tool today; aggregates carry no block, because the row cap does not apply to the
 
 **`returned` is the count of rows actually in the payload**, derived from the rows themselves rather
 than from the caller's `limit` — a `limit` above the hard cap is clamped, so the two are not the same
-number. **`matching` is the count the request selects**, over the same predicates and the same tables
-as the row query. **`truncated` is `returned < matching`**, derived rather than stored: a third
-number can disagree with the other two, and a derived one cannot.
+number. **`matching` is the count the WHOLE request selects**, over the same predicates and the same
+tables as the row query, and it does not move as a caller pages. **`remaining` is what was still
+ahead of this page** — the same count taken from the cursor's position onward, equal to `matching` on
+an unpaged call. **`truncated` is `returned < remaining`**, derived rather than stored: a stored flag
+can disagree with the counts beside it, and a derived one cannot. 🔴 It turns on `remaining` rather
+than on `matching` because only `remaining` falls to the rows in hand on the last page.
 
 🔴 **The measured harm this closes.** An acceptance round found the documented default of `limit: 100`
 silently dropping ~16 months of one account's history, and a caller summing a two-year card total
@@ -395,9 +398,10 @@ advice the answer's own `returned` contradicts.
 The read handle is opened in autocommit — `store/connection.py`: *"every statement is its own
 snapshot"* — and the scheduled sync writer soft-deletes transactions while the MCP reader may be
 mid-query. So a row counted in the first statement and removed before the second makes the count come
-back *below* the rows already in hand. **That is a data condition, not an error:** `matching` floors
+back *below* the rows already in hand. **That is a data condition, not an error:** `remaining` floors
 at `returned`, because those rows were observed to match and reporting fewer would contradict the
-payload beside them; `truncated` is then false, which is true, since nothing is being hidden. The
+payload beside them, and `matching` floors at `remaining` for the same reason one level out;
+`truncated` is then false, which is true, since nothing is being hidden. The
 skew is not smoothed away — `counted_during_change` announces it, so a consumer comparing two calls
 seconds apart knows a write landed between them. **Refusing to answer here would be the wrong
 trade**: it would turn a harmless skew into a failed tool call, which the Direction above forbids in
@@ -407,11 +411,13 @@ as many words.
 `.prawduct/artifacts/mcp-count-latency-2026-09-08.md`, which records that these are single-process
 warm-cache medians on one developer machine rather than a portable benchmark (2026-09-08, synthetic
 stores, 14 accounts over 24 months):
-the `matching` count runs at roughly the cost of the row query itself — ~1ms at 10k rows, ~89ms at
+each count runs at roughly the cost of the row query itself — ~1ms at 10k rows, ~89ms at
 200k — and a full `query_transactions` call lands at ~18ms / ~435ms respectively, inside the ~1s
 target in `nonfunctional-requirements.md` with room to spare at volumes well beyond a real 24-month
-store. **`matching` therefore ships exact**; the approximate-count fallback that was held in reserve
-is not needed and is not built.
+store. **The counts therefore ship exact**; the approximate-count fallback that was held in reserve
+is not needed and is not built. A *paged* call takes a second count so that `matching` can stand for
+the whole request; at the 200k figure above that is one further ~89ms on a call already measured at
+~435ms — still inside the target, and paid only by the requests that page.
 
 ### A truncated answer carries the route to the rest (#17)
 
@@ -422,10 +428,16 @@ present. **The key's presence is the loop condition**: a consumer pages while it
 when it is gone, without comparing two counts to decide. Visibility without a route past the cap
 would have left the honest answer still unobtainable, which is why #17 needed both halves.
 
-**`cursor` narrows the request the way `since` does.** `matching` counts what is left from the
-cursor's position onward, not what lies behind every page — a count over the whole result set would
-leave `truncated` true on the final page forever and a caller paging until it went false would never
-stop.
+**`cursor` narrows the rows and `remaining`, and leaves `matching` alone.** `remaining` counts what
+is left from the cursor's position onward, which is what makes `truncated` go false on the page that
+exhausts the window — a loop condition taken over the whole result set would stay true forever and a
+caller paging until it went false would never stop. `matching` counts what the whole request selects
+and reads the same on every page, because it is the figure a caller QUOTES: measured on the sandbox
+store, one name carrying the paged count reported 390, 290, 190, 90 across a walk while
+`coverage.transactions_in_effective_window` beside it read 390 throughout, so the answer contradicted
+itself and an agent quoting the final page answered "90 transactions" to a question about the year.
+🔴 **The two are separate counts and only a paged request pays for both:** an unpaged call asks one
+question, so `remaining` and `matching` are one statement and one query.
 
 🔴 **A keyset, never an offset.** The cursor is opaque state over `(posted_date, transaction_id)`,
 the total order rows already come back in. An offset shifts under a concurrent sync — one insert
@@ -446,8 +458,8 @@ measurement already refuted raising it — 74.2% of rows are dropped at full cov
 human would pick fixes this.
 
 🔴 **A walk that ends on a `counted_during_change` page may have stopped early.** That warning means
-the count came back below the rows already in hand, so `matching` floored at `returned`, `truncated`
-read false, and no cursor was issued — correct for the numbers in the payload, and possibly short of
+the count came back below the rows already in hand, so `remaining` floored at `returned`,
+`truncated` read false, and no cursor was issued — correct for the numbers in the payload, and possibly short of
 the window if enough rows were removed mid-walk. The warning is the telling: ask again for a count
 taken after the change. Refusing to answer instead would turn a harmless skew into a failed tool
 call, which the Direction above forbids.
@@ -719,8 +731,9 @@ here.
 | Field | Type | Means |
 |---|---|---|
 | `returned` | integer | rows actually in this payload, counted from the rows themselves rather than from the caller's `limit` |
-| `matching` | integer | rows the request selects, over the same predicates and tables as the row query. Floors at `returned` |
-| `truncated` | boolean | `returned < matching`, derived rather than stored |
+| `remaining` | integer | rows this request still had ahead of it when this page began — the whole result set on an unpaged call, and what lies from the cursor's position onward on a resumed one. It falls as a caller pages and reaches `returned` on the last page. Floors at `returned` |
+| `matching` | integer | rows the WHOLE request selects, over the same predicates and tables as the row query with the cursor predicate deliberately left off. 🔴 It does **not** move as a caller pages, so `returned` stays below it on the final page and `returned < matching` is not a loop condition. This is the figure to quote for "how many transactions match". Floors at `remaining` |
+| `truncated` | boolean | `returned < remaining`, derived rather than stored |
 | `next_cursor` | string | opaque state to pass back as `cursor` for the next page. Present when and only when `truncated` is true, so its presence is the loop condition |
 
 **Fields — `rows[]`** *(`list_accounts`)*.

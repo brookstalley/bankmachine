@@ -625,8 +625,8 @@ class Truncation:
     """How many rows matched, how many came back, and therefore whether the cap bit.
 
     🔴 **`truncated` is a property, not a field.** The invariant is *truncated
-    iff returned < matching*, and a stored third count is a third thing that can
-    disagree with the other two. Derived, it cannot: there is no assignment to
+    iff returned < remaining*, and a stored flag is a third thing that can
+    disagree with the two counts. Derived, it cannot: there is no assignment to
     get wrong. `Window.caveats` is a stored field because reconciling a window
     needs coverage facts from outside it; every caveat here follows from the
     values already on the instance, so they are derived too.
@@ -640,6 +640,19 @@ class Truncation:
     """
 
     returned: int
+    #: How many rows the request still had ahead of it when this page began --
+    #: the whole result set on an unpaged call, and what is left from the
+    #: cursor's position onward on a resumed one. 🔴 This is the figure
+    #: `truncated` is derived from, because it is the one that answers "did this
+    #: page leave anything behind"; `matching` cannot, since it does not move as
+    #: a caller pages.
+    remaining: int
+    #: 🔴 How many rows the WHOLE request selects, cursor or no cursor, so it
+    #: reads the same on every page of a walk. It used to be the paged figure,
+    #: and a walk over 390 rows reported 390, 290, 190, 90 under one name --
+    #: with `coverage.transactions_in_effective_window` sitting beside it still
+    #: reading 390, so the answer contradicted itself and an agent quoting the
+    #: last page answered "90 transactions" to a question about the year.
     matching: int
     #: 🔴 The count came back BELOW the rows, which means the store changed
     #: between the two reads. No default: `over()` is the only route that should
@@ -655,8 +668,16 @@ class Truncation:
     resume_from: Cursor | None
 
     @classmethod
-    def over(cls, *, returned: int, counted: int, resume_from: Cursor | None) -> Truncation:
-        """The only route that should build one, because `counted` can lag `returned`.
+    def over(
+        cls, *, returned: int, remaining: int, matching: int, resume_from: Cursor | None
+    ) -> Truncation:
+        """The only route that should build one, because a count can lag `returned`.
+
+        Two counts, and they are two different questions. `remaining` is what
+        this request still had ahead of it when the page began and is what
+        `truncated` turns on; `matching` is what the whole request selects and
+        stays put across a walk. On an unpaged call they are the same number and
+        the caller may pass it twice.
 
         🔴 **The row query and the count are two snapshots, not one.**
         `store/connection.py` opens the read handle in autocommit — "every
@@ -664,7 +685,7 @@ class Truncation:
         SQLAlchemy's transaction control is inert over these handles. The
         scheduled sync writer soft-deletes transactions, and the MCP reader may
         be mid-query when it wakes. So a row counted in the first statement and
-        removed before the second is entirely reachable, and it makes `counted`
+        removed before the second is entirely reachable, and it makes the count
         smaller than the rows already in hand.
 
         Treated as the data condition it is rather than as an impossibility.
@@ -675,23 +696,34 @@ class Truncation:
         harmless skew into a failed tool call, which `api-contract.md` §
         Direction forbids in as many words.
 
-        `matching` is floored at `returned`, because those rows were observed to
+        `remaining` is floored at `returned`, because those rows were observed to
         match: reporting fewer would contradict the payload they sit beside, and
-        `truncated` would then read false for the right reason by accident. The
-        skew itself is not smoothed away — it rides out as a caveat, since a
-        consumer comparing two calls seconds apart deserves to know a write
-        landed between them.
+        `truncated` would then read false for the right reason by accident.
+        `matching` is floored at `remaining` for the same reason one level out --
+        the whole request cannot select fewer rows than one page of it still had
+        ahead of it. The skew itself is not smoothed away — it rides out as a
+        caveat, since a consumer comparing two calls seconds apart deserves to
+        know a write landed between them.
         """
+        left = max(remaining, returned)
         return cls(
             returned=returned,
-            matching=max(counted, returned),
-            counted_during_change=counted < returned,
+            remaining=left,
+            matching=max(matching, left),
+            counted_during_change=remaining < returned,
             resume_from=resume_from,
         )
 
     @property
     def truncated(self) -> bool:
-        return self.returned < self.matching
+        """Whether THIS page left rows behind, which is the caller's loop condition.
+
+        🔴 Derived from `remaining`, never from `matching`. `matching` describes
+        the whole request and does not fall as a caller pages, so `returned <
+        matching` is still true on the last page of a walk -- a caller looping on
+        that would ask forever for a page that does not exist.
+        """
+        return self.returned < self.remaining
 
     @property
     def next_cursor(self) -> str | None:
@@ -712,8 +744,8 @@ class Truncation:
         🔴 The mirror of that skew ends a walk EARLY, and it is worth naming
         because it looks like a clean finish. When enough rows are removed
         between the two statements the count comes back below the rows in hand,
-        `matching` floors at `returned`, `truncated` reads false and no cursor is
-        issued — correct for the numbers in this payload, and possibly short of
+        `remaining` floors at `returned`, `truncated` reads false and no cursor
+        is issued — correct for the numbers in this payload, and possibly short of
         the window. `counted_during_change` is what says so, which is why it
         rides out rather than being smoothed away.
         """
@@ -785,10 +817,11 @@ class Truncation:
             Caveat(
                 kind="rows_truncated",
                 detail=(
-                    f"{self.matching} transactions match this request and the newest "
-                    f"{self.returned} are returned, so {self.matching - self.returned} are "
-                    f"missing from this answer. Summing or counting these rows describes "
-                    f"only what came back, not the window you asked about. {remedy}"
+                    f"{self.matching} transactions match this request. This answer returns "
+                    f"the newest {self.returned} of the {self.remaining} still unread, so "
+                    f"{self.remaining - self.returned} of them are still missing. Summing or "
+                    f"counting these rows describes only what came back, not the window you "
+                    f"asked about. {remedy}"
                 ),
             )
         )
@@ -797,6 +830,7 @@ class Truncation:
     def to_wire(self) -> dict[str, Any]:
         wire: dict[str, Any] = {
             "returned": self.returned,
+            "remaining": self.remaining,
             "matching": self.matching,
             "truncated": self.truncated,
         }

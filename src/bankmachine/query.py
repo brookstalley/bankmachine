@@ -1376,10 +1376,12 @@ def _transaction_filters(
         filters.append(transactions.c.account_id == account_id)
     if after is not None:
         # 🔴 The keyset predicate belongs in the SHARED list, not on the row
-        # query alone. `matching` is the count of what this request selects, and
+        # query alone. `truncation.remaining` is what `truncated` turns on, and
         # a page whose count ignored the cursor would report the whole result
         # set behind every page — so `truncated` would stay true on the last one
-        # and a caller paging until it went false would never stop.
+        # and a caller paging until it went false would never stop. The
+        # whole-request figure a caller QUOTES is taken separately, with this
+        # predicate deliberately left off.
         #
         # Spelled as an explicit disjunction rather than as a row-value
         # comparison, because it mirrors the ORDER BY beside it one clause at a
@@ -1656,10 +1658,11 @@ def list_transactions(
     """Transactions in a window, newest first. Soft-deleted rows are excluded.
 
     `after` resumes a paged walk at the row a previous answer's `next_cursor`
-    named. It narrows this request the way `since` does — `matching` counts what
-    is left from that position, so `truncated` reads false on the page that
-    exhausts the window and the caller has a terminating condition rather than a
-    number to compare.
+    named. It narrows the rows and `truncation.remaining`, so `truncated` reads
+    false on the page that exhausts the window and the caller has a terminating
+    condition rather than a number to compare — while `truncation.matching`
+    stays the count of what the whole request selects and reads the same on
+    every page of the walk.
     """
     problem = _readable(config)
     if problem is not None:
@@ -1671,7 +1674,7 @@ def list_transactions(
             # matched and nothing was dropped. The key stays present because its
             # absence would say this tool returns everything it finds, and there
             # is no page to resume from because there was no page.
-            truncation=Truncation.over(returned=0, counted=0, resume_from=None),
+            truncation=Truncation.over(returned=0, remaining=0, matching=0, resume_from=None),
         )
     with reader_connection(config) as conn:
         # 🔴 Ordered AFTER the readability check on purpose: an unreadable store
@@ -1729,9 +1732,31 @@ def list_transactions(
             }
             for r in selected
         ]
-        matching = conn.execute(
+        remaining = conn.execute(
             select(func.count()).select_from(source).where(*filters)
         ).scalar_one()
+        # 🔴 A SECOND count, taken without the keyset predicate, and only when a
+        # cursor was passed. `remaining` answers "did this page leave anything
+        # behind", which is the caller's loop condition and must fall to the
+        # rows in hand on the last page. `matching` answers "how many rows does
+        # my request select", which a caller quotes -- and a figure that fell
+        # 390, 290, 190, 90 across a walk under that name gave an agent reading
+        # the last page a confident "90" for a question about the year, with
+        # `coverage.transactions_in_effective_window` beside it still saying
+        # 390. An unpaged request asks one question, so it pays for one count.
+        matching = (
+            remaining
+            if after is None
+            else conn.execute(
+                select(func.count())
+                .select_from(source)
+                .where(
+                    *_transaction_filters(
+                        since=since, until=until, account_id=account_id, after=None
+                    )
+                )
+            ).scalar_one()
+        )
         # 🔴 Built from the LAST ROW THE STATEMENT RETURNED, in the column types
         # the order clause sorts on -- never re-parsed from the wire dict beside
         # it, whose `date` is already a string. A cursor rebuilt from the
@@ -1803,7 +1828,10 @@ def list_transactions(
             # `returned` is derived from the rows themselves rather than from
             # `limit`, so it cannot claim a count the payload does not contain.
             truncation=Truncation.over(
-                returned=len(rows), counted=matching, resume_from=resume_from
+                returned=len(rows),
+                remaining=remaining,
+                matching=matching,
+                resume_from=resume_from,
             ),
             extra_caveats=(
                 _uncovered_caveat(uncovered)

@@ -169,13 +169,18 @@ window the answer actually covered. Read the sibling against a windowed question
 `coverage.transactions` there gives you the whole store's count for a question that asked about a
 slice of it. The sibling is not narrowed by `account_id` either, so it is a fact about the *window*
 rather than about your filters; `truncation.matching` is the one that answers "how many rows did my
-whole request select".
+whole request select", and it reads the same on every page of a walk.
 
 🔴 **`truncation` is the one to check before you sum anything.** It carries `matching` (how many rows
-the request selects), `returned` (how many came back) and `truncated`. When `truncated` is true the
-rows are the **newest ones only**, so adding them up describes what came back rather than the window
-you asked about — measurement found a two-year card total understated by roughly 40% that way, with
-nothing in the payload saying so.
+the **whole request** selects), `remaining` (how many were still ahead of this page), `returned` (how
+many came back) and `truncated`. When `truncated` is true the rows are the **newest ones only**, so
+adding them up describes what came back rather than the window you asked about — measurement found a
+two-year card total understated by roughly 40% that way, with nothing in the payload saying so.
+
+🔴 **`matching` does not move as you page**, so it is the number to quote for "how many transactions
+match": on the last page of a 390-row walk it still reads 390. `remaining` is the one that falls,
+and `truncated` is `returned < remaining` — so **never** page on `returned < matching`, which stays
+true at the end of every walk.
 
 **To read the rest, page.** A truncated answer also carries `truncation.next_cursor`; hand it back as
 `query_transactions`'s `cursor` argument, with the same window and account, and keep going until
@@ -206,7 +211,8 @@ boundary it names — so the *absence* of one is information too:
 - `window_extends_past_coverage` — the window reaches past the covered end (today, or the last
   transaction when that is later).
 - `rows_truncated` — the request matched more rows than the cap returned, and the answer holds only
-  the newest of them. The detail says how many are missing and what to do about it.
+  the newest of them. The detail names how many rows the whole request matches, how many are still
+  unread, and what to do about it.
 - `counted_during_change` — a write landed between the row read and the count read, so the two
   describe moments a fraction apart. The rows are accurate as of the `as_of` stamp.
 - `accounts_without_coverage` — an account in scope has **never** had a transaction recorded. Its

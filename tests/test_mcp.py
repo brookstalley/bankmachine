@@ -2358,11 +2358,13 @@ def test_a_capped_answer_says_so_in_the_payload_a_consumer_reads(
 
     assert wire["truncation"]["returned"] == 10
     assert wire["truncation"]["matching"] == 133
+    assert wire["truncation"]["remaining"] == 133
     assert wire["truncation"]["truncated"] is True
     assert len(wire["rows"]) == 10, "the block disagrees with the rows beside it"
     assert _request_kinds(wire) == ["rows_truncated"]
     detail = next(w["detail"] for w in wire["warnings"] if w["kind"] == "rows_truncated")
-    assert "123 are missing" in detail
+    assert "133 transactions match this request" in detail
+    assert "123 of them are still missing" in detail
 
 
 def test_a_complete_answer_says_it_is_complete(initialized_config: Config) -> None:
@@ -2371,7 +2373,12 @@ def test_a_complete_answer_says_it_is_complete(initialized_config: Config) -> No
 
     wire = _call(initialized_config, "query_transactions")["structuredContent"]
 
-    assert wire["truncation"] == {"returned": 3, "matching": 3, "truncated": False}
+    assert wire["truncation"] == {
+        "returned": 3,
+        "remaining": 3,
+        "matching": 3,
+        "truncated": False,
+    }
     assert _request_kinds(wire) == []
 
 
@@ -2460,7 +2467,12 @@ def test_an_unreadable_store_still_reports_whether_the_tool_is_capped(
         assert "truncation" not in wire, tool
         return
 
-    assert wire["truncation"] == {"returned": 0, "matching": 0, "truncated": False}
+    assert wire["truncation"] == {
+        "returned": 0,
+        "remaining": 0,
+        "matching": 0,
+        "truncated": False,
+    }
     assert _request_kinds(wire) == [], tool
     assert any(w["kind"] == "partial" for w in wire["warnings"]), tool
 
