@@ -127,12 +127,25 @@ def _unstamped_ledger_date_caveat(conn: SAConnection) -> list[Caveat]:
     ]
 
 
-def _pipeline_warnings(conn: SAConnection, now: UtcInstant) -> list[Caveat]:
+def _pipeline_warnings(
+    conn: SAConnection, now: UtcInstant, window: Window | None = None
+) -> list[Caveat]:
     """Everything wrong with the data underneath any answer.
 
     Computed per call rather than cached: an answer's warnings describe the
     datastore at the moment it was read, and a cache would make them describe
     some earlier moment while the rows described this one.
+
+    🔴 **`window` does not change WHICH warnings fire — only how `gapped` reads.**
+    The connection-scoped kinds ride every response equally and that is the
+    guarantee they exist to make; making one of them conditional would move it
+    across the line the two tuples draw, after which the ABSENCE of a kind stops
+    being information. What was wrong was never that `gapped` was always
+    present, but that it arrived character-for-character identical on a window
+    inside coverage, a window outside it, a future window and a query for an
+    account that does not exist. A constant string is what teaches a reader to
+    skip it; the same standing fact, phrased against the window in hand, is what
+    makes the second answer worth reading.
     """
     warnings: list[Caveat] = _unstamped_ledger_date_caveat(conn)
     rows = conn.execute(
@@ -144,8 +157,19 @@ def _pipeline_warnings(conn: SAConnection, now: UtcInstant) -> list[Caveat]:
             connections.c.last_error_code,
             connections.c.requested_history_days,
             connections.c.granted_history_days,
+            sync_state.c.history_start_date,
         )
-        .select_from(connections.join(institutions))
+        .select_from(
+            connections.join(institutions).outerjoin(
+                sync_state,
+                (sync_state.c.connection_id == connections.c.connection_id)
+                # Filtered on domain, like every other read of this table: it is
+                # keyed on (connection, domain), so an unfiltered join returns a
+                # row per domain the day a second one lands and every warning
+                # below fires twice per connection.
+                & (sync_state.c.domain == TRANSACTIONS_DOMAIN),
+            )
+        )
         .where(connections.c.retired_at.is_(None))
     ).all()
 
@@ -216,16 +240,87 @@ def _pipeline_warnings(conn: SAConnection, now: UtcInstant) -> list[Caveat]:
             warnings.append(
                 Caveat(
                     kind="gapped",
-                    detail=(
-                        f"{name} granted {int(granted)} days of history against "
-                        f"{int(requested)} requested, so anything older than that is absent "
-                        f"rather than zero"
+                    detail=_gapped_detail(
+                        name=name,
+                        granted=int(granted),
+                        requested=int(requested),
+                        starts=None if row[7] is None else calendar_date(row[7]),
+                        window=window,
+                        today=calendar_date(now.date()),
                     ),
                     connection_id=connection_id,
                     institution=name,
                 )
             )
     return warnings
+
+
+def _gapped_detail(
+    *,
+    name: str,
+    granted: int,
+    requested: int,
+    starts: CalendarDate | None,
+    window: Window | None,
+    today: CalendarDate,
+) -> str:
+    """One standing shortfall, phrased against the window actually asked about.
+
+    🔴 **A reader who sees a different sentence on the second answer reads the
+    third.** The shortfall is the same fact every time and is stated every time;
+    what changes is whether this request went anywhere near it. Four requests
+    that used to produce one identical string now produce four.
+
+    🔴 **Read from the REQUESTED bounds, never the effective ones.**
+    `resolve_window` clamps `since` up to the store's earliest transaction, so an
+    effective window can never start before coverage — comparing against it would
+    report every request as comfortably inside, which is the reassuring version
+    of the bug rather than a fix for it. What a caller asked for is what says
+    whether they were reaching into the ungranted span.
+
+    🔴 And the span compared against is THIS CONNECTION'S, which is why the
+    comparison is worth making at all: the clamp is store-wide, so a request can
+    sit inside the store's coverage and still reach past one institution's own
+    start. That connection is precisely the one whose absence reads as zero.
+
+    The granted span is named in every branch, because a caller applying its own
+    threshold needs the number whatever this answer concluded — the phrasing is
+    a courtesy to a reader, never a replacement for the fact.
+    """
+    shortfall = f"{name} granted {granted} days of history against {requested} requested"
+    if starts is None:
+        return (
+            f"{shortfall}, and the date its coverage begins has not been recorded yet, so "
+            f"anything older than that is absent rather than zero"
+        )
+    begins = f"its coverage begins {starts.isoformat()}"
+    if window is None:
+        return (
+            f"{shortfall}; {begins}. This request named no window, so it may reach past that "
+            f"date -- anything older is absent rather than zero"
+        )
+    since, until = window.requested_since, window.requested_until
+    if since is None:
+        return (
+            f"{shortfall}; {begins}. This request set no start, so it reaches back to that "
+            f"date and no further -- anything older is absent rather than zero"
+        )
+    if since < starts:
+        missing = (starts - calendar_date(since)).days
+        return (
+            f"{shortfall}, and THIS window reaches {missing} day(s) past where its data starts: "
+            f"{begins}, so the part of the window before that is absent rather than zero"
+        )
+    if until is None or until > today:
+        return (
+            f"{shortfall}; {begins}, which this window starts inside. Its leading edge is "
+            f"covered -- but the window reaches past today, and that tail is unanswered rather "
+            f"than quiet"
+        )
+    return (
+        f"{shortfall}; {begins}. THIS window lies wholly inside that span, so the shortfall "
+        f"does not affect this answer"
+    )
 
 
 def _coverage(
@@ -1109,7 +1204,7 @@ def _answer(
         # consumer reading top-down meets the standing state of the pipeline
         # before the thing that is specific to what they just asked.
         warnings=(
-            _pipeline_warnings(conn, now)
+            _pipeline_warnings(conn, now, window)
             + ([] if window is None else window.caveats)
             + ([] if truncation is None else truncation.caveats)
             + (extra_caveats or [])

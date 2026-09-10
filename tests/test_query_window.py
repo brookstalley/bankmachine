@@ -524,3 +524,89 @@ def test_an_inverted_window_is_refused_rather_than_answered_with_an_empty() -> N
     """
     with pytest.raises(InvertedWindowError, match="is before since"):
         _resolve(date(2025, 1, 2), date(2025, 1, 1))
+
+
+# --------------------------------------------------------------------------
+# The standing shortfall, phrased against the window in hand
+# --------------------------------------------------------------------------
+
+
+def _gapped(since: date | None, until: date | None) -> str:
+    """The `gapped` detail this store would put on that request.
+
+    Reaches into `query` for one pure function rather than driving a datastore:
+    the subject is the SENTENCE, and a seeded store would add a fixture's worth
+    of setup without making the four strings any more distinct.
+    """
+    from bankmachine.query import _gapped_detail
+    from bankmachine.store.types import calendar_date
+
+    return _gapped_detail(
+        name="An Institution",
+        granted=90,
+        requested=730,
+        starts=calendar_date(EARLIEST),
+        window=None if since is None and until is None else _resolve(since, until),
+        today=calendar_date(TODAY),
+    )
+
+
+def test_four_requests_against_one_shortfall_produce_four_distinct_notices() -> None:
+    """🔴 #72's own acceptance, and the measurement the acceptance round performed.
+
+    The shortfall is standing state and rides every answer -- that is what
+    `CONNECTION_SCOPED_KINDS` promises and it is not what was wrong. What was
+    wrong is that it arrived CHARACTER-FOR-CHARACTER IDENTICAL on a window
+    wholly inside coverage, a window crossing the boundary, a future window and
+    a request naming no window at all. A constant string is what trains a reader
+    to skip it, and a reader who skips this one is the reader who reports a
+    total over a span the store never covered.
+
+    Asserted as four DISTINCT strings rather than by matching four phrasings:
+    pinning the wording would make every later improvement to it a test edit,
+    while distinctness is the property that actually matters.
+    """
+    inside = _gapped(date(2026, 1, 1), date(2026, 2, 1))
+    crossing = _gapped(date(2024, 1, 1), date(2026, 2, 1))
+    future = _gapped(date(2026, 1, 1), date(2027, 1, 1))
+    unbounded = _gapped(None, None)
+
+    notices = [inside, crossing, future, unbounded]
+    assert len(set(notices)) == 4, (
+        "two of these four requests got the same notice, so it cannot tell a caller whether "
+        "THIS answer is the degraded one:\n  " + "\n  ".join(notices)
+    )
+
+
+def test_every_phrasing_still_names_the_granted_span() -> None:
+    """The prose is a courtesy to a reader; the number is the fact.
+
+    A caller applying its own threshold needs the shortfall whatever this answer
+    concluded about it, so no branch may drop it in the course of being helpful.
+    """
+    for notice in (
+        _gapped(date(2026, 1, 1), date(2026, 2, 1)),
+        _gapped(date(2024, 1, 1), date(2026, 2, 1)),
+        _gapped(date(2026, 1, 1), date(2027, 1, 1)),
+        _gapped(None, None),
+    ):
+        assert "90 days of history against 730 requested" in notice
+
+
+def test_a_window_inside_coverage_says_the_shortfall_did_not_touch_this_answer() -> None:
+    """The branch that carries the most information, because it is reassurance.
+
+    A caller that reads "this window lies wholly inside that span" can report
+    the total without a caveat. It is also the branch a constant string served
+    worst: it said data was missing about an answer nothing was missing from.
+    """
+    notice = _gapped(date(2026, 1, 1), date(2026, 2, 1))
+    assert "wholly inside" in notice
+    assert EARLIEST.isoformat() in notice
+
+
+def test_a_window_crossing_the_leading_edge_counts_the_days_it_reaches_past() -> None:
+    """A number the caller can act on, not just a direction."""
+    notice = _gapped(date(2024, 1, 1), date(2026, 2, 1))
+    assert "day(s) past where its data starts" in notice
+    assert EARLIEST.isoformat() in notice
