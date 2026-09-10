@@ -134,12 +134,17 @@ def _print_key_backup_instruction(config: Config) -> None:
     print("  It cannot be derived from the datastore. Without it this store, and every")
     print("  backup copy of it, is unrecoverable ciphertext -- there is no remedy.")
     print("  Nothing in this product prints the key. On macOS, read it out with")
-    print(
-        f"    security find-generic-password -s {config.keychain_service} "
-        f"-a {config.keychain_account} -w"
-    )
+    print(f"    {_keychain_recipe(config)}")
     print("  and put it in a password manager that survives this machine.")
     print()
+
+
+def _keychain_recipe(config: Config) -> str:
+    """The one macOS command that reads the datastore key out for a password manager."""
+    return (
+        f"security find-generic-password -s {config.keychain_service} "
+        f"-a {config.keychain_account} -w"
+    )
 
 
 def _obtain_key(config: Config, *, datastore_existed: bool) -> bool:
@@ -183,8 +188,7 @@ def cmd_status(config: Config, _args: argparse.Namespace) -> int:
     print(
         f"datastore key:   keychain {config.keychain_service}/{config.keychain_account} -- "
         f"this datastore is unrecoverable without it, and nothing here prints it. "
-        f"Read it with `security find-generic-password -s {config.keychain_service} "
-        f"-a {config.keychain_account} -w`"
+        f"Read it with `{_keychain_recipe(config)}`"
     )
     return 0 if status.healthy else 1
 

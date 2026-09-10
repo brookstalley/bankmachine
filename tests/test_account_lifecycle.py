@@ -935,6 +935,29 @@ def test_a_rebuild_does_not_undo_the_operators_declaration(
     assert _rows(initialized_config)[f"Account {DROPPED}"]["lifecycle"] == "closed"
 
 
+def test_retiring_a_connection_leaves_the_store_rebuildable(initialized_config: Config) -> None:
+    """🔴 The shipped retire path, against the trap `_declare_closed` documents.
+
+    `updated_at` is inside `content_digest` and is derivation-owned, so a retire
+    that stamped it would leave a same-version `store rebuild` unable to
+    reproduce `accounts` from the archive -- and the docs tell an operator to run
+    exactly that rebuild for a connection that is not syncing. Driven through the
+    command's own write rather than a stand-in, so the column set it touches is
+    the one under test.
+    """
+    from bankmachine.cli.connections import _mark_retired
+
+    _shrinking_roster(initialized_config)
+    with writer_connection(initialized_config) as conn:
+        _mark_retired(conn, connection_id=1, now=now_utc())
+
+    rebuild(initialized_config, derivers=ALL_DERIVERS)
+
+    rows = _rows(initialized_config)
+    assert rows[f"Account {KEPT}"]["lifecycle"] == "closed"
+    assert rows[f"Account {DROPPED}"]["lifecycle"] == "closed"
+
+
 #: The derivation version that shipped before `_record_roster_observation` existed.
 #: 🔴 A fixed historical fact, deliberately not written as `DERIVATION_VERSION - 1`:
 #: a relative stamp moves with the constant, so the archived rows and the running

@@ -119,7 +119,7 @@ Register the server per project. For Claude Code:
 
 ```sh
 claude mcp add bankmachine-sandbox --env BANKMACHINE_ENVIRONMENT=sandbox \
-  -- uv run --directory /absolute/path/to/bankmachine bankmachine mcp
+  -- "$(which uv)" run --directory /absolute/path/to/bankmachine bankmachine mcp
 ```
 
 🔴 **The server is a subprocess your client launches, so it runs whatever code existed

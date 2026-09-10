@@ -648,11 +648,11 @@ class Truncation:
     #: a caller pages.
     remaining: int
     #: 🔴 How many rows the WHOLE request selects, cursor or no cursor, so it
-    #: reads the same on every page of a walk. It used to be the paged figure,
-    #: and a walk over 390 rows reported 390, 290, 190, 90 under one name --
-    #: with `coverage.transactions_in_effective_window` sitting beside it still
-    #: reading 390, so the answer contradicted itself and an agent quoting the
-    #: last page answered "90 transactions" to a question about the year.
+    #: reads the same on every page of a walk and agrees with
+    #: `coverage.transactions_in_effective_window` beside it, which does not
+    #: narrow by cursor either. A per-page count under this name would let an
+    #: agent quoting the last page answer "90 transactions" about a year that
+    #: holds 390, with nothing in the payload contradicting it.
     matching: int
     #: 🔴 The count came back BELOW the rows, which means the store changed
     #: between the two reads. No default: `over()` is the only route that should

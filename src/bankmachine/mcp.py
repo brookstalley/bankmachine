@@ -1407,6 +1407,13 @@ def _build_meta() -> dict[str, Any]:
 INSTRUCTIONS_BUDGET = 1800
 
 
+def _oxford(items: list[str]) -> str:
+    """`a`, `b` and `c` -- the shape the primer reads a closed set in."""
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
 def _instructions(config: Config) -> str:
     """The primer a consuming agent is handed once, at handshake.
 
@@ -1431,6 +1438,10 @@ def _instructions(config: Config) -> str:
     it** -- along with the two URIs being in the opening lines, since a
     pointer that would be cut is a pointer that does not exist.
     """
+    # 🔴 Rendered from the vocabularies that own them, never typed here: a hand
+    # copy of a closed set is the one that drifts when the set moves.
+    pipeline_kinds = _oxford([f"`{kind}`" for kind in envelope.CONNECTION_SCOPED_KINDS])
+    unbuilt = _oxford([f"`{tool}`" for tool in mcp_resources.UNBUILT_TOOLS])
     return (
         f"This server answers from a local {config.environment} finance datastore. READ-ONLY: "
         f"nothing here moves money.\n"
@@ -1442,8 +1453,8 @@ def _instructions(config: Config) -> str:
         f"point of view: negative is money out, positive is money in.\n\n"
         f"🔴 An answer can be perfectly well-formed and still be computed over incomplete "
         f"data. READ `warnings` BEFORE drawing a conclusion, and say what you found. Nothing "
-        f"here throws; the numbers simply stop being true. `stale`, `degraded`, `gapped`, "
-        f"`partial` and `rule-applied` describe the PIPELINE and ride every answer; every "
+        f"here throws; the numbers simply stop being true. {pipeline_kinds} describe the "
+        f"PIPELINE and ride every answer; every "
         f"other kind describes THIS REQUEST and fires only when it crosses the boundary it "
         f"names, so its absence is information too.\n\n"
         f"Quote `totals` rather than a sum over `rows`. When `truncation.truncated` is true, "
@@ -1454,7 +1465,7 @@ def _instructions(config: Config) -> str:
         f"this server.\n\n"
         f"THIS SERVER CANNOT ANSWER: holdings or positions; balance history or net worth over "
         f"time; recurring-charge detection; any filter on amount, text or category. "
-        f"`balance_history`, `list_holdings` and `find_recurring` are specified and NOT "
+        f"{unbuilt} are specified and NOT "
         f"built. Say so rather than deriving a number that has no basis."
     )
 
@@ -1617,7 +1628,12 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
 
     if method == "tools/call":
         name = params.get("name")
-        arguments = params.get("arguments") or {}
+        arguments = params.get("arguments")
+        if arguments is None:
+            # Optional on the wire; absent and null both mean "no arguments".
+            # `or {}` would also swallow `0`, `false` and `""`, which are not
+            # objects and are owed the `-32602` below.
+            arguments = {}
         if not isinstance(name, str) or not isinstance(arguments, dict):
             # 🔴 `_INVALID_PARAMS`, not `_INVALID_REQUEST`. The latter describes
             # the request OBJECT -- a frame that is not a valid JSON-RPC request

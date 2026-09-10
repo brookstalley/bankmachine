@@ -18,8 +18,9 @@ three separate things, so the two worlds cannot mix:
 **A flag selects; the envelope confesses.** The failure a flag alone cannot prevent is not picking
 the wrong one — it is *not knowing you did*. A server pointed at sandbox and one pointed at real
 money return identically-shaped answers. So the environment rides every response (`"environment":
-"sandbox"`) and the server's own title (`bankmachine (sandbox)`), which is what a client shows when
-listing configured servers.
+"sandbox"`) and the server's own title (`bankmachine (sandbox)`). Whether a client shows that title
+is the client's choice — Claude Code lists the key you registered and never shows it — which is why
+the entries below are named distinctly too.
 
 The asymmetry in the filenames is deliberate (AC-10.6): production is the *unsuffixed* default, so
 syncing fixture data into the real datastore takes an explicit override rather than a forgotten
@@ -57,7 +58,7 @@ Where that JSON goes depends on the client:
 
 | Client | Where |
 |---|---|
-| Claude Code | `claude mcp add bankmachine-sandbox --env BANKMACHINE_ENVIRONMENT=sandbox -- /absolute/path/to/uv run --directory /absolute/path/to/bankmachine bankmachine mcp` — writes the entry for you; `claude mcp list` shows it |
+| Claude Code | `claude mcp add bankmachine-sandbox --env BANKMACHINE_ENVIRONMENT=sandbox -- "$(which uv)" run --directory /absolute/path/to/bankmachine bankmachine mcp` — writes the entry for you; `claude mcp list` shows it |
 | Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS); restart the app after editing |
 | Other clients | their `mcpServers` config, same shape; consult the client's own docs |
 

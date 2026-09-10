@@ -377,9 +377,13 @@ def _mark_retired(conn: SAConnection, *, connection_id: int, now: UtcInstant) ->
             accounts.c.connection_id == connection_id,
             accounts.c.lifecycle_status == "active",
         )
+        # 🔴 `updated_at` is NOT written. It is derivation-owned -- `_upsert_account`
+        # stamps it from the archived response and `content_digest` covers it --
+        # so an operator write here would be reverted by the next sync and, worse,
+        # would leave `store rebuild` unable to reproduce the table from the
+        # archive, and it refuses the whole rebuild rather than guess.
         .values(
             lifecycle_status="inactive",
             closed_date=calendar_date(now.date()),
-            updated_at=now,
         )
     )

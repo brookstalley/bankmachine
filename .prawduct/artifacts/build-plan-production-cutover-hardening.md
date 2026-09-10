@@ -25,11 +25,17 @@ governed_by:
       - "one sign convention: value held is positive, value owed is negative, and the connector normalizes → conforms, and Chunk 01 applies it MORE faithfully: the aggregator this connector speaks to documents a credit account's `current` as positive-when-owed and negative-when-in-credit, so the connector negates every liability balance unconditionally. The test that pinned the conditional (`test_a_liability_already_reported_negative_is_not_flipped_twice`) encoded a hypothetical second aggregator inside the connector for the first; its expectation changes and the reason is recorded in § Decisions. 🔴 Owner ruling requested — applied provisionally"
       - "money as integer minor units; ledger amounts exact-or-refuse → conforms"
       - "a removed transaction is retained with `removed_at` set → conforms"
+      - "calendar dates and UTC instants are distinct types and never mix → conforms; the retirement date is `calendar_date(now.date())`, and no new column is added"
+      - "every silver row is aggregator-sourced or manually imported and carries its evidence → conforms; the accounts derived from a sync page's roster carry that page's `raw_response_id`"
+      - "the daily balance series is append-only; a day already recorded is never rewritten → conforms; a null `current` records no row for the day rather than a zero"
+      - "a source value is never overwritten in place; local interpretation lives in its own column → conforms; `category_override` is what the rebuild now preserves, and the source category is untouched"
+      - "a migration's DDL is frozen once written → conforms; no migration is added or edited"
   - artifact: security-model
     dispositions:
       - "the datastore key lives in the keychain and reaches no dotfile, shell history or log line → conforms; Chunk 03 prints an INSTRUCTION for reading it out of the keychain, never the key"
       - "the aggregator's API is the only network destination → conforms; `certifi` is a CA bundle on disk, not a destination"
       - "OS file permissions are a control against another local user → Chunk 03 makes the claim true (umask 0o077); today files land 0644"
+      - "log redaction happens at the formatter and is keyed to credential shape → conforms; the derivers' new log lines name accounts by their local integer id rather than by an opaque source id the formatter would blank"
 partition: delegated — five chunks, five worktrees, disjoint file ownership stated per chunk; the coordinator owns integration (the combined suite, the live stdio and MCP probes, the Critic, the merge). Serial would cost five times the wall clock on work whose seams are three known file pairs, named below
 last_validated: 2026-09-10
 ---
@@ -95,15 +101,18 @@ SDK's own models before code — never recalled.
 
 ## Status
 
-- [ ] Chunk 01: Connector and sync survive production
-- [ ] Chunk 02: Enrollment picks the right institutions and re-linking does not wedge
-- [ ] Chunk 03: Files, keys and guards
-- [ ] Chunk 04: The MCP surface says only what the data supports, and says it where the client delivers it
-- [ ] Chunk 05: A stranger can get from clone to production, and the owner has tomorrow's checklist
-Context: Plan written 2026-09-10 by the coordinating session from five review reports. Delegates
-build 01–05 in parallel on `feat/pch-*` branches cut from `feat/production-cutover-hardening`; the
-coordinator merges each, runs the full suite, ruff, mypy and the live MCP probes, then runs
-`/prawduct:critic cumulative` once over the integration branch. Nothing built yet.
+- [x] Chunk 01: Connector and sync survive production
+- [x] Chunk 02: Enrollment picks the right institutions and re-linking does not wedge
+- [x] Chunk 03: Files, keys and guards
+- [x] Chunk 04: The MCP surface says only what the data supports, and says it where the client delivers it
+- [x] Chunk 05: A stranger can get from clone to production, and the owner has tomorrow's checklist
+Context: all five chunks built in parallel by delegates on `feat/pch-*` branches and merged into
+`feat/production-cutover-hardening` on 2026-09-10; full suite 1097 green, ruff/format/mypy clean,
+a scripted stdio walk confirmed every Chunk 04 deliverable on the wire. The cumulative Critic
+returned 3 blocking (the retire path stamping derivation-owned `updated_at`, which broke a
+same-version rebuild -- fixed with a test; two plan lines naming an endpoint where the linter
+expects a file -- reworded) and the warnings were taken in the same pass. Two owner rulings remain
+provisional (§ Decisions). Next: `/prawduct:critic verify-resolutions`, then merge to `develop`.
 
 ## Chunks
 
@@ -121,7 +130,7 @@ Delivers, each with the test that pins it:
    cursor*: a retryable error caught inside `_sync_one`'s page loop, which re-reads the cursor and
    continues. Today it is unrecognized, non-retryable, and degrades the connection.
 2. A transaction naming an account the local `accounts` table lacks no longer wedges the connection
-   forever. The `accounts` array riding every `/transactions/sync` response is derived (upserted)
+   forever. The `accounts` array riding every transactions-sync response is derived (upserted)
    before the change lists are applied, and `_mark_removed` tolerates an unknown account by logging
    and skipping rather than raising. The `DerivationError` for a genuinely unknown account stays for
    the case where the response carries no roster entry either.
@@ -135,8 +144,8 @@ Delivers, each with the test that pins it:
    StoreError)` so a datastore failure on one connection degrades that connection and the run
    continues to the next.
 6. A `modified` entry naming a pending id after that hold has posted finds the merged row via a third
-   fallback on `source_pending_transaction_id`, and updates it rather than inserting a second live
-   row. (Reproduced by the reviewer: one hotel reported twice.)
+   fallback on `source_pending_transaction_id`, and inserts nothing -- the merged row stays under
+   its posted identity. (Reproduced by the reviewer: one hotel reported twice.)
 7. Liability balances negate unconditionally (see § Decisions). The test that pinned the conditional
    changes its expectation and its docstring records why: this connector speaks to one aggregator
    whose documented convention is positive-when-owed.
@@ -145,7 +154,7 @@ Delivers, each with the test that pins it:
 9. `store rebuild` at a changed derivation version preserves `category_override` (and every other
    operator-owned column on `transactions`) across the replay. Today the replay empties the table and
    the override is gone with success reported.
-10. A `/transactions/sync` page whose `next_cursor` is empty but which carries change lists applies
+10. A transactions-sync page whose `next_cursor` is empty but which carries change lists applies
     the lists before returning, rather than dropping them.
 11. `certifi` is a pinned dependency and the client passes `ssl_ca_cert=certifi.where()`, so
     `SSL_CERT_FILE` in a sourced `.env` cannot redirect the trust store.

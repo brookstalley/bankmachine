@@ -72,7 +72,7 @@ security find-generic-password -s bankmachine -a datastore:sandbox -w
 no printing caller. So the retrieval above is the whole recovery path, and it is worth having done
 once on a key that does not matter. The service name is `BANKMACHINE_KEYCHAIN_SERVICE` (default
 `bankmachine`); the account name is built by `Config.keychain_account`
-(`src/bankmachine/config.py:97`) as `datastore:<environment>`.
+(`Config.keychain_account` in `src/bankmachine/config.py`) as `datastore:<environment>`.
 
 *Failure looks like:* nothing returned, or an error naming the account — check the service and the
 environment suffix rather than assuming the key is gone.
@@ -93,8 +93,8 @@ first production sync is what starts accumulating the one series no re-sync can 
 because the destination already exists — it never overwrites.
 
 **2.4 Decide `BANKMACHINE_HISTORY_DAYS` and then leave it alone.** The default is 730, which is the
-aggregator's own inclusive maximum (`MAX_HISTORY_DAYS`, `src/bankmachine/config.py:42`), and a value
-outside 1–730 is **refused rather than clamped** (`load_config`, `src/bankmachine/config.py:259`) —
+aggregator's own inclusive maximum (`MAX_HISTORY_DAYS`, `MAX_HISTORY_DAYS` in `src/bankmachine/config.py`), and a value
+outside 1–730 is **refused rather than clamped** (`load_config`, the `history_days` bounds check in `src/bankmachine/config.py`) —
 a clamp would enroll a connection at a window nobody chose. Before enrolling, confirm no
 `history_days` sits in `~/.config/bankmachine/config.toml` and no `BANKMACHINE_HISTORY_DAYS` is
 exported in the shell you will run `enroll` from; the environment variable wins over the file.
@@ -115,7 +115,7 @@ uv run bankmachine connector set-secret               # the PRODUCTION secret
 ```
 
 *Verifies:* the secret lands under its own keychain account, `plaid:production`
-(`Config.plaid_keychain_account`, `src/bankmachine/config.py:111`), which the sandbox secret cannot
+(`Config.plaid_keychain_account`, `Config.plaid_keychain_account` in `src/bankmachine/config.py`), which the sandbox secret cannot
 overwrite. `set-secret` prompts without echoing at a terminal and reads stdin when piped.
 
 *Failure looks like:* a refusal to store an empty secret; or the command appearing to succeed while
@@ -130,7 +130,7 @@ uv run bankmachine store init
 
 *Verifies:* it prints `datastore created at …/store.db` — **unsuffixed**, which is production's
 default while sandbox gets `store-sandbox.db` (`_default_datastore_name`,
-`src/bankmachine/config.py:163`) — then the migrations applied and a status block ending
+`_default_datastore_name` in `src/bankmachine/config.py`) — then the migrations applied and a status block ending
 `healthy: yes`. A **new** datastore key is minted here, and only here: a key is never minted for a
 store that already exists, because a fresh key would decrypt nothing.
 
@@ -166,7 +166,7 @@ uv run bankmachine connector check
 *Verifies:* configuration, keychain, network path and the raw archive in one call, against the
 production host, with nothing enrolled. Expect a report naming the environment, the endpoint, the
 received timestamp, the byte count and the `raw_response` id it was archived as
-(`_print_check`, `src/bankmachine/cli/connector.py:141`).
+(`_print_check`, `_print_check` in `src/bankmachine/cli/connector.py`).
 
 *Failure looks like:* `400 (INVALID_API_KEYS): invalid client_id or secret provided` — the shape a
 sandbox/production secret mix-up takes, and distinguishable from a malformed-field error and from a

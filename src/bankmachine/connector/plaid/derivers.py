@@ -971,12 +971,16 @@ def _derive_one_account(
     stated_currency = _stated_currency(balances)
     currency = stated_currency or _recorded_currency(conn, response, source_account_id)
     if currency is None:
+        # Named by type and mask: the source id is an opaque run the log
+        # formatter redacts, and there is no local id yet for an account that
+        # is being skipped before it is upserted.
         _log.warning(
-            "raw response %s gives account %s a balance in no stated currency and this "
-            "datastore has no currency recorded for it, so the account is skipped; its "
-            "transactions cannot be derived until a later roster names one",
+            "raw response %s gives a %s account (mask %s) a balance in no stated currency "
+            "and this datastore has no currency recorded for it, so the account is skipped; "
+            "its transactions cannot be derived until a later roster names one",
             response.raw_response_id,
-            source_account_id,
+            account_type,
+            entry.get("mask"),
         )
         return
 
@@ -996,10 +1000,10 @@ def _derive_one_account(
         # unit inferred from another response is how a total silently mixes two
         # of them -- so the account is kept and the balance is not.
         _log.warning(
-            "raw response %s gives account %s a balance in no stated currency; the account "
+            "raw response %s gives account %d a balance in no stated currency; the account "
             "is kept and no balance is recorded for it",
             response.raw_response_id,
-            source_account_id,
+            account_id,
         )
         return
     _write_balance(
@@ -1194,10 +1198,10 @@ def _write_balance(
         # instead aborted the connection before any page was fetched, on every
         # run, forever.
         _log.warning(
-            "raw response %s reports no current balance for account %s, so no balance is "
+            "raw response %s reports no current balance for account %d, so no balance is "
             "recorded for that day; the account is kept",
             response.raw_response_id,
-            source_account_id,
+            account_id,
         )
         return
     current = to_minor(reported, currency, "a current balance", response)

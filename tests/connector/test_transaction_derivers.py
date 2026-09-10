@@ -403,7 +403,7 @@ def test_replaying_a_posting_transaction_does_not_insert_a_second_row(synced: Co
     assert len(_rows(synced)) == 1
 
 
-def test_a_modification_naming_a_hold_that_has_already_posted_updates_the_merged_row(
+def test_a_modification_naming_a_hold_that_has_already_posted_inserts_nothing(
     synced: Config,
 ) -> None:
     """🔴 The same purchase counted twice, with nothing on either row to say so.

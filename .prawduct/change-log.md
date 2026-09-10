@@ -61,8 +61,8 @@ with no signal either way. The reports ride under `artifacts/reviews-2026-09-09/
   sync page is derived before the change lists, so a transaction on an account `/accounts/get` no
   longer lists cannot wedge derivation; a null `balances.current` records an absent balance instead
   of aborting the connection; a datastore failure on one connection degrades that connection and the
-  run continues; a `modified` naming a hold that has already posted updates the merged row instead of
-  inserting a second purchase; `include_original_description` is on, so the archive holds the bank's
+  run continues; a `modified` naming a hold that has already posted finds the merged row instead ofstead of
+  inserting the purchase again; `include_original_description` is on, so the archive holds the bank's
   own memo from the first production page; `store rebuild` carries `category_override` across a
   version bump instead of dropping every operator re-categorisation; `certifi` pins the trust store.
 - 🔴 **A card in credit is value held, not debt.** The Plaid connector negates every liability
