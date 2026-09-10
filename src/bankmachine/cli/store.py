@@ -106,7 +106,40 @@ def cmd_init(config: Config, _args: argparse.Namespace) -> int:
     else:
         print("no migrations to apply")
     _print_status(status)
+    if created_key:
+        _print_key_backup_instruction(config)
     return 0 if status.healthy else 1
+
+
+def _print_key_backup_instruction(config: Config) -> None:
+    """Printed, not logged, and only where a key was just minted.
+
+    The log is the wrong channel for this: it is read after something has gone
+    wrong, and by then the keychain entry is either there or gone. Minting is
+    the one moment the operator is certainly looking at this terminal, and it is
+    also the last moment at which losing the key costs nothing -- there is no
+    data yet.
+
+    It names the read-out command because otherwise the instruction asks for a
+    value the operator has no route to: nothing in this product prints the key,
+    which is deliberate, and the keychain is therefore the only place it exists.
+    The key is not interpolated here or anywhere else.
+    """
+    print()
+    print("BACK THE DATASTORE KEY UP NOW, WHILE THIS STORE IS STILL EMPTY.")
+    print(
+        f"  A new key was generated in keychain "
+        f"{config.keychain_service}/{config.keychain_account}."
+    )
+    print("  It cannot be derived from the datastore. Without it this store, and every")
+    print("  backup copy of it, is unrecoverable ciphertext -- there is no remedy.")
+    print("  Nothing in this product prints the key. On macOS, read it out with")
+    print(
+        f"    security find-generic-password -s {config.keychain_service} "
+        f"-a {config.keychain_account} -w"
+    )
+    print("  and put it in a password manager that survives this machine.")
+    print()
 
 
 def _obtain_key(config: Config, *, datastore_existed: bool) -> bool:
@@ -143,6 +176,16 @@ def _obtain_key(config: Config, *, datastore_existed: bool) -> bool:
 def cmd_status(config: Config, _args: argparse.Namespace) -> int:
     status = connection.inspect(config)
     _print_status(status)
+    # The standing reminder, on the command an operator runs when something
+    # looks wrong. One line rather than `store init`'s block: a block repeated
+    # on every run is a block nobody reads, and the block belongs to the moment
+    # the key is minted.
+    print(
+        f"datastore key:   keychain {config.keychain_service}/{config.keychain_account} -- "
+        f"this datastore is unrecoverable without it, and nothing here prints it. "
+        f"Read it with `security find-generic-password -s {config.keychain_service} "
+        f"-a {config.keychain_account} -w`"
+    )
     return 0 if status.healthy else 1
 
 

@@ -74,6 +74,62 @@ def test_the_startup_banner_names_the_environment(
     assert "environment=SANDBOX" in capsys.readouterr().err
 
 
+def test_init_tells_the_operator_to_back_the_minted_key_up_and_how_to_read_it(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The one moment the operator is guaranteed to be looking at this command.
+
+    A datastore key cannot be recovered from the datastore, and nothing in this
+    product prints it -- so the instruction has to name the keychain entry AND
+    the command that reads it, or the operator is told to preserve a value they
+    have no route to. On stdout rather than in the log because the log is the
+    channel nobody reads on the day they run `store init`.
+    """
+    assert run(["store", "init"]) == 0
+    out = capsys.readouterr().out
+
+    assert "unrecoverable" in out.lower()
+    assert cli_env.keychain_service in out
+    assert cli_env.keychain_account in out
+    assert (
+        f"security find-generic-password -s {cli_env.keychain_service} "
+        f"-a {cli_env.keychain_account} -w"
+    ) in out
+
+
+def test_the_backup_instruction_is_printed_only_where_a_key_was_minted(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A second `store init` mints nothing, so it has nothing to say about a new key.
+
+    Repeating the block on every run is how an instruction stops being read.
+    The standing reminder is `store status`'s one line, asserted below.
+    """
+    assert run(["store", "init"]) == 0
+    assert "unrecoverable" in capsys.readouterr().out.lower()
+
+    assert run(["store", "init"]) == 0
+    assert "unrecoverable" not in capsys.readouterr().out.lower()
+
+
+def test_status_reminds_the_operator_where_the_key_is_and_that_it_is_the_only_copy(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`store status` is the command an operator runs when something looks wrong.
+
+    One line, not the block: the block belongs to the minting moment. This is
+    the standing reminder that the keychain entry is the only copy there is.
+    """
+    assert run(["store", "init"]) == 0
+    capsys.readouterr()
+
+    assert run(["store", "status"]) == 0
+    out = capsys.readouterr().out
+
+    assert "unrecoverable" in out.lower()
+    assert f"{cli_env.keychain_service}/{cli_env.keychain_account}" in out
+
+
 def test_the_datastore_key_is_never_printed(
     cli_env: Config, capsys: pytest.CaptureFixture[str]
 ) -> None:
