@@ -33,6 +33,7 @@ from bankmachine.connector.plaid.derivers import (
     balance_class_of,
     to_minor,
 )
+from bankmachine.store import types as store_types
 from bankmachine.store.derivation import (
     DerivationContext,
     DerivationError,
@@ -50,8 +51,9 @@ from bankmachine.store.schema import (
     manual_imports,
 )
 from bankmachine.store.types import (
-    DEFAULT_MINOR_DIGITS,
+    UnknownMinorDigitsError,
     UtcInstant,
+    has_minor_digits,
     minor_digits,
     utc_instant,
 )
@@ -319,21 +321,52 @@ def test_a_currency_with_a_different_minor_unit_is_not_scaled_by_a_hundred() -> 
     """A JPY balance stored with two minor digits is 100x too large, and plausible."""
     assert minor_digits("JPY") == 0
     assert minor_digits("KWD") == 3
-    assert minor_digits("USD") == DEFAULT_MINOR_DIGITS == 2
+    assert minor_digits("USD") == 2
     # Lowercase too: the field is the aggregator's, not ours.
     assert minor_digits("jpy") == 0
 
 
-def test_a_balance_in_no_stated_currency_is_not_stored_and_does_not_stop_the_roster(
+def test_a_currency_this_build_does_not_know_has_no_minor_digits_at_all() -> None:
+    """🔴 The exponent is a LOOKUP, and an absent entry is a state rather than a 2.
+
+    The table used to answer 2 for anything it did not recognize, which is the
+    ISO convention and is not a fact about `BTC` -- so `0.04217` became `0.04`,
+    a 0.4% loss that every total computed from it inherited. There is no default
+    to fall back to now, and `has_minor_digits` is how the read path asks the
+    same question without catching an exception.
+    """
+    with pytest.raises(UnknownMinorDigitsError, match="BTC"):
+        minor_digits("BTC")
+    assert not has_minor_digits("BTC")
+    assert not has_minor_digits(None)
+    assert has_minor_digits("usd")
+    # An ISO currency that is neither an exception nor the reference one: the
+    # table enumerates the two-decimal codes rather than defaulting to them, so
+    # an ordinary account in one still derives.
+    assert minor_digits("EUR") == 2
+    assert minor_digits("SEK") == 2
+
+
+def test_an_account_in_no_stated_currency_is_created_with_a_null_one(
     store: Config, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """An amount whose unit is unknown is how a total silently mixes two of them.
+    """🔴 The account EXISTS, with `currency = NULL`, and the balance does not.
 
-    🔴 So the balance is not stored -- and the REST of the roster still is.
-    `/accounts/get` is fetched first on every run, so refusing the whole response
-    over one account aborted the connection before a single transaction page was
-    pulled, on that run and on every run after it, with the same body re-archived
-    each time. One unusable account is a fact about that account.
+    Both of the aggregator's currency fields are documented nullable, and while
+    `accounts.currency` was NOT NULL an account of that shape could not be
+    written at all -- so it was skipped, it was invisible to `list_accounts`,
+    and every transaction on it went on refusing to derive until some later sync
+    happened to state a unit. The transactions never needed the account's
+    currency: they carry their own, stated per row.
+
+    A null here means *the aggregator has not told us yet* -- never `USD`, never
+    the unit of the operator's other accounts. Inventing the unit of every
+    amount on an account is the largest version of the mistake this product
+    exists to refuse.
+
+    The BALANCE is still not written, and that asymmetry is deliberate: one
+    amount with no stated unit is unusable, while an account with no unit yet is
+    merely incompletely known.
     """
     body = _with(
         fixture("accounts_get"),
@@ -359,12 +392,114 @@ def test_a_balance_in_no_stated_currency_is_not_stored_and_does_not_stop_the_ros
     with caplog.at_level(logging.WARNING, logger="bankmachine"):
         derive(store, str(ACCOUNTS_GET), body)
 
-    derived = {row["source_account_id"] for row in rows(store, accounts)}
-    assert derived == {"acct-ordinary"}, "an unusable account did not stop the rest of the roster"
-    assert not [row for row in rows(store, balances_daily) if row["currency"] is None]
-    assert any("no stated currency" in record.getMessage() for record in caplog.records), (
-        "an account was dropped with nothing recording that it happened"
+    derived = {row["source_account_id"]: row for row in rows(store, accounts)}
+    assert set(derived) == {"acct-no-currency", "acct-ordinary"}, (
+        "an account whose unit the aggregator has not stated is invisible rather than honest"
     )
+    assert derived["acct-no-currency"]["currency"] is None, (
+        "a unit nothing stated was filled in from somewhere"
+    )
+    assert derived["acct-ordinary"]["currency"] == "USD"
+    assert [row["account_id"] for row in rows(store, balances_daily)] == [
+        derived["acct-ordinary"]["account_id"]
+    ], "a balance was stored under a unit the response did not state"
+    assert any("no stated currency" in record.getMessage() for record in caplog.records), (
+        "a balance was dropped with nothing recording that it happened"
+    )
+
+
+def test_a_balance_in_a_currency_with_no_known_exponent_is_refused_not_rounded(
+    store: Config, caplog: pytest.LogCaptureFixture
+) -> None:
+    """🔴 `0.04217` is not `0.04`, and a rounded amount is a changed amount.
+
+    `to_minor` used to default an unrecognized code to two minor digits, which is
+    ISO's convention and is not a fact about a cryptocurrency: the 0.4% this
+    rounding lost was disclosed only in a log line, which no caller of the MCP
+    surface or the CLI ever sees. A value this system cannot represent exactly is
+    not stored as an approximation -- the row is refused, the raw body keeps it,
+    and a build that knows the currency's minor unit derives it later.
+
+    🔴 Refused per ROW, never per connection. `/accounts/get` runs before a
+    single page is fetched, so one unrepresentable holding escaping here would
+    take the whole institution's history offline on this run and on every run
+    after it.
+    """
+    body = _with(
+        fixture("accounts_get"),
+        lambda p: p.__setitem__(
+            "accounts",
+            [
+                {
+                    **p["accounts"][0],
+                    "account_id": "acct-unofficial",
+                    "balances": {
+                        "current": "0.04217",
+                        "available": None,
+                        "limit": None,
+                        "iso_currency_code": None,
+                        "unofficial_currency_code": "BTC",
+                    },
+                },
+                {**p["accounts"][1], "account_id": "acct-ordinary"},
+            ],
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="bankmachine"):
+        derive(store, str(ACCOUNTS_GET), body)
+
+    derived = {row["source_account_id"]: row for row in rows(store, accounts)}
+    assert set(derived) == {"acct-unofficial", "acct-ordinary"}, (
+        "one unrepresentable balance cost the roster the rest of its accounts"
+    )
+    assert derived["acct-unofficial"]["currency"] == "BTC", (
+        "the unit IS known; it is the scale that is not, and the account should say so"
+    )
+    assert [row["account_id"] for row in rows(store, balances_daily)] == [
+        derived["acct-ordinary"]["account_id"]
+    ], "a balance this build cannot express exactly was stored anyway"
+    assert any("cannot express in minor units" in r.getMessage() for r in caplog.records)
+
+
+def test_the_same_balance_derives_exactly_once_the_currency_has_an_exponent(
+    store: Config, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half: an exponent that is CONFIGURED is not a guess.
+
+    Adding the currency's minor digits to the lookup is the whole remedy -- the
+    amount then converts exactly, nothing is refused, and nothing is warned
+    about. What the previous test refuses is an unknown scale, not an unofficial
+    currency.
+    """
+    monkeypatch.setitem(store_types._MINOR_DIGITS, "BTC", 8)
+    body = _with(
+        fixture("accounts_get"),
+        lambda p: p.__setitem__(
+            "accounts",
+            [
+                {
+                    **p["accounts"][0],
+                    "account_id": "acct-unofficial",
+                    "balances": {
+                        "current": "0.04217",
+                        "available": None,
+                        "limit": None,
+                        "iso_currency_code": None,
+                        "unofficial_currency_code": "BTC",
+                    },
+                }
+            ],
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="bankmachine"):
+        derive(store, str(ACCOUNTS_GET), body)
+
+    balance = rows(store, balances_daily)[0]
+    assert balance["current_minor"] == 4217000, "the amount was scaled to the wrong exponent"
+    assert balance["currency"] == "BTC"
+    assert not caplog.records, "an exactly-derived amount warned about something"
 
 
 def test_an_account_whose_currency_this_datastore_knows_survives_a_response_that_omits_it(

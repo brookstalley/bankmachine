@@ -574,7 +574,7 @@ def test_a_settlement_is_found_by_the_hold_it_replaced(initialized_config: Confi
     )
 
     with reader_connection(initialized_config) as conn:
-        transitions = query._hold_transitions(conn, since=None, until=None)
+        transitions = query._hold_transitions(conn, since=None, until=None, excluded=[])
 
     assert transitions.settled_for("USD").transactions == 1
     assert transitions.settled_for("USD").net_minor == -3140

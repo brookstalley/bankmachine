@@ -116,9 +116,7 @@ def test_the_scan_can_actually_find_a_token() -> None:
             f"an account at {tokens[0]} was reconciled"
         )
     if cased:
-        assert _pattern(cased, ignore_case=False).search(
-            f"an account at {cased[0]} was reconciled"
-        )
+        assert _pattern(cased, ignore_case=False).search(f"an account at {cased[0]} was reconciled")
 
 
 def test_a_cased_token_does_not_match_the_ordinary_word_it_shares_a_spelling_with() -> None:

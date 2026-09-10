@@ -18,6 +18,7 @@ from sqlalchemy import select
 from bankmachine.config import Config
 from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS
+from bankmachine.store import types as store_types
 from bankmachine.store.derivation import DerivationError, apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
 from bankmachine.store.schema import (
@@ -758,21 +759,53 @@ def test_a_page_carrying_changes_but_no_cursor_applies_them_and_says_so(
     )
 
 
-def test_a_transaction_in_an_unofficial_currency_derives_rather_than_failing_the_page(
-    synced: Config,
+def test_a_transaction_in_a_currency_with_no_known_exponent_costs_only_its_own_row(
+    synced: Config, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The inconsistency that let an account exist while none of its rows could derive.
+    """🔴 The row is refused; the PAGE still applies, and so does the row beside it.
 
     The aggregator sets `iso_currency_code: null` and populates
     `unofficial_currency_code` for cryptocurrencies and other non-ISO
-    instruments. Balances already read both; transactions read only the ISO
-    field, so a row of that shape refused the whole page -- the cursor never
-    advanced past it and the connection degraded on every run afterwards.
+    instruments, and this build knows no minor unit for those codes -- so an
+    amount in one cannot be converted exactly. It is not converted
+    approximately: a ledger amount is exact or refused, and `12.00` in a
+    currency whose real scale might be eight digits is not the same number as
+    `12.00` in one with two.
 
-    The code is stored as the aggregator sent it, so the currency groups
-    separately in every total rather than being folded in with the ISO ones.
+    🔴 The refusal is scoped to the ROW. Letting it escape would abort the page,
+    leave the cursor where it was, and re-fetch and re-refuse the identical body
+    on every run afterwards -- so one unrepresentable transaction would take the
+    institution's whole history offline. The raw response keeps the refused row,
+    so a build that knows the currency's minor unit derives it on the next
+    rebuild and nothing is lost.
     """
-    entry = _txn(transaction_id="t1", amount="12.00")
+    unofficial = _txn(transaction_id="t1", amount="12.00")
+    unofficial["iso_currency_code"] = None
+    unofficial["unofficial_currency_code"] = "BTC"
+    ordinary = _txn(transaction_id="t2", amount="5.00")
+
+    with caplog.at_level(logging.WARNING, logger="bankmachine"):
+        _apply(synced, TRANSACTIONS_SYNC.path, _sync_body(added=[unofficial, ordinary]))
+
+    derived = {row["source_transaction_id"]: row for row in _rows(synced)}
+    assert set(derived) == {"t2"}, "an unrepresentable amount was stored, or cost the page"
+    assert derived["t2"]["amount_minor"] == -500
+    assert any("cannot express in minor units" in r.getMessage() for r in caplog.records), (
+        "a row was dropped with nothing recording that it happened"
+    )
+
+
+def test_the_same_transaction_derives_exactly_once_the_currency_has_an_exponent(
+    synced: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The remedy, asserted: a configured exponent is not a guess.
+
+    What is refused is an unknown scale, not an unofficial currency -- and the
+    code is stored as the aggregator sent it, so it groups separately in every
+    total rather than being folded in with the ISO ones.
+    """
+    monkeypatch.setitem(store_types._MINOR_DIGITS, "BTC", 8)
+    entry = _txn(transaction_id="t1", amount="0.04217")
     entry["iso_currency_code"] = None
     entry["unofficial_currency_code"] = "BTC"
 
@@ -780,7 +813,7 @@ def test_a_transaction_in_an_unofficial_currency_derives_rather_than_failing_the
 
     row = _rows(synced)[0]
     assert row["currency"] == "BTC"
-    assert row["amount_minor"] == -1200
+    assert row["amount_minor"] == -4217000
 
 
 def test_a_transaction_in_no_stated_currency_at_all_is_still_refused(synced: Config) -> None:

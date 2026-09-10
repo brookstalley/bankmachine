@@ -21,7 +21,7 @@ from bankmachine.connector import TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
-from bankmachine.store.schema import transactions
+from bankmachine.store.schema import accounts, transactions
 from bankmachine.store.types import minor_units, now_utc
 from test_mcp import _call, _every_tool_except, _seed, _tools_requiring
 
@@ -603,3 +603,190 @@ def test_no_category_reaches_external_spend_without_a_decision(
         f"{sorted(undecided)} reach `external_spend` through the fallback rather than through "
         f"a decision; classify them or record them in KNOWN_SOURCE_CATEGORIES"
     )
+
+
+# --------------------------------------------------------------------------
+# Accounts this store cannot denominate — excluded, and the exclusion named
+# --------------------------------------------------------------------------
+
+
+def _second_account(
+    config: Config, *, balances: dict[str, Any], iso: str | None, unofficial: str | None = None
+) -> None:
+    """A second account on the same connection, plus one transaction on it.
+
+    Written through `/transactions/sync`, which carries an `accounts` array and
+    derives it with the same deriver `/accounts/get` uses. One body is therefore
+    both halves of the case: the account whose unit is in question, and a row on
+    it that a total would otherwise pick up.
+    """
+    now = now_utc()
+    entry: dict[str, Any] = {
+        "account_id": "acct-2",
+        "transaction_id": "second-1",
+        "amount": "77.00",
+        "iso_currency_code": iso,
+        "unofficial_currency_code": unofficial,
+        "date": str(now.date()),
+        "authorized_date": None,
+        "pending": False,
+        "pending_transaction_id": None,
+        "name": "Second Account Purchase",
+        "merchant_name": None,
+        "personal_finance_category": {
+            "primary": "GENERAL_MERCHANDISE",
+            "detailed": "GENERAL_MERCHANDISE_ONLINE_MARKETPLACES",
+        },
+    }
+    with writer_connection(config) as conn:
+        apply_response(
+            conn,
+            connection_id=1,
+            endpoint=TRANSACTIONS_SYNC.path,
+            body=json.dumps(
+                {
+                    "accounts": [
+                        {
+                            "account_id": "acct-2",
+                            "name": "Unknown Unit",
+                            "mask": "2222",
+                            "type": "depository",
+                            "subtype": "checking",
+                            "balances": balances,
+                        }
+                    ],
+                    "added": [entry],
+                    "modified": [],
+                    "removed": [],
+                    "next_cursor": "cursor-second",
+                    "has_more": False,
+                    "transactions_update_status": "HISTORICAL_UPDATE_COMPLETE",
+                    "request_id": "req-second",
+                }
+            ).encode(),
+            received_at=now,
+            derivers=ALL_DERIVERS,
+        )
+
+
+def _rule_applied(wire: dict[str, Any]) -> list[dict[str, Any]]:
+    return [warning for warning in wire["warnings"] if warning["kind"] == "rule-applied"]
+
+
+def test_an_ordinary_store_carries_no_exclusion_warning_at_all(
+    initialized_config: Config,
+) -> None:
+    """🔴 The control, and the reason the warning below is worth reading.
+
+    `rule-applied` says rows were left out of THIS aggregate on purpose. A store
+    where every account's unit is known excludes nothing, so it says nothing --
+    and a reader can take the absence as the statement that the figures cover
+    every account there is.
+    """
+    _seed(initialized_config)
+    assert _rule_applied(_wire(initialized_config)) == []
+
+
+def test_an_account_in_no_stated_currency_is_left_out_of_the_totals_and_named(
+    initialized_config: Config,
+) -> None:
+    """🔴 Its rows derive, they are queryable, and no minor-units figure includes them.
+
+    The account exists with `currency = NULL` -- the aggregator has not told us
+    what unit it is in -- and its transactions derive normally, because they
+    carry their own currency stated per row. What cannot happen is those amounts
+    entering a total: an amount on an account whose unit is unknown cannot be
+    added to a figure in a unit that is known, because the arithmetic would
+    succeed and the result would mean nothing.
+
+    So the rows are excluded and the answer SAYS SO, naming the account rather
+    than a count -- the reader's next move is to go and look at that account.
+    """
+    _seed(initialized_config)
+    baseline = _wire(initialized_config)
+    _second_account(
+        initialized_config,
+        balances={
+            "current": "50.00",
+            "available": None,
+            "limit": None,
+            "iso_currency_code": None,
+            "unofficial_currency_code": None,
+        },
+        iso="USD",
+    )
+
+    with reader_connection(initialized_config) as conn:
+        held = {
+            int(row[0]): row[1]
+            for row in conn.execute(select(accounts.c.account_id, accounts.c.currency)).all()
+        }
+    excluded = [account_id for account_id, currency in held.items() if currency is None]
+    assert len(excluded) == 1, "the account was skipped rather than created with a null unit"
+
+    # It derived, and it is answerable — the cascade this fix ends.
+    rows = _call(initialized_config, "query_transactions", {})["structuredContent"]["rows"]
+    assert any(row["account_id"] == excluded[0] for row in rows), (
+        "the account's transactions did not derive, so the exclusion below hides nothing"
+    )
+
+    wire = _wire(initialized_config)
+    assert wire["totals"] == baseline["totals"], (
+        "an account whose unit is unknown moved a minor-units total"
+    )
+    assert excluded[0] not in {row["group_key"] for row in _rows(initialized_config)}
+    assert str(excluded[0]) not in {
+        row["group_key"] for row in _rows(initialized_config, group_by="account")
+    }
+    warnings = _rule_applied(wire)
+    assert len(warnings) == 1
+    assert str(excluded[0]) in warnings[0]["detail"]
+    assert "never stated one" in warnings[0]["detail"]
+
+
+def test_an_account_whose_currency_has_no_known_exponent_is_named_with_its_code(
+    initialized_config: Config,
+) -> None:
+    """🔴 The unit is known and the SCALE is not, which is the same exclusion.
+
+    `0.04217` in a currency whose minor unit this build does not know cannot be
+    stored exactly, and it is not stored approximately -- so the balance is
+    refused and so is every transaction on the account. That leaves the account
+    with no rows at all, which is precisely why the warning is computed from
+    `accounts` rather than from the rows the answer returned: a scan of the rows
+    would find nothing excluded and report nothing, and the operator would see
+    an account that simply never appears in any figure.
+
+    The code rides the detail, because "this account is in an unknown unit" and
+    "this account is in BTC and we do not know its scale" send an operator to
+    two different places.
+    """
+    _seed(initialized_config)
+    baseline = _wire(initialized_config)
+    _second_account(
+        initialized_config,
+        balances={
+            "current": "0.04217",
+            "available": None,
+            "limit": None,
+            "iso_currency_code": None,
+            "unofficial_currency_code": "BTC",
+        },
+        iso=None,
+        unofficial="BTC",
+    )
+
+    with reader_connection(initialized_config) as conn:
+        held = {
+            int(row[0]): row[1]
+            for row in conn.execute(select(accounts.c.account_id, accounts.c.currency)).all()
+        }
+    excluded = [account_id for account_id, currency in held.items() if currency == "BTC"]
+    assert len(excluded) == 1, "the account was skipped rather than kept with its stated unit"
+
+    wire = _wire(initialized_config)
+    assert wire["totals"] == baseline["totals"]
+    warnings = _rule_applied(wire)
+    assert len(warnings) == 1
+    assert f"{excluded[0]} (BTC)" in warnings[0]["detail"]
+    assert "minor unit this build does not know" in warnings[0]["detail"]

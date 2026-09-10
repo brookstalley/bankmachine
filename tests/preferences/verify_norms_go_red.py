@@ -426,10 +426,14 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         f"{DERIVER_TESTS}::test_a_liability_reported_positive_is_stored_negative",
     ),
     (
+        # 🔴 Pinned to the SHARED parse helper, which is where the argument now
+        # lives. Five readers used to spell `json.loads` themselves; breaking one
+        # of them would leave the other four honest and the norm half-proven.
+        # One site is the point of routing them all through it.
         "AC-6.2: money is read as text, never through a float",
-        CONNECTOR_DERIVERS,
-        "        parsed = json.loads(response.body, parse_float=str)",
-        "        parsed = json.loads(response.body)",
+        CONNECTOR_PACKAGE,
+        "        return json.loads(body, parse_float=str)",
+        "        return json.loads(body)",
         f"{DERIVER_TESTS}::test_an_amount_a_float_would_have_mangled_survives_exactly",
     ),
     (
@@ -928,8 +932,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-2.1: a bounded run does not stamp last_success_at",
         SYNC_RUN,
-        "    _record_success(config, connection_id, complete=not outcome.stopped_short)",
-        "    _record_success(config, connection_id, complete=True)",
+        "    _record_success(config, connection_id, history_complete=not outcome.unfinished)",
+        "    _record_success(config, connection_id, history_complete=True)",
         f"{SYNC_RUN_TESTS}::test_a_bounded_run_does_not_claim_the_connection_is_up_to_date",
     ),
     (
@@ -1352,8 +1356,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # again, so the documented fix would fail on the store it is for.
         "AC-5.3: a newly-populated column bumps the derivation version",
         pathlib.Path("src/bankmachine/store/derivation.py"),
+        "DERIVATION_VERSION = 5",
         "DERIVATION_VERSION = 4",
-        "DERIVATION_VERSION = 3",
         # 🔴 Pinned to the UPGRADE test, not the lifecycle one. The lifecycle
         # test's store is stamped two versions back, so `change_was_expected`
         # stays true under a single reverted bump and the mutation passes -- the
@@ -1361,7 +1365,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # rows at exactly one version back, which is the operator's real
         # situation and the only gap a single reverted bump closes.
         "tests/store/test_upgrading_a_populated_store.py::"
-        "test_the_rebuild_stamps_the_column_the_migration_could_only_leave_empty",
+        "test_the_rebuild_stamps_the_ledger_dates_migration_005_could_only_leave_empty",
     ),
     (
         "AC-12.7: a non-active account's silence is closure, not a coverage finding",

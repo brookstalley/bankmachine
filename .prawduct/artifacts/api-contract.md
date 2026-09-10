@@ -82,6 +82,14 @@ the balance-lifecycle norm names one unmigrated emitter it does not grandfather.
   > *Retroactivity:* none owed. The kind had no emitter to reinterpret — that absence is what #34
   > filed — so nothing already on the wire changes meaning. When FR-8's rule engine lands it
   > becomes a third emitter of the same kind, needing no further amendment.
+  > 🔴 *And it moved scope in the same breath:* `rule-applied` sat in `CONNECTION_SCOPED_KINDS`
+  > while it had no producer, because *which accounts this store cannot denominate* is standing
+  > state. Its emitters are not — they fire only on an answer that computes a total, and only
+  > when that answer's own scope holds such an account — so it now sits in
+  > `REQUEST_SCOPED_KINDS`. A kind in the connection tuple promises to ride every response
+  > equally; once one member of one set behaves like the other's, the absence of ANY kind in
+  > either set stops being readable as information, which is the guarantee the split exists to
+  > make.
   Status: steady-state.
 
 - **The CLI's three-way exit code is a contract: `0` success, `1` ran and found a problem, `2` could
@@ -90,6 +98,34 @@ the balance-lifecycle norm names one unmigrated emitter it does not grandfather.
   ergonomics. Collapsing them makes **a broken scheduler indistinguishable from a degraded feed** —
   which is this product's primary failure mode arriving through the operational door, and the one
   place where an ops shortcut reproduces the exact bug the product exists to prevent.
+
+  > **Amendment, 2026-09-10 — a fourth code, `75` (`EX_TEMPFAIL`), for a run that did not
+  > finish.** *Statement:* the vocabulary is `0` success, `1` ran and found a problem, `2` could not
+  > run, and `75` ran, found nothing wrong, and still owes work — come back. `sync run` answers `75`
+  > for every state in which more history is owed and nothing is broken: `NOT_READY`,
+  > `INITIAL_UPDATE_COMPLETE`, and a page run stopped at its ceiling. `1` outranks `75` on a run
+  > that produced both. The `1`/`2` distinction is untouched and still not collapsible; an
+  > unexpected exception is `2`, which is the existing norm being *obeyed* rather than amended —
+  > `1` was never available to a command that did not finish.
+  > *Why:* this is an ADDITION to the vocabulary, not a collapse of it, and it rests on the same
+  > argument that made `1`/`2` non-collapsible. The CLI is not the MCP envelope. An envelope can
+  > carry incompleteness as a `partial` warning field because its consumer reads the payload; a
+  > scheduled runner reads the exit code and nothing else. A first sync on a real institution
+  > reaches `INITIAL_UPDATE_COMPLETE` — roughly thirty days of a 730-day grant — minutes to hours
+  > before the rest lands, and under a bare `0` build step 8's launchd agent cannot tell that from a
+  > whole history, so the connection sits at thirty of its 730 days until tomorrow's window. The
+  > only mitigation that existed was a paragraph in `docs/first-production-connection.md` § 3.6,
+  > which works solely for an operator reading it at that moment. `EX_TEMPFAIL` rather than a fourth
+  > small integer, because 75 already means "temporary failure, retry" to every piece of operational
+  > tooling that reads exit codes at all. **One code rather than two:** splitting "history complete"
+  > from "still arriving" would encode an internal distinction the caller cannot act on differently.
+  > *Retroactivity:* owed, and paid in the same commit rather than deferred. § 3.6 asserted *"Exit 0
+  > with nothing applied is the expected first result on a real institution"* and is now false; it
+  > is rewritten, together with the page-ceiling paragraph beside it, the standing-routine guidance
+  > on writing your own `cron`/`launchd` entry, and `operational-spec.md`'s scheduling contract and
+  > failure table. Nothing is grandfathered because nothing yet reads these codes in production: the
+  > scheduler is unbuilt, which is why this amendment lands **before** build step 8 rather than as a
+  > migration after it.
   Status: steady-state.
 
 - **A tool's boundary is drawn where the answer *shape* changes — never where the question changes.**
@@ -569,6 +605,20 @@ it is what proves the classification *partitions* the rows rather than quietly d
 aggregate here — a summed integer over two currencies is not a wrong number, it is not a number.
 The block is present and empty when the datastore cannot be read, exactly as `coverage` is present
 and zero, so the key set a consumer branches on never depends on the store's health.
+
+🔴 **An account this store cannot denominate contributes to neither the rows nor the totals, and
+`money_summary` says which account and why.** Two states reach it: an account whose `currency` is
+null, because the aggregator has never stated one, and an account whose currency has no known
+minor-unit exponent, so no amount in it can be expressed exactly. Adding either to a figure in a
+unit that IS known would produce a number that means nothing — the arithmetic succeeds and the
+result is meaningless — so their rows are excluded from every figure in the answer and the exclusion
+rides `rule-applied`, whose `detail` names the account ids and, where the code is known, the code.
+
+The disclosure is computed from `accounts` rather than from the rows the answer returned, and that
+is load-bearing: an account whose unit has no known scale typically has **no derivable rows at
+all**, because each was refused at derivation, so a scan of the returned rows would find nothing
+excluded and report nothing. These are the kind's first two emitters, per § Direction's amendment
+of 2026-09-10.
 
 ### Coverage is reported per account, never per institution (AC-9.5)
 
@@ -1065,12 +1115,20 @@ cases: one breaks the carve-out, the other removes the refusal.
 |---|---|---|
 | `0` | `EXIT_OK` | Success |
 | `1` | `EXIT_UNHEALTHY` | 🔴 **Ran fine; the answer is "unhealthy."** `store status` on a missing or empty datastore |
-| `2` | `EXIT_ERROR` | The command could not run — config error, keychain failure, connector failure |
+| `2` | `EXIT_ERROR` | The command could not run — config error, keychain failure, connector failure, or an unexpected exception |
+| `75` | `EXIT_RUN_AGAIN` | 🔴 **Ran fine, nothing is wrong, and work is still owed — come back.** `EX_TEMPFAIL`. `sync run` answers it for `NOT_READY`, for `INITIAL_UPDATE_COMPLETE`, and for a page run stopped at its ceiling |
 
 🔴 **The 1/2 split is load-bearing and must not be collapsed.** launchd needs to distinguish *"the job
 ran and found a problem"* from *"the job could not run."* Merging them would make a broken scheduler
 indistinguishable from a degraded feed, which is the silent-staleness failure mode arriving through
 the operational door.
+
+🔴 **`75` is an addition to that vocabulary, ratified as an amendment in § Direction on 2026-09-10.**
+It exists because the scheduled runner reads the exit code and nothing else: a first sync on a real
+institution reaches `INITIAL_UPDATE_COMPLETE` — thirty of a granted 730 days — minutes to hours
+before the rest lands, and under a bare `0` launchd cannot tell that from a whole history. `1`
+outranks `75` on a run that produced both: the stuck connection needs a person, the arriving one
+needs only the next run.
 
 Expected failures print one sentence to stderr, not a traceback — **but they are never silent, which
 is the one outcome this project disallows.**
@@ -1174,6 +1232,10 @@ means *this may break*, and for the other three it means *this does not exist ye
 - `--config` — stable
 - `--verbose` — stable
 - exit codes `0` / `1` / `2` — stable
+- exit code `75` — experimental, by the same *shipped and depended on* criterion that grades
+  `store backup`: it was added on 2026-09-10 and its one intended consumer, build step 8's
+  launchd agent, does not exist yet. The meaning is fixed by the § Direction amendment; the
+  tier records that nothing has yet read it in anger
 
 The `connector` commands are `experimental` because the connector is mid-build (step 2) and its
 command shape may still move; `store init`/`status`/`rebuild` and `sync shell` shipped in step 1 and

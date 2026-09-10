@@ -106,6 +106,30 @@ nothing to migrate or grandfather.
   enqueued as VRF-006 in `.prawduct/operator-verification.md`, are what close it, and they are the
   operator's.
 
+  > **Amendment, 2026-09-10 — a valuation is rounded to a minor unit this build KNOWS, and refused
+  > otherwise.** *Statement:* the rounding clause above holds where the currency's minor-unit
+  > exponent is a recorded fact. Where it is not, there is no scale to round to, and the row is
+  > refused rather than approximated — per ROW, never per connection, with the raw response keeping
+  > the value.
+  > *Why:* the clause was implemented against a lookup that answered **2 for anything it did not
+  > recognize**, which is ISO 4217's convention for its own codes and is not a fact about the codes
+  > the aggregator sends in `unofficial_currency_code`. So `0.04217` in a cryptocurrency became
+  > `0.04` — a 0.4% loss, disclosed only in a log line no caller of the MCP surface or the CLI ever
+  > sees, and inherited by every total computed from it. That is neither exact nor refused, which
+  > is the one state this norm's whole point is to exclude. The alternative considered and rejected
+  > was to store the rounded value and flag it: a number wrong by 0.4% and marked is still wrong in
+  > every identity this store maintains over it.
+  > *Retroactivity:* none owed against stored rows — the exponent table gains every ISO 4217 code
+  > rather than losing one, so no currency that derived exactly before derives differently now.
+  > Rows previously rounded under a guessed exponent are re-derived by `store rebuild`, which the
+  > derivation-version bump makes a recorded change rather than a silent one.
+  > *Mechanism:* `store/types.py::minor_digits` raises `UnknownMinorDigitsError` rather than
+  > defaulting; `has_minor_digits` is the same question asked without an exception, and is what the
+  > read path uses to exclude such an account from a minor-units aggregate and name it under
+  > `rule-applied`. Adding a currency's exponent to that table is the whole remedy: the amount then
+  > derives exactly and nothing is refused or warned about.
+  Status: steady-state.
+
 - **All monetary values are stored as integer minor units. No floats anywhere in the schema or in
   aggregation code.**
   Why: binary floating point cannot represent decimal currency exactly, and the error accumulates
@@ -275,7 +299,7 @@ exact failure AC-11.8 exists to prevent.
 | `mask` | text | | Last 4 — the only account-number fragment stored anywhere |
 | `account_type` / `account_subtype` | text | | The **source's** vocabulary, retained verbatim |
 | `balance_class` | text | `asset` \| `liability` | Local classification, operator-correctable |
-| `currency` | text | | ISO code |
+| `currency` | text | nullable | The unit the account is denominated in. 🔴 Null means **the aggregator has not stated one**, never `USD` and never another account's unit (migration 006) |
 | `lifecycle_status` | text | `active` \| `inactive` | |
 | `opened_date` | calendar date | nullable | |
 | `first_seen_date` | calendar date | required | |
@@ -298,6 +322,26 @@ exact failure AC-11.8 exists to prevent.
   then fell behind that maximum and was reported closed for the whole window until the connection's
   next successful sync. A connection with no observation marks nothing absent; once any of its
   accounts carries one, an account still null was genuinely not in that roster.
+- 🔴 **`currency` is nullable and its null is load-bearing too.** It means *the aggregator has not
+  told us what unit this account is in* — never `USD`, never the unit of the operator's other
+  accounts. Both of the aggregator's currency fields are documented nullable, and while the column
+  was NOT NULL an account of that shape could not be written at all: it was skipped, invisible to
+  `list_accounts`, and every transaction on it went on refusing to derive until a later sync
+  happened to state one. The transactions never needed it — they carry their own
+  `transactions.currency`, stated per row.
+  ⚠️ **The four other NOT NULL currency columns stay NOT NULL** — `transactions`, `balances_daily`,
+  `holdings`, `investment_transactions`. Each describes ONE amount, and an amount whose unit nothing
+  stated is refused row by row with a named reason; an account with no unit *yet* is merely
+  incompletely known. Widening those too would turn a narrow honesty fix into a store-wide
+  loosening.
+  🔴 **Such an account, and one whose currency has no known minor-unit exponent, are excluded from
+  every minor-units aggregate, and the exclusion is disclosed** under `rule-applied` naming the
+  account (`query._undenominable_accounts`). Adding an amount whose unit or scale is unknown to a
+  total in a unit that is known produces a figure that means nothing, and an exclusion nobody
+  announces is one that gets silently forgotten during analysis.
+  Migration 006 dropped the NOT NULL by rebuilding the table — SQLite cannot drop one in place — and
+  **no row changed value**: every account in every datastore had a currency, so the copy is the
+  identity and the migration is schema-only.
 
 🔴 **Why `balance_class` exists as data rather than being derived from `account_type`.** `net_worth`
 is an enumerated consumer of this schema and `account_type` cannot answer it: the types are the

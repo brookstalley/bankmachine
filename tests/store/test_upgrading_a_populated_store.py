@@ -31,8 +31,20 @@ maintenance it asks for.** It models the upgrade an operator's own datastore
 performs next, so when a migration lands, the constants move to it. They cannot
 be written relatively -- see the note on them -- so the move is by hand, and the
 alternative is a module that quietly stops testing the migration anyone is about
-to run. It was first written against migration 004 and moved to 005 when that
-landed.
+to run. It was first written against migration 004 and has moved with each one
+since; it is pointed at 006 now.
+
+🔴 **006 is a TABLE REBUILD, and that changes what is worth asserting.** The two
+migrations before it added a column, so the sharp question was what the new
+column holds on rows that predate it. This one creates a replacement `accounts`,
+copies every row across, drops the original and swaps the new one in -- with
+foreign-key enforcement suspended, because four tables reference the table being
+dropped. Nothing about that is visible in the column list afterwards, and the
+ways it goes wrong are silent: a row not copied, two TEXT columns transposed, a
+CHECK or an index lost with the table it hung from, a child left pointing at a
+parent that is no longer there. So the assertions below are about the rows and
+the constraints rather than about a new column's contents, and the strongest of
+them is simply that every table came out byte-identical.
 """
 
 from __future__ import annotations
@@ -42,14 +54,14 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 import pytest
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, update
 
 from bankmachine.config import Config
 from bankmachine.connector import ITEM_GET, TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.secrets import generate_datastore_key, set_datastore_key
 from bankmachine.store import derivation
-from bankmachine.store.connection import reader
+from bankmachine.store.connection import reader, writer
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
 from bankmachine.store.migrations import MIGRATIONS, migrate
@@ -73,24 +85,27 @@ from bankmachine.store.types import UtcInstant, utc_instant
 #: constants, so the seeded store and the running build could never be at
 #: different versions and every assertion below would hold whether or not the
 #: migration did anything at all.
-SCHEMA_BEFORE_THE_LEDGER_DATE = 4
-DERIVATION_BEFORE_THE_LEDGER_DATE = 3
+SCHEMA_BEFORE_THE_NULLABLE_CURRENCY = 5
+DERIVATION_BEFORE_THE_NULLABLE_CURRENCY = 4
 
 #: What that derivation version meant, so the seeded `derivation_versions` row
 #: says something true about the rows hanging off it rather than describing a
 #: roster observation those rows predate.
-DESCRIPTION_BEFORE_THE_LEDGER_DATE = (
+DESCRIPTION_BEFORE_THE_NULLABLE_CURRENCY = (
     "institutions and accounts derived from the aggregator; balances signed from the "
     "operator's point of view; the roster observation recorded per account "
-    "(`accounts.last_seen_date`) and per connection (`connections.roster_observed_date`)"
+    "(`accounts.last_seen_date`) and per connection (`connections.roster_observed_date`); "
+    "the day a transaction's money was committed stamped once as "
+    "`transactions.ledger_date` and never moved by settlement"
 )
 
-#: The migration the seeded store is missing, and the column it adds.
-THE_PENDING_MIGRATION = SCHEMA_BEFORE_THE_LEDGER_DATE + 1
-THE_COLUMN_IT_ADDS = "ledger_date"
+#: The migration the seeded store is missing, and the column whose NOT NULL it
+#: drops.
+THE_PENDING_MIGRATION = SCHEMA_BEFORE_THE_NULLABLE_CURRENCY + 1
+THE_COLUMN_IT_WIDENS = "currency"
 
-#: The table that column lands on.
-THE_TABLE_IT_LANDS_ON = transactions.name
+#: The table it rebuilds to do that -- SQLite cannot drop NOT NULL in place.
+THE_TABLE_IT_REBUILDS = accounts.name
 
 #: The table every migration records itself in. Its rows are the one thing the
 #: upgrade is meant to change, so they are compared on their own.
@@ -261,15 +276,18 @@ def populated_at_the_previous_version(config: Config, monkeypatch: pytest.Monkey
     🔴 **Seeded at the CURRENT version and then rewound, rather than seeded at the
     old one -- and that order is forced.** A build's derivers write the columns
     that build has, so this build's transaction deriver stamps `ledger_date` and
-    cannot run against any store predating it. Seeding first and removing the
+    cannot run against any store predating it. Seeding first and narrowing the
     column afterwards is what lets the rows be written by the shipped path --
     `apply_response`, the shipped registry, the shipped derivers -- which is the
     property this whole module rests on. A hand-written row would satisfy a
     migration a derived row would not.
 
-    What comes out is a file shaped exactly like one the previous build left: the
-    column absent, `schema_version` topping out one short, and every row carrying
-    the derivation version that build stamped.
+    What comes out is a file shaped exactly like one the previous build left:
+    `accounts.currency` NOT NULL again, `schema_version` topping out one short,
+    and every row carrying the derivation version that build stamped. The
+    seeded account is in USD, which is why the rewind can narrow the column at
+    all -- and why the migration's copy is the identity, exactly as it is on
+    every datastore in the world today.
 
     🔴 The derivation version and its description are stood in during seeding
     rather than rewritten afterwards, because they are what the rows POINT AT.
@@ -281,10 +299,10 @@ def populated_at_the_previous_version(config: Config, monkeypatch: pytest.Monkey
 
     with monkeypatch.context() as previous_build:
         previous_build.setattr(
-            derivation, "DERIVATION_VERSION", DERIVATION_BEFORE_THE_LEDGER_DATE
+            derivation, "DERIVATION_VERSION", DERIVATION_BEFORE_THE_NULLABLE_CURRENCY
         )
         previous_build.setattr(
-            derivation, "DERIVATION_DESCRIPTION", DESCRIPTION_BEFORE_THE_LEDGER_DATE
+            derivation, "DERIVATION_DESCRIPTION", DESCRIPTION_BEFORE_THE_NULLABLE_CURRENCY
         )
         _enroll(config)
         _archive_and_derive(config, ITEM_GET.path, _item_body())
@@ -295,9 +313,9 @@ def populated_at_the_previous_version(config: Config, monkeypatch: pytest.Monkey
     seeded = dump_every_table(config)
     empty = [name for name in POPULATED_BY_THE_SEEDING if not seeded[name][1]]
     assert not empty, f"the derivers wrote nothing into {empty}, so nothing here is under test"
-    assert THE_COLUMN_IT_ADDS not in seeded[THE_TABLE_IT_LANDS_ON][0], (
-        "the rewind left the new column in place, so the migration under test has nothing to add "
-        "and every assertion below would hold against a store that never moved"
+    assert required_columns(config, THE_TABLE_IT_REBUILDS) >= {THE_COLUMN_IT_WIDENS}, (
+        "the rewind left the column already nullable, so the migration under test has nothing "
+        "to widen and every assertion below would hold against a store that never moved"
     )
     return config
 
@@ -305,21 +323,87 @@ def populated_at_the_previous_version(config: Config, monkeypatch: pytest.Monkey
 def _rewind_past_the_newest_migration(config: Config) -> None:
     """Take the seeded store back to the version before this build's last migration.
 
-    Removes exactly what that migration added -- its column, and its row in
-    `schema_version` -- so the file reports the older version and a reader of it
-    cannot tell it from a store that never crossed the migration at all.
+    Undoes exactly what that migration did -- the column's nullability, and its
+    row in `schema_version` -- so the file reports the older version and a reader
+    of it cannot tell it from a store that never crossed the migration at all.
+
+    🔴 **A rebuild in the other direction, and deliberately not a call to the
+    migration's own DDL.** Reusing the shipped statements with `NOT NULL` spliced
+    back in would make the fixture and the code under test one implementation:
+    a rebuild that dropped a CHECK would drop it on both sides and the
+    comparison would still pass. This is written out, so what the migration
+    produces is compared against a table built independently of it.
 
     🔴 The store is still at the current version while this runs, which is why an
     ordinary writer may open it. The rewind is what makes it unsupported, so it
     is the last thing done to the file.
     """
-    with writer_connection(config) as conn:
-        conn.exec_driver_sql(
-            f"ALTER TABLE {THE_TABLE_IT_LANDS_ON} DROP COLUMN {THE_COLUMN_IT_ADDS}"
+    # 🔴 The raw handle, not the SQLAlchemy one, and foreign keys off OUTSIDE any
+    # transaction -- SQLite ignores that pragma inside one, and the `DROP TABLE`
+    # below is refused while four tables reference the table being dropped. It
+    # is the same constraint the migration runner works around for the migration
+    # this rewind undoes.
+    with writer(config) as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute(_ACCOUNTS_BEFORE_THE_MIGRATION)
+        conn.execute(f"INSERT INTO accounts_before_006 SELECT {_ACCOUNT_COLUMNS} FROM accounts")
+        conn.execute("DROP TABLE accounts")
+        conn.execute("ALTER TABLE accounts_before_006 RENAME TO accounts")
+        conn.execute(
+            "CREATE UNIQUE INDEX accounts_source_identity ON accounts "
+            "(connection_id, source_account_id) WHERE source_account_id IS NOT NULL"
         )
-        conn.exec_driver_sql(
-            "DELETE FROM schema_version WHERE version = :v", {"v": THE_PENDING_MIGRATION}
-        )
+        conn.execute("CREATE INDEX accounts_by_institution ON accounts (institution_id)")
+        conn.execute("DELETE FROM schema_version WHERE version = ?", (THE_PENDING_MIGRATION,))
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+#: The columns of `accounts`, in the order the file holds them. Named on both
+#: sides of the copy above rather than left to `SELECT *`, for the reason the
+#: migration names: a positional copy is correct until the two lists stop
+#: agreeing, and then it transposes two TEXT columns in silence.
+_ACCOUNT_COLUMNS = (
+    "account_id, institution_id, connection_id, source_account_id, "
+    "source_persistent_account_id, name, official_name, mask, account_type, "
+    "account_subtype, balance_class, currency, lifecycle_status, opened_date, "
+    "first_seen_date, closed_date, source, created_at, updated_at, last_seen_date"
+)
+
+#: `accounts` as the build before migration 006 declared it: `currency NOT NULL`,
+#: and every other constraint migrations 002 and 003 put on the table.
+_ACCOUNTS_BEFORE_THE_MIGRATION = """
+    CREATE TABLE accounts_before_006 (
+        account_id                   INTEGER PRIMARY KEY,
+        institution_id               INTEGER NOT NULL REFERENCES institutions(institution_id),
+        connection_id                INTEGER REFERENCES connections(connection_id),
+        source_account_id            TEXT,
+        source_persistent_account_id TEXT,
+        name                         TEXT NOT NULL,
+        official_name                TEXT,
+        mask                         TEXT,
+        account_type                 TEXT NOT NULL,
+        account_subtype              TEXT,
+        balance_class                TEXT NOT NULL
+                                     CHECK (balance_class IN ('asset', 'liability')),
+        currency                     TEXT NOT NULL,
+        lifecycle_status             TEXT NOT NULL
+                                     CHECK (lifecycle_status IN ('active', 'inactive')),
+        opened_date                  TEXT CHECK (opened_date GLOB
+                                     '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+        first_seen_date              TEXT NOT NULL CHECK (first_seen_date GLOB
+                                     '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+        closed_date                  TEXT CHECK (closed_date GLOB
+                                     '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+        source                       TEXT NOT NULL
+                                     CHECK (source IN ('aggregator', 'manual')),
+        created_at                   TEXT NOT NULL CHECK (created_at LIKE '%+00:00'),
+        updated_at                   TEXT NOT NULL CHECK (updated_at LIKE '%+00:00'),
+        last_seen_date               TEXT CHECK (last_seen_date GLOB
+                                     '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+        CHECK ((source = 'aggregator') <= (source_account_id IS NOT NULL)),
+        CHECK (closed_date IS NULL OR closed_date >= first_seen_date)
+    )
+"""
 
 
 # --------------------------------------------------------------------------
@@ -361,6 +445,21 @@ def dump_every_table(config: Config) -> dict[str, TableDump]:
     return dumped
 
 
+def required_columns(config: Config, table_name: str) -> set[str]:
+    """The columns the file itself refuses a NULL in, whatever the metadata says.
+
+    Read from `PRAGMA table_info` for the same reason `dump_every_table` is: the
+    claim under test is about the database on disk, and `store/schema.py`
+    describes the version this build serves rather than the one the file is at.
+    """
+    with reader(config, require_supported_schema=False) as conn:
+        return {
+            str(row[1])
+            for row in conn.execute(f'PRAGMA table_info("{table_name}")').fetchall()
+            if row[3]
+        }
+
+
 # --------------------------------------------------------------------------
 # The upgrade itself.
 # --------------------------------------------------------------------------
@@ -376,8 +475,11 @@ def test_migrating_a_populated_store_forward_keeps_every_row_it_already_held(
     nothing in it. Here the whole file is read before and after, so a step that
     reached past its own DDL has nowhere to hide.
 
-    `connections` is compared separately below, because it is the one table the
-    migration is allowed to change the shape of.
+    🔴 **Every table, `accounts` included, and that is the point on migration
+    006.** This one drops `accounts` and swaps a replacement in with foreign-key
+    enforcement suspended, so the failures it can produce are a row not copied,
+    two TEXT columns transposed, and a child row left pointing at a parent that
+    is gone. `schema_version` is the one table the migration is meant to change.
     """
     before = dump_every_table(populated_at_the_previous_version)
 
@@ -386,51 +488,140 @@ def test_migrating_a_populated_store_forward_keeps_every_row_it_already_held(
     assert applied == [THE_PENDING_MIGRATION]
     after = dump_every_table(populated_at_the_previous_version)
     assert set(after) == set(before), "the migration added or removed a table"
-    for name in sorted(set(before) - {SCHEMA_VERSION_TABLE, THE_TABLE_IT_LANDS_ON}):
+    for name in sorted(set(before) - {SCHEMA_VERSION_TABLE}):
         assert after[name] == before[name], f"{name} did not survive the upgrade unchanged"
     assert after[SCHEMA_VERSION_TABLE][1][-1][0] == THE_PENDING_MIGRATION
     assert len(after[SCHEMA_VERSION_TABLE][1]) == len(before[SCHEMA_VERSION_TABLE][1]) + 1
 
 
-def test_the_migration_leaves_its_new_column_empty_on_the_rows_it_found(
+def test_the_migration_widens_the_column_and_rewrites_no_value(
     populated_at_the_previous_version: Config,
 ) -> None:
-    """🔴 The upgrade window, asserted over rows that predate the column.
+    """🔴 The upgrade window, asserted over a table that was replaced wholesale.
 
-    A null in `transactions.ledger_date` means *this row predates the split and
-    the store has not been rebuilt*. It must never be read as "the money was
-    committed on the posting date", because that is the very number the column
-    exists to stop being wrong -- so the migration may not invent one, and a
-    constant DEFAULT would be exactly that. There is nothing honest to backfill
-    with in DDL: the correct value is `COALESCE(authorized_date, posted_date)`
-    per row, which `ALTER TABLE ... ADD COLUMN` cannot compute.
+    A rebuild is the shape of migration that usually means data moved. Here it
+    must not: every account in every datastore today has a currency -- the NOT
+    NULL would not have accepted one without -- so the copy is the identity and
+    this is a schema-only change. What has to hold is that the file refuses one
+    fewer thing than it did, and that nothing else about the table moved: same
+    columns, same order, same values, same indexes.
 
-    🔴 **What this pins that a column DEFAULT cannot.** A row inserted after the
-    migration takes the DEFAULT; a row that was already in the table takes
-    whatever the migration did to it. Only the second is the operator's
-    situation, and only a row written before the column existed can tell the two
-    apart.
+    🔴 **Column ORDER, because `store/schema.py`'s metadata is compared to this
+    database column-by-column in order.** A replacement table that listed the
+    columns in a better arrangement would be a correct database that a correct
+    description disagrees with, and the drift guard is where that surfaces --
+    somewhere else entirely from the migration that caused it.
     """
     columns_before, rows_before = dump_every_table(populated_at_the_previous_version)[
-        THE_TABLE_IT_LANDS_ON
+        THE_TABLE_IT_REBUILDS
     ]
-    assert THE_COLUMN_IT_ADDS not in columns_before
     assert rows_before, "the fixture seeded no rows, so this asserts nothing about an upgrade"
+    assert THE_COLUMN_IT_WIDENS in required_columns(
+        populated_at_the_previous_version, THE_TABLE_IT_REBUILDS
+    )
 
     migrate(populated_at_the_previous_version)
 
     columns_after, rows_after = dump_every_table(populated_at_the_previous_version)[
-        THE_TABLE_IT_LANDS_ON
+        THE_TABLE_IT_REBUILDS
     ]
-    assert columns_after == (*columns_before, THE_COLUMN_IT_ADDS), (
-        "the column must land at the END of the table, where `ALTER TABLE ... ADD COLUMN` puts "
-        "it and where store/schema.py's metadata declares it"
+    assert columns_after == columns_before, (
+        "the rebuilt table renamed or reordered a column, so the metadata drift guard now "
+        "disagrees with a database that is otherwise correct"
     )
-    widened = sorted((row[: len(columns_before)] for row in rows_after), key=repr)
-    assert widened == rows_before, "the migration rewrote a transaction row it was only widening"
-    assert [row[-1] for row in rows_after] == [None] * len(rows_after), (
-        "the migration stamped a ledger date it had no per-row expression to compute, so some "
-        "row now claims a commitment date nothing derived"
+    assert rows_after == rows_before, "the rebuild rewrote a row it was only meant to carry across"
+    still_required = required_columns(populated_at_the_previous_version, THE_TABLE_IT_REBUILDS)
+    assert THE_COLUMN_IT_WIDENS not in still_required, "the column is still NOT NULL"
+    assert still_required == {
+        column for column in columns_before if column not in {THE_COLUMN_IT_WIDENS}
+    } & (still_required | {THE_COLUMN_IT_WIDENS}), "a column stopped being required"
+
+
+def test_the_rebuilt_table_keeps_the_indexes_and_checks_it_hung_from(
+    populated_at_the_previous_version: Config,
+) -> None:
+    """🔴 What a table rebuild loses silently, asserted because nothing else would.
+
+    Indexes and table CHECKs belong to the table, so `DROP TABLE` takes them
+    with it and the replacement has to declare them again. Neither loss shows up
+    in a column list or a row dump: a missing index makes queries slower and
+    lets a duplicate account through, and a missing CHECK is invisible until the
+    row it would have refused arrives -- an aggregator account with no source id,
+    or a closed date before the account was first seen.
+    """
+    migrate(populated_at_the_previous_version)
+
+    with reader_connection(populated_at_the_previous_version) as conn:
+        indexes = {
+            str(row[0])
+            for row in conn.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'accounts' "
+                "AND sql IS NOT NULL"
+            ).fetchall()
+        }
+    assert indexes == {"accounts_source_identity", "accounts_by_institution"}
+
+    with (
+        writer_connection(populated_at_the_previous_version) as conn,
+        pytest.raises(Exception, match="CHECK constraint failed"),
+    ):
+        conn.exec_driver_sql(
+            "INSERT INTO accounts (institution_id, name, account_type, balance_class, "
+            "lifecycle_status, first_seen_date, closed_date, source, created_at, updated_at) "
+            "VALUES (1, 'n', 'depository', 'asset', 'active', '2026-09-07', '2026-09-01', "
+            "'manual', '2026-09-07T12:30:00+00:00', '2026-09-07T12:30:00+00:00')"
+        )
+
+
+def test_the_upgraded_store_holds_the_account_the_old_one_could_not(
+    populated_at_the_previous_version: Config,
+) -> None:
+    """🔴 The behaviour the widening buys, asserted rather than inferred.
+
+    An account whose first balance names neither currency field could not be
+    written at all while the column was NOT NULL, so it was skipped -- invisible
+    to `list_accounts`, with every transaction on it refusing to derive until
+    some later sync happened to state a unit. After the upgrade the row exists
+    and says what is true of it: the aggregator has not told us yet.
+
+    Written through the ordinary writer rather than the deriver, because the
+    claim here is about what the FILE will hold. What the deriver does with a
+    body that states no currency is `tests/connector/test_derivers.py`'s.
+    """
+    assert THE_COLUMN_IT_WIDENS in required_columns(
+        populated_at_the_previous_version, THE_TABLE_IT_REBUILDS
+    ), "the column was already nullable, so the upgrade below is not what makes this possible"
+
+    migrate(populated_at_the_previous_version)
+
+    with writer_connection(populated_at_the_previous_version) as conn:
+        conn.execute(
+            insert(accounts).values(
+                institution_id=1,
+                connection_id=1,
+                source_account_id="acct-no-currency",
+                name="Unknown Unit",
+                account_type="depository",
+                balance_class="asset",
+                currency=None,
+                lifecycle_status="active",
+                first_seen_date=POSTED_DATE,
+                source="aggregator",
+                created_at=FETCHED,
+                updated_at=FETCHED,
+            )
+        )
+    with reader_connection(populated_at_the_previous_version) as conn:
+        held = {
+            str(row[0]): row[1]
+            for row in conn.execute(
+                select(accounts.c.source_account_id, accounts.c.currency).where(
+                    accounts.c.source_account_id == "acct-no-currency"
+                )
+            ).all()
+        }
+    assert held == {"acct-no-currency": None}, (
+        "a unit nothing stated came back as something, so the null was defaulted somewhere"
     )
 
 
@@ -472,7 +663,7 @@ def test_an_upgraded_store_serves_the_values_its_derivers_wrote(
     assert account.last_seen_date is None, (
         "a sync body is not a roster read, so it must not leave a record that one happened"
     )
-    assert stamped == [DERIVATION_BEFORE_THE_LEDGER_DATE], (
+    assert stamped == [DERIVATION_BEFORE_THE_NULLABLE_CURRENCY], (
         "the upgrade restamped rows it did not re-derive, so their provenance is now a claim "
         "about logic that never touched them"
     )
@@ -507,7 +698,7 @@ def test_the_prescribed_rebuild_runs_on_the_store_the_upgrade_produced(
 
     report = rebuild(populated_at_the_previous_version, derivers=ALL_DERIVERS)
 
-    assert report.previous_derivation_versions == (DERIVATION_BEFORE_THE_LEDGER_DATE,)
+    assert report.previous_derivation_versions == (DERIVATION_BEFORE_THE_NULLABLE_CURRENCY,)
     assert report.content_changed, (
         "the replay reproduced the upgraded store byte for byte, so the guard this test exists "
         "to exercise was never consulted"
@@ -535,47 +726,52 @@ def test_the_prescribed_rebuild_runs_on_the_store_the_upgrade_produced(
     assert stamps == [report.derivation_version_id]
 
 
-def test_the_rebuild_stamps_the_column_the_migration_could_only_leave_empty(
+def test_the_rebuild_stamps_the_ledger_dates_migration_005_could_only_leave_empty(
     populated_at_the_previous_version: Config,
 ) -> None:
-    """🔴 The remedy the nullable column is owed, asserted rather than prescribed.
+    """🔴 The remedy `transactions.ledger_date` is owed, asserted rather than prescribed.
 
-    `ledger_date` lands nullable because no DDL can compute
-    `COALESCE(authorized_date, posted_date)` per row, and every windowed total
-    silently EXCLUDES a null one -- so between the migration and the rebuild this
-    store answers every window over a subset of its transactions. That is
-    tolerable only because the rebuild closes it, and only for as long as the
-    rebuild is known to.
+    That column landed NULLABLE because no `ALTER TABLE ... ADD COLUMN` can
+    compute `COALESCE(authorized_date, posted_date)` per row, and every window
+    predicate silently EXCLUDES a null one -- so between migration 005 and a
+    rebuild, this store answers every windowed question over a subset of its
+    transactions and reports the subset as the whole. That is tolerable only
+    because the rebuild closes it, and only for as long as the rebuild is known
+    to. This is the half that makes the design honest rather than merely
+    documented.
 
-    So this is the half that makes the design honest: after the prescribed
-    rebuild, no transaction is left unstamped, and the value is the authorized
-    date where the source reported one -- not the posting date, which is the
-    fallback the whole column exists to refuse.
+    🔴 **The nulls are written here rather than reached through migration 005,
+    and that is forced.** This build's transaction deriver stamps `ledger_date`,
+    so it cannot write a store predating the column; and the fixture above
+    already seeds past 005 on its way to 006. Nulling the column reproduces
+    exactly the file state 005 leaves on a populated store -- the column present
+    and empty on every row that predates it -- which is the state under test.
     """
     migrate(populated_at_the_previous_version)
+    with writer_connection(populated_at_the_previous_version) as conn:
+        conn.execute(update(transactions).values(ledger_date=None))
 
     with reader_connection(populated_at_the_previous_version) as conn:
         before = conn.execute(select(transactions.c.ledger_date)).scalars().all()
     assert before and all(value is None for value in before), (
-        "the migration stamped a ledger date, so the rebuild below is not what fills it"
+        "the fixture holds no unstamped row, so the rebuild below has nothing to prove"
     )
 
     rebuild(populated_at_the_previous_version, derivers=ALL_DERIVERS)
 
     with reader_connection(populated_at_the_previous_version) as conn:
-        stamped = conn.execute(
-            select(transactions.c.source_transaction_id, transactions.c.ledger_date)
-        ).all()
+        stamped = conn.execute(select(transactions.c.ledger_date)).scalars().all()
     assert stamped, "the rebuild removed the rows it was meant to restamp"
-    assert all(row[1] is not None for row in stamped), (
+    assert all(value is not None for value in stamped), (
         "the rebuild left a transaction with no ledger date, so a window over this store still "
         "excludes it and reports a floor as a measurement"
     )
-    # The seeded bodies carry `authorized_date` a day before `date`, so a value
-    # equal to the posting date would mean the coalesce fell through -- the exact
-    # fallback that reinstates the defect.
-    assert {row[1] for row in stamped} == {AUTHORIZED_DATE}, (
-        "the rebuild stamped the posting date rather than the date the money was committed"
+    # 🔴 The seeded bodies carry `authorized_date` a day BEFORE `date`, so a
+    # value equal to the posting date would mean the coalesce fell through --
+    # the fallback the column exists to refuse, and the one a rebuild could
+    # reintroduce without any test noticing.
+    assert set(stamped) == {AUTHORIZED_DATE}, (
+        "the rebuild stamped the posting date rather than the day the money was committed"
     )
 
 

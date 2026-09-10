@@ -35,7 +35,6 @@ aggregator sent and `from_decimal_string` converts it exactly or refuses.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from datetime import date
 from decimal import ROUND_HALF_EVEN, Decimal
@@ -50,6 +49,8 @@ from bankmachine.connector import (
     ITEM_GET,
     ITEM_REMOVE,
     TRANSACTIONS_SYNC,
+    MalformedResponseError,
+    parse_response_body,
 )
 from bankmachine.logging_setup import get_logger
 from bankmachine.store.derivation import DerivationContext, DerivationError, Deriver
@@ -67,6 +68,7 @@ from bankmachine.store.types import (
     CalendarDate,
     MinorUnits,
     MoneyError,
+    UnknownMinorDigitsError,
     UtcInstant,
     calendar_date,
     from_decimal_string,
@@ -109,18 +111,29 @@ _ASSET_TYPES: Final[frozenset[str]] = frozenset({"depository", "investment", "br
 def _payload(response: RawResponse) -> dict[str, Any]:
     """The response body, with every number left as the text the aggregator sent.
 
-    `parse_float=str` is the load-bearing argument. Without it `json.loads`
-    builds a float and the exactness question is already lost -- `from_decimal_string`
-    would then be converting this machine's best rendering of a number rather
-    than the number itself.
+    `parse_float=str` is the load-bearing argument, and it is a property of
+    `parse_response_body` rather than of this call: without it `json.loads`
+    builds a float and the exactness question is already lost --
+    `from_decimal_string` would then be converting this machine's best rendering
+    of a number rather than the number itself.
+
+    🔴 **Ruling on the three parse failures: the shared helper, translated back
+    to `DerivationError` so the seam's contract is unchanged.** A body that
+    cannot be read is a refusal to derive one response, and `store.derivation`'s
+    callers are written to catch that -- `sync run` degrades the connection it
+    belongs to and carries on with the others. A syntax error already did that;
+    a body nested past the stack and a body whose bytes are not UTF-8 raised
+    `RecursionError` and `UnicodeDecodeError`, which share no base with
+    `ValueError`, so they escaped the run and every connection queued behind
+    this one went unsynced. `response.body` is `bytes`, so the parser does the
+    decoding and the third mode is reachable here.
     """
     try:
-        parsed = json.loads(response.body, parse_float=str)
-    except json.JSONDecodeError as exc:
-        raise DerivationError(
-            f"raw response {response.raw_response_id} ({response.endpoint}) is not JSON, so "
-            f"nothing can be derived from it"
-        ) from exc
+        parsed = parse_response_body(
+            response.body, what=f"raw response {response.raw_response_id} ({response.endpoint})"
+        )
+    except MalformedResponseError as exc:
+        raise DerivationError(f"{exc}, so nothing can be derived from it") from exc
     if not isinstance(parsed, dict):
         raise DerivationError(
             f"raw response {response.raw_response_id} ({response.endpoint}) is a "
@@ -159,6 +172,25 @@ def _stated_currency(fields: dict[str, Any]) -> str | None:
     return _optional(fields.get("iso_currency_code")) or _optional(
         fields.get("unofficial_currency_code")
     )
+
+
+class UndenominableAmountError(DerivationError):
+    """One row is in a unit this build cannot express in minor units.
+
+    🔴 **A ROW's refusal, never a connection's.** A `DerivationError` aborts the
+    response that raised it, and for `/accounts/get` that is fetched first on
+    every run -- so one unrepresentable holding would take the whole institution
+    offline, on that run and every run after it. This subclass is what the two
+    loops catch to skip the row and keep going: the account stays, its other
+    rows derive, and the raw body keeps what was refused.
+
+    🔴 **Refused, not approximated.** The alternative -- store the rounded value
+    and flag it -- puts a number that is wrong by a fraction into the ledger and
+    asks every later reader to notice a marker. The balance-sheet identities
+    this store maintains would then be built on values that do not add up, and a
+    figure wrong by 0.4% and marked is still wrong in every total computed from
+    it.
+    """
 
 
 def to_minor(amount: object, currency: str, what: str, response: RawResponse) -> MinorUnits:
@@ -202,7 +234,21 @@ def to_minor(amount: object, currency: str, what: str, response: RawResponse) ->
             f"{type(amount).__name__}; amounts must reach this point as the text the aggregator "
             f"sent, because a float has already lost fractions of a cent by the time it is seen"
         )
-    exponent = minor_digits(currency)
+    # 🔴 **Rounded to the currency's OWN minor unit, which has to be known.**
+    # This once defaulted an unrecognized code to two digits, which is right for
+    # most fiat and wrong for every cryptocurrency: `0.04217` in a currency whose
+    # minor unit is 1/100,000,000 became `0.04`, and the 0.4% it lost was
+    # disclosed in a log line no caller of any surface ever sees. Rounding a
+    # valuation to a scale the currency actually has is a recorded
+    # approximation; rounding it to a scale that was guessed is a wrong number.
+    try:
+        exponent = minor_digits(currency)
+    except UnknownMinorDigitsError as exc:
+        raise UndenominableAmountError(
+            f"raw response {response.raw_response_id} gives {what} in {currency}, and {exc}. "
+            f"The row is refused rather than rounded; the archive keeps the value, so a build "
+            f"that knows this currency's minor unit derives it exactly and nothing is lost"
+        ) from exc
     try:
         return from_decimal_string(amount, exponent=exponent)
     except MoneyError:
@@ -470,6 +516,19 @@ def _operator_signed_amount(amount: object, currency: str, response: RawResponse
         )
     try:
         exact = from_decimal_string(amount, exponent=minor_digits(currency))
+    except UnknownMinorDigitsError as exc:
+        # 🔴 Distinguished from the refusal below, because the two are refused
+        # at different scopes. A sub-cent amount in a currency this build knows
+        # is a body it cannot interpret and the page is refused; an amount in a
+        # currency whose minor unit is unknown is a fact about that one row, and
+        # taking the connection offline over it would lose every other row on
+        # the page for the lifetime of the unknown currency.
+        raise UndenominableAmountError(
+            f"raw response {response.raw_response_id} ({response.endpoint}) has transaction "
+            f"amount {amount!r} in {currency}, and {exc}. The row is refused rather than "
+            f"rounded; the archive keeps it, so a build that knows this currency's minor unit "
+            f"derives it exactly"
+        ) from exc
     except MoneyError as exc:
         # Wrapped so the refusal names the response, like every other refusal
         # here. A bare `MoneyError` says an amount was unrepresentable and not
@@ -530,12 +589,46 @@ def _apply_transaction_changes(
     modified = _entries(payload, "modified", response)
     removed = _entries(payload, "removed", response)
     for entry in added:
-        _write_transaction(conn, entry, response, context, known, existing_ok=False)
+        _write_one_change(conn, entry, response, context, known, existing_ok=False)
     for entry in modified:
-        _write_transaction(conn, entry, response, context, known, existing_ok=True)
+        _write_one_change(conn, entry, response, context, known, existing_ok=True)
     for entry in removed:
         _mark_removed(conn, entry, response, known)
     return len(added) + len(modified) + len(removed)
+
+
+def _write_one_change(
+    conn: SAConnection,
+    entry: dict[str, Any],
+    response: RawResponse,
+    context: DerivationContext,
+    known: dict[str, int],
+    *,
+    existing_ok: bool,
+) -> None:
+    """One change from the page, refusing THIS row where it must and no more.
+
+    🔴 **The only refusal that stops here is a unit this build cannot express.**
+    A row in a currency whose minor unit is unknown cannot be stored exactly and
+    is not stored approximately, but it is one row: letting it escape would
+    abort the page, leave the cursor where it was, and re-fetch and re-refuse the
+    same body on every run afterwards -- so a single unrepresentable holding
+    would take the whole institution's history offline indefinitely. Every other
+    `DerivationError` still escapes, because every other one says the body could
+    not be interpreted, which is a fact about the page rather than about a row.
+
+    The raw response keeps what was refused, so nothing is lost and a build that
+    knows the currency's minor unit derives it on the next `store rebuild`.
+    """
+    try:
+        _write_transaction(conn, entry, response, context, known, existing_ok=existing_ok)
+    except UndenominableAmountError as exc:
+        _log.warning(
+            "raw response %s: one transaction is in a unit this build cannot express in minor "
+            "units, so it is not derived and the rest of the page is -- %s",
+            response.raw_response_id,
+            exc,
+        )
 
 
 def _entries(payload: dict[str, Any], key: str, response: RawResponse) -> list[dict[str, Any]]:
@@ -998,21 +1091,15 @@ def _derive_one_account(
     # product's whole warning vocabulary exists to preserve; refusing the roster
     # loses the transactions as well and calls it safety.
     stated_currency = _stated_currency(balances)
+    # 🔴 **`None` is a value this column holds, not a reason to skip the
+    # account.** It means *the aggregator has not told us what unit this account
+    # is in* -- never `USD`, never the unit of the operator's other accounts.
+    # Skipping was the old behaviour and it cascaded: the account was invisible,
+    # which `first-production-connection.md` § 4.2 names as the undetectable
+    # failure, and every transaction on it went on refusing to derive until some
+    # later sync happened to state one. The transactions never needed it -- they
+    # carry their own currency, stated per row.
     currency = stated_currency or _recorded_currency(conn, response, source_account_id)
-    if currency is None:
-        # Named by type and mask: the source id is an opaque run the log
-        # formatter redacts, and there is no local id yet for an account that
-        # is being skipped before it is upserted.
-        _log.warning(
-            "raw response %s gives a %s account (mask %s) a balance in no stated currency "
-            "and this datastore has no currency recorded for it, so the account is skipped; "
-            "its transactions cannot be derived until a later roster names one",
-            response.raw_response_id,
-            account_type,
-            entry.get("mask"),
-        )
-        return
-
     account_id = _upsert_account(
         conn,
         response=response,
@@ -1025,9 +1112,12 @@ def _derive_one_account(
     )
     if stated_currency is None:
         # The account row keeps the unit the aggregator itself recorded for it
-        # earlier. This BALANCE has no stated unit, and storing an amount under a
-        # unit inferred from another response is how a total silently mixes two
-        # of them -- so the account is kept and the balance is not.
+        # earlier, or none where there has never been one. This BALANCE has no
+        # stated unit, and storing an amount under a unit inferred from another
+        # response is how a total silently mixes two of them -- so the account is
+        # kept and the balance is not. `balances_daily.currency` stays NOT NULL
+        # for exactly that reason: one amount with no unit is unusable, while an
+        # account with no unit yet is merely incompletely known.
         _log.warning(
             "raw response %s gives account %d a balance in no stated currency; the account "
             "is kept and no balance is recorded for it",
@@ -1035,16 +1125,32 @@ def _derive_one_account(
             account_id,
         )
         return
-    _write_balance(
-        conn,
-        response=response,
-        context=context,
-        account_id=account_id,
-        source_account_id=source_account_id,
-        balances=balances,
-        currency=currency,
-        balance_class=balance_class_of(account_type, response),
-    )
+    try:
+        _write_balance(
+            conn,
+            response=response,
+            context=context,
+            account_id=account_id,
+            source_account_id=source_account_id,
+            balances=balances,
+            currency=stated_currency,
+            balance_class=balance_class_of(account_type, response),
+        )
+    except UndenominableAmountError as exc:
+        # 🔴 Caught HERE so the refusal costs one balance rather than the
+        # roster. `/accounts/get` is fetched first on every run, so letting this
+        # escape would abort the connection before a page was pulled -- on this
+        # run and on every run after it, since the same body is archived again
+        # each time. The account is kept and says which unit it is in; the read
+        # path excludes it from minor-units figures and names it there.
+        _log.warning(
+            "raw response %s: account %d holds a balance this build cannot express in minor "
+            "units, so no balance is recorded for it and its rows are excluded from every "
+            "minor-units total until the currency's exponent is known -- %s",
+            response.raw_response_id,
+            account_id,
+            exc,
+        )
 
 
 def _recorded_currency(
@@ -1073,7 +1179,7 @@ def _upsert_account(
     source_account_id: str,
     entry: dict[str, Any],
     account_type: str,
-    currency: str,
+    currency: str | None,
     roster: bool,
 ) -> int:
     """One account row, converged on its source identity.

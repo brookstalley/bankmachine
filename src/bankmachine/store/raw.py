@@ -23,6 +23,19 @@ Three properties are load-bearing:
   table records what this system was told and when, so deduplicating it would
   destroy the evidence that the source repeated itself.
 
+  🔴 **A digest-keyed dedup would not do what it looks like it does, which is
+  the more important half of this rule.** Every response the aggregator sends
+  carries its own per-request identifier in the body, so two archives of the
+  same page never hash to the same value: a guard on `body_sha256` would read as
+  a fix for the connection that fails to derive and re-fetches the same page
+  every run, and would fire on nothing. Nor would collapsing the rows be
+  harmless if it did fire -- a deriver reads `received_at` off the row it is
+  given, so `accounts.last_seen_date` would freeze on the day of the first copy
+  and a live account would drift into looking no-longer-reported. What actually
+  stops that loop is the derivation succeeding: `store.derivation.apply_response`
+  names the archived row in the log when one fails, and `store rebuild` replays
+  it from here once the build can read it.
+
 🔴 **What the archive does NOT hold: credentials.** AC-5.1 says every response is
 kept verbatim and AC-10.1 says every access token lives in the keychain, and a
 response whose body carries a token would satisfy the first by breaking the

@@ -65,7 +65,6 @@ CONNECTION_SCOPED_KINDS: tuple[str, ...] = (
     "degraded",
     "gapped",
     "partial",
-    "rule-applied",
 )
 
 #: 🔴 Warnings about THIS request, which fire only when this request actually
@@ -88,6 +87,16 @@ REQUEST_SCOPED_KINDS: tuple[str, ...] = (
     # one boundary concept from their two ends.
     "window_extends_past_coverage",
     "rows_truncated",
+    # 🔴 Request-scoped, and it MOVED here from the connection-scoped tuple when
+    # it gained emitters. Which accounts a store cannot denominate is standing
+    # state, so the kind sat with the standing ones while it had no producer --
+    # but it fires only on an answer that computes a total, and only when that
+    # answer's own scope holds such an account. A kind in the connection tuple
+    # promises to ride EVERY response equally; this one cannot, and leaving it
+    # there would break the guarantee both tuples exist to make. Once one member
+    # of one set behaves like the other's, a caller can no longer read the
+    # ABSENCE of any kind in either set as information.
+    "rule-applied",
     # The row query and the count are separate snapshots on an autocommit
     # reader, so a write landing between them is a data condition rather than a
     # defect. It is reported instead of smoothed away: a consumer comparing two

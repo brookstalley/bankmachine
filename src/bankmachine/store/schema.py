@@ -120,7 +120,19 @@ accounts = Table(
     Column("account_type", Text, nullable=False),
     Column("account_subtype", Text, nullable=True),
     Column("balance_class", Text, nullable=False),
-    Column("currency", Text, nullable=False),
+    # 🔴 Nullable, and the null MEANS "the aggregator has not stated this
+    # account's unit" -- never `USD`, never the unit of the operator's other
+    # accounts. Both of the aggregator's currency fields are documented
+    # nullable, and while this column was NOT NULL such an account could not be
+    # created at all: it was skipped, and every transaction on it went on
+    # refusing to derive. An account that is honest about its unknown unit is
+    # strictly better than one that is invisible.
+    #
+    # 🔴 The four other NOT NULL currency columns stay NOT NULL. They each
+    # describe ONE amount, and an amount whose unit nothing stated is refused
+    # row by row with a named reason; this column describes an account, which
+    # can exist perfectly well before its unit is known.
+    Column("currency", Text, nullable=True),
     Column("lifecycle_status", Text, nullable=False),
     Column("opened_date", CalendarDateColumn, nullable=True),
     Column("first_seen_date", CalendarDateColumn, nullable=False),

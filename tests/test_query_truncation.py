@@ -476,9 +476,7 @@ def test_every_reader_of_transactions_shares_the_one_predicate_list(
     windowed = [
         sql
         for sql in captured_sql
-        if "transactions" in sql
-        and f"{window_column} >=" in sql
-        and f"{window_column} <=" in sql
+        if "transactions" in sql and f"{window_column} >=" in sql and f"{window_column} <=" in sql
     ]
     # The row query, its count, one coverage count per windowed call, the
     # aggregate, and the two hold tallies. Asserted as a floor so an added reader

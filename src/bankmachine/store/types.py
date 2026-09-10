@@ -52,13 +52,39 @@ class TemporalError(ValueError):
     """A date or an instant was not of the kind the schema requires."""
 
 
-#: Currencies whose minor unit is not 1/100.
+class UnknownMinorDigitsError(MoneyError):
+    """A currency whose minor-unit exponent this build does not know.
+
+    🔴 **Named rather than defaulted, and that is the whole point of the table
+    below.** An exponent guessed at 2 is right for most fiat and wrong for every
+    cryptocurrency: `0.04217` in a currency whose real exponent is 8 becomes
+    `0.04`, a 0.4% loss that every later total inherits and no reader can see.
+    A unit this build cannot express exactly is a state, not a fallback -- the
+    callers refuse the row and say which one, and the archive keeps the value so
+    a build that knows the exponent can derive it later.
+    """
+
+
+#: Every currency this build can express in minor units, and how many minor
+#: digits each has: ISO 4217's alphabetic codes with their published exponents.
 #:
-#: ISO 4217's exponent is 2 for almost everything, and the exceptions are a short
-#: closed list. Enumerating them and defaulting the rest to 2 is safer than the
-#: reverse: a missing 2-decimal currency would refuse an ordinary account, while
-#: a missing *exception* would store a JPY balance 100x too large, silently and
-#: plausibly. The list is what keeps the default honest.
+#: 🔴 **A lookup, not a default.** The table used to hold the non-2 exceptions
+#: alone and answer 2 for everything else, on the argument that a missing
+#: exception would store a JPY balance 100x too large while a missing 2-decimal
+#: currency would only refuse an ordinary account. The argument is sound about
+#: ISO's own codes and does not reach the ones the aggregator sends in
+#: `unofficial_currency_code`, which are not ISO codes at all and for which 2 is
+#: not a convention but a guess -- so the default silently rounded every
+#: cryptocurrency amount to hundredths.
+#:
+#: 🔴 **A code this table does not carry has no exponent here, and the fix is to
+#: add it** -- one line, on evidence of what the currency's minor unit actually
+#: is. That is the "configured rather than guessed" half: an unofficial currency
+#: whose exponent is known derives exactly and refuses nothing.
+#:
+#: The metals and fund codes (`XAU`, `XDR`, ...) are deliberately absent: ISO
+#: publishes no minor unit for them, so there is nothing to add and a holding
+#: denominated in one is refused, which is the honest answer.
 _MINOR_DIGITS: Final[Mapping[str, int]] = {
     # Zero-decimal
     "BIF": 0, "CLP": 0, "DJF": 0, "GNF": 0, "ISK": 0, "JPY": 0, "KMF": 0,
@@ -68,20 +94,58 @@ _MINOR_DIGITS: Final[Mapping[str, int]] = {
     "BHD": 3, "IQD": 3, "JOD": 3, "KWD": 3, "LYD": 3, "OMR": 3, "TND": 3,
     # Four-decimal
     "CLF": 4, "UYW": 4,
+    # Two-decimal -- the rest of ISO 4217, enumerated rather than defaulted.
+    "AED": 2, "AFN": 2, "ALL": 2, "AMD": 2, "ANG": 2, "AOA": 2, "ARS": 2,
+    "AUD": 2, "AWG": 2, "AZN": 2, "BAM": 2, "BBD": 2, "BDT": 2, "BGN": 2,
+    "BMD": 2, "BND": 2, "BOB": 2, "BOV": 2, "BRL": 2, "BSD": 2, "BTN": 2,
+    "BWP": 2, "BYN": 2, "BZD": 2, "CAD": 2, "CDF": 2, "CHE": 2, "CHF": 2,
+    "CHW": 2, "CNY": 2, "COP": 2, "COU": 2, "CRC": 2, "CUP": 2, "CVE": 2,
+    "CZK": 2, "DKK": 2, "DOP": 2, "DZD": 2, "EGP": 2, "ERN": 2, "ETB": 2,
+    "EUR": 2, "FJD": 2, "FKP": 2, "GBP": 2, "GEL": 2, "GHS": 2, "GIP": 2,
+    "GMD": 2, "GTQ": 2, "GYD": 2, "HKD": 2, "HNL": 2, "HTG": 2, "HUF": 2,
+    "IDR": 2, "ILS": 2, "INR": 2, "IRR": 2, "JMD": 2, "KES": 2, "KGS": 2,
+    "KHR": 2, "KPW": 2, "KYD": 2, "KZT": 2, "LAK": 2, "LBP": 2, "LKR": 2,
+    "LRD": 2, "LSL": 2, "MAD": 2, "MDL": 2, "MGA": 2, "MKD": 2, "MMK": 2,
+    "MNT": 2, "MOP": 2, "MRU": 2, "MUR": 2, "MVR": 2, "MWK": 2, "MXN": 2,
+    "MXV": 2, "MYR": 2, "MZN": 2, "NAD": 2, "NGN": 2, "NIO": 2, "NOK": 2,
+    "NPR": 2, "NZD": 2, "PAB": 2, "PEN": 2, "PGK": 2, "PHP": 2, "PKR": 2,
+    "PLN": 2, "QAR": 2, "RON": 2, "RSD": 2, "RUB": 2, "SAR": 2, "SBD": 2,
+    "SCR": 2, "SDG": 2, "SEK": 2, "SGD": 2, "SHP": 2, "SLE": 2, "SOS": 2,
+    "SRD": 2, "SSP": 2, "STN": 2, "SVC": 2, "SYP": 2, "SZL": 2, "THB": 2,
+    "TJS": 2, "TMT": 2, "TOP": 2, "TRY": 2, "TTD": 2, "TWD": 2, "TZS": 2,
+    "UAH": 2, "USD": 2, "USN": 2, "UYU": 2, "UZS": 2, "VED": 2, "VES": 2,
+    "WST": 2, "XCD": 2, "XCG": 2, "YER": 2, "ZAR": 2, "ZMW": 2, "ZWG": 2,
 }  # fmt: skip
-
-DEFAULT_MINOR_DIGITS: Final = 2
 
 
 def minor_digits(currency: str) -> int:
-    """How many minor digits a currency has.
+    """How many minor digits a currency has, or a refusal naming it.
 
     Lives beside the money type rather than in the aggregator's package, because
     it is a property of the currency: the manual-import path and any second
     aggregator need the same answer, and a copy of this table is a second answer
     waiting to disagree with the first.
     """
-    return int(_MINOR_DIGITS.get(currency.upper(), DEFAULT_MINOR_DIGITS))
+    try:
+        return int(_MINOR_DIGITS[currency.upper()])
+    except KeyError:
+        raise UnknownMinorDigitsError(
+            f"this build does not know how many minor digits {currency!r} has, so no amount in "
+            f"it can be stored exactly. Add the currency's exponent to `store/types.py` on "
+            f"evidence of what its minor unit is; guessing at two would round a value that is "
+            f"not in hundredths and every total computed from it would inherit the loss"
+        ) from None
+
+
+def has_minor_digits(currency: str | None) -> bool:
+    """Whether an amount in `currency` can be expressed in minor units at all.
+
+    The question the read path asks of a stored code, where a refusal would be
+    the wrong shape: it decides whether an account's rows may enter a
+    minor-units aggregate, and `None` -- a currency the aggregator has never
+    stated -- answers it the same way an unknown exponent does.
+    """
+    return currency is not None and currency.upper() in _MINOR_DIGITS
 
 
 def minor_units(value: int) -> MinorUnits:

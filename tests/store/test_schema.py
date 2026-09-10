@@ -29,9 +29,13 @@ from sqlalchemy.dialects import sqlite as sqlite_dialect
 from sqlalchemy.exc import IntegrityError
 
 from bankmachine.config import Config
-from bankmachine.store.connection import SUPPORTED_SCHEMA_VERSION
+from bankmachine.store.connection import (
+    SUPPORTED_SCHEMA_VERSION,
+    Connection,
+    StoreError,
+)
 from bankmachine.store.engine import writer_engine
-from bankmachine.store.migrations import migrate
+from bankmachine.store.migrations import MIGRATIONS, Migration, migrate
 from bankmachine.store.migrations.core_schema import CORE_SCHEMA_DDL, CORE_SCHEMA_DDL_SHA256
 from bankmachine.store.schema import (
     CORE_TABLES,
@@ -366,6 +370,87 @@ def test_migrations_are_idempotent_when_re_run(initialized_config: Config) -> No
     """`store init` on an already-current datastore applies nothing and breaks nothing."""
     assert migrate(initialized_config) == []
     assert migrate(initialized_config) == []
+
+
+def test_a_table_rebuild_that_orphans_a_row_is_refused_and_rolled_back(
+    initialized_config: Config,
+) -> None:
+    """🔴 What stands in for foreign keys while the runner has them off.
+
+    A step that rebuilds a referenced table runs with enforcement suspended --
+    SQLite refuses `DROP TABLE` otherwise, and it ignores the pragma inside a
+    transaction, so it can only be lifted around the whole step. The failure
+    that suspension admits is a rebuild that carries fewer rows across than it
+    found, and it is silent: nothing errors, and afterwards a transaction simply
+    belongs to no account, so a query returns nothing and the answer reads as a
+    quiet month.
+
+    The version must not be stamped either. A datastore that reports a version
+    whose DDL was rolled back is one nothing can diagnose.
+    """
+
+    def lose_the_accounts(conn: Connection) -> None:
+        conn.execute("DROP TABLE accounts")
+        conn.execute("CREATE TABLE accounts (account_id INTEGER PRIMARY KEY)")
+
+    _seed_one_transaction(initialized_config)
+    with pytest.raises(StoreError, match="referencing a row that is no longer there"):
+        migrate(
+            initialized_config,
+            migrations=(
+                *MIGRATIONS,
+                Migration(
+                    version=len(MIGRATIONS) + 1,
+                    name="a rebuild that loses its rows",
+                    apply=lose_the_accounts,
+                    rebuilds_a_referenced_table=True,
+                ),
+            ),
+        )
+    with writer_engine(initialized_config) as engine, engine.connect() as conn:
+        stamped = conn.execute(text("SELECT MAX(version) FROM schema_version")).scalar_one()
+        held = conn.execute(text("SELECT COUNT(*) FROM accounts")).scalar_one()
+    assert stamped == SUPPORTED_SCHEMA_VERSION, "a rolled-back migration stamped its version"
+    assert held == 1, "the rollback did not put the rebuilt table back"
+
+
+def test_the_runner_puts_foreign_key_enforcement_back_after_a_rebuild(
+    initialized_config: Config,
+) -> None:
+    """🔴 Suspended for one step, not for the run.
+
+    Every step after a rebuild would otherwise run with enforcement off, and so
+    would anything the same handle did afterwards -- a guarantee lost by
+    accident rather than by decision, and one nothing downstream would report.
+    """
+    observed: list[object] = []
+
+    def rebuild_nothing(conn: Connection) -> None:
+        observed.append(conn.execute("PRAGMA foreign_keys").fetchone()[0])
+
+    def look(conn: Connection) -> None:
+        observed.append(conn.execute("PRAGMA foreign_keys").fetchone()[0])
+
+    migrate(
+        initialized_config,
+        migrations=(
+            *MIGRATIONS,
+            Migration(
+                version=len(MIGRATIONS) + 1,
+                name="a rebuild",
+                apply=rebuild_nothing,
+                rebuilds_a_referenced_table=True,
+            ),
+            Migration(version=len(MIGRATIONS) + 2, name="the next step", apply=look),
+        ),
+    )
+    assert observed == [0, 1], "enforcement was not suspended, or was not put back"
+
+
+def _seed_one_transaction(config: Config) -> None:
+    """One account with one transaction hanging off it, so an orphan is possible."""
+    with writer_engine(config) as engine, engine.connect() as conn, conn.begin():
+        add_transaction(conn, seed(conn))
 
 
 # --------------------------------------------------------------------------

@@ -64,7 +64,13 @@ from bankmachine.store.schema import (
     sync_state,
     transactions,
 )
-from bankmachine.store.types import CalendarDate, UtcInstant, calendar_date, now_utc
+from bankmachine.store.types import (
+    CalendarDate,
+    UtcInstant,
+    calendar_date,
+    has_minor_digits,
+    now_utc,
+)
 
 logger = get_logger("query")
 
@@ -914,6 +920,89 @@ def _uncovered_caveat(uncovered: list[AccountCoverage]) -> list[Caveat]:
     ]
 
 
+@dataclass(frozen=True, slots=True)
+class UndenominableAccount:
+    """One account whose amounts cannot enter a total in minor units.
+
+    Two states, one consequence. `currency is None` means the aggregator has
+    never stated this account's unit; a currency present but unknown to
+    `store/types.py` means the unit is named and its minor digits are not, so no
+    amount in it can be expressed exactly. Either way an amount on this account
+    cannot be added to a figure in a unit that IS known -- the arithmetic would
+    succeed and the result would mean nothing -- so its rows are left out and the
+    answer says which account and why.
+    """
+
+    account_id: int
+    currency: str | None
+
+
+def _undenominable_accounts(conn: SAConnection) -> list[UndenominableAccount]:
+    """The accounts a minor-units aggregate must leave out.
+
+    🔴 **Read from `accounts`, not from the rows an answer returned.** An
+    account in an unknown unit typically has no derivable rows at all -- the
+    deriver refuses each one it cannot express -- so a scan of the returned rows
+    would find nothing to exclude and report nothing excluded, which is the
+    silence this disclosure exists to break. Scanning the accounts is what makes
+    the caveat fire for an account whose every row was refused.
+    """
+    return [
+        UndenominableAccount(account_id=int(account_id), currency=currency)
+        for account_id, currency in conn.execute(
+            select(accounts.c.account_id, accounts.c.currency)
+        ).all()
+        if not has_minor_digits(currency)
+    ]
+
+
+def _undenominable_caveat(excluded: list[UndenominableAccount]) -> list[Caveat]:
+    """🔴 The disclosure that makes the exclusion honest rather than silent.
+
+    `rule-applied` means rows were left out of this aggregate ON PURPOSE, and
+    `detail` names which and why. It names the account ids rather than a count,
+    because the reader's next move is to go and look at that account -- "some
+    rows were excluded" is a warning nobody can act on.
+
+    Emitted only where an aggregate actually holds such an account, so its
+    absence says the figures cover every account the store has.
+    """
+    if not excluded:
+        return []
+
+    def ids(entries: list[UndenominableAccount], label: bool) -> str:
+        return ", ".join(
+            f"{entry.account_id} ({entry.currency})" if label else str(entry.account_id)
+            for entry in sorted(entries, key=lambda e: e.account_id)
+        )
+
+    unstated = [entry for entry in excluded if entry.currency is None]
+    unknown = [entry for entry in excluded if entry.currency is not None]
+    parts = []
+    if unstated:
+        parts.append(
+            f"account(s) {ids(unstated, label=False)} are in no currency this datastore knows, "
+            f"because the aggregator has never stated one for them"
+        )
+    if unknown:
+        parts.append(
+            f"account(s) {ids(unknown, label=True)} are in a currency whose minor unit this "
+            f"build does not know, so no amount on them can be expressed exactly"
+        )
+    return [
+        Caveat(
+            kind="rule-applied",
+            detail=(
+                "; ".join(parts) + ". Their rows are excluded from every figure in this "
+                "answer ON PURPOSE -- adding an amount whose unit or scale is unknown to a "
+                "total in a unit that is known would produce a figure that means nothing. "
+                "Quote this beside the totals, and ask about the named account(s) directly "
+                "to see what is recorded for them"
+            ),
+        )
+    ]
+
+
 def _covered_rows(conn: SAConnection, *, since: date, until: date) -> int:
     """How many transactions lie inside the window this answer actually covered.
 
@@ -1607,7 +1696,11 @@ class HoldTransitions:
 
 
 def _hold_transitions(
-    conn: SAConnection, *, since: date | None, until: date | None
+    conn: SAConnection,
+    *,
+    since: date | None,
+    until: date | None,
+    excluded: list[int],
 ) -> HoldTransitions:
     """Holds that left this window, and rows in it that settled out of one.
 
@@ -1634,7 +1727,12 @@ def _hold_transitions(
                 func.coalesce(func.sum(transactions.c.amount_minor), 0),
             )
             .select_from(transactions.join(accounts))
-            .where(*where, *extra)
+            # 🔴 The same exclusion the aggregate applies, because these two
+            # tallies ride the same `totals` block. Leaving it off here would
+            # let an account excluded from every figure put a currency ENTRY
+            # into the totals it was excluded from -- an exclusion that
+            # announced itself and then leaked.
+            .where(*where, *extra, accounts.c.account_id.notin_(excluded))
             .group_by(transactions.c.currency)
         ).all()
         return {
@@ -2406,6 +2504,13 @@ def money_summary(
             config, problem, requested_window=(since, until), truncation=None, totals=[]
         )
     with reader_connection(config) as conn:
+        # 🔴 Read before the statement is built, because it is a PREDICATE on
+        # this aggregate and not a note appended to it. An account whose unit or
+        # whose unit's scale is unknown contributes nothing to a minor-units
+        # figure -- see `_undenominable_accounts` -- and the caveat below names
+        # every one of them, including the ones whose rows were refused at
+        # derivation and so could never have appeared here anyway.
+        undenominable = _undenominable_accounts(conn)
         # Annotated as the general expression type both branches produce: the
         # first assignment would otherwise fix the name to `coalesce` and the
         # account branch's plain column would not fit it.
@@ -2511,7 +2616,14 @@ def money_summary(
             # inflow with no row to appear in at all, which is unreachable
             # rather than merely unaggregated. Direction is a COLUMN on the row,
             # so both halves are always answerable.
-            .where(*_transaction_filters(since=since, until=until, account_id=None, after=None))
+            .where(
+                *_transaction_filters(since=since, until=until, account_id=None, after=None),
+                # 🔴 Excluded in the SQL rather than filtered out of the rows
+                # afterwards, so `totals` -- which is summed from these rows by
+                # construction -- cannot disagree with them about what the
+                # answer covered.
+                accounts.c.account_id.notin_([entry.account_id for entry in undenominable]),
+            )
             .group_by("group_key", "group_label", transactions.c.currency, "flow_class")
             .order_by(func.sum(transactions.c.amount_minor))
         )
@@ -2563,7 +2675,15 @@ def money_summary(
             rows,
             requested_window=(since, until),
             truncation=None,
-            totals=_flow_class_totals(rows, _hold_transitions(conn, since=since, until=until)),
+            totals=_flow_class_totals(
+                rows,
+                _hold_transitions(
+                    conn,
+                    since=since,
+                    until=until,
+                    excluded=[entry.account_id for entry in undenominable],
+                ),
+            ),
             # 🔴 AC-14.5. The two producers are independent and both belong here:
             # the pending caveat says this figure may still move, the sign caveat
             # says its DIRECTION may be wrong. A total can be wrong in both ways
@@ -2573,6 +2693,7 @@ def money_summary(
                 _uncovered_caveat(uncovered)
                 + _not_active_caveat(not_active)
                 + _roster_observed_empty_caveat(not_active)
+                + _undenominable_caveat(undenominable)
                 + _pending_caveat(pending)
                 + signs.caveats(conn, since=since, until=until)
             ),
