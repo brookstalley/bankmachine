@@ -60,7 +60,7 @@ owns the combined run at integration.
 
 ---
 
-## 1. Chunk 01 — The handshake tells the truth about itself
+## Chunk 01 — The handshake tells the truth about itself
 
 Three defects, each verified against `mcp_types` 2.2.0 rather than recalled. All live in
 `src/bankmachine/mcp.py`'s handshake and read loop.
@@ -170,7 +170,7 @@ it is, in the `mode=ro` file handle.
 
 ---
 
-## 2. Chunk 02 — Two structural guards
+## Chunk 02 — Two structural guards
 
 New files under `tests/preferences/` only. Both pin properties that **already hold** —
 this chunk should not change any behaviour, and if it goes red on first run that is a
@@ -221,7 +221,7 @@ check right past it.
 
 ---
 
-## 3. Chunk 03 — The envelope tells the agent what to do about it
+## Chunk 03 — The envelope tells the agent what to do about it
 
 Coordinator's, after 01 merges. The one chunk here that is judgment rather than defect.
 
@@ -281,7 +281,7 @@ conflict, the norm wins and the budget is missed with that recorded — hallucin
 
 ---
 
-## 4. Chunk 04 — The artifacts say what the code now does
+## Chunk 04 — The artifacts say what the code now does
 
 - `api-notes-plaid.md` §18 records the wire format "read from `mcp.types` 2.2.0". Its
   `Tool` line omits `outputSchema`, and its protocol-version line is the source of 01a.
@@ -319,7 +319,7 @@ not a precedent for removing things.
 
 ---
 
-## 5. Chunk 06 — The envelope is machine-checkable
+## Chunk 06 — The envelope is machine-checkable
 
 Ratified 2026-09-08 by the owner, having been raised as a deferred decision. Publish
 `outputSchema` on every tool.
@@ -358,7 +358,7 @@ tool against that tool's published schema, not a fixture shaped like one.
 
 ---
 
-## 6. Chunk 05 — A resources surface
+## Chunk 05 — A resources surface
 
 Ratified 2026-09-08 by the owner. Declare the `resources` capability and serve
 agent-facing reference material through it.
@@ -444,7 +444,7 @@ and this guard's rationale is the first thing that breaks.
 
 ---
 
-## 7b. Chunk 07 — The go-red harness learns the two new guards
+## Chunk 07 — The go-red harness learns the two new guards
 
 `verify_norms_go_red.py` proves each norm test actually goes red by writing the broken
 version to disk, running the named test, and putting it back — once per entry in its `CASES` table. Chunk 02
@@ -575,7 +575,7 @@ owner has directed "minimize tools, use actions to cover related capabilities", 
 filed by this same wave — carries that directive together with the hard conflict it
 implies: MCP allows one `outputSchema` per tool, and chunk 06 above makes schemas per-tool
 precisely so ABSENCE is meaningful. #30 owns the decision and must land it BEFORE the
-remaining tools are designed, which is the order §7's follow-up work assumes. Read this
+remaining tools are designed, which is the order § *After this wave* assumes. Read this
 paragraph as evidence #30 must account for, never as the answer.
 
 **MCP prompts.** Hallucinote removed theirs (`mcp-tool-design.md` §6.2): Claude Code
