@@ -33,6 +33,7 @@ from bankmachine.connector import (
     RateLimitedError,
     ReauthRequiredError,
     TransportError,
+    parse_response_body,
 )
 from bankmachine.connector.plaid.client import PlaidClient, capabilities_of
 from bankmachine.connector.plaid.errors import RetryPolicy
@@ -633,3 +634,81 @@ def test_every_sync_request_asks_for_the_banks_own_memo(client_config: Config) -
         client.transactions_sync("access-token", cursor=None)
 
     assert seen["request"].options.include_original_description is True
+
+
+# --------------------------------------------------------------------------
+# The three ways a body fails to parse, at the client's own read
+# --------------------------------------------------------------------------
+
+
+def test_a_body_nested_past_the_stack_is_a_connector_failure_not_a_traceback() -> None:
+    """🔴 `RecursionError` is a `RuntimeError`, so a `JSONDecodeError` clause misses it.
+
+    Everything this module raises is a `ConnectorError` the CLI turns into a
+    sentence, and a caller catching aggregator failures is written against that
+    taxonomy alone. A parse failure that escapes as `RecursionError` is outside
+    it: the operator gets a decoder's stack-overflow traceback where the
+    contract promises a sentence, and nothing in it says which endpoint answered.
+    """
+    body = ("[" * 100_000 + "]" * 100_000).encode()
+
+    with pytest.raises(MalformedResponseError) as caught:
+        capabilities_of(body)
+
+    assert "/item/get" in str(caught.value)
+    assert "Stack overflow" not in str(caught.value), (
+        "the decoder's own text names the stack size it blew; the error model keeps that off "
+        "the wire"
+    )
+
+
+def test_a_body_whose_bytes_are_not_utf8_is_a_connector_failure() -> None:
+    """The mode that exists here because the parser is the one doing the decoding.
+
+    `capabilities_of` is handed the archived bytes, so `json.loads` decodes them
+    and raises `UnicodeDecodeError` -- which is neither a `JSONDecodeError` nor
+    anything else the clause named. A truncated multi-byte character at the end
+    of a page is an ordinary transport injury, not an exotic one.
+    """
+    body = b'{"item": {"products": [], "available_products": [], "name": "\xff\xfe"}}'
+
+    with pytest.raises(MalformedResponseError) as caught:
+        capabilities_of(body)
+
+    assert "/item/get" in str(caught.value)
+
+
+def test_the_shared_read_enumerates_three_modes_and_absorbs_nothing_else() -> None:
+    """🔴 The value is the enumeration, so what it does NOT catch is half the test.
+
+    The three failures share no base below `Exception`, which is why one clause
+    never covered them and why a `except Exception` here would satisfy the letter
+    of the fix while destroying its point: a fourth mode arriving in a future
+    interpreter has to surface loudly rather than arrive wearing this one's name.
+    """
+    for body, mode in (
+        (b'{"a": 1', "malformed syntax"),
+        (("[" * 100_000 + "]" * 100_000).encode(), "nested past the decoder's stack"),
+        (b'{"a": "\xff\xfe"}', "bytes that are not UTF-8"),
+    ):
+        with pytest.raises(MalformedResponseError) as caught:
+            parse_response_body(body, what="the body")
+        assert "the body" in str(caught.value), f"the refusal for a body {mode} says what broke"
+
+    # Not a parse failure at all: `json.loads` refuses the type before it reads
+    # anything. It leaves as itself, because absorbing it would make this a
+    # broad catch with three names on it.
+    with pytest.raises(TypeError):
+        parse_response_body(object(), what="the body")  # type: ignore[arg-type]
+
+
+def test_every_number_in_a_body_arrives_as_the_text_the_aggregator_sent() -> None:
+    """`parse_float=str` is a property of reading a body, not of remembering to pass it.
+
+    A `float` anywhere in the money path has already lost fractions of a cent by
+    the time anyone can look at it, and a per-caller argument makes the archive's
+    exactness depend on each site getting it right.
+    """
+    payload = parse_response_body(b'{"amount": 110.94}', what="the body")
+
+    assert payload == {"amount": "110.94"}

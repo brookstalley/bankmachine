@@ -19,8 +19,9 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
+from bankmachine.cli import sync_run
 from bankmachine.config import Config
-from bankmachine.connector import TRANSACTIONS_SYNC
+from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC, FetchedResponse
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.store.derivation import DerivationError, apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
@@ -372,3 +373,155 @@ def test_a_cursor_written_then_abandoned_does_not_survive_the_transaction(
         "the cursor survived a derivation that failed, so the transaction is not "
         "protecting it — only the order the statements happen to be written in"
     )
+
+
+# --------------------------------------------------------------------------
+# AC-4.1 at the parse: an unreadable page belongs to one connection
+# --------------------------------------------------------------------------
+
+
+def _accounts_body() -> bytes:
+    """One `/accounts/get` body that derives cleanly, so the page is what fails."""
+    return json.dumps(
+        {
+            "accounts": [
+                {
+                    "account_id": "acct-for-parse-tests",
+                    "name": "Plaid Checking",
+                    "mask": "0000",
+                    "type": "depository",
+                    "subtype": "checking",
+                    "balances": {
+                        "current": "110.94",
+                        "available": "100.00",
+                        "limit": None,
+                        "iso_currency_code": "USD",
+                    },
+                }
+            ],
+            "item": {"item_id": "item-for-cursor-tests"},
+            "request_id": "req-accounts",
+        }
+    ).encode()
+
+
+class _StubClient:
+    """Answers the two calls `_sync_one` makes, with a scripted transactions page."""
+
+    page: bytes = b""
+
+    def __init__(self, config: Config, secret: str, **kwargs: Any) -> None:
+        pass
+
+    def __enter__(self) -> _StubClient:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        return None
+
+    def accounts_get(self, access_token: str, **kwargs: Any) -> FetchedResponse:
+        return FetchedResponse(
+            endpoint=ACCOUNTS_GET,
+            body=_accounts_body(),
+            received_at=now_utc(),
+            request_context=None,
+        )
+
+    def transactions_sync(self, access_token: str, **kwargs: Any) -> FetchedResponse:
+        return FetchedResponse(
+            endpoint=TRANSACTIONS_SYNC,
+            body=_StubClient.page,
+            received_at=now_utc(),
+            request_context=None,
+        )
+
+
+@pytest.mark.parametrize(
+    ("page", "mode"),
+    [
+        (b'{"has_more": tru', "malformed syntax"),
+        (("[" * 100_000 + "]" * 100_000).encode(), "nested past the decoder's stack"),
+        (b'{"next_cursor": "\xff\xfe", "has_more": false}', "bytes that are not UTF-8"),
+    ],
+    ids=["syntax", "depth", "encoding"],
+)
+def test_a_page_this_build_cannot_read_degrades_its_own_connection(
+    enrolled: Config, monkeypatch: pytest.MonkeyPatch, page: bytes, mode: str
+) -> None:
+    """🔴 AC-4.1: one institution's unreadable reply must not end the run.
+
+    `_sync_one` promises it never raises for its connection's sake, and the loop
+    above it relies on that to reach every other connection. The page read had no
+    guard at all, so all three parse failures went straight past a catch naming
+    `ConnectorError` and `StoreError` -- none of `JSONDecodeError`,
+    `RecursionError` or `UnicodeDecodeError` is either -- and out of the run.
+    Every connection queued behind this one then went unsynced, which is the one
+    thing AC-4.1 says must never happen.
+
+    Anchored on `_sync_one` rather than on the parse helper, because a guard that
+    raises the right type and a caller that catches it are two halves and only
+    the caller's half is this requirement. Degrading rather than reading an
+    unparseable page as an empty one is the other half: `{}` would report a page
+    run that finished cleanly, and silence is the one disallowed outcome.
+    """
+    _StubClient.page = page
+    monkeypatch.setattr(sync_run, "PlaidClient", _StubClient)
+    monkeypatch.setattr(sync_run, "get_access_token", lambda _c, _r: "access-token-for-tests")
+
+    outcome = sync_run._sync_one(
+        enrolled,
+        "secret",
+        connection_id=1,
+        institution_name="First Platypus Bank",
+        credential_ref="connection:sandbox:item-for-cursor-tests",
+        wait=False,
+    )
+
+    assert outcome.degraded, f"a page {mode} ended the run instead of this connection"
+    assert outcome.reason is not None and outcome.reason != ""
+    assert _cursor(enrolled) is None, "an unreadable page moved the cursor"
+    with reader_connection(enrolled) as conn:
+        status = conn.execute(
+            select(connections.c.status).where(connections.c.connection_id == 1)
+        ).scalar_one()
+    assert status == "degraded", "the failure was not recorded on the connection's own row"
+
+
+@pytest.mark.parametrize(
+    ("body", "mode"),
+    [
+        (b'{"added": [], "next_cursor": "x"', "malformed syntax"),
+        (("[" * 100_000 + "]" * 100_000).encode(), "nested past the decoder's stack"),
+        (b'{"next_cursor": "\xff\xfe", "has_more": false}', "bytes that are not UTF-8"),
+    ],
+    ids=["syntax", "depth", "encoding"],
+)
+def test_a_body_the_deriver_cannot_read_refuses_one_response_not_the_run(
+    enrolled: Config, body: bytes, mode: str
+) -> None:
+    """The deriver's own read, and the reason two of the three used to escape.
+
+    A body that cannot be parsed is a refusal to derive ONE response, and every
+    caller of this seam is written against `DerivationError` -- `sync run`
+    degrades the connection it belongs to, `store rebuild` reports which response
+    it could not replay. `RecursionError` and `UnicodeDecodeError` share no base
+    with `ValueError`, so a clause naming `JSONDecodeError` let them past both.
+    The bytes are archived either way, which is what makes the refusal survivable.
+    """
+    with writer_connection(enrolled) as conn:
+        with pytest.raises(DerivationError) as caught:
+            apply_response(
+                conn,
+                connection_id=1,
+                endpoint=TRANSACTIONS_SYNC.path,
+                body=body,
+                received_at=now_utc(),
+                derivers=ALL_DERIVERS,
+            )
+        archived = conn.exec_driver_sql("SELECT COUNT(*) FROM raw_responses").scalar_one()
+
+    assert archived == 1, f"a body {mode} was refused before it was archived"
+    assert "raw response 1" in str(caught.value), (
+        "the refusal does not name the row an operator would go and read"
+    )
+    assert _cursor(enrolled) is None
