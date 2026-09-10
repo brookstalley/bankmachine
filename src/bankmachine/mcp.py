@@ -759,7 +759,21 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "outputSchema": _output_schema(
                 {
                     "transaction_id": {"type": "integer"},
-                    "account": {"type": "string"},
+                    "account_id": {
+                        "type": "integer",
+                        "description": (
+                            "this store's id for the account the transaction is on -- the value "
+                            "`query_transactions(account_id=...)` and `get_coverage_report` key "
+                            "on. `account` beside it is a display name and two accounts can "
+                            "share one, so join on this"
+                        ),
+                    },
+                    "account": {
+                        "type": "string",
+                        "description": (
+                            "the account's display name, which identifies nothing on its own"
+                        ),
+                    },
                     "date": {"type": "string"},
                     "description": {
                         "type": "string",

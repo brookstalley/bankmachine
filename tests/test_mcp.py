@@ -884,6 +884,40 @@ def test_amount_fields_say_they_are_minor_units(initialized_config: Config) -> N
     assert all("amount" not in key or "minor_units" in key for key in rows[0])
 
 
+def test_a_transaction_row_carries_the_id_of_the_account_it_is_on(
+    initialized_config: Config,
+) -> None:
+    """🔴 `account` is a display name, and two accounts can share one.
+
+    Every other tool keys on `account_id`, and the tool descriptions send a
+    caller from a suspicious row to `get_coverage_report` or to a narrowed
+    `query_transactions` — both of which take the id. Without it on the row the
+    caller has a name that may match two accounts and no way to tell them apart,
+    so it either guesses or reports the wrong account. Real households hold two
+    accounts called "Checking", and `mask` is nullable.
+
+    Asserted as a join that actually completes, not as key presence: the id has
+    to be the one `list_accounts` publishes and the one the argument accepts.
+    """
+    _seed(initialized_config)
+
+    rows = _call(initialized_config, "query_transactions")["structuredContent"]["rows"]
+    accounts = _call(initialized_config, "list_accounts")["structuredContent"]["rows"]
+
+    ids = {row["account_id"] for row in rows}
+    assert ids, "the fixture returned no rows, so this checks nothing"
+    assert ids <= {account["account_id"] for account in accounts}, (
+        "a transaction names an account id list_accounts does not publish"
+    )
+    for row in rows:
+        narrowed = _call(
+            initialized_config, "query_transactions", {"account_id": row["account_id"]}
+        )["structuredContent"]["rows"]
+        assert row["transaction_id"] in {r["transaction_id"] for r in narrowed}, (
+            "the id on the row does not select the row when passed back as the argument"
+        )
+
+
 def test_a_failing_tool_reports_an_error_without_closing_the_session(
     initialized_config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:

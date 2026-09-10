@@ -750,6 +750,7 @@ here.
 | Field | Type | Means |
 |---|---|---|
 | `transaction_id` | integer | this store's own id for the transaction. Opaque, and the id `get_coverage_report`'s `oldest_stranded_hold` names when it points at one |
+| `account_id` | integer | this store's id for the account the transaction is on — the same value `list_accounts` publishes, `get_coverage_report` keys on, and the `account_id` argument takes. 🔴 It is the only join between a row and the account it belongs to: `account` beside it is display text that two accounts can share |
 | `account` | string | the NAME of the account the transaction is on, not its id. 🔴 It is display text and not a key — filter with the `account_id` argument, which is what selects rows; two accounts can carry the same name and this field would not tell them apart |
 | `date` | string | the transaction's posted date, `YYYY-MM-DD`. A CALENDAR FACT and never an instant (§ Conventions), and the field the effective window is applied to. Every returned row's `date` lies inside `effective_window.effective` |
 | `description` | string | the institution's own string for the transaction, and 🔴 **the authoritative one.** When it and `merchant` disagree, this is the one that came from the bank |

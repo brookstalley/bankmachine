@@ -1691,6 +1691,7 @@ def list_transactions(
         statement = (
             select(
                 transactions.c.transaction_id,
+                transactions.c.account_id,
                 accounts.c.name.label("account"),
                 transactions.c.posted_date,
                 transactions.c.description,
@@ -1710,15 +1711,21 @@ def list_transactions(
         rows = [
             {
                 "transaction_id": int(r[0]),
-                "account": r[1],
-                "date": str(r[2]),
-                "description": r[3],
-                "merchant": r[4],
-                "amount_minor_units": int(r[5]),
-                "currency": r[6],
-                "pending": bool(r[7]),
-                "category": r[9] or r[8],
-                "category_is_override": r[9] is not None,
+                # 🔴 Beside the display name, never instead of it. `account` is
+                # the institution's own text and two accounts can carry the same
+                # one, so it identifies nothing -- and every follow-up this
+                # surface sends a caller on, from `get_coverage_report` to a
+                # narrowed `query_transactions`, is keyed on the id.
+                "account_id": int(r[1]),
+                "account": r[2],
+                "date": str(r[3]),
+                "description": r[4],
+                "merchant": r[5],
+                "amount_minor_units": int(r[6]),
+                "currency": r[7],
+                "pending": bool(r[8]),
+                "category": r[10] or r[9],
+                "category_is_override": r[10] is not None,
             }
             for r in selected
         ]
@@ -1734,7 +1741,7 @@ def list_transactions(
             None
             if not selected
             else Cursor.issued_for(
-                posted_date=selected[-1][2],
+                posted_date=selected[-1][3],
                 transaction_id=int(selected[-1][0]),
                 since=since,
                 until=until,
