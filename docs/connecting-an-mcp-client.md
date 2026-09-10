@@ -107,13 +107,26 @@ Every response carries `environment`, `as_of`, `build`, `coverage`, `warnings` a
 **classifying** tool also carries `totals`. Absence of a key means that tool takes no window,
 returns every row it finds, or does not classify the money it reports.
 
-🔴 **`totals` is the one to read before quoting a spending figure.** `money_summary` splits every
-row by `flow_class` — `external_spend`, `internal_transfer`, `debt_service` — and `totals` carries
-the window's outflow under each, one entry per currency. Only `external_spend_outflow_minor_units`
-is spending: a transfer between the holder's own accounts never left, and a card payment settles
-purchases already counted under the categories they were spent in. The three sum to the window's
-total outflow, which is how you check them against the rows. Over the sandbox store the raw total
-is five times the money that actually went out the door.
+🔴 **`totals` is the one to read before quoting a money figure.** Each entry carries the window's
+`inflow_minor_units` and `outflow_minor_units` for one currency, and then splits that outflow by
+`flow_class` — `external_spend`, `internal_transfer`, `debt_service`. Quote `outflow_minor_units`
+when asked how much went out and `external_spend_outflow_minor_units` when asked about external
+spend, and **name the other two classes beside it**. The three sum to `outflow_minor_units`, which
+is how you check them against the rows. Over the sandbox store external spend is a fifth of the raw
+outflow.
+
+🔴 **The class says how the aggregator LABELLED a row, not where the money went.** It is read from
+one category and matches no counterparty leg, so `internal_transfer` covers an ATM withdrawal, a
+P2P payment, rent paid by ACH and an incoming paycheque as readily as a move between the holder's
+own accounts; `debt_service` covers mortgage, auto and student-loan payments as well as card
+payoff, and only a payment to an *enrolled* card settles purchases counted under their own
+categories. `inflow_minor_units` is inflow rather than income for the same reason: refunds are in
+it, and so is a paycheque the aggregator called a transfer.
+
+🔴 **`group_by=merchant` falls back to `description`** where the aggregator supplied no merchant
+name, so one merchant can split across several raw institution strings and each rollup understates
+it. And **a window is measured on the posting date**: a hold that posts in a later period moves
+into that period, so a total for a month you already asked about can change after the fact.
 
 🔴 **Each `totals` entry also states how much of itself has not settled.** `pending_transactions`
 and `pending_net_minor_units` are authorisation holds — money claimed but not yet taken, which can

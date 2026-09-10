@@ -112,7 +112,9 @@ _WINDOW_NOTE = (
     "was actually answered over, and a `window_starts_before_coverage` or "
     "`window_extends_past_coverage` warning names the boundary crossed; absent those, you got "
     "the window you asked for. Outside coverage, data is ABSENT rather than zero, so an empty "
-    "result there is not a zero."
+    "result there is not a zero. The window is measured on the POSTING date, so a hold that "
+    "posts in a later period moves into that period and a total for a period you already "
+    "asked about can change after the fact."
 )
 
 #: 🔴 On `query_transactions` alone. `money_summary` is an aggregate, fixed
@@ -388,19 +390,36 @@ def _output_schema(
         properties["totals"] = {
             "type": "array",
             "description": (
-                "🔴 READ THIS BEFORE QUOTING A SPENDING FIGURE. The window's OUTFLOW split "
-                "three ways, one entry per currency: what actually left the household, what "
-                "only moved between the holder's own accounts, and what serviced a debt. "
-                "Only `external_spend_outflow_minor_units` is spending — an internal "
-                "transfer never left, and debt service settles purchases already counted "
-                "under the categories they were spent in, so summing all three double-counts. "
-                "The three add up to the window's total outflow in that currency, which is "
-                "how you can check them against the rows"
+                "🔴 READ THIS BEFORE QUOTING A MONEY FIGURE. One entry per currency, "
+                "carrying the whole window's `inflow_minor_units` and "
+                "`outflow_minor_units` and then the outflow split three ways by how the "
+                "AGGREGATOR categorised each row. Quote `outflow_minor_units` for 'how much "
+                "went out' and `external_spend_outflow_minor_units` for external spend, and "
+                "name the other two classes beside it rather than dropping them: the split "
+                "is a description of the outflow, not a filter on it. The three classes add "
+                "up to `outflow_minor_units` in that currency, which is how you can check "
+                "them"
             ),
             "items": {
                 "type": "object",
                 "properties": {
                     "currency": {"type": "string"},
+                    "inflow_minor_units": {
+                        "type": "integer",
+                        "description": (
+                            "everything that came IN over the whole window, a positive "
+                            "magnitude. 🔴 Inflow is not income: a refund is an inflow, and a "
+                            "paycheque can arrive categorised as a transfer"
+                        ),
+                    },
+                    "outflow_minor_units": {
+                        "type": "integer",
+                        "description": (
+                            "everything that went OUT over the whole window, a positive "
+                            "magnitude, before any classification. This is the figure to "
+                            "quote for 'how much went out'"
+                        ),
+                    },
                     # The vocabulary itself rather than a copy of it, exactly as
                     # the warning `enum` above takes `WARNING_KINDS`: a class
                     # retyped here would start refusing answers this server sends
@@ -408,7 +427,11 @@ def _output_schema(
                     **{
                         f"{flow}_outflow_minor_units": {
                             "type": "integer",
-                            "description": "a positive magnitude, in minor units",
+                            "description": (
+                                f"a positive magnitude, in minor units: the part of "
+                                f"`outflow_minor_units` classed `{flow}`, which is "
+                                f"{mcp_resources.flow_class_meaning(flow)}"
+                            ),
                         }
                         for flow in query.FLOW_CLASSES
                     },
@@ -468,7 +491,7 @@ def _output_schema(
                         "description": "what those settled rows come to, signed",
                     },
                 },
-                "required": ["currency"]
+                "required": ["currency", "inflow_minor_units", "outflow_minor_units"]
                 + [f"{flow}_outflow_minor_units" for flow in query.FLOW_CLASSES]
                 + [
                     "pending_transactions",
@@ -830,17 +853,25 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "`group_by` values you need — the parameter's own enum is the list. "
                 "🔴 BOTH DIRECTIONS on every row: `inflow_minor_units` and "
                 "`outflow_minor_units` are positive magnitudes, and `net_minor_units` is "
-                "signed from the account holder's point of view. Ask this for spending (read "
-                "`outflow`), for income (read `inflow`), and for cashflow (`group_by=month` "
-                "and read all three). 🔴 A category whose outflow is large and whose net is "
+                "signed from the account holder's point of view. Ask this for what went out "
+                "(read `outflow`), for what came in (read `inflow` — it is inflow, NOT "
+                "income: refunds are in it and a paycheque can arrive categorised as a "
+                "transfer), and for cashflow (`group_by=month` and read all three). "
+                "🔴 A category whose outflow is large and whose net is "
                 "near zero is money that came back -- refunds or transfers -- so quote `net` "
                 "when the question is 'how much did this cost me'. Rows are per currency and "
                 "are never summed across currencies. 🔴 Rows also split by `flow_class`, so "
-                "one month or one merchant can return up to three rows: a transfer between "
-                "the holder's own accounts never left, and a credit-card payment settles "
-                "purchases already counted under the categories they were spent in. Neither "
-                "is spending, and both can dwarf it. Read `totals` before quoting any "
-                "spending figure, and quote `external_spend_outflow_minor_units` from it. "
+                "one month or one merchant can return up to three rows. The class is read "
+                "from ONE category the AGGREGATOR assigned and matches no counterparty leg: "
+                "`internal_transfer` means categorised as a transfer by the aggregator, not "
+                "verified against an enrolled counterparty, and `debt_service` means loan "
+                "and card payments, where only a payment to an ENROLLED card settles "
+                "purchases counted under their own categories. Read `totals` before quoting "
+                "any money figure: quote `outflow_minor_units` for how much went out and "
+                "`external_spend_outflow_minor_units` for external spend, and name the other "
+                "two classes beside it. 🔴 `group_by=merchant` falls back to `description` "
+                "where the aggregator supplied no merchant name, so a rollup can split one "
+                "merchant across several raw institution strings. "
                 "🔴 EVERY row and every `totals` entry says how much of itself is an "
                 "unsettled authorisation hold (`pending_transactions`, "
                 "`pending_net_minor_units`, always present and 0 when none). A hold is not "
@@ -881,12 +912,15 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "type": "string",
                         "enum": list(query.FLOW_CLASSES),
                         "description": (
-                            "whether this money left the household (`external_spend`), only "
-                            "moved between the holder's own accounts "
-                            "(`internal_transfer`), or serviced a debt (`debt_service`). "
-                            "🔴 Rows are split by this under EVERY grouping, so one month "
-                            "or one account can return up to three rows and summing them "
-                            "gives back the conflated figure this field exists to separate"
+                            "how the AGGREGATOR categorised this money, not where it went: "
+                            + "; ".join(
+                                f"`{flow}` is {mcp_resources.flow_class_meaning(flow)}"
+                                for flow in query.FLOW_CLASSES
+                            )
+                            + ". 🔴 Rows are split by this under EVERY grouping, so one "
+                            "month or one account can return up to three rows and summing "
+                            "them gives back the conflated figure this field exists to "
+                            "separate"
                         ),
                     },
                     "transactions": {"type": "integer"},
@@ -1468,15 +1502,15 @@ def _instructions(config: Config) -> str:
         f"`cursor` with the SAME window and account, and keep going until `truncated` is "
         f"false. The cursor is OPAQUE -- never build or edit one -- and it is present when and "
         f"only when there is more to read.\n\n"
-        f"A CLASSIFYING tool adds `totals` — one entry per currency, splitting the window's "
-        f"OUTFLOW three ways. 🔴 **Quote `external_spend_outflow_minor_units` when asked what "
-        f"was spent.** `internal_transfer_outflow_minor_units` is the holder moving their own "
-        f"money between their own accounts and never left; "
-        f"`debt_service_outflow_minor_units` settles card purchases already counted under the "
-        f"categories they were spent in. Adding the three together double-counts, and the two "
-        f"that are not spending can be several times larger than the one that is. The three "
-        f"DO sum to the window's total outflow, which is how you check them against "
-        f"`rows`.\n\n"
+        f"A CLASSIFYING tool adds `totals` — one entry per currency, carrying the window's "
+        f"`inflow_minor_units` and `outflow_minor_units` and then splitting that outflow "
+        f"three ways by how the AGGREGATOR categorised each row. 🔴 **Quote "
+        f"`outflow_minor_units` for how much went out and "
+        f"`external_spend_outflow_minor_units` for external spend, and name "
+        f"`internal_transfer_outflow_minor_units` and `debt_service_outflow_minor_units` "
+        f"beside it** — the classifier matches no counterparty, so an ATM withdrawal or a "
+        f"mortgage payment sits in one of those two and is still money out. The three sum to "
+        f"`outflow_minor_units`, which is how you check them against `rows`.\n\n"
         f"🔴 **Absence of `effective_window`, `truncation` or `totals` is a fact, not a gap**: "
         f"that tool takes no window, returns every row it found, or does not classify money. "
         f"Each tool publishes an `outputSchema` saying which it carries.\n\n"

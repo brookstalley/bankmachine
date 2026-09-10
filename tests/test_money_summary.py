@@ -9,12 +9,13 @@ what `api-contract.md` § Direction's fourth norm draws a tool boundary on.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
 from sqlalchemy import select
 
-from bankmachine import query
+from bankmachine import mcp, query
 from bankmachine.config import Config
 from bankmachine.connector import TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS
@@ -365,6 +366,111 @@ def test_the_three_totals_partition_the_windows_outflow(initialized_config: Conf
     assert totals["external_spend_outflow_minor_units"] == 10140
     assert totals["internal_transfer_outflow_minor_units"] == 40000
     assert totals["debt_service_outflow_minor_units"] == 30000
+
+
+def test_the_totals_carry_the_whole_windows_inflow_and_outflow(
+    initialized_config: Config,
+) -> None:
+    """🔴 "How much went out" had no protected figure, so an agent had to sum rows.
+
+    The three class outflows are a decomposition of a number that was never
+    published, and the guidance beside them said to quote only the smallest of
+    the three — so a question about money leaving the household got an answer
+    that excluded a mortgage payment and an ATM withdrawal. The whole-window
+    figure is the one that answers the question as asked, and the classes sit
+    beside it saying what it is made of.
+
+    The income side has the same hole one direction over: with no
+    `inflow_minor_units` here, an agent asked what came in sums the rows itself
+    and reads refunds as income.
+    """
+    _seed_every_flow_class(initialized_config)
+    wire = _wire(initialized_config, group_by="category")
+    (totals,) = wire["totals"]
+
+    assert totals["outflow_minor_units"] == sum(row["outflow_minor_units"] for row in wire["rows"])
+    assert totals["inflow_minor_units"] == sum(row["inflow_minor_units"] for row in wire["rows"])
+
+
+def test_the_three_class_outflows_add_up_to_the_windows_outflow(
+    initialized_config: Config,
+) -> None:
+    """🔴 The identity that proves the classes PARTITION the window rather than sample it.
+
+    Asserted inside the block rather than across the block and the rows, because
+    that is where a reader checks it: `external_spend + internal_transfer +
+    debt_service` must be `outflow_minor_units` exactly, and a shortfall would
+    mean a row was classified into nothing at all — an undercount, in the
+    direction this surface says nobody questions.
+    """
+    _seed_every_flow_class(initialized_config)
+    for entry in _wire(initialized_config)["totals"]:
+        assert (
+            sum(entry[f"{flow}_outflow_minor_units"] for flow in query.FLOW_CLASSES)
+            == entry["outflow_minor_units"]
+        ), entry
+
+
+def test_the_payload_does_not_claim_a_transfer_never_left_or_a_debt_was_already_counted(
+    initialized_config: Config,
+) -> None:
+    """🔴 The classifier reads one aggregator category and matches no counterparty.
+
+    So `internal_transfer` means *the aggregator called it a transfer* — which in
+    this very store includes the payroll deposit — and `debt_service` covers
+    mortgage, auto and student-loan payments, which are money out rather than the
+    settlement of purchases counted elsewhere. Text asserting otherwise is a
+    claim about the household that the classification does not establish, and it
+    understates spending: the direction the contract records as the one that gets
+    believed.
+
+    Asserted over every surface an agent can read, because the sentence was in
+    all of them and fixing the one a reviewer names is what buys a second round.
+    """
+    _seed_every_flow_class(initialized_config)
+    definition = next(d for d in mcp._tool_definitions() if d["name"] == "money_summary")
+    schemas = json.dumps(definition["outputSchema"])
+    surfaces = {
+        "tool description": str(definition["description"]),
+        "output schema": schemas,
+        "instructions": mcp._instructions(initialized_config),
+        "resources": "\n".join(doc.text for doc in mcp._reference_documents()),
+        "client guide": (
+            Path(__file__).resolve().parents[1] / "docs" / "connecting-an-mcp-client.md"
+        ).read_text(encoding="utf-8"),
+    }
+
+    for name, text in surfaces.items():
+        assert "never left" not in text, f"{name} still claims a transfer never left the household"
+        assert "already counted" not in text, (
+            f"{name} still claims debt service settles purchases already counted"
+        )
+
+
+def test_every_surface_says_what_the_flow_classes_do_and_do_not_establish(
+    initialized_config: Config,
+) -> None:
+    """The positive half: removing the false claim must not leave silence.
+
+    An agent that reads "internal_transfer" with nothing beside it supplies a
+    meaning of its own, and the one it will reach for is the one the label
+    suggests. So each surface has to say what the class is derived from — a
+    category the aggregator assigned, with no counterparty leg matched — and
+    which date a window is measured on, since a hold that settles later moves
+    between periods.
+    """
+    definition = next(d for d in mcp._tool_definitions() if d["name"] == "money_summary")
+    resources = "\n".join(doc.text for doc in mcp._reference_documents())
+
+    assert "not verified against an enrolled counterparty" in resources
+    assert "mortgage, auto or student-loan payment is money out" in resources
+    assert "categorised as a transfer by the aggregator" in str(definition["description"])
+    assert "falls back to `description`" in str(definition["description"]), (
+        "the merchant rollup does not say when it is really rolling up by description"
+    )
+    assert "POSTING date" in str(definition["description"]), (
+        "nothing says which date the window is measured on"
+    )
 
 
 def test_the_totals_are_identical_under_every_grouping(initialized_config: Config) -> None:

@@ -2101,14 +2101,19 @@ GROUPINGS: tuple[str, ...] = ("category", "merchant", "account", "month", "flow_
 #: is a code change with a diff, not a silent rewrite of history.
 FLOW_CLASSES: tuple[str, ...] = ("external_spend", "internal_transfer", "debt_service")
 
-#: The holder moving their own money between their own accounts. Measured at 61%
-#: of the two-year total -- $164,400 of $267,693 -- which is why a raw outflow
-#: figure over this store reads several times what was actually spent.
+#: What the aggregator categorised as a transfer. 🔴 **A transfer by ITS label,
+#: not a movement verified between two enrolled accounts** -- nothing here
+#: matches a counterparty leg, and this store's own payroll deposit arrives
+#: categorised `TRANSFER_IN`. Measured at 61% of the two-year total -- $164,400
+#: of $267,693 -- which is why a raw outflow figure over this store reads
+#: several times what was actually spent, and why the split is published rather
+#: than applied.
 _INTERNAL_TRANSFER_CATEGORIES: frozenset[str] = frozenset({"TRANSFER_IN", "TRANSFER_OUT"})
 
-#: Servicing a debt rather than buying anything. Measured as ~100% credit-card
-#: payoff, which is a DOUBLE count: the card purchases the payment settles are
-#: already counted under the categories they were spent in.
+#: Loan and card payments. 🔴 The primary category covers mortgage, auto,
+#: student-loan and personal-loan payments as well as credit-card payoff -- so
+#: only the last is the double count a card's own purchases create, and only
+#: then if that card is enrolled. The rest is money out of the household.
 _DEBT_SERVICE_CATEGORIES: frozenset[str] = frozenset({"LOAN_PAYMENTS"})
 
 #: Every `source_category_primary` this mapping has actually been designed
@@ -2183,7 +2188,7 @@ def _flow_class() -> ColumnElement[str]:
 def _flow_class_totals(
     rows: list[dict[str, Any]], transitions: HoldTransitions
 ) -> list[dict[str, Any]]:
-    """The window's OUTFLOW split three ways, per currency, and how much is a hold.
+    """The window's money in and out, per currency, with the outflow split three ways.
 
     🔴 **The three flow classes are summed from the rows this answer returns,
     never from a second query.** A second read against a live store is taken at a
@@ -2226,12 +2231,25 @@ def _flow_class_totals(
         return totals.setdefault(
             currency,
             {f"{flow}_outflow_minor_units": 0 for flow in FLOW_CLASSES}
-            | {"pending_transactions": 0, "pending_net_minor_units": 0},
+            | {
+                "inflow_minor_units": 0,
+                "outflow_minor_units": 0,
+                "pending_transactions": 0,
+                "pending_net_minor_units": 0,
+            },
         )
 
     for row in rows:
         entry = entry_for(str(row["currency"]))
         entry[f"{row['flow_class']}_outflow_minor_units"] += int(row["outflow_minor_units"])
+        # 🔴 The whole window's two directions, summed from the same rows as the
+        # classes above so the identity between them holds by construction. They
+        # exist because the questions a caller actually asks are "how much went
+        # out" and "how much came in", and until they were published the only
+        # answer to either was a class figure that excludes a mortgage payment
+        # and an ATM withdrawal, or a sum the caller had to take over rows.
+        entry["inflow_minor_units"] += int(row["inflow_minor_units"])
+        entry["outflow_minor_units"] += int(row["outflow_minor_units"])
         entry["pending_transactions"] += int(row["pending_transactions"])
         entry["pending_net_minor_units"] += int(row["pending_net_minor_units"])
     for currency in transitions.currencies():

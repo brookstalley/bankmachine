@@ -502,10 +502,12 @@ own principle: an overcount gets questioned and an undercount gets believed.
 ### A classifying tool carries `totals`, per currency, and the three add up
 
 🔴 **`money_summary` gains a `totals` block** — one entry per currency, carrying the window's
-*outflow* under each of the three classes. `external_spend_outflow_minor_units` is the figure to
-quote when asked what was spent; the other two are money that never left the holder's accounts or
-that settles purchases already counted under the categories they were spent in, so summing all
-three double-counts.
+`inflow_minor_units` and `outflow_minor_units` and then splitting that *outflow* under each of the
+three classes. Quote `outflow_minor_units` when asked how much went out and
+`external_spend_outflow_minor_units` when asked about external spend, and **name the other two
+classes beside it**: the split describes the outflow rather than filtering it, and the classifier
+reads one aggregator category without matching a counterparty leg, so a mortgage payment and an ATM
+withdrawal are money out under labels that do not say so.
 
 🔴 **Measured against the sandbox store on 2026-09-09, over its full 24 months:** $267,692.77 of
 outflow, of which $164,400.00 is internal transfer and $50,484.00 is debt service — leaving
@@ -767,7 +769,7 @@ here.
 | `account` | string | the NAME of the account the transaction is on, not its id. 🔴 It is display text and not a key — filter with the `account_id` argument, which is what selects rows; two accounts can carry the same name and this field would not tell them apart |
 | `date` | string | the transaction's posted date, `YYYY-MM-DD`. A CALENDAR FACT and never an instant (§ Conventions), and the field the effective window is applied to. Every returned row's `date` lies inside `effective_window.effective` |
 | `description` | string | the institution's own string for the transaction, and 🔴 **the authoritative one.** When it and `merchant` disagree, this is the one that came from the bank |
-| `merchant` | string, nullable | the aggregator's guess at a merchant name, 🔴 **unvalidated** — it is a normalisation the aggregator performed and this product did not check. Null when it offered none. Grouping `money_summary` by merchant falls back to `description` where this is null |
+| `merchant` | string, nullable | the aggregator's guess at a merchant name, 🔴 **unvalidated** — it is a normalisation the aggregator performed and this product did not check. Null when it offered none. Grouping `money_summary` by merchant falls back to `description` where this is null, so one merchant can split across several raw institution strings and each rollup understates it |
 | `amount_minor_units` | integer | the amount in MINOR UNITS, signed from the account holder's point of view: negative is money out |
 | `currency` | string | the currency the amount is in |
 | `pending` | boolean | this row is an authorisation hold that has not settled. A pending amount can settle at a different figure or expire without settling, so a total computed over these rows can move with no new activity — which is what `includes_pending_rows` warns about |
@@ -781,7 +783,7 @@ here.
 | `group_key` | string | the group this row is for, 🔴 **always a string whatever the grouping** — an account id rendered as text under `group_by=account`, a `YYYY-MM` month under `month`, the category or merchant name under those, and the flow class itself under `flow_class`. It is the key to act on: under `account` it is the value `query_transactions(account_id=…)` takes, once read as an integer |
 | `group_label` | string | the same group, named for reading. Equal to `group_key` under every grouping except `account`, where the key is the id and the label is the account's name. Never a second key — two accounts can share a label |
 | `currency` | string | the currency this row's figures are in. Rows are per currency, because a figure summed across currencies is not a wrong number, it is not a number |
-| `flow_class` | string | `external_spend`, `internal_transfer` or `debt_service` — a GROUPING DIMENSION under every value of `group_by`, so one month or one account can return up to three rows. Read from the source category only, never from an override |
+| `flow_class` | string | `external_spend`, `internal_transfer` or `debt_service` — a GROUPING DIMENSION under every value of `group_by`, so one month or one account can return up to three rows. Read from the source category only, never from an override. 🔴 It says how the AGGREGATOR labelled the row and not where the money went: nothing matches a counterparty leg |
 | `transactions` | integer | how many transactions this group holds. 🔴 A per-group count, and a different figure from `coverage.transactions`, which is store-wide and never narrowed by the question asked |
 | `inflow_minor_units` | integer | money IN over this window for this group, 🔴 **a POSITIVE MAGNITUDE** in minor units — not operator-signed. The sign convention is carried by `net_minor_units`; these two are the halves it is made of |
 | `outflow_minor_units` | integer | money OUT over this window for this group, likewise a positive magnitude. It is the figure the `totals` block decomposes by flow class |
@@ -794,9 +796,11 @@ here.
 | Field | Type | Means |
 |---|---|---|
 | `currency` | string | the currency this entry's figures are in. One entry per currency, never one integer across currencies |
-| `external_spend_outflow_minor_units` | integer | 🔴 **the figure to quote when asked what was spent.** Money that actually left the household, as a positive magnitude in minor units |
-| `internal_transfer_outflow_minor_units` | integer | outflow that only moved between the holder's own accounts, a positive magnitude. It never left, so adding it to spending overstates spending — on the sandbox store it is the larger part of the gap measured in § *A classifying tool carries `totals`* |
-| `debt_service_outflow_minor_units` | integer | outflow that serviced a debt, a positive magnitude. It settles purchases already counted under the categories they were spent in, so adding it to spending double-counts them |
+| `inflow_minor_units` | integer | everything that came IN over the whole window in this currency, a positive magnitude. 🔴 **Inflow is not income:** refunds sit in it under `external_spend`, and a paycheque can sit in it under `internal_transfer` |
+| `outflow_minor_units` | integer | everything that went OUT over the whole window in this currency, a positive magnitude and before any classification. 🔴 **The figure to quote when asked how much went out** |
+| `external_spend_outflow_minor_units` | integer | the part of `outflow_minor_units` the aggregator categorised as neither a transfer nor a loan payment — the closest figure to external spend, and a residual rather than a verification |
+| `internal_transfer_outflow_minor_units` | integer | the part the aggregator categorised as a transfer; 🔴 **not verified against an enrolled counterparty.** That label covers a move between the holder's own accounts, and equally an ATM withdrawal, a P2P payment, and rent paid by ACH. On the sandbox store it is the larger part of the gap measured in § *A classifying tool carries `totals`* |
+| `debt_service_outflow_minor_units` | integer | the part the aggregator categorised as a loan or card payment. A card payment settles purchases counted under their own categories **only if that card is enrolled**; a mortgage, auto or student-loan payment is money out |
 | `pending_transactions` | integer | how many of the rows behind these totals are authorisation holds that have not settled. `0` is a real answer |
 | `pending_net_minor_units` | integer | what those holds come to, SIGNED — the amount these totals could move by when the holds settle or expire, with no new activity at all |
 | `expired_holds` | integer | holds in this window that were withdrawn without ever posting. 🔴 They are EXCLUDED from every figure here, so a total that shrank against an earlier answer is explained by this rather than by missing data |
@@ -804,10 +808,10 @@ here.
 | `settled_from_hold` | integer | rows in this window whose amount arrived by settling an earlier hold. A settlement may differ from the hold, so these are the rows whose contribution *changed* rather than appeared — which is why they are counted apart from `expired_holds` rather than with them |
 | `settled_from_hold_net_minor_units` | integer | what those settled rows come to, signed |
 
-🔴 **The three outflow figures add up to the window's total outflow in that currency, and that
-identity is the contract** — it is what proves the classification *partitions* the rows rather than
-quietly dropping some. Summing all three as "spending" is the error the decomposition exists to
-prevent.
+🔴 **The three class figures add up to `outflow_minor_units` in that currency, and that identity is
+the contract** — it is what proves the classification *partitions* the rows rather than quietly
+dropping some, and it is why the whole-window figure is published beside them rather than left to a
+caller to add up.
 
 **Fields — `rows[]`** *(`get_pipeline_health`)*.
 
