@@ -124,14 +124,60 @@ amendment with its own rationale, and the coordinator writes it — not the dele
 
 ## Status
 
-- [ ] **01 · Wave 1 — four independent file sets** *(delegated ×4)*
-- [ ] **02 · The foundation: `rule-applied` gets an emitter, `ledger_date` gets a column** *(coordinator)*
-- [ ] **03 · Wave 2 — currency, connector hygiene, CLI exit codes** *(delegated)*
+- [x] **01 · Wave 1 — four independent file sets** *(delegated ×4)* — #62, #6, #81, #59
+- [x] **02 · The foundation: `rule-applied` gets its meaning, `ledger_date` gets a column** *(coordinator)* — #34's amendment, #80
+- [ ] **03 · Wave 2 — currency, connector hygiene, CLI exit codes** *(delegated ×3, in flight)*
 - [ ] **04 · The read path** *(coordinator)*
 - [ ] **05 · Convergence and the classifier** *(delegated + coordinator)*
-- [ ] **06 · Integration, contract amendment, backlog reconciliation** *(coordinator)*
+- [ ] **06 · Integration, backlog reconciliation** *(coordinator)*
 
-**Context.** Branch cut from `develop` at `ade9a15`. Nothing built yet.
+**Context.** Branch cut from `develop` at `ade9a15`. Baseline was green at 1102 before any
+change. Six items landed across five commits; the suite was green at 1126 after chunk 02 and all
+175 go-red cases still report RED.
+
+🔴 **#34 is amended but not yet closed.** The vocabulary now says what the kind means; it has no
+emitter until #86 and #84 land in chunk 03. Closing it before then would be closing it on a
+carrier change alone, which is the half the issue explicitly says is not enough.
+
+---
+
+## Decisions
+
+Recorded here because each was taken during the build, and three of them departed from what the
+item as filed asked for.
+
+**#80 · `ledger_date` lands NULLABLE, filled by `store rebuild` — owner's ruling, 2026-09-10.**
+The landed requirements said NOT NULL. Every migration in this repo is pure `ALTER TABLE ADD
+COLUMN` and the runner's contract is DDL only; there is no constant default that is correct,
+because the value is `COALESCE(authorized_date, posted_date)` per row. *Rejected: a table rebuild
+(CREATE/INSERT SELECT/DROP/RENAME)* — it would put DML inside a migration for the first time, on
+the largest table in the store, against the contract that exists so a kill mid-migration leaves an
+unrecognised version rather than a half-populated one. *Rejected: coalescing at read time* — it
+returns exactly the number the column exists to stop being wrong, invisibly.
+🔴 **The cost this buys, and how it is paid:** a null is silently EXCLUDED by every window
+predicate, so between the migration and the rebuild every windowed total is a floor. That is
+disclosed on every answer via `partial`, naming the count and the command, and
+`test_the_rebuild_stamps_the_column_the_migration_could_only_leave_empty` holds the remedy.
+
+**#80 · stranded holds measured on `ledger_date` — owner's ruling, 2026-09-10.** The requirements'
+split table did not cover `_stranded_cutoff` / `_stranded_holds` (AC-13.5). How long an
+authorisation has been outstanding is a question about the money. Changes no answer today, because
+a pending row's two dates agree; stays correct if that ever stops being true.
+
+**#79/#75 · exit code 75 (`EX_TEMPFAIL`) for "run again", applied to `NOT_READY` too — owner's
+ruling, 2026-09-10.** The requirements doc reserved this for the owner because it contradicts
+`first-production-connection.md` § 3.6. That paragraph changes in the same commit.
+
+**#34 · the kind is widened, not recorded as not-yet-built.** Its own *Expected* offered both. The
+account-rule path (FR-8) is unbuilt and building a rule engine inside a bug sweep would be
+inventing a requirement — but #86's landed requirements already rule that `rule-applied` carries
+their exclusion and call it "its first real emitter". So the meaning widens to what actually
+emits it, recorded as an amendment with statement, why and retroactivity.
+
+**Partition · the read path is never delegated.** `query.py` is 2589 lines and is touched by seven
+of the twenty items. One delegate owns a narrow slice of it in chunk 03 (the aggregate exclusion);
+the coordinator holds the rest and works serially, because a shared worktree gives two agents one
+git index and whole-file writes.
 
 ---
 
