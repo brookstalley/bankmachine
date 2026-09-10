@@ -433,6 +433,15 @@ def _not_active_balances(conn: SAConnection, account_ids: list[int]) -> list[dic
     ]
 
 
+#: How close an account's first transaction may sit to its connection's granted
+#: start before the history is read as TRUNCATED rather than as genuinely
+#: beginning there. Seven days: a grant boundary rarely lands exactly on an
+#: account's first posting day, and inside that margin the conservative reading
+#: is truncation, because calling absent data a true zero is the error that gets
+#: believed rather than questioned.
+GRANT_BOUNDARY_DAYS = 7
+
+
 @dataclass(frozen=True, slots=True)
 class AccountCoverage:
     """What the store holds for ONE account, so an empty answer about it is legible.
@@ -456,6 +465,46 @@ class AccountCoverage:
     first_transaction_date: CalendarDate | None
     last_transaction_date: CalendarDate | None
     transaction_count: int
+    #: Where this account's CONNECTION was granted history from. Null when the
+    #: grant has not been measured yet, or for an import-only account that has
+    #: no connection -- two different reasons, both meaning the comparison below
+    #: cannot be made.
+    history_starts: CalendarDate | None = None
+
+    @property
+    def truncated_by_the_grant(self) -> bool:
+        """Whether this account's history was cut by the grant rather than by its age.
+
+        🔴 **The discriminator the whole item turns on.** `first_transaction_date`
+        alone cannot tell a recently-opened account -- a TRUE zero before that
+        date -- from one whose history was truncated by what the institution
+        granted, where everything earlier is ABSENT. Reporting either as $0 is
+        the failure this product exists to refuse, and they are indistinguishable
+        from the account row alone.
+
+        Compared against the connection's own granted start: an account whose
+        first transaction sits materially AFTER it genuinely has no earlier
+        activity; one that starts at or near it was cut.
+
+        🔴 Seven days, and the direction of the tie is deliberate. Inside that
+        window this reports TRUNCATION, because calling absent data a true zero
+        is the error that gets believed -- and a grant boundary rarely lands
+        exactly on an account's first posting day.
+        """
+        if self.history_starts is None or self.first_transaction_date is None:
+            return False
+        return (self.first_transaction_date - self.history_starts).days <= GRANT_BOUNDARY_DAYS
+
+    @property
+    def unmeasured(self) -> bool:
+        """The third state, which is neither a true zero nor a known truncation.
+
+        A connection whose granted window has not been measured yet has no start
+        to compare against, so this account is not *either* case -- and saying
+        so is the point. It is common in the first hours of a real connection,
+        and defaulting it to either branch would invent the answer.
+        """
+        return self.history_starts is None and self.transaction_count > 0
 
     @property
     def uncovered(self) -> bool:
@@ -468,11 +517,15 @@ class AccountCoverage:
         return self.transaction_count == 0
 
     def to_wire(self) -> dict[str, Any]:
-        """The three fields every account row carries, in every tool that carries them."""
+        """The fields every account row carries, in every tool that carries them."""
         return {
             "first_transaction_date": iso_or_none(self.first_transaction_date),
             "last_transaction_date": iso_or_none(self.last_transaction_date),
             "transaction_count": self.transaction_count,
+            # Present on every row, null where there is nothing to compare
+            # against. It is what makes `first_transaction_date` READABLE: on its
+            # own that date cannot say whether anything existed before it.
+            "history_starts": iso_or_none(self.history_starts),
         }
 
 
@@ -507,15 +560,24 @@ def _account_coverage(conn: SAConnection) -> dict[int, AccountCoverage]:
             func.min(transactions.c.posted_date),
             func.max(transactions.c.posted_date),
             func.count(transactions.c.transaction_id),
+            sync_state.c.history_start_date,
         )
         .select_from(
             accounts.outerjoin(
                 transactions,
                 (transactions.c.account_id == accounts.c.account_id)
                 & transactions.c.removed_at.is_(None),
+            ).outerjoin(
+                sync_state,
+                (sync_state.c.connection_id == accounts.c.connection_id)
+                # Filtered on domain like every other read of this table: it is
+                # keyed on (connection, domain), so an unfiltered join multiplies
+                # every account row the day a second domain lands and the counts
+                # above would come back multiplied with it.
+                & (sync_state.c.domain == TRANSACTIONS_DOMAIN),
             )
         )
-        .group_by(accounts.c.account_id)
+        .group_by(accounts.c.account_id, sync_state.c.history_start_date)
     ).all()
     return {
         int(row[0]): AccountCoverage(
@@ -531,6 +593,7 @@ def _account_coverage(conn: SAConnection) -> dict[int, AccountCoverage]:
             first_transaction_date=None if row[1] is None else calendar_date(row[1]),
             last_transaction_date=None if row[2] is None else calendar_date(row[2]),
             transaction_count=int(row[3]),
+            history_starts=None if row[4] is None else calendar_date(row[4]),
         )
         for row in result
     }
@@ -1011,6 +1074,79 @@ def _uncovered_caveat(uncovered: list[AccountCoverage]) -> list[Caveat]:
             detail=(
                 f"no transaction has ever been recorded for account(s) {ids}; an empty or "
                 f"absent result for them means DATA NOT PRESENT, never no activity"
+            ),
+        )
+    ]
+
+
+def _window_coverage_caveat(coverage: list[AccountCoverage], since: date | None) -> list[Caveat]:
+    """The warning an AGGREGATE owes about the accounts it could not cover.
+
+    🔴 **`coverage.earliest_transaction` is one `min()` over every account**, so
+    a single long-history account makes the whole store look well covered. A
+    window over an account whose own data starts inside it then returns $0 for
+    the uncovered months with NO warning at all -- absent-read-as-zero arriving
+    through the one number a caller is most likely to trust as a coverage check.
+
+    Per account, and only for accounts this window actually reaches past:
+
+    * data starting materially after the grant is a real beginning, and a zero
+      before it is a TRUE zero that may be reported as one;
+    * data starting at the grant boundary was cut, and everything earlier is
+      absent -- so a zero must not be reported for it;
+    * a connection whose grant has not been measured yet is NEITHER, and says so.
+
+    Rides the existing `accounts_without_coverage` kind. `api-contract.md` closes
+    the vocabulary and this does not open it: the kind already means *an account
+    in scope could not have data for what was asked*, and what changes is that
+    aggregates emit it where only the row surfaces used to.
+
+    Names WHICH accounts and from WHICH date each is covered. A count alone is
+    not actionable -- the caller's next move is to look at the specific account,
+    and with a store-wide minimum there was nothing to look at.
+    """
+    # 🔴 The REQUESTED start, not the effective one. `resolve_window` clamps
+    # `since` up to the store's earliest transaction, so an effective window can
+    # never begin before coverage -- comparing against it would report every
+    # request as comfortably inside, which is the reassuring version of this bug
+    # rather than a fix for it. And the clamp is store-WIDE, which is the whole
+    # reason a per-account check is needed: a window can sit inside the store's
+    # coverage and still reach past one account's own start.
+    if since is None:
+        return []
+    asked_from = calendar_date(since)
+    cut: list[str] = []
+    for entry in sorted(coverage, key=lambda c: c.account_id):
+        # Already named, in full, by `_uncovered_caveat`. Saying it twice in two
+        # kinds would have a caller reconcile two lists describing one set of
+        # accounts.
+        if entry.uncovered:
+            continue
+        if (
+            entry.truncated_by_the_grant
+            and entry.history_starts is not None
+            and asked_from < entry.history_starts
+        ):
+            cut.append(f"{entry.account_id} (from {entry.history_starts.isoformat()})")
+    # 🔴 The UNMEASURED case is deliberately not emitted here, though it is the
+    # third state this comparison has. A connection whose granted window has not
+    # been measured yet already raises `partial` from `_pipeline_warnings`, once
+    # per connection, saying exactly that -- and it is the ordinary state in the
+    # first hours of a real connection, so emitting it per ACCOUNT as well would
+    # put a second notice about one fact on nearly every answer. Two kinds
+    # describing one condition is how a caller ends up reconciling two lists,
+    # and an always-present notice is the "true and useless" failure the two
+    # warning tuples exist to prevent. `unmeasured` stays on the row, where a
+    # caller can read it per account without being told twice.
+    if not cut:
+        return []
+    return [
+        Caveat(
+            kind="accounts_without_coverage",
+            detail=(
+                f"this window reaches back past where account(s) {', '.join(cut)} have any "
+                f"data, and their history was TRUNCATED BY THE GRANT rather than beginning "
+                f"there -- so the earlier part of the window is absent for them, never zero"
             ),
         )
     ]
@@ -2899,7 +3035,8 @@ def money_summary(
         # observation of the same fact.
         lifecycle = _account_lifecycle(conn)
         not_active = [entry for entry in lifecycle.values() if not entry.active]
-        uncovered = [entry for entry in _account_coverage(conn).values() if entry.uncovered]
+        all_coverage = list(_account_coverage(conn).values())
+        uncovered = [entry for entry in all_coverage if entry.uncovered]
         return _answer(
             config,
             conn,
@@ -2938,6 +3075,7 @@ def money_summary(
             # as settled.
             extra_caveats=(
                 _uncovered_caveat(uncovered)
+                + _window_coverage_caveat(all_coverage, since)
                 + _not_active_caveat(not_active)
                 + _roster_observed_empty_caveat(not_active)
                 + _undenominable_caveat(undenominable)

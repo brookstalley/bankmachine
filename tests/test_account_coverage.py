@@ -703,3 +703,114 @@ def test_the_widest_gaps_survive_the_cap_and_the_count_does_not_shrink_with_the_
     assert [gap["days"] for gap in capped] == sorted((gap["days"] for gap in gaps), reverse=True)[
         : query.MAX_INTERIOR_GAPS_PER_ACCOUNT
     ], "the cap kept the earliest gaps, not the widest"
+
+
+# --------------------------------------------------------------------------
+# A true zero, and history the grant cut off, told apart
+# --------------------------------------------------------------------------
+
+
+def _coverage(first: date | None, starts: date | None, count: int = 5) -> query.AccountCoverage:
+    from bankmachine.store.types import calendar_date
+
+    return query.AccountCoverage(
+        account_id=1,
+        first_transaction_date=None if first is None else calendar_date(first),
+        last_transaction_date=None if first is None else calendar_date(first),
+        transaction_count=count,
+        history_starts=None if starts is None else calendar_date(starts),
+    )
+
+
+def test_an_account_opened_well_after_the_grant_really_does_begin_there() -> None:
+    """🔴 A TRUE zero, which may be reported as one.
+
+    The account's first transaction sits months after its connection's granted
+    start, so the store genuinely looked at that earlier period and there was
+    nothing in it. A zero for those months is a fact about the household.
+    """
+    assert not _coverage(date(2026, 6, 1), date(2024, 9, 16)).truncated_by_the_grant
+
+
+def test_an_account_starting_at_the_grant_boundary_was_cut_rather_than_opened() -> None:
+    """🔴 ABSENT, not zero — and indistinguishable from the case above without this.
+
+    `first_transaction_date` alone reads identically in both: a date with
+    nothing before it. Only the comparison against the connection's granted
+    start says whether the store LOOKED earlier and found nothing, or never
+    looked at all. Reporting this one as $0 is the failure the product exists
+    to refuse.
+    """
+    assert _coverage(date(2024, 9, 18), date(2024, 9, 16)).truncated_by_the_grant
+
+
+def test_the_boundary_margin_resolves_toward_truncation() -> None:
+    """The tie goes to "absent", and the direction is the decision.
+
+    A grant boundary rarely lands exactly on an account's first posting day, so
+    a few days of slack is ordinary. Inside the margin this reports truncation,
+    because calling absent data a true zero is the error that gets believed
+    rather than questioned.
+    """
+    boundary = date(2024, 9, 16)
+    inside = boundary + timedelta(days=query.GRANT_BOUNDARY_DAYS)
+    outside = boundary + timedelta(days=query.GRANT_BOUNDARY_DAYS + 1)
+
+    assert _coverage(inside, boundary).truncated_by_the_grant, "the margin must include its edge"
+    assert not _coverage(outside, boundary).truncated_by_the_grant
+
+
+def test_an_unmeasured_grant_is_neither_case_and_says_so() -> None:
+    """🔴 The third state. Defaulting it to either branch would invent the answer.
+
+    A connection whose granted window has not been measured has no start to
+    compare against. That is common in the first hours of a real connection,
+    and it is not "covered" — it is unanswered.
+    """
+    entry = _coverage(date(2026, 1, 1), None)
+    assert entry.unmeasured
+    assert not entry.truncated_by_the_grant
+
+
+def test_an_aggregate_names_the_accounts_whose_history_the_window_reaches_past() -> None:
+    """🔴 The defect: one store-wide min() made a thinly-covered account invisible.
+
+    `coverage.earliest_transaction` is a single minimum over every account, so
+    one long-history account makes the whole store look well covered, and a
+    window over an account whose own data starts inside it returns $0 for the
+    uncovered months with no warning at all.
+
+    The notice names WHICH account and from WHICH date. A count is not
+    actionable — with a store-wide minimum there was nothing to go and look at.
+    """
+    cut = _coverage(date(2024, 9, 18), date(2024, 9, 16))
+    caveats = query._window_coverage_caveat([cut], date(2024, 1, 1))
+
+    assert len(caveats) == 1
+    assert caveats[0].kind == "accounts_without_coverage"
+    assert "2024-09-16" in caveats[0].detail, "the notice must say from when the account IS covered"
+    assert "absent" in caveats[0].detail
+
+
+def test_an_aggregate_inside_every_accounts_coverage_says_nothing() -> None:
+    """The absence of this kind has to stay information.
+
+    A window that reaches past nothing raises nothing, so a caller can read the
+    quiet as coverage rather than as an unasked question.
+    """
+    cut = _coverage(date(2024, 9, 18), date(2024, 9, 16))
+    assert query._window_coverage_caveat([cut], date(2025, 1, 1)) == []
+
+
+def test_an_unmeasured_account_is_not_named_a_second_time_by_the_aggregate() -> None:
+    """🔴 One condition, one notice.
+
+    A connection whose grant is unmeasured already raises `partial` once, from
+    the pipeline warnings. Emitting it per ACCOUNT here as well would put a
+    second notice about one fact on nearly every answer during the hours after
+    a real connection is made — and two kinds describing one condition is how a
+    caller ends up reconciling two lists.
+    """
+    unmeasured = _coverage(date(2026, 1, 1), None)
+    assert unmeasured.unmeasured
+    assert query._window_coverage_caveat([unmeasured], date(2020, 1, 1)) == []

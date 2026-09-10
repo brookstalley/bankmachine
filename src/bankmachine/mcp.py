@@ -547,6 +547,18 @@ def _coverage_row_fields() -> dict[str, dict[str, Any]]:
             "type": "integer",
             "description": "0 is a real answer: the account has no transaction data at all",
         },
+        "history_starts": {
+            "type": ["string", "null"],
+            "description": (
+                "where this account's CONNECTION was granted history from. 🔴 It is what makes "
+                "`first_transaction_date` readable: on its own that date cannot tell a recently "
+                "opened account — a TRUE zero before it — from one whose history was cut by the "
+                "grant, where everything earlier is ABSENT. A first transaction sitting close to "
+                "this date means truncation; well after it means the account really does begin "
+                "there. null means the granted window has not been measured yet, so the question "
+                "is NOT YET ANSWERABLE — never that the account is fully covered"
+            ),
+        },
     }
 
 
