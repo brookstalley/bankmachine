@@ -10,6 +10,23 @@ Accumulated wisdom from building this product. Entries use "When X, do Y because
 
 ---
 
+## Measure what the client delivers, not what the server sends
+
+**When a server's `instructions` (or any text a client forwards to a model) carries guidance that
+matters, measure the text the CLIENT actually hands the model — because a client may truncate at a
+budget the server never sees, and every test that holds the string in-process passes while the model
+reads a third of it.**
+
+**Instances:**
+
+- *2026-09-10, the MCP primer.* `mcp.py` served 6,673 characters of instructions with a table of
+  warning kinds and the rule that prevents "no payments found" on a mortgage; two tests held the
+  string against the vocabulary and both were green. Claude Code's system prompt showed
+  `… [truncated]` after 2,045 characters — the reviewer measured it from the coordinator's own
+  context. The fix was a 1,693-character primer whose second line names the resources that carry the
+  rest, and a test that holds the union of primer and resources. Reviews:
+  `artifacts/reviews-2026-09-09/review-mcp.md` finding 1.
+
 ## Review coverage
 
 **When work should be reviewable, land it on a feature branch and review it BEFORE pushing to the
