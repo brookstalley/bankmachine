@@ -324,8 +324,17 @@ def test_a_currency_with_a_different_minor_unit_is_not_scaled_by_a_hundred() -> 
     assert minor_digits("jpy") == 0
 
 
-def test_a_balance_in_no_stated_currency_is_refused(store: Config) -> None:
-    """An amount whose unit is unknown is how a total silently mixes two of them."""
+def test_a_balance_in_no_stated_currency_is_not_stored_and_does_not_stop_the_roster(
+    store: Config, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An amount whose unit is unknown is how a total silently mixes two of them.
+
+    🔴 So the balance is not stored -- and the REST of the roster still is.
+    `/accounts/get` is fetched first on every run, so refusing the whole response
+    over one account aborted the connection before a single transaction page was
+    pulled, on that run and on every run after it, with the same body re-archived
+    each time. One unusable account is a fact about that account.
+    """
     body = _with(
         fixture("accounts_get"),
         lambda p: p.__setitem__(
@@ -333,6 +342,7 @@ def test_a_balance_in_no_stated_currency_is_refused(store: Config) -> None:
             [
                 {
                     **p["accounts"][0],
+                    "account_id": "acct-no-currency",
                     "balances": {
                         "current": 1.0,
                         "available": None,
@@ -340,12 +350,88 @@ def test_a_balance_in_no_stated_currency_is_refused(store: Config) -> None:
                         "iso_currency_code": None,
                         "unofficial_currency_code": None,
                     },
-                }
+                },
+                {**p["accounts"][1], "account_id": "acct-ordinary"},
             ],
         ),
     )
-    with pytest.raises(DerivationError, match="currency"):
+
+    with caplog.at_level(logging.WARNING, logger="bankmachine"):
         derive(store, str(ACCOUNTS_GET), body)
+
+    derived = {row["source_account_id"] for row in rows(store, accounts)}
+    assert derived == {"acct-ordinary"}, "an unusable account did not stop the rest of the roster"
+    assert not [row for row in rows(store, balances_daily) if row["currency"] is None]
+    assert any("no stated currency" in record.getMessage() for record in caplog.records), (
+        "an account was dropped with nothing recording that it happened"
+    )
+
+
+def test_an_account_whose_currency_this_datastore_knows_survives_a_response_that_omits_it(
+    store: Config,
+) -> None:
+    """The unit is the aggregator's own earlier word about the same account.
+
+    Keeping the account row is what lets its transactions keep deriving; the
+    balance is still not written, because storing an amount under a unit taken
+    from a different response is the mixing this refusal exists to prevent.
+    """
+    derive(store, str(ACCOUNTS_GET), _one_account_body("acct-1", current=100.00))
+
+    without_currency = _account(current=250.00)
+    without_currency["account_id"] = "acct-1"
+    without_currency["balances"]["iso_currency_code"] = None
+    derive(
+        store,
+        str(ACCOUNTS_GET),
+        json.dumps({"accounts": [without_currency], "item": {}, "request_id": "r"}).encode(),
+        received_at=LATER,
+    )
+
+    account = next(row for row in rows(store, accounts) if row["source_account_id"] == "acct-1")
+    assert account["currency"] == "USD"
+    assert account["last_seen_date"] == LATER.date(), "the account stopped being observed"
+    assert [row["as_of_date"] for row in rows(store, balances_daily)] == [RECEIVED.date()], (
+        "a balance was stored under a currency the response did not state"
+    )
+
+
+def test_a_null_current_balance_records_an_absent_balance_rather_than_refusing(
+    store: Config, caplog: pytest.LogCaptureFixture
+) -> None:
+    """🔴 `current` is documented nullable, and null means ABSENT, not zero.
+
+    The refusal cost far more than the balance: `/accounts/get` runs before any
+    page is fetched, so one account anywhere on the connection with a null
+    `current` meant no transactions were fetched for that institution at all,
+    ever, and the same body was archived again on every run. The account keeps
+    its row -- which is what its transactions hang from -- and the day simply has
+    no balance, because `current_minor` is NOT NULL and a zero would be this
+    system inventing a figure and recording it as the source's.
+    """
+    absent = _account(current=None)
+    absent["account_id"] = "acct-absent"
+    present = _account(current=110.23)
+    present["account_id"] = "acct-present"
+
+    with caplog.at_level(logging.WARNING, logger="bankmachine"):
+        derive(
+            store,
+            str(ACCOUNTS_GET),
+            json.dumps({"accounts": [absent, present], "item": {}, "request_id": "r"}).encode(),
+        )
+
+    assert {row["source_account_id"] for row in rows(store, accounts)} == {
+        "acct-absent",
+        "acct-present",
+    }
+    balances = {row["account_id"]: row["current_minor"] for row in rows(store, balances_daily)}
+    assert list(balances.values()) == [11023], "a balance was invented for the account with none"
+    assert any("no current balance" in record.getMessage() for record in caplog.records)
+    # AC-12.4: the roster was still observed, so the accounts do not start
+    # reading as no-longer-reported because one of them had no balance.
+    observed = rows(store, connections)[0]["roster_observed_date"]
+    assert observed == RECEIVED.date()
 
 
 def test_a_second_capture_on_a_recorded_day_is_rejected_not_merged(store: Config) -> None:

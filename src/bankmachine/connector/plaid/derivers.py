@@ -887,13 +887,24 @@ def _derive_one_account(
             f"raw response {response.raw_response_id} gives account {source_account_id} no "
             f"balances object"
         )
-    currency = _stated_currency(balances)
+    # 🔴 One unusable account must not cost the connection its transactions.
+    # `/accounts/get` is fetched first on every run, so a refusal here aborts the
+    # connection before a single page is pulled -- and the same body is archived
+    # again on the next run, and the one on the run after that. What the
+    # aggregator did not report is ABSENT, which is the distinction this
+    # product's whole warning vocabulary exists to preserve; refusing the roster
+    # loses the transactions as well and calls it safety.
+    stated_currency = _stated_currency(balances)
+    currency = stated_currency or _recorded_currency(conn, response, source_account_id)
     if currency is None:
-        raise DerivationError(
-            f"raw response {response.raw_response_id} gives account {source_account_id} a "
-            f"balance in no stated currency; storing an amount whose unit is unknown is how a "
-            f"total silently mixes two of them"
+        _log.warning(
+            "raw response %s gives account %s a balance in no stated currency and this "
+            "datastore has no currency recorded for it, so the account is skipped; its "
+            "transactions cannot be derived until a later roster names one",
+            response.raw_response_id,
+            source_account_id,
         )
+        return
 
     account_id = _upsert_account(
         conn,
@@ -904,15 +915,46 @@ def _derive_one_account(
         account_type=account_type,
         currency=currency,
     )
+    if stated_currency is None:
+        # The account row keeps the unit the aggregator itself recorded for it
+        # earlier. This BALANCE has no stated unit, and storing an amount under a
+        # unit inferred from another response is how a total silently mixes two
+        # of them -- so the account is kept and the balance is not.
+        _log.warning(
+            "raw response %s gives account %s a balance in no stated currency; the account "
+            "is kept and no balance is recorded for it",
+            response.raw_response_id,
+            source_account_id,
+        )
+        return
     _write_balance(
         conn,
         response=response,
         context=context,
         account_id=account_id,
+        source_account_id=source_account_id,
         balances=balances,
         currency=currency,
         balance_class=balance_class_of(account_type, response),
     )
+
+
+def _recorded_currency(
+    conn: SAConnection, response: RawResponse, source_account_id: str
+) -> str | None:
+    """The unit this datastore already has for the account, if it has one.
+
+    Read only when the response states none. It is the aggregator's own earlier
+    word about the same account rather than a guess, which is what makes keeping
+    the account row honest -- and keeping it is what lets the account's
+    transactions derive at all.
+    """
+    return conn.execute(
+        select(accounts.c.currency).where(
+            accounts.c.connection_id == response.connection_id,
+            accounts.c.source_account_id == source_account_id,
+        )
+    ).scalar_one_or_none()
 
 
 def _upsert_account(
@@ -1019,6 +1061,7 @@ def _write_balance(
     response: RawResponse,
     context: DerivationContext,
     account_id: int,
+    source_account_id: str,
     balances: dict[str, Any],
     currency: str,
     balance_class: str,
@@ -1050,7 +1093,22 @@ def _write_balance(
     aggregator's, because the aggregator's changes when a connection is removed
     and re-linked, and history that pointed at it would detach.
     """
-    current = to_minor(balances.get("current"), currency, "a current balance", response)
+    reported = balances.get("current")
+    if reported is None:
+        # 🔴 `current` is documented nullable, and a null one is an ABSENT
+        # balance rather than a zero or a refusal. `current_minor` is NOT NULL,
+        # so absence is recorded by the day having no row -- and the account
+        # keeps its row, which is what lets its transactions derive. Refusing
+        # instead aborted the connection before any page was fetched, on every
+        # run, forever.
+        _log.warning(
+            "raw response %s reports no current balance for account %s, so no balance is "
+            "recorded for that day; the account is kept",
+            response.raw_response_id,
+            source_account_id,
+        )
+        return
+    current = to_minor(reported, currency, "a current balance", response)
     if balance_class == "liability":
         current = negate(current)
 
