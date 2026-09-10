@@ -602,3 +602,37 @@ licenses a substitution or a skip, re-derive it yourself before accepting — `d
 says a delegate's "Done" on a sweep is a claim; this is the same rule for a delegate's "not found".
 Related: [[guarantees-by-construction]], whose instances are the same family — a check whose bad
 news never arrives.
+
+---
+
+## A standing advisory is a queue with a history, not a fresh finding: search the backlog for its id before you analyze it, because the decision it asks for may already be filed
+
+**When an advisory names a target — a norm, a file, a stale artifact — grep the backlog for the
+advisory id BEFORE reading the target or reasoning about the fork it offers. An advisory persists
+across sessions until someone resolves it, so its second appearance looks exactly like its first,
+and the work it asks for may already be recorded, scoped, and waiting.**
+
+Advisories are re-emitted on every session start from the same mechanical probe. Nothing in the
+briefing line distinguishes "nobody has looked at this" from "this was decided three sessions ago
+and the cleanup is item #N" — the text is byte-identical either way. The owner-facing fork
+(*re-affirm and schedule cleanup, or retire*) reads as an open question in both states, which is
+what makes re-deriving the answer feel like the work rather than a duplication of it.
+
+**The tell is that the analysis comes out clean and confident.** Re-derivation from the same
+artifacts by the same method reaches the same conclusion, so nothing about the result feels
+second-hand. Cost is not just the wasted pass: filing the cleanup produces a duplicate item, and
+two items against one file invite two branches touching the same lines.
+
+**Instances:**
+
+- *2026-09-09, advisory `norm-lifecycle-dead-why-v1-fcdc48`.* Backlog **state** was checked for
+  every cited item (#9, #18, #30, #40) but the backlog was never searched for the advisory id.
+  Item **#42** already carried the re-affirm decision, the phrase "citation-shape decay, not
+  rationale decay", both citation line numbers, and an explicit amendment-vs-upkeep scope-out. The
+  session re-derived all of it and filed **#64** on top. #42 was under-scoped — it covered the #30
+  citation and not the #18 one — which is the only reason the duplicate added anything.
+
+**How to apply:** `gh issue list --search "<advisory-id>"` (or grep `.prawduct/backlog.md`) is the
+first move on any advisory, ahead of opening the file it names. If an item exists, start from its
+scope and check it against the advisory's — an under-scoped prior item is the case worth catching,
+and extending it beats filing beside it.
