@@ -153,8 +153,16 @@ by the operating system rather than by application logic — which is what makes
 `PRAGMA query_only=OFF` re-enables writes on a read-write handle *(measured)*, and `sync shell` exists
 precisely to run operator-supplied SQL — it is the surface that can type it. Under `mode=ro` the
 identical sequence still fails *(measured)*, because the refusal lives in the file handle rather than
-in a session flag. §5's mandate — *"Read-only. No mutation tools. No exceptions."* — is therefore
-structural rather than a convention every future tool author remembers.
+in a session flag. §5's mandate is therefore structural rather than a convention every future tool author
+remembers.
+
+🔴 **The 2026-09-10 amendment narrowed that mandate and left this control untouched, deliberately.**
+§5 read *"Read-only. No mutation tools. No exceptions."* and now reads read-only over everything the
+aggregator produced, with one class of write permitted — to sidecar tables bankmachine itself
+maintains (FR-11). What did **not** change is that the MCP server process holds no writable handle:
+the recommended write path is out-of-process, so the refusal stays in the file handle rather than
+becoming a rule about which tool may call which function. AC-16.10 states that as a criterion
+precisely so a build cannot satisfy the amendment by opening the handle this paragraph is about.
 
 ### API-design failure modes (OWASP API Top 10)
 
@@ -165,13 +173,13 @@ and *why* they do not apply is the useful part:
 |---|---|---|
 | **BOLA / object-level authz** (API1) | **No** | One operator owns every object. There is no "another user's transaction" to leak |
 | **Broken authentication** (API2) | **No** | Nothing to authenticate to; process ancestry is the boundary |
-| **Broken object property level authz** / mass assignment | **No** | 🔴 The surface is **read-only**. There is no request binding to over-permit |
+| **Broken object property level authz** / mass assignment | 🔴 **Yes, once FR-11 ships** | It was **No** while the surface was read-only — no request binding, nothing to over-permit. § 5's 2026-09-10 amendment lets an agent write annotations, and an `annotate` call **is** a request binding. The mitigation is not field validation: it is that the write path reaches exactly one table, and that the server process still holds no writable handle (AC-16.9, AC-16.10) — the same argument `mode=ro` makes one layer down. Until FR-11 builds there is still no mutation tool and no binding |
 | **Unrestricted resource consumption** (API4) | 🔴 **Yes** | A caller can drive cost. Mitigated by the ~500-row hard cap and aggregate-first design (AC-9.1); a cursor narrows a request rather than lifting the cap, so each page stays bounded by it |
 | **Improper inventory management** (API9) | 🔴 **Yes** | A forgotten tool is a real risk. Mitigated by the declared surface inventory in `api-contract.md` |
 | **Unsafe consumption of third-party APIs** (API10) | 🔴 **Yes** | The aggregator's responses are unowned input in two distinct ways. The aggregator being *wrong* is "Data integrity" below. The aggregator being *right* about text an outsider wrote — a descriptor is chosen by the counterparty, not by the bank — is the transaction-text row in the threat model above |
 | **Excessive data exposure** | Partly | The consumer is an LLM with finite context; returning less is a *performance* requirement too |
 
-The three that apply are handled in `api-contract.md` § Security, not duplicated here.
+Each row marked **Yes** is handled in `api-contract.md` § Security, not duplicated here — except the mass-assignment row, whose handling is FR-11's own criteria and does not exist yet, because neither does the tool.
 
 ---
 

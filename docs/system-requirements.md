@@ -532,11 +532,11 @@ consumers — the account-retirement path #48 needs, and a per-row annotation fi
 — because a contract derived from one consumer is a carve-out. Its assumptions are recorded as
 **vetoable** in that document; an assumption the owner rejects retires the criteria resting on it.*
 
-🔴 **One question is deliberately NOT answered here and is the owner's:** whether an *agent* may
-write. The MCP surface is read-only by norm (§ 5), and an agent reaches this store through no other
-surface, so an agent-authored value is a ruling on a red-line norm rather than a design choice.
-These criteria assume an operator-invoked CLI path and hold unchanged either way — what a ruling
-changes is who calls in, not what the store owes the value.
+🔴 **The question this section deliberately left to the owner has since been ruled.** Whether an
+*agent* may write was a ruling on a red-line norm rather than a design choice, and the owner took it
+on 2026-09-10: an agent may write, bounded by row authorship (§ 5's amendment, FR-11). These
+criteria were written assuming an operator-invoked CLI path and hold unchanged under the ruling —
+what it changed is who calls in, not what the store owes the value.
 
 **AC-15.1 · An operator-writable column is declared, and the declaration is what protects it.** Every
 column an operator may write appears in the declaration its table class requires — the dimension
@@ -601,12 +601,139 @@ reproducing what it replaced, which is the one thing the digest exists to preven
 new operator column needs its mechanism entry, and AC-15.4 is what makes that a caught omission
 rather than a discovered one.
 
+### FR-11 · Agent annotations
+
+*Derived in `.prawduct/artifacts/discovery-agent-annotations.md`. An agent that works this store
+learns things the store cannot hold; today that knowledge dies with the session transcript, so the
+next session re-derives it — or derives it differently. These criteria say what the store owes a
+note. **Sequenced after production onboarding** for the reason recorded there: the subject list is
+currently three plausible types rather than an observed distribution, and real sessions are what turn
+it into evidence.*
+
+🔴 **This is the requirement the § 5 amendment was made for.** An agent may write, and what it may
+write is bounded by row authorship — see the amendment note in § 5.
+
+**AC-16.1 · An annotation addresses its subject by durable identity, never by a surrogate row id.**
+The stored key is the identity that survives a rebuild, and it does not rest on the subject table's
+current rebuild classification. *Why:* `transactions` is rebuildable — deleted and replayed — so
+`transaction_id` is reassigned, which is why `rebuild.OPERATOR_STATE` keys `category_override` on
+`(account_id, source_transaction_id)`. An annotation keyed on that surrogate survives the rebuild
+intact and points at a different row, with no symptom: it still reads plausibly, against the wrong
+transaction. `securities.security_id` and `account_id` are stable today, but only because those
+tables are dimensions a rebuild never empties — a property of their current schema, not a guarantee —
+so a key resting on it is AC-15.1's guard that holds only while an unrelated fact stays true.
+
+**AC-16.2 · An annotation survives a rebuild without being captured, restored or replayed.** It lives
+in a table carrying neither `raw_response_id` nor `derivation_version_id`, so `store rebuild` never
+empties it and it needs no `OPERATOR_STATE` or `_OPERATOR_OWNED` entry. *Why:* this is a third table
+class beside FR-10's two, and it is the reason the annotation requirement is cheaper than the shape
+first proposed for it. A column on a rebuildable table would need both of FR-10's mechanisms and gain
+no protection that is not hand-maintained.
+
+**AC-16.3 · An annotation is inside the content digest, and inside the same file as the data.** It is
+not excluded from `content_digest`, and it is not stored beside the datastore in a second file.
+*Why:* `content_digest` covers every table already, so inclusion costs nothing and AC-15.9's argument
+applies unchanged. The one-file clause is what stops a design satisfying "survives backup" while
+letting a restore pair a fresh store with a stale sidecar — a note re-attached to a row that has
+moved on is this product's own failure class arriving where no warning kind can describe it.
+
+**AC-16.4 · An annotation whose subject cannot be found is reported, never silently kept and never
+re-homed.** A write naming an unknown subject is refused when it is made; an annotation whose subject
+later leaves the store is surfaced to the operator and attached to no other row. *Why:* AC-15.8 by
+the other door. A rebuild's restore path has a moment where it must match a value to a row and can
+say when it cannot; a sidecar table has no such moment, so an orphan simply persists and keeps being
+returned. That is the cost of the cheaper shape, and it is paid by an explicit reconciliation.
+
+**AC-16.5 · Every annotation says who wrote it and when.** Author class — operator or agent — the
+author's identity within that class where the surface knows it, and the created and last-changed
+times, in the annotation's own columns and never by reusing a derivation-owned timestamp. *Why:* a
+later agent must be able to tell *something an agent concluded once* from *something the data says*.
+Without an author, session five reads session two's guess as a fact of the store, and each session's
+speculation becomes the next one's premise — a self-confirming memory that degrades as sessions
+accumulate. The second clause is AC-15.2: `updated_at` is written from the archived response and is
+inside the digest.
+
+**AC-16.6 · 🔴 An annotation never enters arithmetic.** No aggregate reads one, no total moves because
+of one, no derived value is computed from one, and no annotation changes how a row is classified or
+grouped. It is returned as commentary, labelled as an assertion with its author and age, never merged
+into the field it comments on. *Why:* every other incompleteness in this product has a warning kind
+that can describe it. There is none that can say *this total moved because an agent believed
+something*, the vocabulary is deliberately closed, and inventing a kind would be building a way to
+announce the failure instead of preventing it. So it is prevented.
+
+**AC-16.7 · An annotation is rewritable and deletable, and a delete deletes.** No tombstone, no soft
+delete, no append-only ledger imposed on the author's behalf. *Why:* the store's neighbouring norms
+run the other way — a transaction is never hard-deleted, a source value is never overwritten in place
+— and both exist to protect a record of what an institution said. An annotation is not that record:
+it is the author's own current belief, and a belief that cannot be withdrawn becomes permanently
+wrong. This is a recorded boundary ruling on those two norms, not a silent exemption.
+
+**AC-16.8 · An annotation rides the item it annotates.** Where a tool returns an item singly its
+annotations come with it; an aggregate carries none, in its figures or its payload. *Why:* a memory a
+later agent must remember to go looking for is not a memory. The aggregate half is AC-16.6 at the
+envelope level — an annotation sitting beside a total invites exactly the arithmetic AC-16.6 forbids.
+
+**AC-16.9 · An agent writes only what is declared agent-writable, and the declaration cannot name a
+table the store derives.** An explicit declaration lists the agent-writable tables; a check fails
+when a write path reaches a table outside it, and fails when the declaration names a table carrying
+`raw_response_id` or `derivation_version_id`. *Why:* the negative test alone is not the rule.
+eight tables carry neither provenance column and none may be writable — a bound stated only as "no
+provenance columns" would license an agent to write the raw archive `raw_responses` replays from,
+`account_rules` which filters rows out of aggregates, and `accounts.lifecycle_status` which the
+balance-lifecycle norm makes arithmetic. This is AC-15.1's argument at the table level: a permission that holds only while an unrelated fact stays true has been tested by
+nothing. It also takes over the security model's mass-assignment argument, which currently rests on
+the surface being read-only.
+
+**AC-16.10 · The read surface stays structurally incapable of writing.** Whatever path carries the
+write, no handle held by the MCP server process is writable. *Why:* stated as a criterion so a build
+cannot satisfy the amendment's letter by opening the very handle the norm was protecting.
+`PRAGMA query_only=OFF` re-enables writes on a read-write handle *(measured)*; the refusal has to
+live in the file handle.
+
+**AC-16.11 · A write that cannot take the writer lock fails as retryable, and never blocks a read.**
+An annotation attempted while a sync, backup or rebuild holds the exclusive lock returns a
+distinguishable retryable failure; it does not wait unboundedly and it does not degrade any read in
+flight. *Why:* the writer factory takes an exclusive `flock` before it returns, and syncs and
+rebuilds are long. Without this, the first annotation attempted during a nightly sync either hangs
+the session or fails as an unexplained error.
+
 
 ---
 
 ## 5. MCP tool surface
 
-🔴 **Read-only. No mutation tools. No exceptions.**
+🔴 **Read-only over everything the aggregator produced. The one class of write this surface
+may originate is to sidecar data bankmachine itself maintains.**
+
+> **Amendment (2026-09-10, owner ruling).** This section read *"Read-only. No mutation tools. No
+> exceptions."* until an agent needed somewhere to keep what it learned.
+>
+> **The bound is row authorship, expressed as a declaration with a floor under it.** An
+> agent-originated write may touch only a table named in an explicit **agent-writable declaration**,
+> and no table carrying `raw_response_id` or `derivation_version_id` may be named in it. A table
+> carrying either is read-only to this surface **whatever the column**, `transactions.category_override`
+> included: it is operator-authored, but it sits on a derived row and it is what `money_summary`
+> groups by, so an agent that could move it could move a total.
+>
+> 🔴 **The declaration is what grants; the provenance test only forbids.** Stated as the
+> provenance test alone the rule has a hole, and **eight tables fall through it** — measured, not
+> reasoned: `account_rules`, `accounts`, `connections`, `derivation_versions`, `institutions`,
+> `manual_imports`, `raw_responses` and `sync_state`. Among them the archive itself (`raw_responses`
+> carries its `raw_response_id` as a primary key, not a foreign key, so it passes), `account_rules`
+> (which produces the `rule-applied` warning and filters rows out of aggregates — arithmetic, by the
+> same test that holds `category_override` out of reach), and `accounts` (FR-10's two operator-owned
+> columns). This is AC-15.1's hole one layer up: no table is unwritable merely because nothing
+> currently says so, exactly as no column is protected merely because no deriver currently emits it.
+>
+> 🔴 **And the row is the unit, not the column.** SQLite has no per-column grant, so a
+> column-scoped rule could only ever live in application logic — which is the thing this norm exists
+> to avoid resting on. Whether a table carries a raw-provenance column is a question a test can ask.
+>
+> **What the amendment does not license: a writable handle in the server process.** The `mode=ro`
+> control (`security-model.md` § Authorization, `architecture.md` § Direction) is untouched, and AC-16.10 states it as a criterion so a build cannot satisfy
+> this amendment's letter by opening the handle the norm was protecting. The derivation, and the
+> write-path options priced against each other, are in
+> `.prawduct/artifacts/discovery-agent-annotations.md`; the requirement is FR-11.
 
 **AC-9.1** — **Aggregate-first.** Tools return computed summaries by default, not raw rows. Dumping
 24 months of transactions into an LLM context is slow, expensive, and worse at arithmetic than SQL

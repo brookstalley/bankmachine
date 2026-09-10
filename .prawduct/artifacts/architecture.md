@@ -63,8 +63,11 @@ decision applies — there is nothing to migrate, contain, or grandfather.
   *(measured)*, and `sync shell` exists precisely to run operator-supplied SQL, which is the surface
   that can type it; under `mode=ro` the identical sequence still fails *(measured)*, because the
   refusal lives in the file handle rather than in a session flag. Second, the read-only guarantee is
-  §5's mandate (*"Read-only. No mutation tools. No exceptions."*) and it should be structural rather
-  than a convention every future tool author remembers. Third, a pinned snapshot starves WAL
+  §5's mandate and it should be structural rather than a convention every future tool author
+  remembers — and it still should, under §5's 2026-09-10 amendment: that amendment lets an agent
+  write to sidecar tables bankmachine itself maintains, but the recommended path puts that write in
+  a different process, so **no handle held by the MCP server is writable** and this norm is
+  unaffected (FR-11 AC-16.10). Third, a pinned snapshot starves WAL
   checkpointing: with one reader holding an open read transaction a passive checkpoint moved **0 of
   93** frames, and moved **93 of 93** the instant the reader released *(measured)*; an MCP server
   lives as long as its client, so a snapshot held across tool calls would grow the WAL unbounded
