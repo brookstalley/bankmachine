@@ -19,12 +19,22 @@
 # weaker guarantee -- useful while editing, not sufficient before a push. The
 # pre-push hook always passes a range.
 #
-# COST: a range scan greps every reachable commit's full tree, so the first push
-# of a large history is slow. That is the price of the guarantee, but a hook that
-# takes minutes is a hook people learn to `--no-verify` past. If this repository's
-# history ever grows enough for that to bite, narrow the range rather than
-# weakening the check -- scanning `git rev-list --max-count` of the newest commits
-# plus a one-off audit of the rest is a real answer; skipping the scan is not.
+# WHAT A PUSH PUBLISHES
+#
+# A push is checked against the commits it actually publishes. When the remote sha
+# is all-zero the remote has never seen this branch, and the commits being
+# published are everything reachable from the tip that no remote-tracking ref
+# already reaches -- not everything reachable, which on a branch cut from an
+# existing one is almost entirely history the remote already holds.
+#
+# That narrowing rests on a PRECONDITION, and it is a real one: trusting
+# remote-tracking refs means already-pushed history is never re-read, which is the
+# exact blind spot this guard exists to close. A one-off full-history audit closes
+# it instead, once, and its adjudicated matches are recorded with the operator's
+# token lists in `deployment/`. The audit is per-deployment because the tokens are:
+# an audit run against one operator's roster says nothing about another's. Run it
+# before relying on the narrowed range, and again whenever a token is added.
+# See docs/deployment-requirements.template.md §8.
 #
 # TOKENS
 #
@@ -35,9 +45,19 @@
 # inherit a guard protecting a stranger's identity while protecting none of their
 # own. A checkout with no `deployment/` directory has nothing to leak and says so.
 #
-# Tokens are matched case-insensitively on word boundaries. They are validated at
-# load, because a token that cannot match is worse than a missing one: it still
-# counts toward a reassuring total. See docs/deployment-requirements.template.md §8.
+# Three token files, two matching modes. `roster-tokens.txt` and
+# `identity-tokens.txt` match case-insensitively on word boundaries.
+# `roster-tokens-cased.txt` matches case-SENSITIVELY on word boundaries, for the
+# institution whose name is also an ordinary English word: the leaked form of a
+# proper noun is capitalized, so the cased file catches it while ordinary prose
+# using the lowercase word goes free. That is a genuine reduction in coverage --
+# the lowercased and embedded forms are no longer caught -- so a token belongs in
+# the cased file ONLY when its lowercase form is an ordinary English word. The
+# default is the strict files.
+#
+# Tokens are validated at load whichever file they come from, because a token that
+# cannot match is worse than a missing one: it still counts toward a reassuring
+# total. See docs/deployment-requirements.template.md §8.
 #
 # FAILING CLOSED
 #
@@ -65,13 +85,15 @@ cd "$repo_root"
 TOKEN_DIR="deployment"
 ROSTER_FILE="$TOKEN_DIR/roster-tokens.txt"
 IDENTITY_FILE="$TOKEN_DIR/identity-tokens.txt"
+ROSTER_CASED_FILE="$TOKEN_DIR/roster-tokens-cased.txt"
 
 usage() {
     cat >&2 <<'USAGE_EOF'
 usage:
   check-no-personal-data.sh                    scan the working tree (weaker: not push-safe)
   check-no-personal-data.sh --rev <rev>        scan the tree at one revision
-  check-no-personal-data.sh --range <a> <b>    scan every commit in a..b (all of b if a is all-zero)
+  check-no-personal-data.sh --range <a> <b>    scan every commit in a..b (if a is all-zero, every
+                                               commit in b that no remote-tracking ref reaches)
 USAGE_EOF
     exit 2
 }
@@ -85,9 +107,16 @@ USAGE_EOF
 # Both fail loudly here instead.
 
 tokens=()
+cased_tokens=()
 
+# The matching mode is a property of the FILE, never of the token line. A prefix
+# or a second column would have to pass the single-word validator below, and that
+# validator's strictness is what stops a name that matches nothing from counting
+# toward a reassuring total -- loosening it to carry a mode would trade a
+# guarantee for a feature. A file name states the semantics for everything in it,
+# and it is visible at review time.
 load_tokens() {
-    local file=$1 line n=0
+    local file=$1 mode=$2 line n=0
     [[ -f $file ]] || return 0
     # `|| [[ -n $line ]]` so a file with no trailing newline does not lose its
     # last token -- read returns non-zero at EOF with data still in $line.
@@ -105,18 +134,23 @@ load_tokens() {
        (one line per word, or the concatenated form), never as one multi-word line.
        See docs/deployment-requirements.template.md §8."
         fi
-        tokens+=("$line")
+        if [[ $mode == cased ]]; then
+            cased_tokens+=("$line")
+        else
+            tokens+=("$line")
+        fi
     done <"$file"
     return 0
 }
 
-load_tokens "$ROSTER_FILE"
-load_tokens "$IDENTITY_FILE"
+load_tokens "$ROSTER_FILE" nocase
+load_tokens "$IDENTITY_FILE" nocase
+load_tokens "$ROSTER_CASED_FILE" cased
 
-real_token_count=${#tokens[@]}
+real_token_count=$(( ${#tokens[@]} + ${#cased_tokens[@]} ))
 
 note=""
-if [[ ! -f $ROSTER_FILE && ! -f $IDENTITY_FILE ]]; then
+if [[ ! -f $ROSTER_FILE && ! -f $IDENTITY_FILE && ! -f $ROSTER_CASED_FILE ]]; then
     note="  (no $TOKEN_DIR/ token files on this checkout -- nothing to leak)"
 fi
 
@@ -143,7 +177,16 @@ if (( real_token_count == 0 )); then
     exit 0
 fi
 
-pattern=$(build_pattern "${tokens[@]}")
+# An empty class leaves its pattern empty, and every use is guarded on that: a
+# pattern built from no tokens is `(...)()(...)`, which matches every line.
+pattern=""
+cased_pattern=""
+if (( ${#tokens[@]} > 0 )); then
+    pattern=$(build_pattern "${tokens[@]}")
+fi
+if (( ${#cased_tokens[@]} > 0 )); then
+    cased_pattern=$(build_pattern "${cased_tokens[@]}")
+fi
 
 # Identity-owned GitHub slugs (`owner/repo`) are stripped before a line is judged.
 # The owner segment is inherently public the moment this repository is -- it is in
@@ -156,13 +199,29 @@ pattern=$(build_pattern "${tokens[@]}")
 # `<owner>/<repo> -- <institution> roster` still fails on the institution.
 #
 # BSD sed (macOS) has no `\b`, hence anchoring on the token alternation instead.
-token_alt=$(printf '%s|' "${tokens[@]}")
-token_alt=${token_alt%|}
+# Each class strips under its own case rule, so the slug exemption is exactly as
+# wide as the match it exempts.
+token_alt=""
+cased_token_alt=""
+if (( ${#tokens[@]} > 0 )); then
+    token_alt=$(printf '%s|' "${tokens[@]}")
+    token_alt=${token_alt%|}
+fi
+if (( ${#cased_tokens[@]} > 0 )); then
+    cased_token_alt=$(printf '%s|' "${cased_tokens[@]}")
+    cased_token_alt=${cased_token_alt%|}
+fi
 
 strip_public_slugs() {
-    local out
-    out=$(sed -E "s#(${token_alt})/[A-Za-z0-9_.-]+##gI" <<<"$1") \
-        || die "slug-strip failed (sed error) -- refusing to report clean"
+    local out=$1
+    if [[ -n $token_alt ]]; then
+        out=$(sed -E "s#(${token_alt})/[A-Za-z0-9_.-]+##gI" <<<"$out") \
+            || die "slug-strip failed (sed error) -- refusing to report clean"
+    fi
+    if [[ -n $cased_token_alt ]]; then
+        out=$(sed -E "s#(${cased_token_alt})/[A-Za-z0-9_.-]+##g" <<<"$out") \
+            || die "slug-strip failed (sed error) -- refusing to report clean"
+    fi
     printf '%s' "$out"
 }
 
@@ -177,24 +236,47 @@ strip_public_slugs() {
 # sentinel matches, which is how a guard comes to report "clean" over a scan
 # that matched nothing. Both legs must pass, because the two engines below have
 # already been observed to disagree.
-self_test() {
-    local probe="harmless prefix ${tokens[0]} harmless suffix" stripped probe_dir rc=0
+control_probe() {
+    local token=$1 mode=$2
+    local probe="harmless prefix ${token} harmless suffix" stripped probe_dir rc=0
 
     # Leg 1: the engine that actually SCANS.
     probe_dir=$(mktemp -d) || die "positive control: cannot create a probe directory"
     printf '%s\n' "$probe" >"$probe_dir/probe.txt"
-    ( cd "$probe_dir" && git grep --no-index -a -i -n -E -e "$pattern" -- probe.txt ) \
-        >/dev/null 2>&1 || rc=$?
+    if [[ $mode == cased ]]; then
+        ( cd "$probe_dir" && git grep --no-index -a -n -E -e "$cased_pattern" -- probe.txt ) \
+            >/dev/null 2>&1 || rc=$?
+    else
+        ( cd "$probe_dir" && git grep --no-index -a -i -n -E -e "$pattern" -- probe.txt ) \
+            >/dev/null 2>&1 || rc=$?
+    fi
     rm -rf "$probe_dir"
-    (( rc == 0 )) || die "positive control FAILED (git grep exit $rc) -- a known token was not
-       matched by the scanning engine. The guard cannot prove it is scanning;
+    (( rc == 0 )) || die "positive control FAILED ($mode, git grep exit $rc) -- a known token was
+       not matched by the scanning engine. The guard cannot prove it is scanning;
        refusing to report clean."
 
     # Leg 2: the engine that JUDGES each hit, including the slug strip.
     stripped=$(strip_public_slugs "$probe")
-    grep -qiE "$pattern" <<<"$stripped" \
-        || die "positive control FAILED -- the judging path did not match a known token.
-       Refusing to report clean."
+    if [[ $mode == cased ]]; then
+        grep -qE "$cased_pattern" <<<"$stripped" \
+            || die "positive control FAILED ($mode) -- the judging path did not match a known
+       token. Refusing to report clean."
+    else
+        grep -qiE "$pattern" <<<"$stripped" \
+            || die "positive control FAILED ($mode) -- the judging path did not match a known
+       token. Refusing to report clean."
+    fi
+}
+
+# Every class that will be scanned is proved first. A control that covers one mode
+# while the other scans unproven is the same fail-open shape with a smaller hole.
+self_test() {
+    if [[ -n $pattern ]]; then
+        control_probe "${tokens[0]}" nocase
+    fi
+    if [[ -n $cased_pattern ]]; then
+        control_probe "${cased_tokens[0]}" cased
+    fi
 }
 
 self_test
@@ -207,12 +289,23 @@ self_test
 
 found=0
 
+still_matches() {
+    local stripped=$1
+    if [[ -n $pattern ]] && grep -qiE "$pattern" <<<"$stripped"; then
+        return 0
+    fi
+    if [[ -n $cased_pattern ]] && grep -qE "$cased_pattern" <<<"$stripped"; then
+        return 0
+    fi
+    return 1
+}
+
 report() {
     local location=$1 text=$2 stripped
     stripped=$(strip_public_slugs "$text")
     # If nothing matches once identity-owned slugs are removed, the only hit was
     # a slug. Test explicitly rather than treating any failure as a false positive.
-    if ! grep -qiE "$pattern" <<<"$stripped"; then
+    if ! still_matches "$stripped"; then
         return 0
     fi
     if (( found == 0 )); then
@@ -224,17 +317,38 @@ report() {
 }
 
 git_grep() {
+    local mode=$1; shift
     local rc=0 out
-    out=$(git grep -a -i -n -E -e "$pattern" "$@" 2>&1) || rc=$?
+    if [[ $mode == cased ]]; then
+        out=$(git grep -a -n -E -e "$cased_pattern" "$@" 2>&1) || rc=$?
+    else
+        out=$(git grep -a -i -n -E -e "$pattern" "$@" 2>&1) || rc=$?
+    fi
     if (( rc >= 2 )); then
         die "git grep failed (exit $rc): $out"
     fi
     printf '%s' "$out"
 }
 
+# `git grep` takes one case flag per invocation, so the two matching modes are two
+# passes. A line carrying tokens from both classes is one leak, not two, hence the
+# de-duplication.
+scan_output() {
+    local out all=""
+    if [[ -n $pattern ]]; then
+        out=$(git_grep nocase "$@")
+        if [[ -n $out ]]; then all="${all}${out}"$'\n'; fi
+    fi
+    if [[ -n $cased_pattern ]]; then
+        out=$(git_grep cased "$@")
+        if [[ -n $out ]]; then all="${all}${out}"$'\n'; fi
+    fi
+    printf '%s' "$all" | awk 'NF && !seen[$0]++'
+}
+
 scan_worktree() {
     local out line
-    out=$(git_grep)
+    out=$(scan_output)
     [[ -n $out ]] || return 0
     while IFS= read -r line; do
         [[ -n $line ]] || continue
@@ -245,7 +359,7 @@ scan_worktree() {
 scan_revs() {
     local out line
     (( $# > 0 )) || return 0
-    out=$(git_grep "$@")
+    out=$(scan_output "$@")
     [[ -n $out ]] || return 0
     while IFS= read -r line; do
         [[ -n $line ]] || continue
@@ -268,9 +382,13 @@ case "${1:-}" in
         mode=revs
         zero=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
         if [[ $2 == "$zero" ]]; then
-            # New branch on the remote: every commit reachable from the tip is
-            # being published, so every one of them is in scope.
-            while IFS= read -r r; do revs+=("$r"); done < <(git rev-list "$3")
+            # New branch on the remote. What this push publishes is what no
+            # remote-tracking ref already reaches -- a branch cut from an existing
+            # one publishes only its own commits, and refusing it over a match in
+            # history the remote already holds is a refusal the push cannot act on.
+            # The already-published side is covered by the one-off audit described
+            # in the header, not by re-reading it on every push.
+            while IFS= read -r r; do revs+=("$r"); done < <(git rev-list "$3" --not --remotes)
         else
             while IFS= read -r r; do revs+=("$r"); done < <(git rev-list "$2..$3")
         fi
@@ -297,14 +415,21 @@ which is gitignored -- see docs/deployment-requirements.template.md.
 If a commit already in history carries this, sanitizing the tip is not enough:
 the history itself has to be rewritten before the branch is pushed.
 
-If a match is a genuine false positive, narrow the rule in this script rather
-than dropping the token -- a token removed from the list stops guarding every
-file, not just this one.
+If a match is a genuine false positive, narrow the rule rather than dropping the
+token -- a token removed from the list stops guarding every file, not just this
+one. Where the token's lowercase form is an ordinary English word, moving it to
+deployment/roster-tokens-cased.txt is that narrowing: it then matches only the
+capitalized whole word.
 BLOCKED_EOF
     exit 1
 fi
 
+# Keyed on the mode rather than on the revision count: a narrowed range is
+# routinely empty, and reporting "clean over the working tree" for a scan that
+# never looked at the working tree is the reassuring-total failure again.
 scope_desc="working tree"
-(( ${#revs[@]} > 0 )) && scope_desc="${#revs[@]} commit(s)"
+if [[ $mode == revs ]]; then
+    scope_desc="${#revs[@]} commit(s)"
+fi
 echo "check-no-personal-data: clean ($real_token_count tokens over $scope_desc)${note}"
 exit 0

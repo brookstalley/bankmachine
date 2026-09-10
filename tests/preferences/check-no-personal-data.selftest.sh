@@ -96,11 +96,46 @@ check "worktree is clean after sanitizing the tip" 0
 check "tip revision alone is clean" 0 --rev "$sanitized_tip"
 check "RANGE still catches the leak behind a clean tip" 1 --range "$clean_tip" "$sanitized_tip"
 zero=$(printf '%040d' 0)
-check "new-branch push scans all reachable history" 1 --range "$zero" "$sanitized_tip"
 # A backwards force-push yields an empty range. Expanding an empty array under `set -u`
 # is an error on bash 3.2, which is /bin/bash on macOS -- so this case is about the
 # guard surviving, not about what it finds.
 check "empty range (backwards force-push) is not an error" 0 --range "$sanitized_tip" "$sanitized_tip"
+
+echo
+echo "the zero-remote range -- what the first push of a branch publishes"
+# A push publishes what no remote-tracking ref already reaches, so modelling the
+# zero-remote case at all needs a published base. `$sanitized_tip` carries the leak
+# behind it: that is the whole point, because it is history the remote already holds
+# and no push can fix.
+git update-ref refs/remotes/origin/develop "$sanitized_tip"
+printf 'Still clean.\n' >>docs.md
+git add -A && git commit -qm "new branch, clean commit"
+new_branch_tip=$(git rev-parse HEAD)
+check "new branch scans its own commits, not published history" 0 --range "$zero" "$new_branch_tip"
+printf 'ExampleBank holds four accounts.\n' >>docs.md
+git add -A && git commit -qm "new branch, unpublished leak"
+unpublished_leak_tip=$(git rev-parse HEAD)
+check "new branch carrying an UNPUBLISHED leak is still blocked" 1 --range "$zero" "$unpublished_leak_tip"
+# Kept on a ref so the later hook case addresses a commit the repository still
+# names, rather than one only the reflog remembers.
+git branch -q unpublished-leak "$unpublished_leak_tip"
+git reset -q --hard "$new_branch_tip"
+
+echo
+echo "case-sensitive tokens -- the file for a name that is also an English word"
+printf 'Sparrow\n' >deployment/roster-tokens-cased.txt
+printf 'The sparrow flew past the window.\n' >>docs.md
+check "cased token does not match the ordinary English word" 0
+git checkout -q docs.md
+printf 'Sparrow holds four accounts.\n' >>docs.md
+check "cased token matches its capitalized whole-word form" 1
+git checkout -q docs.md
+printf 'A Sparrowhawk is a bird.\n' >>docs.md
+check "cased token does not match inside a longer word" 0
+git checkout -q docs.md
+printf 'Two Words\n' >deployment/roster-tokens-cased.txt
+check "cased file honours the same single-word validator" 2
+rm -f deployment/roster-tokens-cased.txt
 
 echo
 echo "failing closed"
@@ -144,8 +179,10 @@ if [[ -x $HOOK ]]; then
         "refs/heads/develop $clean_tip refs/heads/develop $clean_tip"
     hook_check "range carrying the leak is blocked" 1 \
         "refs/heads/develop $sanitized_tip refs/heads/develop $clean_tip"
-    hook_check "new branch (all-zero remote) scans all history" 1 \
-        "refs/heads/develop $sanitized_tip refs/heads/develop $ZERO40"
+    hook_check "new branch whose commits are already published passes" 0 \
+        "refs/heads/develop $new_branch_tip refs/heads/develop $ZERO40"
+    hook_check "new branch carrying an unpublished leak is blocked" 1 \
+        "refs/heads/develop $unpublished_leak_tip refs/heads/develop $ZERO40"
     hook_check "branch deletion pushes no content, so it passes" 0 \
         "refs/heads/develop $ZERO40 refs/heads/develop $sanitized_tip"
 
@@ -165,7 +202,7 @@ fi
 
 echo
 echo "no roster present -- the state every other clone is in"
-rm -f deployment/roster-tokens.txt deployment/identity-tokens.txt
+rm -f deployment/roster-tokens.txt deployment/identity-tokens.txt deployment/roster-tokens-cased.txt
 printf 'ExampleBank holds four accounts.\n' >>docs.md
 check "no token files: passes, nothing to leak" 0
 
