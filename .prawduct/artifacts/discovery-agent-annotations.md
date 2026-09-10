@@ -161,14 +161,32 @@ the write path's reachable statement set is one table (§ *Option axis 2*, Optio
 same argument `mode=ro` makes one layer down. The row needs rewriting with the requirement, not
 after it.
 
-**F8 · 🔴 The obvious statement of the owner's rule has a hole in it, and FR-10 already named the
-class.** "A table whose rows no aggregator produced and no deriver writes" sounds like it means
-"carries neither `raw_response_id` nor `derivation_version_id`" — but three tables satisfy that test
-today and none of them is sidecar data. `accounts`, `institutions` and `connections` are
-**dimensions**: the rebuild never empties them (that is what makes them dimensions), the deriver
-upserts them in place, and they carry no provenance column because their provenance is the upsert
-itself. A bound written as the negative test would license an agent to write `accounts.lifecycle_status`
-— which the balance-lifecycle norm makes arithmetic — and every connection's sync cursor.
+**F8 · 🔴 The obvious statement of the owner's rule has a hole in it, and it is a wide one.** "A
+table whose rows no aggregator produced and no deriver writes" sounds like it means "carries neither
+`raw_response_id` nor `derivation_version_id`". **Eight tables pass that test and not one of them is
+sidecar data** (enumerated against `rebuild.derived_tables()`, 2026-09-10):
+
+```
+account_rules  accounts  connections  derivation_versions
+institutions   manual_imports  raw_responses  sync_state
+```
+
+Three of those are the reason the negative test cannot be the rule:
+
+- **`raw_responses` is the archive itself.** It carries `raw_response_id` as its own primary key
+  rather than as a foreign key, so it passes — and `rebuild.py` already records this exact trap for
+  its own classification: *"a name test would have put the archive itself first in the list of things
+  a rebuild empties before replaying it."* An agent that can write the archive can change what every
+  rebuild replays.
+- **`account_rules` enters arithmetic.** It is what produces the `rule-applied` warning and what
+  filters rows out of an aggregate. Permitting it would contradict, in the same sentence, the reason
+  `transactions.category_override` is held out of reach.
+- **`accounts`** carries `lifecycle_status` and `balance_class` — FR-10's two operator-owned columns,
+  the first of which the balance-lifecycle norm makes arithmetic — plus `connections`' sync state
+  beside it.
+
+The rest are dimensions and registries: the rebuild never empties them, the deriver upserts them in
+place, and they carry no provenance column because their provenance *is* the upsert.
 
 This is AC-15.1's finding arriving one layer up: *no column is protected merely because no deriver
 currently emits it*, and by the same argument no table is unwritable merely because no test currently

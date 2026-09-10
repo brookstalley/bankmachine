@@ -70,11 +70,16 @@ the balance-lifecycle norm names one unmigrated emitter it does not grandfather.
   > anything but the deriver, and scoping the permission by row authorship protects exactly that
   > while costing the note nothing.
   > 🔴 *The declaration is what grants; the provenance test only forbids.* Stated as the provenance
-  > test alone the bound has a hole: `accounts`, `institutions` and `connections` carry neither
-  > provenance column — they are dimensions, upserted in place — so the negative test would license
-  > an agent to write `lifecycle_status` (which the balance-lifecycle norm below makes arithmetic),
-  > `balance_class`, and every connection's sync state. That is AC-15.1's finding one layer up: no
-  > table is unwritable merely because nothing currently says so.
+  > test alone the bound has a hole and **eight tables fall through it** (measured 2026-09-10):
+  > `account_rules`, `accounts`, `connections`, `derivation_versions`, `institutions`,
+  > `manual_imports`, `raw_responses`, `sync_state`. Three of those settle it — `raw_responses` is
+  > the archive every rebuild replays from and passes because its `raw_response_id` is a primary key
+  > rather than a foreign key (`rebuild.py` records the same trap for its own classification);
+  > `account_rules` produces the `rule-applied` warning and filters rows out of aggregates, so
+  > permitting it would contradict the reason `category_override` is held out of reach in the same
+  > sentence; `accounts` carries `lifecycle_status`, which the balance-lifecycle norm below makes
+  > arithmetic. That is AC-15.1's finding one layer up: no table is unwritable merely because nothing
+  > currently says so.
   > 🔴 *And the row is the unit, not the column.* `transactions.category_override` is
   > operator-authored and stays out of an agent's reach, because SQLite has no per-column grant — a
   > column-scoped rule could only live in application logic, which is the thing this norm exists to

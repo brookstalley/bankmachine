@@ -677,10 +677,10 @@ envelope level — an annotation sitting beside a total invites exactly the arit
 table the store derives.** An explicit declaration lists the agent-writable tables; a check fails
 when a write path reaches a table outside it, and fails when the declaration names a table carrying
 `raw_response_id` or `derivation_version_id`. *Why:* the negative test alone is not the rule.
-`accounts`, `institutions` and `connections` carry neither provenance column and must not be
-writable — a bound stated only as "no provenance columns" would license an agent to move
-`lifecycle_status`, which the balance-lifecycle norm makes arithmetic. This is AC-15.1's argument at
-the table level: a permission that holds only while an unrelated fact stays true has been tested by
+eight tables carry neither provenance column and none may be writable — a bound stated only as "no
+provenance columns" would license an agent to write the raw archive `raw_responses` replays from,
+`account_rules` which filters rows out of aggregates, and `accounts.lifecycle_status` which the
+balance-lifecycle norm makes arithmetic. This is AC-15.1's argument at the table level: a permission that holds only while an unrelated fact stays true has been tested by
 nothing. It also takes over the security model's mass-assignment argument, which currently rests on
 the surface being read-only.
 
@@ -716,11 +716,14 @@ may originate is to sidecar data bankmachine itself maintains.**
 > groups by, so an agent that could move it could move a total.
 >
 > 🔴 **The declaration is what grants; the provenance test only forbids.** Stated as the
-> provenance test alone the rule has a hole, and it is AC-15.1's hole one layer up: `accounts`,
-> `institutions` and `connections` carry neither provenance column — they are dimensions, upserted
-> in place — so the negative test would hand an agent `lifecycle_status`, `balance_class` and every
-> connection's sync state. No table is unwritable merely because nothing currently says so, exactly
-> as no column is protected merely because no deriver currently emits it.
+> provenance test alone the rule has a hole, and **eight tables fall through it** — measured, not
+> reasoned: `account_rules`, `accounts`, `connections`, `derivation_versions`, `institutions`,
+> `manual_imports`, `raw_responses` and `sync_state`. Among them the archive itself (`raw_responses`
+> carries its `raw_response_id` as a primary key, not a foreign key, so it passes), `account_rules`
+> (which produces the `rule-applied` warning and filters rows out of aggregates — arithmetic, by the
+> same test that holds `category_override` out of reach), and `accounts` (FR-10's two operator-owned
+> columns). This is AC-15.1's hole one layer up: no table is unwritable merely because nothing
+> currently says so, exactly as no column is protected merely because no deriver currently emits it.
 >
 > 🔴 **And the row is the unit, not the column.** SQLite has no per-column grant, so a
 > column-scoped rule could only ever live in application logic — which is the thing this norm exists
