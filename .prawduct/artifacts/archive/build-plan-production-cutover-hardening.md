@@ -22,7 +22,7 @@ governed_by:
       - "incompleteness rides the success path as a warning field, not an exception → conforms"
   - artifact: data-model
     dispositions:
-      - "one sign convention: value held is positive, value owed is negative, and the connector normalizes → conforms, and Chunk 01 applies it MORE faithfully: the aggregator this connector speaks to documents a credit account's `current` as positive-when-owed and negative-when-in-credit, so the connector negates every liability balance unconditionally. The test that pinned the conditional (`test_a_liability_already_reported_negative_is_not_flipped_twice`) encoded a hypothetical second aggregator inside the connector for the first; its expectation changes and the reason is recorded in § Decisions. 🔴 Owner ruling requested — applied provisionally"
+      - "one sign convention: value held is positive, value owed is negative, and the connector normalizes → conforms, and Chunk 01 applies it MORE faithfully: the aggregator this connector speaks to documents a credit account's `current` as positive-when-owed and negative-when-in-credit, so the connector negates every liability balance unconditionally. The test that pinned the conditional (`test_a_liability_already_reported_negative_is_not_flipped_twice`) encoded a hypothetical second aggregator inside the connector for the first; its expectation changes and the reason is recorded in § Decisions. 🔴 Owner ruling requested — applied provisionally; RULED 2026-09-10: kept as built"
       - "money as integer minor units; ledger amounts exact-or-refuse → conforms"
       - "a removed transaction is retained with `removed_at` set → conforms"
       - "calendar dates and UTC instants are distinct types and never mix → conforms; the retirement date is `calendar_date(now.date())`, and no new column is added"
@@ -86,10 +86,10 @@ SDK's own models before code — never recalled.
   removes most card issuers and credit unions from tomorrow's list with no error. `optional_products`
   keeps the discovery the decision wanted (the product is added to the Item wherever the institution
   supports it) without the narrowing. The bill the decision accepted stays accepted where the product
-  is actually enabled. **Owner may veto; the change is one constant.**
+  is actually enabled. **Owner may veto; the change is one constant.** **Owner ruling 2026-09-10: kept as built.**
 - **[DECISION: liability balances are negated unconditionally in the Plaid connector.]** See the
   data-model disposition above. A card in credit after a refund on a paid-off balance is ordinary
-  production data; today it is stored as debt. **Owner ruling requested.**
+  production data; today it is stored as debt. **Owner ruling requested.** **Owner ruling 2026-09-10: kept as built.**
 - **[DECISION: the `flow_class` prose stops asserting what the classifier does not establish.]** The
   classifier reads one aggregator category. It matches no counterparty leg, so `internal_transfer`
   means *the aggregator called it a transfer*, which in the sandbox includes the payroll deposit; and

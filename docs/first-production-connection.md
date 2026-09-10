@@ -86,8 +86,18 @@ BANKMACHINE_DATASTORE_PATH=/tmp/rehearse.db uv run bankmachine store status
 
 `store backup` takes the exclusive writer lock, folds the WAL in, and reopens the copy with the same
 key to check it (its `--help` says so). The restore direction — copy a backup into place and open it
-— has never been walked by a human (`.prawduct/artifacts/operational-spec.md`, § Restore), and the
-first production sync is what starts accumulating the one series no re-sync can rebuild.
+— was walked against sandbox on 2026-09-10 and works; the first production sync is what starts
+accumulating the one series no re-sync can rebuild, which is why it is worth having walked before
+then (`.prawduct/artifacts/operational-spec.md`, § Restore).
+
+🔴 **A freshly restored copy reads `journal mode: delete`, not `wal`, and that is expected.** SQLite's
+backup API writes the destination in the default journal mode; the product's writer factory sets
+`PRAGMA journal_mode = WAL` on every writer open (`src/bankmachine/store/connection.py`), so the copy
+flips to `wal` the moment anything writes to it — `store init` or the first `sync run`. `store status`
+opens read-only and therefore reports what it finds. Measured 2026-09-10: `delete` on the restored
+copy, `wal` after one `store init`, `healthy: yes` throughout. Step 3.7 below says `store status`
+should name `journal mode: wal`; that is the steady state, not what a restore shows before its first
+writer, and reading `delete` during a recovery is not evidence the restore failed.
 
 *Failure looks like:* `store status` on the copy reporting `healthy: no`, or the backup refusing
 because the destination already exists — it never overwrites.
@@ -137,6 +147,30 @@ store that already exists, because a fresh key would decrypt nothing.
 the wrong file, check `BANKMACHINE_DATASTORE_PATH`; or an error naming a missing keychain entry for
 `datastore:production`, which means a store exists whose key is gone. The command refuses to mint a
 replacement on purpose, because the exact diagnosis is worth more than a misleading one.
+
+🔴 **Then check the mode the file actually landed with.** "Another local user is stopped by OS file
+permissions" is a control this product claims, and the only thing enforcing it is a single
+`os.umask(0o077)` at the CLI entry point (`run` in `src/bankmachine/cli/__init__.py`). umask governs
+**creation only** — it never repairs a file that already exists — so the claim is true for a store
+created by a fixed build and silently false for anything older. Confirm it rather than assume it:
+
+```sh
+ls -ld ~/.local/share/bankmachine ~/.local/share/bankmachine/store.db \
+       ~/.local/state/bankmachine/logs ~/.local/state/bankmachine/logs/bankmachine.log
+```
+
+Expect `drwx------` on both directories and `-rw-------` on both files. The log is **plaintext** and
+carries paths, institution ids and SQL text, so it matters as much as the encrypted store does.
+Anything group- or world-readable, repair by hand — nothing in the product will do it for you:
+
+```sh
+chmod 700 ~/.local/share/bankmachine ~/.local/state/bankmachine ~/.local/state/bankmachine/logs
+chmod 600 ~/.local/share/bankmachine/store.db ~/.local/state/bankmachine/logs/bankmachine.log
+```
+
+*(Measured 2026-09-10: the sandbox store and the log both predated the umask fix and were `0644`;
+they were repaired by hand. A production store created by this build lands `0600` on its own — this
+step is here to prove that rather than to trust it.)*
 
 ### 3.3 🔴 Back up the datastore key, now, before there is any data
 

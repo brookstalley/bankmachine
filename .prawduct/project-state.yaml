@@ -1140,7 +1140,7 @@ coverage_required: false
 # override per-PR with `/pr create --accept-pending-verification "rationale"`.
 # Default off in v1.4 — opt-in by setting `operator_verification_required: true`.
 
-operator_verification_required: false
+operator_verification_required: true
 
 # =============================================================================
 # API VERSIONING DECISION (advisory resolution fact, v2.2+)

@@ -283,9 +283,17 @@ single file, so there is no WAL or shm to keep with it and no way to restore a p
 A wrong key **raises rather than returning garbage** *(verified)*, so a mismatched restore fails
 loudly instead of presenting an empty or corrupt store as a working one.
 
-🔴 **This path is not yet tested end to end by a human.** The command's own tests reopen the copy
-through the ordinary reader — the same route a restore takes — so the copy is known to be readable;
-what is unrehearsed is the operator procedure around it. That is what the restore runbook is for.
+**Walked against sandbox on 2026-09-10** (`docs/first-production-connection.md` § 2.3): backup
+verified, the copy opened at the configured path, `healthy: yes`. What that walk added to the
+procedure is one expectation the reader needs: a restored copy reports `journal mode: delete`
+until something writes to it, because SQLite's backup API writes the destination in the default
+mode and the writer factory is what sets `PRAGMA journal_mode = WAL`. It flips on the first
+writer open. An operator mid-recovery who reads `delete` where the healthy-store description
+promises `wal` has not found a failed restore.
+
+🔴 **Still unwalked: a restore into the *production* path, and a restore against a key read back
+from wherever the operator stored it** rather than one already sitting in the keychain. The key
+half is the one that actually fails in an incident, and sandbox cannot rehearse it.
 
 ### RPO / RTO
 
