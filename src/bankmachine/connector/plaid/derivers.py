@@ -331,6 +331,35 @@ def derive_transactions_sync(
             f"belongs to exactly one connection and nothing else can say which"
         )
     payload = _payload(response)
+    # 🔴 Before the change lists, because they depend on it. An account that has
+    # closed, been de-selected in Account Select, or stopped being shared drops
+    # out of `/accounts/get` while this endpoint keeps emitting deltas for its
+    # rows -- and the aggregator names it right here, in the same body. Without
+    # this the page refused forever: the raw body committed, the derivation
+    # rolled back, the cursor never moved, and every later run re-fetched and
+    # re-archived the identical page until the archive itself could not be
+    # replayed.
+    listed = payload.get("accounts")
+    if listed is not None:
+        institution_id = conn.execute(
+            select(connections.c.institution_id).where(
+                connections.c.connection_id == response.connection_id
+            )
+        ).scalar_one_or_none()
+        if institution_id is None:
+            raise DerivationError(
+                f"raw response {response.raw_response_id} names connection "
+                f"{response.connection_id}, which is not in this datastore"
+            )
+        _derive_account_entries(
+            conn,
+            response=response,
+            context=context,
+            institution_id=int(institution_id),
+            listed=listed,
+            roster=False,
+        )
+
     applied = _apply_transaction_changes(conn, response, context)
 
     next_cursor = payload.get("next_cursor")
@@ -723,7 +752,22 @@ def _mark_removed(
     page predates the archive, and there is nothing to do about it.
     """
     source_transaction_id = _required(entry.get("transaction_id"), "a removed id", response)
-    account_id = _local_account(entry, known, response)
+    source_account_id = entry.get("account_id")
+    if not isinstance(source_account_id, str) or source_account_id not in known:
+        # 🔴 Skipped, where an addition is refused, because the two are not the
+        # same risk. Refusing an addition protects a transaction that would
+        # otherwise be lost behind an advancing cursor; there is no such row
+        # here, and refusing stopped the cursor on a page whose only unusable
+        # entry was a soft delete of something this system never held.
+        _log.info(
+            "raw response %s removes transaction %s from account %r, which this connection "
+            "has no row for; there is nothing to soft-delete",
+            response.raw_response_id,
+            source_transaction_id,
+            source_account_id,
+        )
+        return
+    account_id = known[source_account_id]
     conn.execute(
         update(transactions)
         .where(
@@ -805,11 +849,45 @@ def derive_accounts(conn: SAConnection, response: RawResponse, context: Derivati
             f"{response.connection_id}, which is not in this datastore"
         )
 
-    payload = _payload(response)
-    listed = payload.get("accounts")
+    _derive_account_entries(
+        conn,
+        response=response,
+        context=context,
+        institution_id=int(institution_id),
+        listed=_payload(response).get("accounts"),
+        roster=True,
+    )
+    # 🔴 AC-12.5a: recorded AFTER the loop and OUTSIDE it, so a roster that
+    # listed nothing still advances the observation. An empty `/accounts/get`
+    # is a successful observation of zero accounts, not a failed fetch, and the
+    # state that must not exist is the third one -- a response that type-checks,
+    # runs this loop zero times, and leaves no record that anyone looked.
+    _record_roster_observation(conn, response)
+
+
+def _derive_account_entries(
+    conn: SAConnection,
+    *,
+    response: RawResponse,
+    context: DerivationContext,
+    institution_id: int,
+    listed: object,
+    roster: bool,
+) -> None:
+    """The `accounts` array, from whichever endpoint carried it.
+
+    🔴 **One deriver, and `roster` is the one thing the two callers disagree
+    about.** `/accounts/get` answers *these are the accounts this connection
+    has*; `/transactions/sync` answers *these are the accounts the transactions
+    in this body belong to*. The rows are the same shape and mean the same
+    thing, so a second deriver would be two descriptions of one fact drifting
+    apart -- but only the first is an observation of the roster, and
+    `accounts.last_seen_date` is a record of that observation rather than of
+    having seen the account named anywhere.
+    """
     if not isinstance(listed, list):
         raise DerivationError(
-            f"raw response {response.raw_response_id} ({ACCOUNTS_GET}) has no accounts list"
+            f"raw response {response.raw_response_id} ({response.endpoint}) has no accounts list"
         )
     for entry in listed:
         if not isinstance(entry, dict):
@@ -821,15 +899,10 @@ def derive_accounts(conn: SAConnection, response: RawResponse, context: Derivati
             conn,
             response=response,
             context=context,
-            institution_id=int(institution_id),
+            institution_id=institution_id,
             entry=entry,
+            roster=roster,
         )
-    # 🔴 AC-12.5a: recorded AFTER the loop and OUTSIDE it, so a roster that
-    # listed nothing still advances the observation. An empty `/accounts/get`
-    # is a successful observation of zero accounts, not a failed fetch, and the
-    # state that must not exist is the third one -- a response that type-checks,
-    # runs this loop zero times, and leaves no record that anyone looked.
-    _record_roster_observation(conn, response)
 
 
 def _record_roster_observation(conn: SAConnection, response: RawResponse) -> None:
@@ -878,6 +951,7 @@ def _derive_one_account(
     context: DerivationContext,
     institution_id: int,
     entry: dict[str, Any],
+    roster: bool,
 ) -> None:
     source_account_id = _required(entry.get("account_id"), "account_id", response)
     account_type = _required(entry.get("type"), "account type", response)
@@ -914,6 +988,7 @@ def _derive_one_account(
         entry=entry,
         account_type=account_type,
         currency=currency,
+        roster=roster,
     )
     if stated_currency is None:
         # The account row keeps the unit the aggregator itself recorded for it
@@ -966,6 +1041,7 @@ def _upsert_account(
     entry: dict[str, Any],
     account_type: str,
     currency: str,
+    roster: bool,
 ) -> int:
     """One account row, converged on its source identity.
 
@@ -973,6 +1049,15 @@ def _upsert_account(
     `(connection_id, source_account_id)`, and SQLite treats NULLs as distinct, so
     relying on a conflict would let the manual-import path's null connections
     duplicate silently.
+
+    🔴 **`last_seen_date` moves only on a roster read** (`roster=True`). It
+    records *the roster was observed and this account was in it*, and AC-12.5
+    measures absence by comparing it against `connections.roster_observed_date`
+    -- so a sync body advancing it past an observation nobody made would leave no
+    account matching that observation, and the connection would report a roster
+    that listed nothing. An account first learned from a sync body therefore has
+    a NULL `last_seen_date`, which already means exactly what is true of it: no
+    roster observation is recorded for this account.
     """
     existing = conn.execute(
         select(
@@ -1010,7 +1095,7 @@ def _upsert_account(
                 # AC-12.4: the same date at both ends on the first observation.
                 # The pair only diverges once a later roster names the account
                 # again, or stops naming it.
-                last_seen_date=seen_date,
+                last_seen_date=seen_date if roster else None,
                 created_at=response.received_at,
             )
         )
@@ -1041,15 +1126,22 @@ def _upsert_account(
     # `seen_date` for it is right and is not a special case wearing a coalesce:
     # this response IS the latest observation of the account, whatever was or
     # was not recorded before it.
+    observed: dict[str, Any] = (
+        {
+            "last_seen_date": (
+                seen_date if last_seen_date is None else max(last_seen_date, seen_date)
+            )
+        }
+        if roster
+        else {}
+    )
     conn.execute(
         update(accounts)
         .where(accounts.c.account_id == account_id)
         .values(
             **{k: v for k, v in values.items() if k not in _OPERATOR_OWNED},
             first_seen_date=min(first_seen_date, seen_date),
-            last_seen_date=(
-                seen_date if last_seen_date is None else max(last_seen_date, seen_date)
-            ),
+            **observed,
         )
     )
     return int(account_id)

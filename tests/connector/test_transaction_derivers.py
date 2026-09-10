@@ -22,6 +22,7 @@ from bankmachine.store.derivation import DerivationError, apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
 from bankmachine.store.schema import (
     TRANSACTIONS_DOMAIN,
+    accounts,
     connections,
     institutions,
     sync_state,
@@ -33,25 +34,28 @@ SOURCE_ACCOUNT = "acct-checking"
 CONNECTION_ID = 1
 
 
+def _account_entry(account_id: str = SOURCE_ACCOUNT, *, name: str = "Plaid Checking") -> Any:
+    """One account in the shape both `/accounts/get` and `/transactions/sync` send it."""
+    return {
+        "account_id": account_id,
+        "name": name,
+        "official_name": "Plaid Gold Checking",
+        "mask": "0000",
+        "type": "depository",
+        "subtype": "checking",
+        "balances": {
+            "current": "110.94",
+            "available": "100.00",
+            "limit": None,
+            "iso_currency_code": "USD",
+        },
+    }
+
+
 def _accounts_body() -> bytes:
     return json.dumps(
         {
-            "accounts": [
-                {
-                    "account_id": SOURCE_ACCOUNT,
-                    "name": "Plaid Checking",
-                    "official_name": "Plaid Gold Checking",
-                    "mask": "0000",
-                    "type": "depository",
-                    "subtype": "checking",
-                    "balances": {
-                        "current": "110.94",
-                        "available": "100.00",
-                        "limit": None,
-                        "iso_currency_code": "USD",
-                    },
-                }
-            ],
+            "accounts": [_account_entry()],
             "item": {"item_id": "item-x"},
             "request_id": "req-accounts",
         }
@@ -90,6 +94,7 @@ def _txn(
 
 def _sync_body(
     *,
+    accounts_listed: list[Any] | None = None,
     added: list[dict[str, Any]] | None = None,
     modified: list[dict[str, Any]] | None = None,
     removed: list[dict[str, Any]] | None = None,
@@ -97,7 +102,7 @@ def _sync_body(
 ) -> bytes:
     return json.dumps(
         {
-            "accounts": [],
+            "accounts": accounts_listed or [],
             "added": added or [],
             "modified": modified or [],
             "removed": removed or [],
@@ -150,6 +155,11 @@ def _apply(config: Config, endpoint: str, body: bytes) -> None:
             received_at=now_utc(),
             derivers=ALL_DERIVERS,
         )
+
+
+def _connection_row(config: Config) -> Any:
+    with reader_connection(config) as conn:
+        return conn.execute(select(connections)).one()._mapping
 
 
 def _rows(config: Config) -> list[Any]:
@@ -785,6 +795,100 @@ def test_a_transaction_in_no_stated_currency_at_all_is_still_refused(synced: Con
 
     with pytest.raises(DerivationError, match="currency"):
         _apply(synced, TRANSACTIONS_SYNC.path, _sync_body(added=[entry]))
+
+
+def test_an_account_the_sync_response_names_is_derived_before_its_transactions(
+    synced: Config,
+) -> None:
+    """🔴 The permanent wedge, and the roster that was riding the same body.
+
+    An account closed, de-selected in Account Select, or no longer shared drops
+    out of `/accounts/get` while `/transactions/sync` keeps emitting deltas for
+    its rows. The page then failed forever: the raw body committed, the
+    derivation rolled back, the cursor never moved, and the next run re-fetched
+    and re-archived the identical page. The archive itself became unrebuildable,
+    so the one recovery tool failed on the same response.
+
+    The aggregator is telling you which accounts these transactions belong to,
+    in the same body -- so the roster it carries is derived before the change
+    lists that depend on it.
+    """
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(
+            accounts_listed=[_account_entry(), _account_entry("acct-savings", name="Savings")],
+            added=[_txn(transaction_id="t1", amount="12.00") | {"account_id": "acct-savings"}],
+            next_cursor="cursor-2",
+        ),
+    )
+
+    with reader_connection(synced) as conn:
+        derived = set(conn.execute(select(accounts.c.source_account_id)).scalars())
+        cursor = conn.execute(
+            select(sync_state.c.cursor).where(sync_state.c.domain == TRANSACTIONS_DOMAIN)
+        ).scalar_one()
+    assert derived == {SOURCE_ACCOUNT, "acct-savings"}
+    assert len(_rows(synced)) == 1
+    assert cursor == "cursor-2", "the cursor did not advance past the page it applied"
+
+
+def test_a_sync_page_does_not_claim_the_roster_was_observed(synced: Config) -> None:
+    """🔴 A sync body's `accounts` array is not a roster read.
+
+    It names the accounts these transactions belong to, which is not the same
+    statement as *this is every account this connection has*. Recording it as an
+    observation would make AC-12.5's absence test compare accounts against a
+    date no roster read produced -- and a connection whose sync page landed after
+    midnight would report every account of its own last roster as behind it.
+    """
+    before = _connection_row(synced)["roster_observed_date"]
+
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(
+            accounts_listed=[_account_entry("savings", name="Savings")],
+            next_cursor="cursor-2",
+        ),
+    )
+
+    assert _connection_row(synced)["roster_observed_date"] == before
+    with reader_connection(synced) as conn:
+        seen = conn.execute(
+            select(accounts.c.last_seen_date).where(accounts.c.source_account_id == "savings")
+        ).scalar_one()
+    assert seen is None, "an account learned from a sync page claims a roster observation"
+
+
+def test_a_removal_naming_an_account_this_system_does_not_have_is_a_no_op(
+    synced: Config, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The docstring `_mark_removed` already had, made true.
+
+    A soft delete of a row this system does not hold has nothing to do -- and
+    refusing instead stopped the cursor, so the connection stayed at that page
+    for good. A rebuild replaying removals whose original page predates the
+    archive meets the same shape.
+    """
+    with caplog.at_level(logging.INFO, logger="bankmachine"):
+        _apply(
+            synced,
+            TRANSACTIONS_SYNC.path,
+            _sync_body(
+                removed=[{"transaction_id": "gone", "account_id": "acct-never-derived"}],
+                next_cursor="cursor-2",
+            ),
+        )
+
+    with reader_connection(synced) as conn:
+        cursor = conn.execute(
+            select(sync_state.c.cursor).where(sync_state.c.domain == TRANSACTIONS_DOMAIN)
+        ).scalar_one()
+    assert cursor == "cursor-2", "a removal for an unknown account stopped the cursor"
+    assert any("no row for" in record.getMessage() for record in caplog.records), (
+        "a removal was skipped with nothing recording that it happened"
+    )
 
 
 def test_a_malformed_change_list_is_refused_not_read_as_empty(synced: Config) -> None:
