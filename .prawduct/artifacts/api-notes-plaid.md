@@ -585,6 +585,65 @@ assumed.
 
 ---
 
+## What the production-cutover hardening established
+
+### 19. `/transactions/sync` takes an `options` object, and the bank's own memo is opt-in
+
+Probed against the installed `plaid-python` 44.0.0:
+
+```
+TransactionsSyncRequest.openapi_types:
+  access_token, client_id, count, cursor, options, secret
+TransactionsSyncRequestOptions.openapi_types:
+  account_id, days_requested, include_logo_and_counterparty_beta,
+  include_original_description, include_personal_finance_category,
+  personal_finance_category_version
+```
+
+🔴 **`include_original_description` decides what the ARCHIVE holds, not what a deriver
+reads.** The field is absent from the response bytes unless it is asked for, and `store/raw.py`
+exists because an aggregator's history window is not a thing you get back — so a page fetched
+without it has lost the raw bank memo permanently, and turning the option on later affects only
+rows fetched later. It is therefore requested on every page from the first one.
+
+`days_requested` is deliberately NOT set here: the link-time value is the source of truth
+(§11) and `MAX_HISTORY_DAYS` is already read off the SDK's declared maximum.
+
+### 20. The `accounts` array on a sync response is the same shape as `/accounts/get`'s
+
+§16 left this open ("whether to use it or keep the endpoints separate is a build step 4
+decision, not settled here"). It is settled: the array is derived through the same account
+deriver, before the change lists that reference it, because the aggregator is naming the
+accounts those transactions belong to in the same body — and an account that has closed, been
+de-selected in Account Select, or stopped being shared drops out of `/accounts/get` while its
+deltas keep arriving here.
+
+🔴 **It is NOT a roster observation.** `/accounts/get` answers *these are the accounts this
+connection has*; this array answers *these are the accounts the transactions in this body
+belong to*, which is a weaker statement. AC-12.5 measures an account's absence by comparing
+`accounts.last_seen_date` against `connections.roster_observed_date`, so recording this array
+as an observation would leave a connection whose sync page landed after midnight with no
+account matching its own last roster read.
+
+### 21. `plaid.Configuration` takes `ssl_ca_cert`, and naming it changes nothing else
+
+Probed with `ssl_ca_cert` set:
+
+```
+pool_manager.connection_pool_kw:
+  {'maxsize': 50, 'cert_reqs': VerifyMode.CERT_REQUIRED, 'ca_certs': '<the path>',
+   'cert_file': None, 'key_file': None}
+verify_ssl True   assert_hostname None
+```
+
+So the value reaches urllib3 as `ca_certs` and neither verification nor hostname checking is
+affected. Left at its default `None`, urllib3 falls back to OpenSSL's default paths, which
+honour `SSL_CERT_FILE` and `SSL_CERT_DIR` — and this product's documented setup step is
+`source .env`, so the shell that runs a sync routinely imports environment. Pinning `certifi`'s
+bundle makes both variables inert for the one channel that carries live credentials.
+
+---
+
 ## Still to verify
 
 - ~~**The success path has not been probed.**~~ Done 2026-09-06 — see §7. The fixture is

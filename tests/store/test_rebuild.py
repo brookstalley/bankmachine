@@ -548,11 +548,12 @@ def test_a_rebuild_preserves_an_operator_override_the_archive_cannot_recreate(
 
     assert report.change_was_expected
     with reading(initialized_config) as conn:
-        overrides = dict(
-            conn.execute(
+        overrides = {
+            str(row[0]): row[1]
+            for row in conn.execute(
                 select(transactions.c.source_transaction_id, transactions.c.category_override)
             ).all()
-        )
+        }
     assert overrides["t-1"] == "Sabbatical", "the rebuild reported success and lost the override"
     assert overrides["t-2"] is None, "an override was applied to a row that never had one"
 
