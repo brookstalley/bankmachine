@@ -55,7 +55,47 @@ the balance-lifecycle norm names one unmigrated emitter it does not grandfather.
   `delete_transaction` with no undo, on a datastore holding the same class of data. A read-only
   pipeline and a pipeline that can move money are different risk classes, and the difference is one
   tool wide.
-  Status: steady-state.
+
+  > **Amendment, 2026-09-10 — one class of write is permitted, and the class is defined by who
+  > authored the row.** *Statement:* the surface is read-only over everything the aggregator
+  > produced. An agent-originated write may touch only a table named in an explicit **agent-writable
+  > declaration**, and no table carrying `raw_response_id` or `derivation_version_id` may be named in
+  > it. A table carrying either stays read-only to this surface **whatever the column**. Adding a
+  > mutation tool that reaches a derived row is still not a decision this norm leaves open.
+  > *Why:* the why above is an argument about *derived financial data* — 19 mutation tools including
+  > `delete_transaction`, a pipeline that can move money. It is not an argument about a note. An
+  > agent that cannot record what it learned re-learns it every session or, worse, learns it
+  > differently, and there is nowhere else for a learning to live that travels with the store
+  > (FR-11). What the norm was actually protecting is that the *derived* store cannot be written by
+  > anything but the deriver, and scoping the permission by row authorship protects exactly that
+  > while costing the note nothing.
+  > 🔴 *The declaration is what grants; the provenance test only forbids.* Stated as the provenance
+  > test alone the bound has a hole: `accounts`, `institutions` and `connections` carry neither
+  > provenance column — they are dimensions, upserted in place — so the negative test would license
+  > an agent to write `lifecycle_status` (which the balance-lifecycle norm below makes arithmetic),
+  > `balance_class`, and every connection's sync state. That is AC-15.1's finding one layer up: no
+  > table is unwritable merely because nothing currently says so.
+  > 🔴 *And the row is the unit, not the column.* `transactions.category_override` is
+  > operator-authored and stays out of an agent's reach, because SQLite has no per-column grant — a
+  > column-scoped rule could only live in application logic, which is the thing this norm exists to
+  > avoid resting on — and because it is what `money_summary` groups by, so an agent that could move
+  > it could move a total.
+  > *Retroactivity:* none owed. No mutation tool exists, so nothing on the wire changes meaning, and
+  > this amendment lands **before** the build rather than as a migration after it — the same
+  > sequencing as the `EX_TEMPFAIL` amendment below.
+  > *What it does not license:* a writable handle in the server process. The recommended write path
+  > is out-of-process, so `architecture.md` § Direction's `mode=ro` norm is untouched and AC-16.10
+  > states that as a criterion, precisely so a build cannot satisfy this amendment's letter by
+  > opening the handle the norm was protecting.
+  > `[DECISION: the agent-write permission is scoped by row authorship — a declared sidecar table,
+  > with no derived table admissible to the declaration — rather than by column or by tool intent |
+  > the norm's why is about derived financial data, and a table-scoped permission is the only shape
+  > a test can check, since SQLite has no per-column grant | user can veto/override]`
+  Born 2026-09-07. Amended 2026-09-10 on the owner's ruling of the same date; derivation
+  `discovery-agent-annotations.md`, requirement FR-11.
+  Status: in-transition — brookstalley/bankmachine#87 tracks the build. **Interim rule:** until #87
+  lands there is no mutation tool and no agent-writable declaration, every MCP handle stays
+  `mode=ro`, and new work does not open a writable handle in the server process.
 
 - **Every response carries a freshness stamp, and incompleteness rides the success path as a warning
   field rather than as an exception.** Warnings distinguish at minimum `stale`, `degraded`, `gapped`,
@@ -221,8 +261,11 @@ codes are a machine contract**, not just operator ergonomics.
 
 ### MCP tool surface — the eight tools (§5) · *five built, three specified*
 
-🔴 **Read-only. No mutation tools. No exceptions.** (Vetting a comparable server surfaced 19 mutation
-tools including `delete_transaction` with no undo. Not reproducing that.)
+🔴 **Read-only over everything the aggregator produced; no mutation tool reaches a derived row.**
+(Vetting a comparable server surfaced 19 mutation tools including `delete_transaction` with no undo.
+Not reproducing that.) §5's 2026-09-10 amendment permits exactly one class of write — to sidecar
+tables bankmachine itself maintains, which is FR-11's annotations and nothing shipped today. The
+norm entry in § Direction carries the amendment and its bound.
 
 🔴 **Aggregate-first (AC-9.1).** Tools return computed summaries by default, not raw rows. Dumping 24
 months of transactions into an LLM context is slow, expensive, and *worse at arithmetic than SQL is.*

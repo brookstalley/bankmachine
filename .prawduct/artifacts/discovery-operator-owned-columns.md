@@ -52,6 +52,14 @@ This document assumes the write path is **operator-invoked CLI only** and marks 
 vetoable (§ *Assumptions, vetoable*). Every criterion below holds unchanged if the owner later rules
 that agents may write; what changes is *who calls* the path, not what the store owes the value.
 
+> **The owner ruled on 2026-09-10: agents may write.** A1 is vetoed, and the criteria stand exactly
+> as this paragraph predicted — AC-15.1–15.9 are untouched. The norm was amended rather than
+> reinterpreted (`docs/system-requirements.md` § 5; `api-contract.md` § Direction), and the bound is
+> row authorship: an agent writes only to tables carrying neither `raw_response_id` nor
+> `derivation_version_id`. `transactions.category_override` therefore stays out of an agent's reach,
+> which is the one thing this section could not have predicted. Derivation:
+> `discovery-agent-annotations.md`.
+
 ---
 
 ## Premise verification — what #48 claimed, and what the tree says
@@ -233,6 +241,15 @@ because they were derived here and would otherwise be rediscovered:
   whether it is searchable, and 🔴 **whether an annotation may ever influence an aggregate** — are
   not settled here and are not this contract's to settle.
 
+  > 🔴 **Superseded 2026-09-10 by `discovery-agent-annotations.md` § *Option axis 1*.** The shape
+  > note above is wrong on every axis once the owner stated the requirement: three subject types,
+  > many mutable notes per subject, and an author. It is a **sidecar table** carrying neither
+  > `raw_response_id` nor `derivation_version_id` — a third table class this document's two-class
+  > model does not name, needing neither mechanism, since `store rebuild` never comes for its rows.
+  > The product questions listed above are answered there (FR-11), including the last one: an
+  > annotation never enters arithmetic, which is AC-16.6 rather than a prior. **A3 is not vetoed** —
+  > it asserted the field was a real upcoming requirement, and it was.
+
 🔴 **The strong prior on that last one, recorded for whoever writes it:** an annotation should ride
 the row as data and never enter arithmetic. An operator note that silently moves a number is the
 failure class this whole surface exists to refuse, and it would arrive with no warning kind able to
@@ -245,7 +262,8 @@ describe it.
 Each of these was inferred from the tree and the artifacts rather than taken from the owner. An
 assumption the owner rejects retires the criteria resting on it.
 
-**A1 · The write path is operator-invoked CLI only.** Rests on the MCP read-only norm. If the owner
+**A1 · The write path is operator-invoked CLI only.** — 🔴 **VETOED 2026-09-10 by owner ruling;
+the consequences this entry predicted are the ones that landed.** Rests on the MCP read-only norm. If the owner
 rules that agents may write, no criterion above changes — AC-15.1–15.9 are about what the *store*
 owes an operator value, not about who calls in — but the norm needs an amendment and the annotation
 item inherits a much larger surface. *Retires:* nothing. *Expands:* the annotation item's scope.

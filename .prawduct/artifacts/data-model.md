@@ -177,6 +177,9 @@ nothing to migrate or grandfather.
   and the ability to tell provider drift apart from a local decision. Once they are the same column,
   no later reader can separate them.
   Status: steady-state.
+  Rulings: [[a-store-authored-row-is-not-a-record-of-what-anyone-said]] — an annotation is
+  rewritable and deletable (AC-16.7); this norm governs values the aggregator supplied, not values
+  this product's own users authored.
 
 - **A transaction is never hard-deleted.** Removal is a soft delete carrying a removal timestamp.
   Why: AC-2.2. A removed transaction is evidence — of a reversal, a correction, or an upstream
@@ -184,6 +187,8 @@ nothing to migrate or grandfather.
   layer able to agree: a rebuild from raw responses can reproduce a removal, but cannot reproduce a
   row nobody kept.
   Status: steady-state.
+  Rulings: [[a-store-authored-row-is-not-a-record-of-what-anyone-said]] — same edge, same answer:
+  an annotation delete is a real DELETE (AC-16.7), because a note is a belief rather than evidence.
 
 - **A migration's DDL is frozen once written, and the Core metadata and that DDL are written
   independently rather than generated from one another.**
@@ -679,10 +684,14 @@ column rather than a better formula.
 carries no `derivation_version_id` — so `store.rebuild` classifies it as a dimension and never
 empties it. The observation still rides the row beside the declaration, as evidence.
 
-⚠️ **`closed` is reachable in the read path and unreachable in the product.** No CLI command and no
-MCP path can set `lifecycle_status` — the MCP surface is read-only by norm, and no `accounts retire`
-command exists. Until one does, the system can report what it suspects and the operator cannot
-confirm it.
+⚠️ **`closed` is reachable, but only at the wrong granularity.** `connections retire` sets
+`lifecycle_status='inactive'` and `closed_date` on every still-active account of the connection it
+retires (`cli/connections.py::_mark_retired`) — so the value is not unreachable, as this note and
+brookstalley/bankmachine#48's body both once said. The defect is that declaring **one** card closed
+means retiring the whole institution, which also stops syncing every sibling account. No
+per-account command exists; AC-15.5 carries a granularity clause for exactly this, and #48 builds
+it. The MCP surface cannot set it either — and still cannot under § 5's 2026-09-10 amendment, since
+`accounts` is a dimension the deriver upserts and no derived table may be declared agent-writable.
 
 🔴 **A retired account's dormant period must not read as a permanent coverage gap (AC-12.7).**
 `get_coverage_report` reads the same producer `list_accounts` does (`query._account_lifecycle`) and
