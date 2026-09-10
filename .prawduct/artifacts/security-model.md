@@ -80,8 +80,9 @@ Getting this right determines whether every control below is proportionate or th
 |---|---|---|
 | **Someone holding a backup copy** of the datastore | Cloud sync, external drive, an old Time Machine volume | 🔴 The **primary** threat. Page-level encryption; the backup is ciphertext without further work |
 | **Someone with the repository** (it may be published) | GitHub, a clone, a fork | No roster, no credentials, no operator identity in any tracked file — enforced on every push |
-| **A process on this machine running as another user** | Filesystem | OS file permissions; the key is in the keychain, not on disk |
-| **The network** | — | 🔴 **Not reachable.** The MCP server opens no sockets; the only outbound destination is the aggregator |
+| **A process on this machine running as another user** | Filesystem | OS file permissions, made real by `os.umask(0o077)` at the single CLI entry point (`cli/__init__.py`, which every command including `mcp` passes through): the datastore, its WAL and shm, the plaintext log, every backup copy and the directories holding them are created owner-only. The key is in the keychain, not on disk |
+| **The network** | — | 🔴 **Not reachable.** The MCP server opens no sockets; the only outbound destination is the aggregator. This says nothing about what the *client* sends onward — see the row below |
+| **Whoever writes the text in a transaction** — a counterparty choosing its own descriptor, or anyone who can move $0.01 to the operator | The aggregator relays descriptions and merchant names verbatim; the MCP surface hands them to a model that holds tools far beyond this server | 🔴 Structural first: the surface is **read-only**, so the worst case is a wrong answer or a nudged agent, never a moved dollar. Stated second: the server's instructions and its envelope reference name `description`, `merchant`, `account` and `institution` as third-party text to be quoted and never followed, and say that no instruction, URL or credential request appearing in a row comes from the operator or from this server. 🔴 **This risk does not exist against sandbox fixtures. It begins with the first real account** |
 
 **Who it does *not* defend against, deliberately:**
 
@@ -89,6 +90,11 @@ Getting this right determines whether every control below is proportionate or th
   boundary to draw inside a single-user tool, and inventing one would be theatre.
 - **An attacker with the unlocked machine and the operator's session.** They have the keychain. This
   is the OS's boundary — FileVault and the login password — and it is the right layer for it.
+- **The model the MCP client is wired to.** 🔴 **Every tool call hands merchant names, amounts,
+  balances, account names and masks to whatever model that client runs** — hosted or local, under
+  that provider's terms rather than this project's. That is the product working as designed, and it
+  is also the single place the "never leaves the machine" property stops holding. The control is the
+  operator's choice of client, so it is stated rather than enforced.
 - **A malicious aggregator.** Trusted by construction: it is the data source. What *is* defended is
   the aggregator being *wrong* — see "Data integrity" below, which is where this product's real
   paranoia lives.
@@ -162,7 +168,7 @@ and *why* they do not apply is the useful part:
 | **Broken object property level authz** / mass assignment | **No** | 🔴 The surface is **read-only**. There is no request binding to over-permit |
 | **Unrestricted resource consumption** (API4) | 🔴 **Yes** | A caller can drive cost. Mitigated by the ~500-row hard cap and aggregate-first design (AC-9.1); a cursor narrows a request rather than lifting the cap, so each page stays bounded by it |
 | **Improper inventory management** (API9) | 🔴 **Yes** | A forgotten tool is a real risk. Mitigated by the declared surface inventory in `api-contract.md` |
-| **Unsafe consumption of third-party APIs** (API10) | 🔴 **Yes** | The aggregator's responses are unowned input. See "Data integrity" below |
+| **Unsafe consumption of third-party APIs** (API10) | 🔴 **Yes** | The aggregator's responses are unowned input in two distinct ways. The aggregator being *wrong* is "Data integrity" below. The aggregator being *right* about text an outsider wrote — a descriptor is chosen by the counterparty, not by the bank — is the transaction-text row in the threat model above |
 | **Excessive data exposure** | Partly | The consumer is an LLM with finite context; returning less is a *performance* requirement too |
 
 The three that apply are handled in `api-contract.md` § Security, not duplicated here.
@@ -176,7 +182,7 @@ The three that apply are handled in `api-contract.md` § Security, not duplicate
 | Class | Examples | Handling |
 |---|---|---|
 | 🔴 **Secret** | Datastore key, aggregator client secret, access tokens | Keychain only. Never on disk, never in a log, never in a `repr` |
-| 🔴 **Sensitive** | Transactions, balances, holdings, account numbers, institution roster | Encrypted at rest. Never leaves the machine except as an encrypted backup |
+| 🔴 **Sensitive** | Transactions, balances, holdings, account numbers, institution roster | Encrypted at rest. It leaves this machine two ways, both deliberate: an encrypted backup copy, and every MCP tool answer — the client is the egress, and what it is handed goes wherever its model runs |
 | **Restricted** | The operator's identity, machine name, institution names | Never in a tracked file — the repository may be published |
 | Public | The engine's source code | The point of the layering rule |
 
