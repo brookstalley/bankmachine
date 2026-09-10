@@ -56,7 +56,7 @@ def _accounts_body() -> bytes:
 
 
 def _sync_body(today: str) -> bytes:
-    def txn(index: int, amount: str, name: str, category: str) -> dict[str, Any]:
+    def txn(index: int, amount: str, name: str, category: str, detailed: str) -> dict[str, Any]:
         return {
             "account_id": "acct-1",
             "transaction_id": f"t{index}",
@@ -68,7 +68,11 @@ def _sync_body(today: str) -> bytes:
             "pending_transaction_id": None,
             "name": name,
             "merchant_name": None,
-            "personal_finance_category": {"primary": category, "detailed": category},
+            # 🔴 Both stated. They used to be the same string, which is not a
+            # shape the aggregator ever sends -- and once the flow class began
+            # reading the detailed column, that fixture was feeding the
+            # classifier a value from the wrong vocabulary.
+            "personal_finance_category": {"primary": category, "detailed": detailed},
         }
 
     return json.dumps(
@@ -78,9 +82,15 @@ def _sync_body(today: str) -> bytes:
             # LEAVING. The last is negative — money arriving — so the spending
             # aggregate has something it must exclude.
             "added": [
-                txn(0, "89.40", "SparkFun", "GENERAL_MERCHANDISE"),
-                txn(1, "12.00", "McDonald's", "FOOD_AND_DRINK"),
-                txn(2, "-250.00", "Payroll", "INCOME"),
+                txn(
+                    0,
+                    "89.40",
+                    "SparkFun",
+                    "GENERAL_MERCHANDISE",
+                    "GENERAL_MERCHANDISE_ONLINE_MARKETPLACES",
+                ),
+                txn(1, "12.00", "McDonald's", "FOOD_AND_DRINK", "FOOD_AND_DRINK_RESTAURANT"),
+                txn(2, "-250.00", "Payroll", "INCOME", "INCOME_WAGES"),
             ],
             "modified": [],
             "removed": [],

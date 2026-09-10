@@ -278,6 +278,13 @@ transactions = Table(
     # alternative is deleting money on the strength of a column nothing filled.
     # `store rebuild` fills it from the archive.
     Column("lineage_id", Integer, ForeignKey("connections.connection_id"), nullable=True),
+    # 🔴 Declared LAST for the same reason every ALTER-added column is: this
+    # metadata is compared to the migrated database column-by-column in order.
+    #
+    # A shared token, not a pointer: both legs of one transfer carry the same
+    # value, and neither is the other's parent. A null means no counterparty leg
+    # was found -- the ordinary case for most rows, and never "not checked".
+    Column("transfer_pair_id", Integer, nullable=True),
 )
 
 Index(

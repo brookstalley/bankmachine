@@ -1155,9 +1155,9 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # reclassifies a transfer as spending, silently and upward.
         "flow class: the class reads the source column, never category_override",
         QUERY,
-        "            transactions.c.source_category_primary.in_("
-        "sorted(_INTERNAL_TRANSFER_CATEGORIES)),",
-        "            transactions.c.category_override.in_(sorted(_INTERNAL_TRANSFER_CATEGORIES)),",
+        "                transactions.c.source_category_detailed.in_("
+        "sorted(_TRANSFER_SHAPED_DETAILED)),",
+        "                transactions.c.category_override.in_(sorted(_TRANSFER_SHAPED_DETAILED)),",
         f"{AGGREGATE_TESTS}::test_a_re_categorisation_cannot_move_a_transfer_into_spending",
     ),
     (
@@ -1355,8 +1355,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # again, so the documented fix would fail on the store it is for.
         "AC-5.3: a newly-populated column bumps the derivation version",
         pathlib.Path("src/bankmachine/store/derivation.py"),
+        "DERIVATION_VERSION = 8",
         "DERIVATION_VERSION = 7",
-        "DERIVATION_VERSION = 6",
         # 🔴 Pinned to the UPGRADE test, not the lifecycle one. The lifecycle
         # test's store is stamped two versions back, so `change_was_expected`
         # stays true under a single reverted bump and the mutation passes -- the

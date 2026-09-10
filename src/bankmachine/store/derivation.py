@@ -52,6 +52,7 @@ from sqlalchemy import Connection as SAConnection
 from sqlalchemy import insert, select
 
 from bankmachine.logging_setup import get_logger
+from bankmachine.store import transfers
 from bankmachine.store.connection import StoreError
 from bankmachine.store.engine import transaction
 from bankmachine.store.raw import RawResponse, record_response
@@ -66,7 +67,7 @@ logger = get_logger("store.derivation")
 #: column. AC-5.3 exists because losslessness is only well-defined against a
 #: recorded version: without one, an upstream taxonomy change and a rebuild bug
 #: are indistinguishable, since both simply produce different rows than before.
-DERIVATION_VERSION = 7
+DERIVATION_VERSION = 8
 
 #: What that version means, recorded beside it so a datastore carrying rows from
 #: an old version says something useful about them years later.
@@ -81,7 +82,9 @@ DERIVATION_DESCRIPTION = (
     "identity the aggregator gives it, scoped to its institution, so a re-link converges on "
     "the row its history already hangs from; and every transaction stamped with the "
     "aggregator Item that produced it (`transactions.lineage_id`); the Item's consent "
-    "expiry and its standing error recorded on the connection"
+    "expiry and its standing error recorded on the connection; and the two legs of a "
+    "transfer between enrolled accounts paired, so a movement between them is not "
+    "counted as money leaving the household"
     "; the Item's consent expiry and its standing error recorded on the connection"
 )
 
@@ -259,4 +262,15 @@ def apply_response(
                 "none" if response.connection_id is None else response.connection_id,
             )
             raise
+        # 🔴 Inside the same transaction as the derivation that produced the
+        # rows, so a page never commits with its rows visible and their pairing
+        # not yet computed -- a reader between the two would see a transfer's
+        # outgoing leg counted as spending and then watch it stop being counted,
+        # with nothing to say why.
+        #
+        # Per response rather than per run because this is the sync path's ONE
+        # entry point and it has no notion of a run ending. The pass considers
+        # only unpaired rows, so the cost is the rows this page added, and a leg
+        # whose counterparty arrives on a later page pairs when that page lands.
+        transfers.pair_transfers(conn)
     return response

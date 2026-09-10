@@ -93,13 +93,13 @@ from bankmachine.store.types import UtcInstant, utc_instant
 #: constants, so the seeded store and the running build could never be at
 #: different versions and every assertion below would hold whether or not the
 #: migration did anything at all.
-SCHEMA_BEFORE_THE_ITEM_STANDING = 7
-DERIVATION_BEFORE_THE_ITEM_STANDING = 6
+SCHEMA_BEFORE_THE_TRANSFER_PAIRS = 8
+DERIVATION_BEFORE_THE_TRANSFER_PAIRS = 7
 
 #: What that derivation version meant, so the seeded `derivation_versions` row
 #: says something true about the rows hanging off it rather than describing a
 #: convergence rule those rows predate.
-DESCRIPTION_BEFORE_THE_ITEM_STANDING = (
+DESCRIPTION_BEFORE_THE_TRANSFER_PAIRS = (
     "institutions and accounts derived from the aggregator; balances signed from the "
     "operator's point of view; the roster observation recorded per account "
     "(`accounts.last_seen_date`) and per connection (`connections.roster_observed_date`); "
@@ -109,18 +109,30 @@ DESCRIPTION_BEFORE_THE_ITEM_STANDING = (
     "minor-unit exponent refused rather than rounded; an account matched on the persistent "
     "identity the aggregator gives it, scoped to its institution, so a re-link converges on "
     "the row its history already hangs from; and every transaction stamped with the "
-    "aggregator Item that produced it (`transactions.lineage_id`)"
+    "aggregator Item that produced it (`transactions.lineage_id`); and the Item's consent "
+    "expiry and its standing error recorded on the connection"
 )
 
 #: The migration the seeded store is missing, the table it adds columns to, and
 #: the columns themselves. Migration 008 adds TWO, which is why this is a tuple
 #: where its predecessors were a single name.
-THE_PENDING_MIGRATION = SCHEMA_BEFORE_THE_ITEM_STANDING + 1
-THE_TABLE_IT_EXTENDS = connections.name
-THE_COLUMNS_IT_ADDS = ("consent_expires_at", "source_error_code")
+THE_PENDING_MIGRATION = SCHEMA_BEFORE_THE_TRANSFER_PAIRS + 1
+THE_TABLE_IT_EXTENDS = transactions.name
+THE_COLUMNS_IT_ADDS = ("transfer_pair_id",)
 
-#: The column 007 adds, which the older fixture below also crosses.
+#: The migrations BETWEEN the older fixture and this build, each named with the
+#: version it IS rather than as an offset from the newest.
+#:
+#: 🔴 Offsets were how two rewinds silently deleted the same `schema_version`
+#: row and left another standing: `THE_PENDING_MIGRATION - 1` reads the same in
+#: two functions and means the same thing in only one of them. A version is a
+#: fixed historical number, so it is written as one -- the same rule the fixture
+#: constants above already follow, applied to the steps between them.
+THE_LINEAGE_MIGRATION = 7
 THE_COLUMN_THE_LINEAGE_MIGRATION_ADDS = "lineage_id"
+
+THE_ITEM_STANDING_MIGRATION = 8
+THE_COLUMNS_THE_ITEM_MIGRATION_ADDS = ("consent_expires_at", "source_error_code")
 
 #: 🔴 **The version before THAT, kept rather than retired with the re-point.**
 #: Migration 006 is the only table rebuild in this store's history, and the ways
@@ -144,7 +156,8 @@ DESCRIPTION_BEFORE_THE_NULLABLE_CURRENCY = (
 #: first of them drops.
 THE_PENDING_MIGRATIONS = [
     SCHEMA_BEFORE_THE_NULLABLE_CURRENCY + 1,
-    THE_PENDING_MIGRATION - 1,
+    THE_LINEAGE_MIGRATION,
+    THE_ITEM_STANDING_MIGRATION,
     THE_PENDING_MIGRATION,
 ]
 THE_COLUMN_IT_WIDENS = "currency"
@@ -339,10 +352,10 @@ def populated_at_the_previous_version(config: Config, monkeypatch: pytest.Monkey
     _seed(
         config,
         monkeypatch,
-        DERIVATION_BEFORE_THE_ITEM_STANDING,
-        DESCRIPTION_BEFORE_THE_ITEM_STANDING,
+        DERIVATION_BEFORE_THE_TRANSFER_PAIRS,
+        DESCRIPTION_BEFORE_THE_TRANSFER_PAIRS,
     )
-    _rewind_past_the_item_standing(config)
+    _rewind_past_the_transfer_pairs(config)
 
     _refuse_a_fixture_with_nothing_in_it(config)
     assert not set(THE_COLUMNS_IT_ADDS) & set(dump_every_table(config)[THE_TABLE_IT_EXTENDS][0]), (
@@ -382,6 +395,7 @@ def populated_before_the_nullable_currency(
     _rewind_past_the_nullable_currency(config)
     _rewind_past_the_lineage_column(config)
     _rewind_past_the_item_standing(config)
+    _rewind_past_the_transfer_pairs(config)
 
     _refuse_a_fixture_with_nothing_in_it(config)
     assert required_columns(config, THE_TABLE_IT_REBUILDS) >= {THE_COLUMN_IT_WIDENS}, (
@@ -416,10 +430,10 @@ def _refuse_a_fixture_with_nothing_in_it(config: Config) -> None:
     assert not empty, f"the derivers wrote nothing into {empty}, so nothing here is under test"
 
 
-def _rewind_past_the_item_standing(config: Config) -> None:
+def _rewind_past_the_transfer_pairs(config: Config) -> None:
     """Take the seeded store back to the version before this build's last migration.
 
-    Undoes exactly what migration 008 did -- two columns on `connections`, and
+    Undoes exactly what migration 009 did -- one column on `transactions`, and
     its row in `schema_version` -- so the file reports the older version and a
     reader of it cannot tell it from a store that never crossed the migration.
 
@@ -439,6 +453,19 @@ def _rewind_past_the_item_standing(config: Config) -> None:
         conn.execute("DELETE FROM schema_version WHERE version = ?", (THE_PENDING_MIGRATION,))
 
 
+def _rewind_past_the_item_standing(config: Config) -> None:
+    """Take a store back past 008, the migration that recorded the Item's standing.
+
+    🔴 Kept when the module re-pointed at 009, for the reason the lineage rewind
+    below is: the older fixture crosses every migration from its own version
+    forward, so it has to be able to arrive at that version.
+    """
+    with writer(config) as conn:
+        for column in THE_COLUMNS_THE_ITEM_MIGRATION_ADDS:
+            conn.execute(f"ALTER TABLE {connections.name} DROP COLUMN {column}")
+        conn.execute("DELETE FROM schema_version WHERE version = ?", (THE_ITEM_STANDING_MIGRATION,))
+
+
 def _rewind_past_the_lineage_column(config: Config) -> None:
     """Take a store back past 007, the migration that stamped each row's Item.
 
@@ -453,7 +480,7 @@ def _rewind_past_the_lineage_column(config: Config) -> None:
         conn.execute(
             f"ALTER TABLE {transactions.name} DROP COLUMN {THE_COLUMN_THE_LINEAGE_MIGRATION_ADDS}"
         )
-        conn.execute("DELETE FROM schema_version WHERE version = ?", (THE_PENDING_MIGRATION - 1,))
+        conn.execute("DELETE FROM schema_version WHERE version = ?", (THE_LINEAGE_MIGRATION,))
 
 
 def _rewind_past_the_nullable_currency(config: Config) -> None:
@@ -697,8 +724,11 @@ def test_migrating_a_populated_store_across_the_table_rebuild_keeps_every_row(
         before,
         after,
         added={
-            THE_TABLE_IT_EXTENDS: THE_COLUMNS_IT_ADDS,
-            transactions.name: (THE_COLUMN_THE_LINEAGE_MIGRATION_ADDS,),
+            transactions.name: (
+                THE_COLUMN_THE_LINEAGE_MIGRATION_ADDS,
+                *THE_COLUMNS_IT_ADDS,
+            ),
+            connections.name: THE_COLUMNS_THE_ITEM_MIGRATION_ADDS,
         },
     )
     assert after[SCHEMA_VERSION_TABLE][1][-1][0] == THE_PENDING_MIGRATION
@@ -876,7 +906,7 @@ def test_an_upgraded_store_serves_the_values_its_derivers_wrote(
     assert account.last_seen_date is None, (
         "a sync body is not a roster read, so it must not leave a record that one happened"
     )
-    assert stamped == [DERIVATION_BEFORE_THE_ITEM_STANDING], (
+    assert stamped == [DERIVATION_BEFORE_THE_TRANSFER_PAIRS], (
         "the upgrade restamped rows it did not re-derive, so their provenance is now a claim "
         "about logic that never touched them"
     )
@@ -911,7 +941,7 @@ def test_the_prescribed_rebuild_runs_on_the_store_the_upgrade_produced(
 
     report = rebuild(populated_at_the_previous_version, derivers=ALL_DERIVERS)
 
-    assert report.previous_derivation_versions == (DERIVATION_BEFORE_THE_ITEM_STANDING,)
+    assert report.previous_derivation_versions == (DERIVATION_BEFORE_THE_TRANSFER_PAIRS,)
     assert report.content_changed, (
         "the replay reproduced the upgraded store byte for byte, so the guard this test exists "
         "to exercise was never consulted"

@@ -31,6 +31,7 @@ from bankmachine.store.migrations.nullable_account_currency import (
 )
 from bankmachine.store.migrations.roster_observed import apply_roster_observed
 from bankmachine.store.migrations.transaction_lineage import apply_transaction_lineage
+from bankmachine.store.migrations.transfer_pairs import apply_transfer_pairs
 
 logger = get_logger("store.migrations")
 
@@ -97,6 +98,11 @@ MIGRATIONS: Sequence[Migration] = (
         version=8,
         name="record the Item's consent expiry and standing error",
         apply=apply_item_consent,
+    ),
+    Migration(
+        version=9,
+        name="record which rows are the two legs of one transfer",
+        apply=apply_transfer_pairs,
     ),
 )
 

@@ -532,7 +532,7 @@ health.
 field that appears on one grouping and is guessed on the others. It has to be: an account holds a
 transfer and a coffee, a month holds all three by definition, and even a category can split,
 because the category key reads `category_override` first while the class is fixed to read
-`source_category_primary` only. Attaching one row's class to a group that spans classes would
+`source_category_detailed` only. Attaching one row's class to a group that spans classes would
 state it for the others, and making the field *optional* is refused by § Direction's fourth norm,
 which merges tools only where one strict row schema covers every parameter value. The consequence
 is accepted and is the point: one month can return three rows per currency where it returned one.
@@ -541,6 +541,32 @@ is accepted and is the point: one month can return three rows per currency where
 so there is no invisible undercount. That is also why this emits no `rule-applied` warning —
 that kind means an account rule filtered rows *out* of an aggregate, and a tool that excludes
 nothing saying so would be a false statement about the answer carrying it.
+
+> **Amendment, 2026-09-10 — the three classes answer whether money crossed the household
+> boundary, not what the aggregator called the row.** *Statement:* `internal_transfer` means value
+> moved between two accounts **this store holds**, matched leg to leg; `debt_service` means a
+> payment toward a liability **this store holds**; everything else is `external_spend`. The class
+> is read from `source_category_detailed`, and both non-spending classes require a matched
+> opposite leg — equal magnitude, opposite sign, a different enrolled account, same currency,
+> `ledger_date` within ±3 days — recorded at derivation time as `transactions.transfer_pair_id`.
+> The three class NAMES are unchanged; this surface is stable and a rename would break every
+> consumer for no gain.
+> *Why:* classifying on the aggregator's primary category alone made the tool answer a question
+> nobody asked. Measured on the review's own scenario, it reported **"spent $5,000, income $0"**
+> where the truth was ≈$8,900 and $6,000: a mortgage to an unenrolled lender, ATM cash and ACH
+> rent were all excluded from spending as though the money had merely moved between the
+> household's own accounts, and a payroll deposit categorised `TRANSFER_IN` was excluded from
+> income for the same reason. Both errors ran in the direction that gets believed.
+> *What this deliberately does NOT do:* it does not split a loan payment into principal and
+> interest. The aggregator does not decompose one per transaction, and deriving a split from
+> balance movement would be an inference presented as a record — so the whole payment classifies
+> together. It also does not net refunds against spending; that remains descoped.
+> *Retroactivity:* owed and paid in the same commit. Every figure this tool has ever returned for
+> a store holding transfer-shaped rows was computed under the old rule, and no answer is
+> re-issued — the change is forward-only. An unmatched transfer-shaped row now counts as
+> spending and the answer carries a `partial` warning saying how many, so a caller can see the
+> classifier fell back rather than concluded. `store rebuild` recomputes the pairing over the
+> whole archive, which is what makes an existing store's answers move to the new rule.
 
 🔴 **The class is read from the source column, never from `category_override`.** An override is
 local interpretation of what a transaction was *for*; the flow class is about whose money moved and
@@ -842,7 +868,7 @@ here.
 | `currency` | string | the currency the amount is in |
 | `pending` | boolean | this row is an authorisation hold that has not settled. A pending amount can settle at a different figure or expire without settling, so a total computed over these rows can move with no new activity — which is what `includes_pending_rows` warns about |
 | `category` | string, nullable | the category this transaction is filed under: 🔴 **the operator's override where one exists, and the source's category otherwise.** Read `category_is_override` beside it to know which you are looking at. Null when neither exists |
-| `category_is_override` | boolean | whether `category` came from the operator rather than from the source. It matters beyond provenance: `flow_class` on `money_summary` is fixed to read the SOURCE category only, so an overridden row can be grouped under one category and classed as though it were under another — and that is deliberate, because a re-categorisation must not be able to reclassify a transfer as spending |
+| `category_is_override` | boolean | whether `category` came from the operator rather than from the source. It matters beyond provenance: `flow_class` on `money_summary` is fixed to read the source's DETAILED category only, so an overridden row can be grouped under one category and classed as though it were under another — and that is deliberate, because a re-categorisation must not be able to reclassify a transfer as spending |
 
 **Fields — `rows[]`** *(`money_summary`)*.
 
@@ -851,7 +877,7 @@ here.
 | `group_key` | string | the group this row is for, 🔴 **always a string whatever the grouping** — an account id rendered as text under `group_by=account`, a `YYYY-MM` month under `month`, the category or merchant name under those, and the flow class itself under `flow_class`. It is the key to act on: under `account` it is the value `query_transactions(account_id=…)` takes, once read as an integer |
 | `group_label` | string | the same group, named for reading. Equal to `group_key` under every grouping except `account`, where the key is the id and the label is the account's name. Never a second key — two accounts can share a label |
 | `currency` | string | the currency this row's figures are in. Rows are per currency, because a figure summed across currencies is not a wrong number, it is not a number |
-| `flow_class` | string | `external_spend`, `internal_transfer` or `debt_service` — a GROUPING DIMENSION under every value of `group_by`, so one month or one account can return up to three rows. Read from the source category only, never from an override. 🔴 It says how the AGGREGATOR labelled the row and not where the money went: nothing matches a counterparty leg |
+| `flow_class` | string | `external_spend`, `internal_transfer` or `debt_service` — a GROUPING DIMENSION under every value of `group_by`, so one month or one account can return up to three rows. Read from `source_category_detailed` only, never from an override. 🔴 It says **whether the money crossed the household boundary**: `internal_transfer` and `debt_service` both require a matched counterparty leg on an account this store holds, so an ATM withdrawal, a payment to a person and a mortgage to an unenrolled lender are all `external_spend` |
 | `transactions` | integer | how many transactions this group holds. 🔴 A per-group count, and a different figure from `coverage.transactions`, which is store-wide and never narrowed by the question asked |
 | `inflow_minor_units` | integer | money IN over this window for this group, 🔴 **a POSITIVE MAGNITUDE** in minor units — not operator-signed. The sign convention is carried by `net_minor_units`; these two are the halves it is made of |
 | `outflow_minor_units` | integer | money OUT over this window for this group, likewise a positive magnitude. It is the figure the `totals` block decomposes by flow class |

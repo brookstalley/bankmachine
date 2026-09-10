@@ -37,31 +37,64 @@ def _wire(config: Config, **arguments: Any) -> dict[str, Any]:
 
 
 def _seed_every_flow_class(config: Config) -> None:
-    """The shared fixture plus one row of each class that is NOT external spend.
+    """The shared fixture plus a real example of each class that is NOT spending.
 
     🔴 The shared `_seed` writes three rows that are all `external_spend`, so
     every case about the other two classes would pass over a store where they
     are simply absent -- green because nothing was classified rather than
-    because the classification works. These are the categories the mapping
-    names, written through the real derivers like every other fixture here, so
-    the CHECK on provenance is satisfied by the product rather than by the test.
+    because the classification works.
+
+    🔴 **Two ACCOUNTS, and two legs each, because that is what those classes now
+    mean.** A row is `internal_transfer` only when the money is found on the
+    other side, and `debt_service` only when the liability is one this store
+    holds. A single transfer-shaped row with no counterparty is money that left
+    the household, and seeding one would assert the opposite of the rule. So the
+    savings account and the card are enrolled here, and each movement is written
+    as the pair the aggregator really sends: money out of checking, money into
+    the account that received it.
+
+    Written through the real derivers like every other fixture here, so the
+    pairing under test is the product's own rather than the test's.
     """
     now = now_utc()
+    today = str(now.date())
     _seed(config)
 
-    def txn(index: int, amount: str, name: str, category: str) -> dict[str, Any]:
+    def account(source_id: str, name: str, kind: str, subtype: str) -> dict[str, Any]:
         return {
-            "account_id": "acct-1",
+            "account_id": source_id,
+            "name": name,
+            "mask": "0000",
+            "type": kind,
+            "subtype": subtype,
+            "balances": {
+                "current": "0.00",
+                "available": None,
+                "limit": None,
+                "iso_currency_code": "USD",
+            },
+        }
+
+    def txn(
+        index: int, source_account: str, amount: str, name: str, primary: str, detailed: str
+    ) -> dict[str, Any]:
+        return {
+            "account_id": source_account,
             "transaction_id": f"flow-{index}",
             "amount": amount,
             "iso_currency_code": "USD",
-            "date": str(now.date()),
+            "date": today,
             "authorized_date": None,
             "pending": False,
             "pending_transaction_id": None,
             "name": name,
             "merchant_name": None,
-            "personal_finance_category": {"primary": category, "detailed": category},
+            # 🔴 Both stated, never one derived from the other. The
+            # aggregator sends both and they are not related by string surgery:
+            # deriving `primary` here produced categories that exist in no
+            # taxonomy and slipped past the guard that holds this tuple against
+            # what the store contains.
+            "personal_finance_category": {"primary": primary, "detailed": detailed},
         }
 
     with writer_connection(config) as conn:
@@ -69,14 +102,47 @@ def _seed_every_flow_class(config: Config) -> None:
             conn,
             connection_id=1,
             endpoint=TRANSACTIONS_SYNC.path,
-            # Positive amounts leave, as the aggregator sends them.
+            # Positive amounts leave, as the aggregator sends them -- so the two
+            # legs of one movement arrive with opposite signs.
             body=json.dumps(
                 {
-                    "accounts": [],
+                    "accounts": [
+                        account("acct-savings", "Plaid Saving", "depository", "savings"),
+                        account("acct-card", "Plaid Card", "credit", "credit card"),
+                    ],
                     "added": [
-                        txn(0, "400.00", "Transfer to Saving", "TRANSFER_OUT"),
-                        txn(1, "-150.00", "Transfer from Saving", "TRANSFER_IN"),
-                        txn(2, "300.00", "Card Payment", "LOAN_PAYMENTS"),
+                        txn(
+                            0,
+                            "acct-1",
+                            "400.00",
+                            "Transfer to Saving",
+                            "TRANSFER_OUT",
+                            "TRANSFER_OUT_ACCOUNT_TRANSFER",
+                        ),
+                        txn(
+                            1,
+                            "acct-savings",
+                            "-400.00",
+                            "Transfer from Checking",
+                            "TRANSFER_IN",
+                            "TRANSFER_IN_ACCOUNT_TRANSFER",
+                        ),
+                        txn(
+                            2,
+                            "acct-1",
+                            "300.00",
+                            "Card Payment",
+                            "LOAN_PAYMENTS",
+                            "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT",
+                        ),
+                        txn(
+                            3,
+                            "acct-card",
+                            "-300.00",
+                            "Payment Received",
+                            "LOAN_PAYMENTS",
+                            "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT",
+                        ),
                     ],
                     "modified": [],
                     "removed": [],
@@ -312,14 +378,23 @@ def test_each_flow_class_is_reachable_over_rows_that_exercise_it(
     by_class = {row["group_key"]: row for row in _rows(initialized_config, group_by="flow_class")}
     assert set(by_class) == {"external_spend", "internal_transfer", "debt_service"}
     # Money out under each, from the seeded amounts: 89.40 + 12.00 spent,
-    # 400.00 transferred out, 300.00 paid to a card.
+    # 400.00 moved to savings, 300.00 paid to the enrolled card.
     assert by_class["external_spend"]["outflow_minor_units"] == 10140
     assert by_class["internal_transfer"]["outflow_minor_units"] == 40000
     assert by_class["debt_service"]["outflow_minor_units"] == 30000
-    # And money in stays reachable within a class rather than being filtered
-    # away: the payroll credit is external, the returned 150.00 is a transfer.
+    # 🔴 And money IN under the same class, which is the half a matched pair
+    # makes true: both legs of one movement classify together, so the 400.00
+    # arriving in savings is the same transfer as the 400.00 leaving checking
+    # and the class nets to zero. That netting is the proof the money never
+    # left the household -- under the old classifier the two legs could land in
+    # different classes and the net said nothing.
     assert by_class["external_spend"]["inflow_minor_units"] == 25000
-    assert by_class["internal_transfer"]["inflow_minor_units"] == 15000
+    assert by_class["internal_transfer"]["inflow_minor_units"] == 40000
+    assert by_class["internal_transfer"]["net_minor_units"] == 0, (
+        "a matched transfer must net to zero; a non-zero net means one leg was classified "
+        "and the other was not, which is the overcount this class exists to remove"
+    )
+    assert by_class["debt_service"]["inflow_minor_units"] == 30000
 
 
 def test_a_re_categorisation_cannot_move_a_transfer_into_spending(
@@ -356,13 +431,19 @@ def test_an_unrecognised_category_falls_to_external_spend(initialized_config: Co
     """
     _seed_every_flow_class(initialized_config)
     with writer_connection(initialized_config) as conn:
+        # 🔴 The DETAILED column, because that is the one the class is read from
+        # now. Rewriting the primary category leaves the classification
+        # untouched, so a test that mutated it would pass while proving nothing
+        # about the fallback it names.
         conn.execute(
             transactions.update()
-            .where(transactions.c.source_category_primary == "LOAN_PAYMENTS")
-            .values(source_category_primary="SOMETHING_INVENTED_LATER")
+            .where(transactions.c.source_category_detailed == "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT")
+            .values(source_category_detailed="SOMETHING_INVENTED_LATER")
         )
     by_class = {row["group_key"]: row for row in _rows(initialized_config, group_by="flow_class")}
     assert "debt_service" not in by_class
+    # The card payment's OUT leg joins spending; its IN leg on the card joins
+    # inflow, which is what an unclassified pair looks like from both sides.
     assert by_class["external_spend"]["outflow_minor_units"] == 10140 + 30000
 
 
@@ -390,14 +471,20 @@ def test_one_account_returns_a_row_per_class_rather_than_one_conflated_row(
 ) -> None:
     """The cost of the finer grain, asserted as the behaviour it buys.
 
-    Every seeded row is on one account, so before the split this account was a
-    single row whose outflow read 803.40 — a figure that is 700.00 of money that
-    never left. Three rows is what makes that readable, and a caller who sums
-    them blindly gets back exactly the number the split exists to separate.
+    The checking account carries a row of every class, so without the split it
+    was a single row whose outflow read 803.40 — a figure that is 700.00 of
+    money that never left the household. Three rows is what makes that readable,
+    and a caller who sums them blindly gets back exactly the number the split
+    exists to separate.
+
+    🔴 Scoped to that account rather than asserting it is the only one. The
+    other two exist because a transfer needs somewhere to go: the class is only
+    `internal_transfer` when the counterparty is enrolled, so a fixture with one
+    account could not produce the row this test is about.
     """
     _seed_every_flow_class(initialized_config)
-    rows = _rows(initialized_config, group_by="account")
-    assert {row["group_key"] for row in rows} == {"1"}
+    rows = [row for row in _rows(initialized_config, group_by="account") if row["group_key"] == "1"]
+    assert rows, "the checking account produced no row at all"
     assert {row["flow_class"] for row in rows} == set(query.FLOW_CLASSES)
 
 
@@ -652,6 +739,24 @@ def test_no_category_reaches_external_spend_without_a_decision(
             if row[0] is not None
         }
     assert present, "the store held no categories, so this checked nothing"
+    with reader_connection(initialized_config) as conn:
+        detailed = {
+            str(row[0])
+            for row in conn.execute(
+                select(transactions.c.source_category_detailed).distinct()
+            ).all()
+            if row[0] is not None
+        }
+    # 🔴 The DETAILED vocabulary is checked too, and it is the one that matters
+    # now: the class is read from that column, so a detailed name nobody
+    # classified is the value that reaches `external_spend` unexamined. Checking
+    # only the primary tuple would leave the deciding column unguarded.
+    assert detailed, "the store held no detailed categories, so this checked nothing"
+    undecided_detailed = detailed - set(query.KNOWN_SOURCE_CATEGORIES_DETAILED)
+    assert not undecided_detailed, (
+        f"{sorted(undecided_detailed)} reach `external_spend` through the fallback rather than "
+        f"through a decision; classify them or record them in KNOWN_SOURCE_CATEGORIES_DETAILED"
+    )
     undecided = present - set(query.KNOWN_SOURCE_CATEGORIES)
     assert not undecided, (
         f"{sorted(undecided)} reach `external_spend` through the fallback rather than through "
@@ -844,3 +949,168 @@ def test_an_account_whose_currency_has_no_known_exponent_is_named_with_its_code(
     assert len(warnings) == 1
     assert f"{excluded[0]} (BTC)" in warnings[0]["detail"]
     assert "minor unit this build does not know" in warnings[0]["detail"]
+
+
+# --------------------------------------------------------------------------
+# The scenario the review measured, answered as ruled
+# --------------------------------------------------------------------------
+
+
+def _seed_the_review_scenario(config: Config) -> None:
+    """The six movements the review used to measure the overcount.
+
+    $2,400 mortgage to a lender nobody enrolled, $300 from an ATM, $1,200 rent,
+    $5,000 of card purchases, an $1,800 card payment, and a $6,000 paycheque.
+    Only the card is enrolled besides checking, which is the whole point: every
+    other counterparty is outside the household, so that money is gone.
+    """
+    now = now_utc()
+    today = str(now.date())
+    _seed(config)
+
+    def account(source_id: str, name: str, kind: str, subtype: str) -> dict[str, Any]:
+        return {
+            "account_id": source_id,
+            "name": name,
+            "mask": "0000",
+            "type": kind,
+            "subtype": subtype,
+            "balances": {
+                "current": "0.00",
+                "available": None,
+                "limit": None,
+                "iso_currency_code": "USD",
+            },
+        }
+
+    def txn(
+        index: int, source_account: str, amount: str, name: str, primary: str, detailed: str
+    ) -> dict[str, Any]:
+        return {
+            "account_id": source_account,
+            "transaction_id": f"review-{index}",
+            "amount": amount,
+            "iso_currency_code": "USD",
+            "date": today,
+            "authorized_date": None,
+            "pending": False,
+            "pending_transaction_id": None,
+            "name": name,
+            "merchant_name": None,
+            "personal_finance_category": {"primary": primary, "detailed": detailed},
+        }
+
+    with writer_connection(config) as conn:
+        apply_response(
+            conn,
+            connection_id=1,
+            endpoint=TRANSACTIONS_SYNC.path,
+            body=json.dumps(
+                {
+                    "accounts": [account("acct-card", "Plaid Card", "credit", "credit card")],
+                    "added": [
+                        txn(
+                            0,
+                            "acct-1",
+                            "2400.00",
+                            "Mortgage Co",
+                            "LOAN_PAYMENTS",
+                            "LOAN_PAYMENTS_MORTGAGE_PAYMENT",
+                        ),
+                        txn(
+                            1,
+                            "acct-1",
+                            "300.00",
+                            "ATM Withdrawal",
+                            "TRANSFER_OUT",
+                            "TRANSFER_OUT_WITHDRAWAL",
+                        ),
+                        txn(
+                            2,
+                            "acct-1",
+                            "1200.00",
+                            "Landlord ACH",
+                            "TRANSFER_OUT",
+                            "TRANSFER_OUT_ACCOUNT_TRANSFER",
+                        ),
+                        txn(
+                            3,
+                            "acct-card",
+                            "5000.00",
+                            "Card Purchases",
+                            "GENERAL_MERCHANDISE",
+                            "GENERAL_MERCHANDISE_ONLINE_MARKETPLACES",
+                        ),
+                        txn(
+                            4,
+                            "acct-1",
+                            "1800.00",
+                            "Card Payment",
+                            "LOAN_PAYMENTS",
+                            "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT",
+                        ),
+                        txn(
+                            5,
+                            "acct-card",
+                            "-1800.00",
+                            "Payment Received",
+                            "LOAN_PAYMENTS",
+                            "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT",
+                        ),
+                        txn(
+                            6,
+                            "acct-1",
+                            "-6000.00",
+                            "Payroll",
+                            "INCOME",
+                            "INCOME_WAGES",
+                        ),
+                    ],
+                    "modified": [],
+                    "removed": [],
+                    "next_cursor": "cursor-review",
+                    "has_more": False,
+                    "transactions_update_status": "HISTORICAL_UPDATE_COMPLETE",
+                    "request_id": "req-review",
+                }
+            ).encode(),
+            received_at=now,
+            derivers=ALL_DERIVERS,
+        )
+
+
+def test_the_reviews_scenario_answers_as_ruled(initialized_config: Config) -> None:
+    """🔴 The acceptance is ARITHMETIC, and it is the reason this item existed.
+
+    On the old classifier this scenario answered **"spent $5,000, income $0"**.
+    Both numbers were wrong and both were wrong in the direction that gets
+    believed: the mortgage, the ATM cash and the rent were excluded from
+    spending as though the money had merely moved between the household's own
+    accounts, and the paycheque was excluded from income for the same reason.
+
+    What is true: $2,400 + $300 + $1,200 left the household, and so did the
+    $5,000 of card purchases. The $1,800 card payment did NOT -- the card is
+    enrolled, its purchases are already counted, and counting the payoff too is
+    the double count `debt_service` exists to prevent. And $6,000 of wages
+    arrived.
+    """
+    _seed_the_review_scenario(initialized_config)
+    by_class = {row["group_key"]: row for row in _rows(initialized_config, group_by="flow_class")}
+
+    spent = by_class["external_spend"]["outflow_minor_units"]
+    # The shared `_seed` contributes 89.40 + 12.00 of its own spending.
+    assert spent == 240000 + 30000 + 120000 + 500000 + 10140, (
+        "spending must include the mortgage, the ATM cash, the rent and the card purchases -- "
+        "every one of them money that left the household"
+    )
+    assert "internal_transfer" not in by_class, (
+        "nothing here has a counterparty leg on an enrolled account, so no movement is internal"
+    )
+    assert by_class["debt_service"]["outflow_minor_units"] == 180000, (
+        "the card payment is the one movement that stayed inside the household"
+    )
+
+    income = by_class["external_spend"]["inflow_minor_units"]
+    assert income >= 600000, (
+        "the paycheque is external value entering the household, not a transfer"
+    )

@@ -47,7 +47,7 @@ from bankmachine.envelope import (
     resolve_window,
 )
 from bankmachine.logging_setup import get_logger
-from bankmachine.store import lineage
+from bankmachine.store import lineage, transfers
 from bankmachine.store.connection import (
     DatastoreProblem,
     DatastoreStatus,
@@ -1181,6 +1181,41 @@ def _uncovered_caveat(uncovered: list[AccountCoverage]) -> list[Caveat]:
             detail=(
                 f"no transaction has ever been recorded for account(s) {ids}; an empty or "
                 f"absent result for them means DATA NOT PRESENT, never no activity"
+            ),
+        )
+    ]
+
+
+def _unmatched_transfer_caveat(conn: SAConnection) -> list[Caveat]:
+    """The notice that the classifier FELL BACK rather than concluded.
+
+    A transfer-shaped row with no counterparty leg in this store counts as money
+    leaving the household. That is the conservative direction and it is usually
+    right -- an ATM withdrawal, a payment to a person, rent to a landlord are all
+    transfer-shaped and all gone. But it is a JUDGEMENT, and the other
+    explanation is ordinary: the counterparty account exists and the operator has
+    simply not enrolled it.
+
+    🔴 So the count rides the answer. A judgement made silently over hundreds of
+    rows is one nobody audits, and the operator's move -- enrol the other side,
+    or accept the figure -- depends on knowing it was made at all.
+
+    `partial`, because what is unknown is real: whether those rows left the
+    household is not established, only assumed in the direction that overstates
+    spending rather than hiding it.
+    """
+    unmatched = transfers.unmatched_transfer_shaped(conn, _TRANSFER_SHAPED_DETAILED)
+    if not unmatched:
+        return []
+    return [
+        Caveat(
+            kind="partial",
+            detail=(
+                f"{unmatched} transfer-shaped row(s) have no matching leg on any account this "
+                f"store holds, so they are counted as money LEAVING the household. That is the "
+                f"conservative reading and it is not established: the counterparty may simply "
+                f"be an account nobody enrolled. Enrol the other side to have them classified "
+                f"as transfers instead"
             ),
         )
     ]
@@ -2791,6 +2826,60 @@ _INTERNAL_TRANSFER_CATEGORIES: frozenset[str] = frozenset({"TRANSFER_IN", "TRANS
 #: then if that card is enrolled. The rest is money out of the household.
 _DEBT_SERVICE_CATEGORIES: frozenset[str] = frozenset({"LOAN_PAYMENTS"})
 
+#: The detailed categories that MIGHT be a movement between two accounts this
+#: household holds -- transfer-shaped, which is not the same as being a transfer.
+#:
+#: 🔴 A row is only `internal_transfer` when a matching opposite leg is FOUND on
+#: another enrolled account. These names are the candidates; `transfer_pair_id`
+#: is the evidence. An ATM withdrawal, a payment to a person, ACH rent to a
+#: landlord -- all transfer-shaped, none of them a transfer, because from the
+#: household's point of view the money is gone.
+#:
+#: 🔴 **`TRANSFER_IN_PAYROLL` is deliberately absent, and so is every `INCOME_*`
+#: name.** Wages arriving are external value ENTERING the household, whatever
+#: the aggregator's transfer-shaped naming suggests. Classifying the payroll row
+#: as an internal transfer is what made income read $0 on this surface, and no
+#: leg match should be able to bring it back: a paycheque has no counterparty
+#: leg here, but an accidental amount-and-date collision must not be allowed to
+#: invent one.
+_TRANSFER_SHAPED_DETAILED: frozenset[str] = frozenset(
+    {
+        "TRANSFER_IN_ACCOUNT_TRANSFER",
+        "TRANSFER_IN_DEPOSIT",
+        "TRANSFER_IN_INVESTMENT_AND_RETIREMENT_FUNDS",
+        "TRANSFER_IN_SAVINGS",
+        "TRANSFER_IN_OTHER_TRANSFER_IN",
+        "TRANSFER_OUT_ACCOUNT_TRANSFER",
+        "TRANSFER_OUT_INVESTMENT_AND_RETIREMENT_FUNDS",
+        "TRANSFER_OUT_SAVINGS",
+        "TRANSFER_OUT_OTHER_TRANSFER_OUT",
+    }
+)
+
+#: Detailed categories naming a payment toward a liability.
+#:
+#: 🔴 It is `debt_service` only when THIS STORE HOLDS the liability. A mortgage
+#: to a lender the operator has not enrolled is money out of the household and
+#: is `external_spend`; a card payoff where the card IS enrolled is
+#: `debt_service`, because that card's own purchases are already counted and
+#: counting the payoff too is the double count the class exists to prevent.
+#:
+#: 🔴 **Principal and interest are explicitly NOT split**, and the silence is a
+#: decision rather than an oversight. The aggregator does not decompose a loan
+#: payment per transaction, and deriving a split from balance movement would be
+#: an inference presented as a record. The whole payment classifies together.
+_DEBT_SERVICE_DETAILED: frozenset[str] = frozenset(
+    {
+        "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT",
+        "LOAN_PAYMENTS_MORTGAGE_PAYMENT",
+        "LOAN_PAYMENTS_CAR_PAYMENT",
+        "LOAN_PAYMENTS_STUDENT_LOAN_PAYMENT",
+        "LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT",
+        "LOAN_PAYMENTS_OTHER_PAYMENT",
+    }
+)
+
+
 #: Every `source_category_primary` this mapping has actually been designed
 #: against, observed in the sandbox datastore on 2026-09-09.
 #:
@@ -2824,6 +2913,44 @@ KNOWN_SOURCE_CATEGORIES: tuple[str, ...] = (
 )
 
 
+#: Every `source_category_detailed` this classifier has been designed against,
+#: and the twin of `KNOWN_SOURCE_CATEGORIES` above.
+#:
+#: 🔴 **The detailed vocabulary is the one the class is now read from, so it is
+#: the one that needs the guard.** The two sets above name the values that
+#: change a row's class; every other detailed name reaches `external_spend`
+#: through the `else_` branch, and that branch is silent by construction -- a
+#: category nobody classified is indistinguishable from one deliberately left as
+#: spending. `tests/test_money_summary.py` holds this tuple against what the
+#: store actually contains, so a value entering the data without a decision goes
+#: RED rather than quietly inflating the figure this tool tells an agent to
+#: quote.
+#:
+#: 🔴 The same residual limit the primary tuple records applies here and is
+#: larger, because the detailed vocabulary is: a name arriving in an operator's
+#: own store that has never appeared here still falls to `external_spend` with
+#: nothing saying so. Conservative, and a fallback rather than a classification.
+KNOWN_SOURCE_CATEGORIES_DETAILED: tuple[str, ...] = tuple(
+    sorted(
+        _TRANSFER_SHAPED_DETAILED
+        | _DEBT_SERVICE_DETAILED
+        | {
+            "GENERAL_MERCHANDISE_ONLINE_MARKETPLACES",
+            "FOOD_AND_DRINK_GROCERIES",
+            "FOOD_AND_DRINK_RESTAURANT",
+            "INCOME_WAGES",
+            "INCOME_OTHER_INCOME",
+            "PERSONAL_CARE_OTHER_PERSONAL_CARE",
+            "RENT_AND_UTILITIES_RENT",
+            "TRANSFER_IN_PAYROLL",
+            "TRANSFER_OUT_WITHDRAWAL",
+            "TRANSPORTATION_PUBLIC_TRANSIT",
+            "TRAVEL_FLIGHTS",
+        }
+    )
+)
+
+
 #: How many groups `money_summary` puts in one payload.
 #:
 #: 🔴 A cap on the PAYLOAD, never on the arithmetic. The totals beside the rows
@@ -2841,6 +2968,10 @@ MAX_GROUPS = 200
 def _flow_class() -> ColumnElement[str]:
     """Which side of the household boundary this money crossed.
 
+    The question this answers is **"did this money cross the household boundary,
+    and if not, where did it go instead"** -- not "what did the aggregator call
+    this row". Every decision below follows from that one sentence.
+
     🔴 **Classify, do not filter** -- the owner's ruling on #18. Every row is
     kept and gains a class; nothing is dropped, precisely so there is no
     invisible undercount. That is also why this emits no `rule-applied` warning:
@@ -2848,7 +2979,12 @@ def _flow_class() -> ColumnElement[str]:
     total excludes them on purpose", and nothing here excludes anything, so
     saying it would be a false statement about the answer carrying it.
 
-    🔴 **Read from `source_category_primary`, NEVER from `category_override`.**
+    🔴 **Read from `source_category_detailed`, NEVER from `category_override`.**
+    The primary category is too coarse to carry the distinction that matters:
+    `TRANSFER_IN` alone is why a payroll deposit landed in `internal_transfer`
+    and income read $0 on this surface. The detailed name separates a paycheque
+    from a movement between two accounts the household holds.
+
     An override is local interpretation of what a transaction was *for*; the
     flow class is about whose money moved and in which direction. Letting a
     re-categorisation reclassify a transfer as spending would reintroduce the
@@ -2863,11 +2999,28 @@ def _flow_class() -> ColumnElement[str]:
     """
     return case(
         (
-            transactions.c.source_category_primary.in_(sorted(_INTERNAL_TRANSFER_CATEGORIES)),
+            and_(
+                transactions.c.source_category_detailed.in_(sorted(_TRANSFER_SHAPED_DETAILED)),
+                # 🔴 The evidence, not the label. A transfer-shaped row is only a
+                # transfer when the other leg is HERE -- a matching, opposite row
+                # on another enrolled account, recorded at derivation time. An
+                # ATM withdrawal, a payment to a person and ACH rent are all
+                # transfer-shaped and all money gone.
+                transactions.c.transfer_pair_id.is_not(None),
+            ),
             "internal_transfer",
         ),
         (
-            transactions.c.source_category_primary.in_(sorted(_DEBT_SERVICE_CATEGORIES)),
+            and_(
+                transactions.c.source_category_detailed.in_(sorted(_DEBT_SERVICE_DETAILED)),
+                # 🔴 The liability has to be one THIS STORE HOLDS. A mortgage to
+                # a lender the operator never enrolled is money out of the
+                # household; a card payoff where the card is enrolled is not,
+                # because that card's own purchases are already counted and
+                # counting the payoff too is the double count this class exists
+                # to prevent.
+                transactions.c.transfer_pair_id.is_not(None),
+            ),
             "debt_service",
         ),
         else_="external_spend",
@@ -3276,6 +3429,7 @@ def money_summary(
             extra_caveats=(
                 _uncovered_caveat(uncovered)
                 + _superseded_caveat(spans)
+                + _unmatched_transfer_caveat(conn)
                 + _window_coverage_caveat(all_coverage, since)
                 + _not_active_caveat(not_active)
                 + _roster_observed_empty_caveat(not_active)
