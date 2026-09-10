@@ -508,7 +508,7 @@ yourself."*
 ### A19. The owner's GitHub handle appears in tracked artifacts
 **Where:** `.claude/settings.json:6`, `.prawduct/project-state.yaml:733,1219`, and ~10
 `.prawduct/artifacts/*.md` issue references (`brookstalley/bankmachine#NN`).
-**Evidence:** grep over tracked files for `brookstalley|Brooks Talley|/Users/|noun.band` returns
+**Evidence:** grep over tracked files for the operator's name, handle, home path and mail domain returns
 only these plus the test fixtures' deliberate `/Users/someone/` literals
 (`tests/preferences/test_no_hardcoded_paths.py:23,132,156,167,182,192`). **No institution name, no
 balance, no home directory path, and no email leaks into any tracked file** — the roster boundary
@@ -516,7 +516,7 @@ holds. The handle is a repo path, which is unavoidable for public issue referenc
 because `project-preferences.md:128` states the norm as "no … operator name … in any commit
 reaching a remote".
 **Fix:** none needed; if the norm is meant literally, amend the norm's wording to carve out the
-repository slug rather than chase the references.
+repository slug rather than hunt down the references.
 
 ### A20. `.prawduct/artifacts/mcp-production-readiness.md` reads as current but is a 2026-09-08 snapshot with superseded facts
 **Where:** `mcp-production-readiness.md:1-8`, `:227-238`, `:475-486`.
@@ -659,7 +659,7 @@ to prevent (`docs/system-requirements.md:164-168`).
 *Failure looks like:* the cap refusal (`ConnectionCapReachedError`, `enroll.py:699-701`) — raised
 **before** the link token so you spend no browser trip (`operational-spec.md:110-113`); a timeout
 (exit 1); or an exit-1 success carrying *"the connection this replaced could not be removed at the
-aggregator, so it may still be billing"* (`enroll.py:541-552`) — chase that one, it is money.
+aggregator, so it may still be billing"* (`enroll.py:541-552`) — follow that one up, it is money.
 *Why one institution:* `docs/system-requirements.md:772-774`, build step 3 — verify the granted
 window on ONE real connection before enrolling any others.
 

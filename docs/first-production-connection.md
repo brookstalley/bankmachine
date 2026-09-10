@@ -203,7 +203,7 @@ exists to prevent: what was granted is not measurable until the aggregator finis
 *Failure looks like:* a refusal because the connection cap is reached — raised **before** the link
 token, so no browser trip is wasted; a timeout, which exits 1; or a *successful* enrollment that
 still exits 1 carrying *"the connection this replaced could not be removed at the aggregator, so it
-may still be billing"* (`cmd_enroll`, `src/bankmachine/cli/enroll.py`). Chase that last one — it is
+may still be billing"* (`cmd_enroll`, `src/bankmachine/cli/enroll.py`). Follow that last one up — it is
 money leaving monthly for an Item you meant to drop.
 
 *Why one institution:* `docs/system-requirements.md` § 8, build step 3 — verify the granted window
