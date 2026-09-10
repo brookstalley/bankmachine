@@ -127,11 +127,26 @@ amendment with its own rationale, and the coordinator writes it — not the dele
 - [x] **01 · Wave 1 — four independent file sets** *(delegated ×4)* — #62, #6, #81, #59
 - [x] **02 · The foundation: `rule-applied` gets its meaning, `ledger_date` gets a column** *(coordinator)* — #34's amendment, #80
 - [x] **03 · Wave 2 — currency, connector hygiene, CLI exit codes** *(delegated ×3)* — #86, #84, #28, #79, #75, #34 closed; **#82 partial**
-- [ ] **04 · The read path** *(coordinator)*
-- [ ] **05 · Convergence and the classifier** *(delegated + coordinator)*
+- [x] **04 · The read path** *(coordinator)* — #85, #74, #72, #69, #83, #56
+- [x] **05 · Convergence and the classifier** *(delegated + coordinator)* — #68, #66
 - [ ] **06 · Integration, backlog reconciliation** *(coordinator)*
 
-**Context.** Branch cut from `develop` at `ade9a15`. Baseline was green at 1102 before any
+**Context.** All twenty items are built. Suite green at **1197**, all **175** go-red cases still
+RED, ruff/format/mypy clean. Nineteen closed outright; **#82 is half-fixed and stays open** with
+its residual recorded above.
+
+🔴 **Five schema migrations landed in one sweep** — 005 `ledger_date`, 006 nullable
+`accounts.currency` (the store's first table rebuild, which changed the migration runner), 007
+`lineage_id`, 008 the Item's consent expiry and standing error, 009 `transfer_pair_id`. Schema is
+at **9** and `DERIVATION_VERSION` at **8**. An existing store needs `bankmachine store rebuild`
+after upgrading: three of those columns are derivation-owned and land empty, and the read path
+discloses each null rather than reading it as an answer.
+
+🔴 **The go-red harness caught a stale anchor at nearly every integration**, six times in total,
+and twice caught something worse than a moved line — a norm whose test had stopped being able to
+prove it. Do not treat an anchor re-pin as bookkeeping: read what moved before re-pinning it.
+
+**Original context.** Branch cut from `develop` at `ade9a15`. Baseline was green at 1102 before any
 change. Six items landed across five commits; the suite was green at 1126 after chunk 02 and all
 175 go-red cases still report RED.
 
