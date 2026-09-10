@@ -37,8 +37,8 @@ from bankmachine.secrets import (
 )
 from bankmachine.store.connection import DatastoreMissingError, inspect, remedy_for
 from bankmachine.store.engine import reader_connection, transaction, writer_connection
-from bankmachine.store.schema import connections, institutions
-from bankmachine.store.types import UtcInstant, now_utc
+from bankmachine.store.schema import accounts, connections, institutions
+from bankmachine.store.types import UtcInstant, calendar_date, now_utc
 
 logger = get_logger("cli.connections")
 
@@ -351,9 +351,35 @@ def explain_cap(live: list[ConnectionRow], cap: int) -> str:
 
 
 def _mark_retired(conn: SAConnection, *, connection_id: int, now: UtcInstant) -> None:
-    """Retire without deleting. AC-1.6 and AC-6.5 -- the history outlives the connection."""
+    """Retire without deleting. AC-1.6 and AC-6.5 -- the history outlives the connection.
+
+    🔴 **The accounts are closed here too, because nothing will ever observe them
+    again.** Every absence signal this product has is measured against a later
+    roster observation, and a retired connection is never rostered: the accounts'
+    last observation still matches the connection's, so they keep reading `active`
+    and their last captured balance keeps being summed as a present-day one. The
+    operator retiring the connection is the declaration that it is over, and
+    AC-12.6 makes the stored declaration outrank the derived signal -- so it is
+    written down rather than inferred by every reader separately.
+
+    Only the accounts still `active` are touched. One already closed was closed on
+    its own date, and that date is a fact about the account rather than about the
+    day somebody tidied up the connection.
+    """
     conn.execute(
         update(connections)
         .where(connections.c.connection_id == connection_id)
         .values(status="retired", retired_at=now, updated_at=now)
+    )
+    conn.execute(
+        update(accounts)
+        .where(
+            accounts.c.connection_id == connection_id,
+            accounts.c.lifecycle_status == "active",
+        )
+        .values(
+            lifecycle_status="inactive",
+            closed_date=calendar_date(now.date()),
+            updated_at=now,
+        )
     )
