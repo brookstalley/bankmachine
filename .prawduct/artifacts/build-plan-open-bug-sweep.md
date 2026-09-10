@@ -244,6 +244,14 @@ capped at 10/account) · #83's read half (consent expiry → `partial` at 14 day
 passed; `item.error` → `degraded`) · #56 (relational scope sentence, three narrating comments swept,
 one-pass `_account_lifecycle` with the null-is-load-bearing comment verbatim).
 
+🔴 **Carried in from chunk 03, and it must not be lost.** #79's fix stops `last_success_at` being
+stamped at `INITIAL_UPDATE_COMPLETE`, which is right — but it changes which caveat the read path
+emits for that connection. It now takes the `last_success is None` branch and says *"X has never
+completed a sync, so it contributes no data yet"*, which is false for a connection that HAS
+applied pages. Still `partial`, still the right kind; the sentence is now wrong. #79 exists to
+stop the CLI and the read path disagreeing about a partial backfill, and this is the one place
+they still do.
+
 ### Chunk 05: Convergence and the classifier
 
 - **#68** — account convergence on `source_persistent_account_id` scoped to the institution;
