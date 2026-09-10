@@ -225,6 +225,11 @@ such source. A backup of the datastore without the key is a backup of noise.
 characters in the keychain; it belongs in the operator's password manager or a paper copy in a safe —
 somewhere that survives the machine's disk *and* the machine's keychain.
 
+The operator-facing form of this — the keychain recipe, and the moment in the cutover to run it,
+which is immediately after `store init` and before any data exists — is
+`docs/first-production-connection.md`, along with the ordered production procedure, the day-one
+checks and the standing daily routine this section's guarantees depend on.
+
 ### What backup looks like *(built)*
 
 ```
