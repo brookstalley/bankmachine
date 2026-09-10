@@ -38,7 +38,12 @@ governed_by:
       - "log redaction happens at the formatter and is keyed to credential shape → conforms; the derivers' new log lines name accounts by their local integer id rather than by an opaque source id the formatter would blank"
 partition: delegated — five chunks, five worktrees, disjoint file ownership stated per chunk; the coordinator owns integration (the combined suite, the live stdio and MCP probes, the Critic, the merge). Serial would cost five times the wall clock on work whose seams are three known file pairs, named below
 last_validated: 2026-09-10
+lifecycle: completed
+archived: 2026-09-10
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build Plan — production cutover hardening
 
