@@ -133,11 +133,19 @@ REQUEST_SCOPED_KINDS: tuple[str, ...] = (
     # account on it is separately marked absent, which is the account-level
     # truth; this kind is the connection-level anomaly beside it, and the pair
     # is the point. Fourteen frozen balances and a broken feed look identical
-    # from the account rows alone -- AC-12.5 used to suppress the account-level
-    # truth to avoid publishing that ambiguity, which made a one-account
-    # connection unable to report its only account absent at all.
-    # Request-scoped, on the same test as its neighbours: it fires only when
-    # THIS request's scope actually holds an account on such a connection.
+    # from the account rows alone, so suppressing either one to avoid publishing
+    # that ambiguity leaves a one-account connection unable to report its only
+    # account absent at all.
+    #
+    # 🔴 **Its scope is RELATIONAL, like `sign_convention_unverified`'s above,
+    # and the two emitters are not the same shape.** On an answer surface it is
+    # request-scoped: it fires only where THIS request's scope holds an account
+    # on such a connection. On the verification surface it is a per-connection
+    # finding, which reaches a case the request-scoped one never can -- a
+    # connection holding NO accounts at all has nothing to bring it into scope,
+    # and that connection is the one an operator most needs told about. Reading
+    # this entry as a single firing rule and making the health emitter obey it
+    # would delete exactly that case.
     "roster_observed_empty",
 )
 

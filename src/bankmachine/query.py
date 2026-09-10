@@ -673,8 +673,25 @@ def _account_lifecycle(conn: SAConnection) -> dict[int, AccountLifecycle]:
     ).all()
 
     observed = _roster_observations(conn)
-    seen: dict[int, CalendarDate | None] = {}
+
+    # 🔴 The connection-level anomaly, from the ONE producer that defines it
+    # rather than from a second predicate written here. `get_pipeline_health`
+    # asks the same question of the same store, and two spellings of "the last
+    # roster read listed nothing" can disagree -- which on this surface means a
+    # health check calling a connection healthy while the answer beside it says
+    # its roster came back empty. Handed the observations already read above, so
+    # one answer reads them once.
+    empty_rostered = _connections_with_an_empty_roster(conn, observed=observed)
+
+    # 🔴 ONE pass. This read used to run two: the first accumulated the
+    # connection's observation as a maximum over its OWN accounts, which is the
+    # design `_roster_observations` replaced, and once that went the loop's only
+    # remaining job was a dict the second pass re-derived a line later. Two
+    # passes over one result set, agreeing by construction and able to drift by
+    # edit.
+    lifecycle: dict[int, AccountLifecycle] = {}
     for row in result:
+        account_id = int(row[0])
         connection_id = None if row[1] is None else int(row[1])
         # 🔴 A null `last_seen_date` means NO ROSTER OBSERVATION IS RECORDED for
         # this account, and it is left null rather than read as anything else.
@@ -699,22 +716,6 @@ def _account_lifecycle(conn: SAConnection) -> dict[int, AccountLifecycle]:
         # absence is measured against a successful observation and never against
         # silence. A pre-migration null IS silence.
         last_seen = None if connection_id is None or row[5] is None else calendar_date(row[5])
-        seen[int(row[0])] = last_seen
-
-    # 🔴 The connection-level anomaly, from the ONE producer that defines it
-    # rather than from a second predicate written here. `get_pipeline_health`
-    # asks the same question of the same store, and two spellings of "the last
-    # roster read listed nothing" can disagree -- which on this surface means a
-    # health check calling a connection healthy while the answer beside it says
-    # its roster came back empty. Handed the observations already read above, so
-    # one answer reads them once.
-    empty_rostered = _connections_with_an_empty_roster(conn, observed=observed)
-
-    lifecycle: dict[int, AccountLifecycle] = {}
-    for row in result:
-        account_id = int(row[0])
-        connection_id = None if row[1] is None else int(row[1])
-        last_seen = seen[account_id]
         roster = None if connection_id is None else observed.get(connection_id)
         # 🔴 AC-12.6: the operator's declaration outranks the derived signal, and
         # it is checked FIRST rather than merged with it. `_OPERATOR_OWNED` keeps

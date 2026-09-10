@@ -1434,12 +1434,12 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "test_the_roster_observation_is_a_maximum_so_a_replay_cannot_move_it_back",
     ),
     (
-        # 🔴 The break is the design the amendment REVERSED, written out in
-        # full, rather than a constant that makes the read return nothing. The
-        # regression this case exists to catch is somebody restoring the derived
-        # maximum because it needs no column and cannot disagree with its rows --
-        # and under it every other lifecycle test still passes, which is exactly
-        # why the N=1 case had to be written before it could be caught.
+        # 🔴 The break is the DERIVED MAXIMUM written out in full, rather than a
+        # constant that makes the read return nothing. That design is the one a
+        # reader keeps reaching for -- it needs no column and cannot disagree
+        # with its own rows -- and under it every other lifecycle test still
+        # passes, so the N=1 case had to exist before this could be caught at
+        # all. A break that merely empties the read would prove far less.
         "AC-12.5: absence is measured against the RECORDED observation, at N=1 too",
         QUERY,
         "            select(connections.c.connection_id, connections.c.roster_observed_date)",
