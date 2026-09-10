@@ -1410,20 +1410,22 @@ INSTRUCTIONS_BUDGET = 1800
 def _instructions(config: Config) -> str:
     """The primer a consuming agent is handed once, at handshake.
 
-    🔴 **A budget, not a document, because the client is what decides how much
-    of this the model ever sees.** Measurement: one client delivered 2,045 of
-    6,673 characters and cut mid-table, so two thirds of the guidance — six
-    warning kinds, the whole envelope table, and the closing pointer to the
-    reference resources — never reached the model at all. What is cut is
-    invisible: the text that survives reads complete.
+    🔴 **A budget, not a document, because the CLIENT decides how much of this
+    the model ever sees.** Measured on this surface: a client handed the model
+    2,045 characters of a 6,673-character text and cut mid-table, dropping two
+    thirds of the guidance. Nothing announces the cut — the surviving prefix
+    reads complete — so length here buys the appearance of coverage rather than
+    coverage, and whatever falls past the cut is guidance the agent was never
+    given.
 
-    So the layering is inverted. This text carries only what an agent cannot
-    act correctly WITHOUT, it opens with the two resource URIs rather than
-    closing with them, and everything else is SERVED by URI at no per-session
-    cost. `_reference_documents()` is the authority: the envelope reference
-    names every field a tool publishes and the warning reference names every
-    kind the vocabulary declares, both derived rather than restated, and a test
-    holds their UNION with this text against the wire.
+    So the layering runs the other way: this text carries only what an agent
+    cannot act correctly WITHOUT, it opens with the two resource URIs rather
+    than closing with them, and every table and every field-level explanation is
+    SERVED by URI at no per-session cost. `_reference_documents()` is the
+    authority — the envelope reference names every field a tool publishes and
+    the warning reference names every kind the vocabulary declares, both derived
+    rather than restated — and a test holds their UNION with this text against
+    the wire, so nothing can fall out of both.
 
     🔴 **`INSTRUCTIONS_BUDGET` is the ceiling, and a test holds this text to
     it** -- along with the two URIs being in the opening lines, since a
