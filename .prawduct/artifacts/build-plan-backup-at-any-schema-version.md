@@ -143,10 +143,20 @@ of every future caller. `copying_writer` is one name with one caller, exactly as
 
 ## Status
 
-- [ ] Chunk 01 — the copying handle, and the remedy asserted
+- [x] Chunk 01 — the copying handle, and the remedy asserted
 
 ## Context
 
 Branch `fix/backup-at-any-schema-version` off `develop` at `3985f77`. Found while rehearsing
 `docs/first-production-connection.md` § 2.3 against the sandbox store, which sits at schema 4
 against a build serving 9.
+
+**Closed 2026-09-10** across three commits — `4267038` (the copying handle), `0fbf985` (the
+per-state remedy, the optional version, the source-level exemption walk) and `acc80d4` (restoring a
+settings file a broad `git add` had swept in). Four Critic rounds; the last returned 0 blocking,
+0 warning, 0 note. Suite green at 1271.
+
+**Not built here, deliberately:** nothing pins `enabledPlugins["prawduct@prawduct"]` to `true`, so
+the sweep that flipped it would flip it again. The remedy that landed is procedural (a
+`learnings.md` entry); a `tests/preferences/` guard is the stronger one and is judgeable work, so it
+belongs in a chunk of its own rather than riding this one. Filed to the backlog.
