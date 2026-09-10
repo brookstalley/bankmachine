@@ -129,11 +129,20 @@ amendment with its own rationale, and the coordinator writes it — not the dele
 - [x] **03 · Wave 2 — currency, connector hygiene, CLI exit codes** *(delegated ×3)* — #86, #84, #28, #79, #75, #34 closed; **#82 partial**
 - [x] **04 · The read path** *(coordinator)* — #85, #74, #72, #69, #83, #56
 - [x] **05 · Convergence and the classifier** *(delegated + coordinator)* — #68, #66
-- [ ] **06 · Integration, backlog reconciliation** *(coordinator)*
+- [x] **06 · Integration, backlog reconciliation** *(coordinator)* — Critic cleared; backlog held for the owner
 
-**Context.** All twenty items are built. Suite green at **1197**, all **175** go-red cases still
-RED, ruff/format/mypy clean. Nineteen closed outright; **#82 is half-fixed and stays open** with
+**Context.** All twenty items are built. 🔴 **Suite green — cite `prawduct-hook test-status`, not
+a number written here.** The total was copied into this line once and was stale three commits
+later; the evidence store holds it per tree and is the only carrier that stays true. All **175**
+go-red cases still RED, ruff/format/mypy clean. Nineteen closed outright; **#82 is half-fixed and stays open** with
 its residual recorded above.
+
+🔴 **Four review rounds, and every one caught something real.** The cumulative found 4 blocking,
+the first verify 2, the second 1; the third cleared. Two of those were defects in guards this
+sweep itself added — an assertion that was exact-case while its subject was lowercase, so it
+passed over the very instance it was written for; and a caveat whose store function was pinned
+while its EMISSION was not, so the call site could have been deleted with the suite green. **A
+guard is not coverage until something has been seen to fail because of it.**
 
 🔴 **Five schema migrations landed in one sweep** — 005 `ledger_date`, 006 nullable
 `accounts.currency` (the store's first table rebuild, which changed the migration runner), 007

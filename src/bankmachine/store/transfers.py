@@ -48,9 +48,16 @@ TRANSFER_WINDOW_DAYS = 3
 #:
 #: 🔴 A row is only `internal_transfer` when a matching opposite leg is FOUND on
 #: another enrolled account. These names are the candidates; `transfer_pair_id`
-#: is the evidence. An ATM withdrawal, a payment to a person, ACH rent to a
-#: landlord -- all transfer-shaped, none of them a transfer, because from the
-#: household's point of view the money is gone.
+#: is the evidence. A payment to a person and ACH rent to a landlord are both
+#: transfer-shaped and neither is a transfer, because from the household's point
+#: of view the money is gone.
+#:
+#: 🔴 **`TRANSFER_OUT_WITHDRAWAL` is deliberately NOT here**, and it is the entry
+#: a later reader is most likely to add. Cash out of a machine is definitionally
+#: not a movement to another account this store holds, so it reaches
+#: `external_spend` by CLASSIFICATION rather than by failing to find a leg --
+#: adding it would make every ATM withdrawal a candidate, let one pair against
+#: an unrelated deposit, and put the household's cash back inside the boundary.
 #:
 #: 🔴 **`TRANSFER_IN_PAYROLL` is deliberately absent, and so is every `INCOME_*`
 #: name.** Wages arriving are external value ENTERING the household, whatever

@@ -1193,10 +1193,14 @@ def _unmatched_transfer_caveat(
 
     A transfer-shaped row with no counterparty leg in this store counts as money
     leaving the household. That is the conservative direction and it is usually
-    right -- an ATM withdrawal, a payment to a person, rent to a landlord are all
-    transfer-shaped and all gone. But it is a JUDGEMENT, and the other
+    right -- a payment to a person and rent to a landlord are both
+    transfer-shaped and both gone. But it is a JUDGEMENT, and the other
     explanation is ordinary: the counterparty account exists and the operator has
     simply not enrolled it.
+
+    🔴 An ATM withdrawal is NOT among these. It never becomes a candidate, so it
+    is never a fallback -- counting it here would tell a reader the classifier
+    was unsure about a row it was certain of.
 
     🔴 So the count rides the answer. A judgement made silently over hundreds of
     rows is one nobody audits, and the operator's move -- enrol the other side,
@@ -2958,9 +2962,10 @@ def _flow_class() -> ColumnElement[str]:
                 ),
                 # 🔴 The evidence, not the label. A transfer-shaped row is only a
                 # transfer when the other leg is HERE -- a matching, opposite row
-                # on another enrolled account, recorded at derivation time. An
-                # ATM withdrawal, a payment to a person and ACH rent are all
-                # transfer-shaped and all money gone.
+                # on another enrolled account, recorded at derivation time. A
+                # payment to a person and ACH rent are both transfer-shaped and
+                # both money gone. An ATM withdrawal is not even transfer-shaped:
+                # it reaches `external_spend` by classification.
                 transactions.c.transfer_pair_id.is_not(None),
             ),
             "internal_transfer",
