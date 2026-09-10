@@ -305,7 +305,7 @@ exact failure AC-11.8 exists to prevent.
 | `lifecycle_status` | text | `active` \| `inactive` | |
 | `opened_date` | calendar date | nullable | |
 | `first_seen_date` | calendar date | required | |
-| `closed_date` | calendar date | nullable, `>= first_seen_date` | Operator-owned, like `lifecycle_status` |
+| `closed_date` | calendar date | nullable, `>= first_seen_date` | Operator-owned, like `lifecycle_status` — ⚠️ but **not yet encoded in `_OPERATOR_OWNED`**, so it is protected by the accounts deriver never emitting the key rather than by the guard. AC-15.1 rules that the declaration must carry it; the guard is corrected when #48 builds |
 | `source` | text | `aggregator` \| `manual` | Provenance, never lost (AC-7.4) |
 | `created_at` / `updated_at` | UTC instant | required | |
 | `last_seen_date` | calendar date | nullable | 🔴 The date this account was last listed on a successful roster observation, as a **monotone maximum** (AC-12.4). Migration 003; last in column order because `ALTER TABLE` appends |
