@@ -323,6 +323,56 @@ def test_backup_writes_a_verified_copy_and_reports_it(
     assert "verified:        yes" in out
 
 
+def test_backup_gives_the_ahead_copy_the_remedy_that_is_not_store_init(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """🔴 Two mismatch states, two remedies, and this is the one that inverts.
+
+    Migrations are forward-only. A copy AHEAD of this build is not migrated
+    forward by anything, so "run `store init`" sends the operator to a command
+    that applies nothing, reports nothing to do, and reads as "I tried the fix
+    and the fix is broken". The remedy is to upgrade the build instead, and this
+    asserts the note says so rather than merely saying something.
+    """
+    from bankmachine.store import connection
+
+    assert run(["store", "init"]) == 0
+    with connection.writer(cli_env) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        connection.stamp_schema_version(conn, SUPPORTED_SCHEMA_VERSION + 1)
+        conn.execute("COMMIT")
+    capsys.readouterr()
+    destination = cli_env.datastore_path.parent / "backup.db"
+
+    assert run(["store", "backup", str(destination)]) == 0
+    out = capsys.readouterr().out
+
+    assert f"schema version:  {SUPPORTED_SCHEMA_VERSION + 1}" in out
+    assert "verified:        yes" in out
+    assert "Update this bankmachine to the build that wrote it" in out
+    assert "do not run `bankmachine store init`" in out, (
+        "the ahead copy must be told NOT to run the migration command -- naming it here "
+        "is the defect this state exists to distinguish"
+    )
+
+
+def test_backup_says_nothing_about_the_version_when_this_build_serves_it(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The negative half, without which the note above could be unconditional.
+
+    An unconditional note trains the operator to skip it, and the ordinary
+    backup is the one they take most.
+    """
+    assert run(["store", "init"]) == 0
+    capsys.readouterr()
+    destination = cli_env.datastore_path.parent / "backup.db"
+
+    assert run(["store", "backup", str(destination)]) == 0
+
+    assert "this build serves" not in capsys.readouterr().out
+
+
 def test_backup_warns_that_the_copy_is_useless_without_the_key(
     cli_env: Config, caplog: pytest.LogCaptureFixture
 ) -> None:

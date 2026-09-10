@@ -473,9 +473,11 @@ one, because a build that does not recognize the datastore's schema version refu
 (`.prawduct/artifacts/operational-spec.md`, § the upgrade order):
 
 1. Disconnect the MCP client — that is enough; the server is a subprocess started at connect time.
-2. **`store backup` first.** Backup opens through the ordinary writer factory and cannot back up a
-   datastore at a version this build does not serve, so after the migration the old build can no
-   longer produce one.
+2. **`store backup` first.** This is the tidy order rather than a required one: a copy taken at the
+   version you are still running opens without being migrated first. 🔴 **If you have already
+   pulled, take the backup anyway** — `store backup` copies a datastore at any schema version,
+   including one this build cannot serve, and names the version the copy carries. Never reach for
+   `cp` here; it drops whatever is still in the WAL.
 3. `git pull && uv sync`.
 4. `uv run bankmachine store init` — the migration runner is idempotent and applies only what is
    pending.

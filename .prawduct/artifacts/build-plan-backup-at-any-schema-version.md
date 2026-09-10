@@ -19,6 +19,7 @@ governed_by:
   - artifact: operational-spec
     dispositions:
       - "§ Direction: *a backup destination is never created implicitly and never overwritten* → conforms; both refusals live in `back_up` above the handle and are untouched by this change"
+      - "§ Direction: *no filesystem path is hardcoded* → conforms; the copy's source is `config.datastore_path` and its destination is the operator's argument. `_verify` reaches the copy by `dataclasses.replace(config, datastore_path=destination)` rather than by constructing a path, which is the same rule held one layer in"
 ---
 
 # Build Plan — a datastore can be backed up at any schema version
@@ -115,6 +116,9 @@ of every future caller. `copying_writer` is one name with one caller, exactly as
   `initializing_writer` are the *only* handles that skip `_require_supported_schema`.
 - `back_up` still refuses an existing destination and an absent parent directory at an unservable
   version -- the operational-spec norm holding where the new path could have bypassed it.
+- The CLI note is covered both ways: it appears for a copy this build cannot serve and names
+  `store init` as the way forward, and it is ABSENT for an ordinary backup -- an unconditional
+  note trains the operator to skip the one that matters.
 
 **Artifacts, updated as part of the chunk**
 
@@ -124,7 +128,15 @@ of every future caller. `copying_writer` is one name with one caller, exactly as
   rewrite upgrade step 2 so the ordering is a convenience rather than a requirement.
 - `project-preferences.md` -- norm-registry row for the ruling's enforcement test.
 - `.prawduct/change-log.md` -- entry.
-- `docs/first-production-connection.md` § 2.3 -- no longer needs to warn about the ordering.
+- `docs/first-production-connection.md` § **5.4** -- rewritten. The ordering step gave the
+  limitation as its REASON ("backup opens through the ordinary writer factory and cannot back up a
+  datastore at a version this build does not serve"), which sent a post-pull operator to `cp`. It
+  now says the order is the tidy one rather than a required one, and 🔴 to take the backup anyway if
+  the pull already happened.
+  🔴 **This bullet first read "checked, no change owed", from a search that reached § 2.3 and
+  stopped.** § 2.3 genuinely has no ordering warning; § 5.4 did. Kept as a correction rather than
+  overwritten, because the wrong disposition is the reusable lesson
+  (`learnings.md` § *A truncated search proves nothing about what it did not reach*).
 
 **Done when:** the suite is green, the new tests are verified to go red without the fix, and
 `/prawduct:critic` returns zero blocking.

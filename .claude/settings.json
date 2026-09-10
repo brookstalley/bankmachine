@@ -1,4 +1,7 @@
 {
+  "enabledPlugins": {
+    "prawduct@prawduct": false
+  },
   "extraKnownMarketplaces": {
     "prawduct": {
       "source": {
@@ -8,8 +11,5 @@
       },
       "autoUpdate": true
     }
-  },
-  "enabledPlugins": {
-    "prawduct@prawduct": true
   }
 }

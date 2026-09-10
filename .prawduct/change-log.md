@@ -53,6 +53,20 @@ check — and verification reads the copy back with the reader's existing `requi
 The command names a copy whose version this build cannot serve, so a sound backup is not mistaken
 for a broken one when `store status` calls the restored file unhealthy.
 
+🔴 **The note carries the remedy for its own state, not one sentence for both.** Migrations are
+forward-only: a copy BEHIND this build is migrated forward by `store init`, and a copy AHEAD of it
+is not — telling that operator to run it sends them to a command that applies nothing and reads as
+"the fix is broken". A new `schema_problem_for()` is the single classifier, and the note takes its
+action clause from `remedy_for`, the vocabulary every other unhealthy-store surface already uses.
+`inspect()` asks the same classifier instead of repeating it.
+
+🔴 **A datastore recording NO schema version is copied and reported, not refused.** That is a
+migration that died between creating the file and stamping the version — the state most worth
+holding a copy of, and one the old code refused only by accident, because the reader used to raise
+first. Refusing a faithful copy while leaving it on disk is the zero-byte hazard in another costume.
+`BackupReport.schema_version` is optional accordingly, rendered as "none recorded" at all three
+surfaces: the report line, the note, and the verified-backup log record.
+
 **The norm decision:** `architecture.md`'s fourth Direction norm governs this, and it is **ruled at
 the edge rather than amended**. "Serve" means answering queries or writing derived data; `VACUUM
 INTO` copies pages of ciphertext, reads no table and answers no question, so the norm's why — "it

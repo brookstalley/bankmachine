@@ -456,3 +456,67 @@ def test_the_destination_norms_hold_at_an_unservable_version(
 
     with pytest.raises(BackupDestinationUnusableError):
         back_up(initialized_config, tmp_path / "no-such-dir" / "backup.db")
+
+
+def test_a_store_behind_this_build_reports_the_version_it_was_taken_at(
+    config: Config, tmp_path: Path
+) -> None:
+    """The state the fix exists for, as opposed to the forward-stamped stand-in.
+
+    The tests above stamp FORWARD because `schema_version` is append-only, which
+    reaches "this build does not serve it" by the only route a single INSERT
+    offers. It does not reach the state an operator actually arrives in, which
+    is a store the build has moved PAST -- so that one is built for real, by
+    applying a truncated migration list.
+    """
+    from bankmachine.secrets import generate_datastore_key, set_datastore_key
+    from bankmachine.store.migrations import MIGRATIONS, migrate
+
+    set_datastore_key(config, generate_datastore_key())
+    short = list(MIGRATIONS[:-1])
+    migrate(config, migrations=short)
+
+    report = back_up(config, tmp_path / "behind.db")
+
+    assert report.schema_version == short[-1].version
+    assert (
+        connection.schema_problem_for(report.schema_version)
+        is connection.DatastoreProblem.SCHEMA_BEHIND_BUILD
+    ), "a store the build has moved past must classify as behind, which is what earns `store init`"
+
+
+def test_a_store_that_records_no_schema_version_is_copied_and_reported(
+    config: Config, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """🔴 A migration that died between creating the file and stamping a version.
+
+    This is the state most worth having a copy of, and refusing it would put the
+    gap this change closes back one state over. The copy is faithful, so it is
+    verified and reported -- with the version's absence named rather than
+    smuggled through as a number.
+
+    Refusing while leaving the file on disk would be the zero-byte hazard in
+    another costume: a real file the command says is not a backup.
+    """
+    from bankmachine.secrets import generate_datastore_key, set_datastore_key
+
+    set_datastore_key(config, generate_datastore_key())
+    with connection.initializing_writer(config) as conn:
+        conn.execute("SELECT 1").fetchone()
+
+    # 🔴 At INFO, because the defect this guards does not raise. `%d` against a
+    # None version fails INSIDE the logging handler: the exception is swallowed,
+    # stderr gets "--- Logging error ---", and no record is written -- so a test
+    # that never builds the record cannot see it. The line matters because an
+    # unattended run leaves nothing else behind.
+    with caplog.at_level("INFO", logger="bankmachine"):
+        report = back_up(config, tmp_path / "no-version.db")
+
+    assert report.schema_version is None
+    assert report.destination.exists()
+    assert (
+        connection.schema_problem_for(None) is connection.DatastoreProblem.NO_SCHEMA_VERSION
+    )
+    verified = [r for r in caplog.records if "backup verified" in r.getMessage()]
+    assert verified, "the record an unattended run depends on was never written"
+    assert "none recorded" in verified[0].getMessage()

@@ -312,8 +312,13 @@ opens through `copying_writer` rather than the ordinary writer factory: a page-l
 question, so the check that stops a process serving an unrecognized schema has nothing to protect
 here (`architecture.md` § Direction, the fourth norm's 2026-09-10 ruling). This is what makes 🔴 "do
 not use `cp`" unconditional — there is no longer a case the command cannot cover. The copy reports
-the version it was taken at, and says so when this build cannot serve it; restore it and run
-`bankmachine store init` to bring it forward.
+the version it was taken at, and says so when this build cannot serve it — 🔴 with the remedy for
+**that** state rather than one sentence for both: a copy BEHIND this build is migrated forward by
+`store init`, and a copy AHEAD of it is not, because migrations are forward-only. The note takes its
+action clause from `remedy_for`, the vocabulary every other unhealthy-store surface uses, so the two
+cannot drift apart. A copy recording **no** version is reported rather than refused: that is a
+migration that died between creating the file and stamping the version, which is the state most
+worth holding a copy of.
 
 **Still manual:** nothing schedules this. The command exists; running it is the operator's, and
 automating it is not yet specified.

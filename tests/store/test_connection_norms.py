@@ -8,8 +8,10 @@ never been red is a claim, not a check.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import os
+import pathlib
 import subprocess
 import sys
 import textwrap
@@ -435,6 +437,37 @@ def test_only_the_two_named_roles_are_exempt_from_the_schema_check(
     for name in sorted(exempt):
         with getattr(connection, name)(initialized_config) as conn:
             assert connection.read_schema_version(conn) == future
+
+    # 🔴 The behavioural walk above can only reach handles it knows how to CALL,
+    # which is every one taking a `Config` and no other. A handle with a
+    # different signature would open the datastore and never be tried. So the
+    # claim is closed at the source: any function that opens through `_writer`
+    # either checks the schema or is one of the two named roles, whatever its
+    # parameters look like.
+    tree = ast.parse(pathlib.Path(connection.__file__).read_text(encoding="utf-8"))
+    opens_the_datastore = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and any(
+            isinstance(call.func, ast.Name) and call.func.id == "_writer"
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call)
+        )
+    }
+    assert opens_the_datastore, "the source walk found no writer at all, so it proves nothing"
+
+    for name, node in sorted(opens_the_datastore.items()):
+        checks = any(
+            isinstance(call.func, ast.Name) and call.func.id == "_require_supported_schema"
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call)
+        )
+        assert checks or name in exempt, (
+            f"{name}() opens the datastore through the writer factory without checking the "
+            f"schema version, and is not one of the two roles ruled exempt. Either it checks, "
+            f"or the ruling in architecture.md grows a third entry and this set grows with it"
+        )
 
 
 def test_status_reports_an_unrecognized_schema_version_as_unhealthy(

@@ -8,7 +8,7 @@ enforceable by a structural test rather than by review, and it is why
 There are exactly two roles, and role membership is a property of how a handle
 was constructed rather than of which command asked for it:
 
-* **Writer** -- `writer()` and `initializing_writer()`. Both route through one
+* **Writer** -- `writer()`, `initializing_writer()` and `copying_writer()`. All route through one
   private factory that takes the exclusive advisory lock *before* it returns a
   handle. There is no other way to obtain a connection that can write.
 * **Reader** -- every read-role handle comes from `_open_read_role`, which
@@ -217,6 +217,29 @@ _REMEDIES: Final[dict[DatastoreProblem, str]] = {
 _MISSING_REMEDIES = set(DatastoreProblem) - set(_REMEDIES)
 if _MISSING_REMEDIES:  # pragma: no cover - import-time guard
     raise RuntimeError(f"DatastoreProblem members with no remedy: {sorted(_MISSING_REMEDIES)}")
+
+
+def schema_problem_for(version: int | None) -> DatastoreProblem | None:
+    """Which unhealthy state a recorded schema version puts a datastore in.
+
+    🔴 One home, because the three states take three different remedies and a
+    caller deciding for itself gets the common one right and the rare ones
+    wrong. `migrate()` is forward-only: "run the migrations" is correct for a
+    store BEHIND this build, does nothing for one AHEAD of it, and the operator
+    who runs it is told there was nothing to apply and never learns the real fix
+    is to upgrade the reader.
+
+    `None` means the version is the one this build serves.
+    """
+    if version is None:
+        return DatastoreProblem.NO_SCHEMA_VERSION
+    if version == SUPPORTED_SCHEMA_VERSION:
+        return None
+    return (
+        DatastoreProblem.SCHEMA_AHEAD_OF_BUILD
+        if version > SUPPORTED_SCHEMA_VERSION
+        else DatastoreProblem.SCHEMA_BEHIND_BUILD
+    )
 
 
 def remedy_for(problem: DatastoreProblem | None) -> str:
@@ -650,20 +673,14 @@ def inspect(config: Config) -> DatastoreStatus:
             journal = conn.execute("PRAGMA journal_mode").fetchone()
             version = read_schema_version(conn)
             problem = None
-            reason = None
-            if version is None:
+            reason = schema_problem_for(version)
+            if reason is DatastoreProblem.NO_SCHEMA_VERSION:
                 problem = (
                     "no schema version recorded -- datastore is uninitialized, "
                     "or a migration did not complete"
                 )
-                reason = DatastoreProblem.NO_SCHEMA_VERSION
-            elif version != SUPPORTED_SCHEMA_VERSION:
+            elif reason is not None:
                 problem = f"schema version {version} is not served by this build"
-                reason = (
-                    DatastoreProblem.SCHEMA_AHEAD_OF_BUILD
-                    if version > SUPPORTED_SCHEMA_VERSION
-                    else DatastoreProblem.SCHEMA_BEHIND_BUILD
-                )
             return DatastoreStatus(
                 path=path,
                 exists=True,
