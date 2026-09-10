@@ -59,7 +59,7 @@ Norms. These bind future work; departure is a recorded decision, never silent
 | | |
 |---|---|
 | Platform | **macOS (Apple Silicon), native. Not containerized.** |
-| Runtime | Python — `requires-python >= 3.11`; the pinned interpreter is **3.14** |
+| Runtime | Python — `requires-python >= 3.14`, the same number as the pinned interpreter, because nothing here runs on another |
 | Package manager | `uv`, with `uv.lock` pinning the full dependency graph |
 | Install shape | A git clone plus `uv sync`. There is no published package |
 | Deploy target | **This machine.** No staging, no remote, nothing to roll out to |

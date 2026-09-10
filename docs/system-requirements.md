@@ -91,7 +91,7 @@ file imports  ──┘                                                         
                                                                                  (proxied to analyst agent)
 ```
 
-- **Runtime:** Python 3.11+, native on macOS (Apple Silicon). Not containerized.
+- **Runtime:** Python 3.14 (the floor tracks the pinned interpreter; see `pyproject.toml`), native on macOS (Apple Silicon). Not containerized.
 - **Datastore:** SQLCipher (Community Edition), single file. Key held in the OS keychain.
 - **Repo:** a git repo. Data, logs, and secrets are gitignored.
 - **Scheduling:** an OS-level user agent, daily. Survives reboot; requires no open terminal.
