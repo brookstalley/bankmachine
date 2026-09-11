@@ -81,15 +81,25 @@ CONTINUATION: Final = "         ...> "
 #: answer questions about data, and that is one of them.
 NULL_DISPLAY: Final = "NULL"
 
-_HELP: Final = """\
+#: 🔴 The read-only guarantee, in ONE place because the shell states it on three
+#: surfaces -- the banner, `--help`, and `.help` -- and a sweep that reaches two
+#: of them leaves the operator a surface that disagrees about what the handle
+#: can do. It reached exactly two once.
+#:
+#: It ends on "them" deliberately. The earlier wording closed on a demonstrative
+#: ("...and no PRAGMA changes that"), which parses as readily as a conjunction
+#: and left the sentence apparently waiting for a clause that never came.
+READ_ONLY_SENTENCE: Final = "writes are refused, and no PRAGMA re-enables them"
+
+_HELP: Final = f"""\
   .tables            list the tables in this datastore
   .schema [table]    show the DDL, for one table or all of them
   .help              this list
   .quit / .exit      leave the shell (Ctrl-D does too)
 
 Anything else is SQL, terminated by a semicolon. Statements may span lines.
-This handle is read-only at the file, so writes are refused whatever the
-session PRAGMAs say. Access tokens and account numbers are redacted on the way
+This handle is read-only at the file: {READ_ONLY_SENTENCE}.
+Access tokens and account numbers are redacted on the way
 out (AC-10.3); account masks are left intact, since they are what the redaction
 exists to preserve."""
 
@@ -105,7 +115,7 @@ def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
             "An authenticated SQL prompt on the encrypted datastore. Page encryption "
             "breaks ad-hoc SQL tooling -- stock sqlite3 reads this file as corrupt -- so "
             "this is how the datastore gets inspected. The handle is read-only at the "
-            "file: writes are refused, and no PRAGMA typed at this prompt changes that. "
+            f"file: {READ_ONLY_SENTENCE}. "
             "Output is redacted for access tokens and account numbers."
         ),
     )
@@ -183,17 +193,7 @@ def _schema_identifiers(conn: connection.Connection) -> frozenset[str]:
 def _print_banner(config: Config, out: OutputStream) -> None:
     print(f"bankmachine sync shell -- environment {config.environment.upper()}", file=out)
     print(f"datastore: {config.datastore_path}", file=out)
-    # 🔴 "no PRAGMA re-enables them", not "no PRAGMA changes that". The
-    # demonstrative read as a conjunction -- "changes that <clause>" -- and
-    # stranded the reader on a clause that never arrived, on the one line naming
-    # the read-only guarantee. A reader who thinks this line is broken has
-    # reason to doubt the guarantee it states, which is the opposite of what a
-    # banner is for. The comma closes the first clause before `and`, and naming
-    # writes outright says the property instead of pointing at it.
-    print(
-        "role:      read-only at the file; writes are refused, and no PRAGMA re-enables them",
-        file=out,
-    )
+    print(f"role:      read-only at the file; {READ_ONLY_SENTENCE}", file=out)
     print("output:    access tokens and account numbers redacted (AC-10.3)", file=out)
     print("type .help for the command list, .quit to leave", file=out)
 

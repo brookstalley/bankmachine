@@ -51,10 +51,16 @@ bankmachine sync shell
 **Recorded session** (re-run 2026-09-06 after the review fixes, against a scratch datastore seeded
 with two accounts; the datastore path is elided):
 
+🔴 **This transcript is what that session printed, including the `role:` line step 1 later failed
+on.** It was briefly rewritten to the post-fix wording on 2026-09-10 and has been put back: a dated
+transcript is evidence of a run, and editing it to show output nobody saw makes it evidence of
+nothing — on the very step that exists because only a human catches this class. The line now reads
+`writes are refused, and no PRAGMA re-enables them` (#89). Re-date this block only by re-running it.
+
 ```
 bankmachine sync shell -- environment SANDBOX
 datastore: /tmp/.../opcheck/store.db
-role:      read-only at the file; writes are refused, and no PRAGMA re-enables them
+role:      read-only at the file; writes are refused and no PRAGMA changes that
 output:    access tokens and account numbers redacted (AC-10.3)
 type .help for the command list, .quit to leave
 bankmachine> SELECT a.name, a.mask, a.balance_class, b.current_minor

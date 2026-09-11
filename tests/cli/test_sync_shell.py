@@ -197,29 +197,63 @@ def test_the_banner_names_the_four_things_before_the_first_prompt(
     assert rest, "nothing followed the banner, so this proves nothing about order"
 
 
-def test_the_banner_role_line_does_not_strand_the_reader_mid_clause(
+def _shell_parser_description() -> str:
+    """The `sync shell --help` text, read from a real parser rather than a copy."""
+    import argparse
+
+    from bankmachine.cli import sync as sync_module
+
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers()
+    sync_module.add_arguments(subparsers)
+    return subparsers.choices["sync"]._subparsers._group_actions[0].choices["shell"].description
+
+
+def test_every_surface_states_the_read_only_guarantee_in_the_same_words(
     initialized_config: Config,
 ) -> None:
-    """The line names the one guarantee an operator is trusting, so it has to land.
+    """🔴 The guarantee is stated three times, so it is WRITTEN once.
 
-    It read `writes are refused and no PRAGMA changes that`, where the
-    demonstrative `that` parses just as readily as a conjunction -- leaving the
-    sentence apparently waiting for a clause that never comes. It was complete
-    as authored and still read as broken, which on THIS line is the same defect:
-    a reader who doubts the sentence has reason to doubt the guarantee.
+    The banner, `--help` and `.help` each tell the operator the handle cannot be
+    written to. Three literals meant a rewrite could reach two of them and leave
+    the third disagreeing about what the handle does -- which is exactly what
+    happened: the banner was fixed and `--help` kept the old wording.
 
-    Asserted as the property (the sentence closes on a word that cannot open a
-    subordinate clause) rather than as the exact wording, so a future rewrite is
-    free to say it differently and not free to strand the reader again.
+    This is what makes the sweep unnecessary next time rather than merely done
+    this time. One constant, asserted at every surface that renders it.
     """
-    out = _run(initialized_config, ["SELECT 1;"])
-    role = next(line for line in out.splitlines() if line.startswith("role:"))
+    from bankmachine.cli.sync import READ_ONLY_SENTENCE, _HELP
 
-    assert role.rstrip().split()[-1] not in {"that", "which", "because", "unless", "whether"}, (
-        f"the role line ends on {role.rstrip().split()[-1]!r}, which reads as the start of a "
-        f"clause the line never delivers"
+    banner = _run(initialized_config, ["SELECT 1;"]).partition("bankmachine>")[0]
+    assert READ_ONLY_SENTENCE in banner
+    assert READ_ONLY_SENTENCE in _HELP
+    assert READ_ONLY_SENTENCE in _shell_parser_description()
+
+
+def test_the_read_only_sentence_does_not_end_on_a_known_stranding_word() -> None:
+    """A heuristic over the one constant, and it is named as a heuristic.
+
+    The defect it guards: the sentence read `...and no PRAGMA changes that`,
+    where the demonstrative parses just as readily as a conjunction and leaves
+    the reader waiting for a clause that never comes -- on the one sentence
+    stating the guarantee they are trusting.
+
+    🔴 **This is a word list, not a property, and the distinction is the point.**
+    It cannot know whether a sentence strands its reader; it knows five words
+    that commonly do. A rewrite ending on `so` or `while` would pass and still
+    strand. What actually protects the sentence is that there is now only ONE of
+    it, reviewed once -- the list is a cheap tripwire on top, and claiming more
+    for it would be the enumeration-shaped guarantee this repo has been bitten
+    by before (`learnings.md` § Guarantees by construction).
+    """
+    from bankmachine.cli.sync import READ_ONLY_SENTENCE
+
+    last = READ_ONLY_SENTENCE.rstrip(" .").split()[-1].lower()
+    assert last not in {"that", "which", "because", "unless", "whether"}, (
+        f"the sentence ends on {last!r}, a word that commonly reads as opening a "
+        f"clause -- which is how the original wording came to look truncated"
     )
-    assert "PRAGMA" in role, "the line must still say what cannot undo the refusal"
+    assert "PRAGMA" in READ_ONLY_SENTENCE, "it must still say what cannot undo the refusal"
 
 
 def test_a_write_is_refused_in_the_read_role(initialized_config: Config) -> None:

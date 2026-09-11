@@ -51,11 +51,20 @@ clause before `and`, and naming writes outright states the property instead of p
 **How it was found, and what that says:** operator verification **VRF-001**, whose first check is
 that the banner reads to a human. Every keyword that check names was present, so a scan for them
 would have passed — it took someone reading the line as a sentence. The automated suite could not
-have caught it, and did not: 🔴 **no test asserted this banner at all.** Two now do, one on the four
-claims and their order, one on the property the defect violated — the line does not end on a word
-that opens a clause it never delivers, asserted as the property rather than the exact wording so a
-future rewrite is free to say it differently and not free to strand the reader again. Seen red
-against the original text.
+have caught it, and did not: 🔴 **no test asserted this banner at all.** Three now do.
+
+🔴 **And the guarantee is now written once.** The shell stated it on three surfaces — the banner,
+`--help` and `.help` — in three separate literals, so this fix initially reached two of them and
+left `--help` still ending on `changes that`: the same defect, the same sentence, one `--help` away.
+A `READ_ONLY_SENTENCE` constant now carries it, asserted at every surface that renders it, which is
+what makes the next rewrite unable to reach only some of them.
+
+The remaining guard checks that the sentence does not end on one of five words that commonly read
+as opening a clause. 🔴 **That is a heuristic and is labelled one** — it cannot know whether a
+sentence strands its reader, and a rewrite ending on `so` or `while` would pass and still strand.
+What protects the sentence is that there is only one of it. An earlier draft of this entry called it
+a property test, which would have been the enumeration-shaped guarantee this repo has already been
+bitten by (`learnings.md` § Guarantees by construction). Both guards seen red.
 
 **Filed as #89.** The first diagnosis in the session that found it said the string was *truncated in
 the source*; `git log -L` showed it byte-identical to its only commit. The symptom was real and the
