@@ -241,7 +241,9 @@ transactions, which do come from the fictional institutions.
 
 ## VRF-003 — the hosted enrollment flow reads correctly to a human
 
-**Chunk:** enrollment-v1 Chunk 02 · **Raised:** 2026-09-07 · **Status:** verified · **Verified:** 2026-09-10
+**Status:** verified
+
+**Chunk:** enrollment-v1 Chunk 02 · **Raised:** 2026-09-07 · **Verified:** 2026-09-10
 
 **Why a human:** the offline suite fakes the aggregator, and a Hosted Link session
 cannot be completed programmatically — `/sandbox/public_token/create` bypasses Link
@@ -279,7 +281,9 @@ not a tty):
 
 ## VRF-004 — the MCP surface answers usefully in a real client
 
-**Chunk:** the MCP surface · **Raised:** 2026-09-08 · **Status:** pending
+**Status:** pending
+
+**Chunk:** the MCP surface · **Raised:** 2026-09-08
 
 **Why a human:** every tool is tested and driven end to end over stdio, but no test can say whether
 an *agent* can use these answers to reason correctly. What is unverified is the judgement layer:
@@ -381,7 +385,9 @@ warnings are read rather than skipped.
 
 ## VRF-005 — one real pending transaction watched across settlement
 
-**Chunk:** production-data semantics (#22) · **Raised:** 2026-09-09 · **Status:** pending
+**Status:** pending
+
+**Chunk:** production-data semantics (#22) · **Raised:** 2026-09-09
 
 **Why a human:** the sandbox has zero pending rows and has never had one — `pending` is 0 on all
 388, `source_pending_transaction_id` is NULL on all 388. The deriver's pending→posted branch is
@@ -408,7 +414,9 @@ the delivery sequence.
 
 ## VRF-006 — the sign convention on a real inflow, across two institutions
 
-**Chunk:** production-data semantics (#23) · **Raised:** 2026-09-09 · **Status:** pending
+**Status:** pending
+
+**Chunk:** production-data semantics (#23) · **Raised:** 2026-09-09
 
 **Why a human:** normalization is an unconditional negation, and it is already exercised in both
 directions by the suite and by the sandbox (49 of 388 rows are stored positive). What no test can
@@ -435,8 +443,10 @@ ground truth about money you already know about.
 
 ## VRF-007 — an update-mode repair, completed in a browser
 
-**Chunk:** connections reauth (#67) · **Raised:** 2026-09-10 · **Status:** verified
-· **Verified:** 2026-09-11 · **Visual change:** yes
+**Status:** verified
+
+**Chunk:** connections reauth (#67) · **Raised:** 2026-09-10 · **Verified:** 2026-09-11
+· **Visual change:** yes
 
 **Why a human:** a Hosted Link session cannot be completed programmatically — the whole reason
 `test_enroll.py` fakes the aggregator. Every test of `connections reauth` fakes the item's recovery,
