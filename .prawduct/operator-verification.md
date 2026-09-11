@@ -522,6 +522,13 @@ neither skipped — so those two assumptions now hold on this account. They say 
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-007`
 
+🔴 **VRF-008, VRF-009 and VRF-010 re-raise obligations that VRF-004, VRF-005 and VRF-006 were
+accepted out of on 2026-09-11.** The acceptance discharged the block on one PR; it did not discharge
+the checks, none of which has been done. **`accept-operator-verification` takes no id and flips
+every pending entry**, so running the override again would erase these three exactly as it erased
+the originals. If a future PR has to be unblocked that way, restore them by hand afterwards — or
+verify them, which is the point.
+
 ## VRF-008 — the MCP surface answers usefully in a real client
 
 **Status:** pending

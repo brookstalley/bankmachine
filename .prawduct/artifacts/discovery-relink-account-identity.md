@@ -83,10 +83,12 @@ account ids, duplicate rows. It differs only in marking the old accounts inactiv
   assertable from one call and no more:** `connections reauth` compares the `item_id` the aggregator
   reports after the session against the one the connection was enrolled with, and refuses if they
   differ — so a repair cannot silently become a re-link. Whether the *accounts* beneath an unchanged
-  Item keep their ids is not answerable from that call, and **it cannot be answered in sandbox**; it
-  is enqueued as an operator verification against production (`.prawduct/operator-verification.md`).
-  If they are re-issued, #67 reduces the frequency of the duplication without eliminating it and the
-  identity fallback below is needed regardless.
+  Item keep their ids is not answerable from that call. VRF-007 asked it of the sandbox on
+  2026-09-11 and got a clean answer there — update mode kept every `source_account_id` — but a
+  sandbox institution is not evidence about a real one, so the question is **narrowed, not closed**:
+  what is now unknown is production specifically. If ids are re-issued there, #67 reduces the
+  frequency of the duplication without eliminating it and the identity fallback below is needed
+  regardless.
 - **What identity should stand in where `persistent_account_id` is NULL?** `(mask, name, type,
   subtype)` scoped to the connection is the obvious candidate. `_match_account` deliberately refuses
   to guess today, and its stated reason is sound: a false merge of two real accounts is worse than a

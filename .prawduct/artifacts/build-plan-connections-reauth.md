@@ -339,11 +339,10 @@ columns the entry names. The repair preserved the item, all 28 account rows and 
 added nothing. The chunk-01 amendment's two assumptions were separately settled by the `-m sandbox`
 probes the same morning (`2 passed`, neither skipped).
 
-🔴 **Outstanding:** the queue still reports VRF-007 pending and `/prawduct:pr create` still blocks —
-a prawduct parser defect, not a verification gap. `operator_verification._STATUS_LINE_RE` only
-matches a `**Status:**` line standing alone, so every entry from VRF-003 on, which carries status
-inside a combined `**Chunk:** … · **Raised:** … · **Status:** …` line, parses as `pending` whatever
-it says. Draining needs the plugin fixed or `--accept-pending-verification`.
+The drain did not take at first: prawduct's queue parser reads `**Status:**` only when it stands
+alone, so every entry carrying it inside a combined metadata line parsed as pending whatever it
+said. The entries now put status on its own line, VRF-007 drains, and the defect is filed upstream
+as brookstalley/prawduct#798.
 
 ## Context
 
