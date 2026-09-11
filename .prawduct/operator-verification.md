@@ -542,7 +542,16 @@ the obligation now lives. Verify against VRF-004's steps and drain this id.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-008`
 
-**Accepted:** 2026-09-11 — rationale: Same three entries and the same rationale the owner ruled on for PR #101, re-raised because that acceptance lives on the other branch. This branch touches config, secrets, the CLI and sync_run; it does not change the MCP surface (VRF-008), enrolls nothing and syncs no second institution (VRF-010), and produces no pending rows (VRF-009) -- the sandbox has never held one. All three need the production cutover, which is next and for which access is approved.
+**Accepted:** 2026-09-11 — rationale: the owner's one ruling, which unblocked both PR #101 and
+PR #104. VRF-009 (#22) and VRF-010 (#23) require production data the sandbox cannot produce: it
+has never held a pending row and is single-connection, and neither branch enrolls anything or
+syncs a second institution. VRF-008 runs against sandbox but could not be drained from either
+session: the reachable sandbox MCP server is on build `296b7a0`, an ancestor of neither `develop`
+nor either branch, and still reports the pre-fix doubled state (28 accounts, 784 transactions);
+draining it needs the server relaunched on the merged build, which is #25. Production access is
+approved and the cutover is next, which discharges all three against real data within days.
+**The block is discharged here and the obligation is not** — it is re-raised as VRF-011, VRF-012
+and VRF-013 below.
 
 ## VRF-009 — one real pending transaction watched across settlement
 
@@ -557,7 +566,16 @@ Verify against VRF-005's steps and drain this id.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-009`
 
-**Accepted:** 2026-09-11 — rationale: Same three entries and the same rationale the owner ruled on for PR #101, re-raised because that acceptance lives on the other branch. This branch touches config, secrets, the CLI and sync_run; it does not change the MCP surface (VRF-008), enrolls nothing and syncs no second institution (VRF-010), and produces no pending rows (VRF-009) -- the sandbox has never held one. All three need the production cutover, which is next and for which access is approved.
+**Accepted:** 2026-09-11 — rationale: the owner's one ruling, which unblocked both PR #101 and
+PR #104. VRF-009 (#22) and VRF-010 (#23) require production data the sandbox cannot produce: it
+has never held a pending row and is single-connection, and neither branch enrolls anything or
+syncs a second institution. VRF-008 runs against sandbox but could not be drained from either
+session: the reachable sandbox MCP server is on build `296b7a0`, an ancestor of neither `develop`
+nor either branch, and still reports the pre-fix doubled state (28 accounts, 784 transactions);
+draining it needs the server relaunched on the merged build, which is #25. Production access is
+approved and the cutover is next, which discharges all three against real data within days.
+**The block is discharged here and the obligation is not** — it is re-raised as VRF-011, VRF-012
+and VRF-013 below.
 
 ## VRF-010 — the sign convention on a real inflow, across two institutions
 
@@ -572,7 +590,16 @@ about another. Verify against VRF-006's steps and drain this id.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-010`
 
-**Accepted:** 2026-09-11 — rationale: Same three entries and the same rationale the owner ruled on for PR #101, re-raised because that acceptance lives on the other branch. This branch touches config, secrets, the CLI and sync_run; it does not change the MCP surface (VRF-008), enrolls nothing and syncs no second institution (VRF-010), and produces no pending rows (VRF-009) -- the sandbox has never held one. All three need the production cutover, which is next and for which access is approved.
+**Accepted:** 2026-09-11 — rationale: the owner's one ruling, which unblocked both PR #101 and
+PR #104. VRF-009 (#22) and VRF-010 (#23) require production data the sandbox cannot produce: it
+has never held a pending row and is single-connection, and neither branch enrolls anything or
+syncs a second institution. VRF-008 runs against sandbox but could not be drained from either
+session: the reachable sandbox MCP server is on build `296b7a0`, an ancestor of neither `develop`
+nor either branch, and still reports the pre-fix doubled state (28 accounts, 784 transactions);
+draining it needs the server relaunched on the merged build, which is #25. Production access is
+approved and the cutover is next, which discharges all three against real data within days.
+**The block is discharged here and the obligation is not** — it is re-raised as VRF-011, VRF-012
+and VRF-013 below.
 
 
 ## VRF-011 — the MCP surface answers usefully in a real client
@@ -590,11 +617,6 @@ against sandbox, but only against a server on the build under test. Measured 202
 reachable sandbox MCP server was on `296b7a0` — an ancestor of neither `develop` nor either branch
 — and still reported the pre-fix doubled state (28 accounts, 784 transactions). Relaunch the
 server on the merged build first; until then this cannot be drained from inside a session.
-
-🔴 **This entry exists because VRF-008's acceptance discharged the block AND the obligation.** The
-ruling it quoted had discharged only the block, by re-raising. This restores that property, and
-gives the obligation the backlog home it lacked — VRF-009 and VRF-010 name #22 and #23; this one
-named nothing.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-011`
 

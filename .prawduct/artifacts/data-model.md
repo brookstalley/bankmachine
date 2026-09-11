@@ -440,15 +440,19 @@ same file is a no-op, and **an operator who renames the export cannot import it 
 
 🔴 **Lineage, and why a re-link needs one.** Removing a connection and linking it again yields a new
 Item, and the new Item re-issues every transaction id — so the whole granted history arrives again as
-rows this store has never seen, against an account that converged on its persistent identity, with
-nothing for a unique index to collide with. Summed naively, a year of spending doubles. `connections`
+rows this store has never seen, with nothing for a unique index to collide with. Where the aggregator
+publishes a persistent account id those rows land on the same account; where it does not — the rule
+everywhere outside three institutions — a second generation of account rows is inserted and the
+history lands on that instead. Summed naively, a year of spending doubles either way. `connections`
 is already this store's row per Item (`source_connection_id` holds the Item id and is unique) and the
 sync cursor and the measured granted window are already Item-scoped, so this column is that same
 boundary recorded on the rows rather than a parallel mechanism.
 
-**Every row is kept; aggregates count one lineage.** For a range covered by more than one Item the
-NEWEST answers, older ones answer only outside it, and the overlap is disclosed with `rule-applied`
-naming the account and the superseded range. The excluded rows stay in the store and stay reachable —
+**Every row is kept; aggregates count one generation.** For a range covered by more than one
+generation the NEWEST answers, older ones answer only outside it, and the overlap is disclosed with
+`rule-applied` naming the account and the superseded range. The discriminator is the generation, not
+the lineage: a re-enroll that updates the connection row in place leaves both generations sharing one
+`lineage_id`, so a rule keyed on lineage alone sees nothing to supersede. The excluded rows stay in the store and stay reachable —
 consistent with § Direction's rule that a transaction is never hard-deleted. `store/lineage.py` is the
 one place the rule lives: `superseded_spans` computes it, `counts_once` filters a query by it, and
 `only_superseded` asks for exactly what was left out.

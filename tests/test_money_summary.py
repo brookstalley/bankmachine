@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -18,13 +19,13 @@ from sqlalchemy import select
 
 from bankmachine import mcp, query
 from bankmachine.config import Config
-from bankmachine.connector import TRANSACTIONS_SYNC
+from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
 from bankmachine.store.schema import accounts, transactions
 from bankmachine.store.types import minor_units, now_utc
-from test_mcp import _call, _every_tool_except, _seed, _tools_requiring
+from test_mcp import _call, _every_tool_except, _seed, _sync_body, _tools_requiring
 
 
 def _rows(config: Config, **arguments: Any) -> list[dict[str, Any]]:
@@ -882,6 +883,105 @@ def _second_account(
 
 def _rule_applied(wire: dict[str, Any]) -> list[dict[str, Any]]:
     return [warning for warning in wire["warnings"] if warning["kind"] == "rule-applied"]
+
+
+def _relink_splitting_the_account(config: Config) -> None:
+    """Re-read the roster under a re-issued account id, a day later.
+
+    What a re-link produces where the aggregator publishes no persistent account
+    identity: the roster lists an account this store has never seen, so a SECOND
+    account row is inserted describing the same real account, and the granted
+    history arrives again against it under transaction ids nothing collides with.
+
+    🔴 A day later, because the evidence that the first account stopped being
+    listed is its `last_seen_date` falling behind the connection's latest roster
+    observation, and both are calendar dates.
+    """
+    later = now_utc() + timedelta(days=1)
+    accounts_body = json.dumps(
+        {
+            "accounts": [
+                {
+                    # Re-issued id, same institution-supplied description.
+                    "account_id": "acct-1-reissued",
+                    "name": "Plaid Checking",
+                    "mask": "0000",
+                    "type": "depository",
+                    "subtype": "checking",
+                    "balances": {
+                        "current": "110.94",
+                        "available": "100.00",
+                        "limit": None,
+                        "iso_currency_code": "USD",
+                    },
+                }
+            ],
+            "item": {"item_id": "item-mcp"},
+            "request_id": "req-accounts-reissued",
+        }
+    ).encode()
+    sync_body = json.loads(_sync_body(str(now_utc().date())))
+    for index, row in enumerate(sync_body["added"]):
+        row["account_id"] = "acct-1-reissued"
+        row["transaction_id"] = f"t{index}-reissued"
+    sync_body["next_cursor"] = "cursor-reissued"
+    with writer_connection(config) as conn:
+        for endpoint, body in (
+            (ACCOUNTS_GET.path, accounts_body),
+            (TRANSACTIONS_SYNC.path, json.dumps(sync_body).encode()),
+        ):
+            apply_response(
+                conn,
+                connection_id=1,
+                endpoint=endpoint,
+                body=body,
+                received_at=later,
+                derivers=ALL_DERIVERS,
+            )
+
+
+def test_a_superseded_generation_is_named_on_the_wire_with_its_account_and_range(
+    initialized_config: Config,
+) -> None:
+    """🔴 The disclosure half of the exclusion, asserted where an operator reads it.
+
+    The mechanism and this text have to ship together: a total that silently
+    dropped rows and a total that is simply wrong look identical to whoever reads
+    them, and only this warning tells them apart. Asserting `superseded_spans`
+    proves the rows were excluded; it does not prove anybody was TOLD, and the
+    detail string is the part a later edit can change with nothing going red.
+
+    🔴 Names the ACCOUNT and the RANGE, not a count. "Some rows were excluded" is
+    a warning nobody can act on -- the operator's next move is to go and look at
+    that account over those dates, and the rows are all still there to be looked
+    at.
+    """
+    _seed(initialized_config)
+    before = _wire(initialized_config)
+    assert _rule_applied(before) == [], (
+        "the store excluded rows before the re-link, so this proves nothing about the re-link"
+    )
+
+    _relink_splitting_the_account(initialized_config)
+
+    applied = _rule_applied(_wire(initialized_config))
+    assert len(applied) == 1, (
+        "the aggregate now drops a whole generation of history and says nothing about it"
+    )
+    detail = applied[0]["detail"]
+    with reader_connection(initialized_config) as conn:
+        superseded = conn.execute(
+            select(accounts.c.account_id).where(accounts.c.source_account_id == "acct-1")
+        ).scalar_one()
+    assert f"account(s) {superseded} (" in detail, (
+        f"the warning does not name the superseded account, so the operator cannot check it: "
+        f"{detail!r}"
+    )
+    assert ".." in detail, f"the warning names no date range: {detail!r}"
+    assert "more than one connection" not in detail, (
+        "the warning still claims two connections, which is false here: this re-link converged "
+        "its connection in place and there is only one"
+    )
 
 
 def test_an_ordinary_store_carries_no_exclusion_warning_at_all(

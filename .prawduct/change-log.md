@@ -34,6 +34,73 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-11: A re-issued roster is counted once, and the exclusion is disclosed
+
+<!-- prawduct: scope=duplicated-roster-double-count -->
+
+**Why:** `money_summary` for 2026-08 returned `outflow_minor_units: 2229892` against a true
+`1114946` — **exactly 2×** — with every account appearing twice at identical figures and
+`list_accounts` reporting 28 accounts for a 14-account institution. Measured on the live sandbox
+store, not inferred. Nothing in the payload named it: of the four caveats returned, only
+`account_no_longer_active` was in the neighbourhood, and it speaks solely about balances. The 2×
+landed on transactions, where no caveat looked.
+
+`store/lineage.py` exists to prevent exactly this and could not fire. A converging re-enroll
+updates the `connections` row in place, so `lineage_id` is unchanged; the new Item nonetheless
+re-issues every `source_account_id`, and `source_persistent_account_id` is NULL everywhere outside
+the three TAN banks, so `_match_account` matched nothing and inserted a **second generation of
+account rows** that the re-fetched history landed on. `superseded_spans` compared overlaps within
+one `account_id`; the twins had different `account_id`s and the same `lineage_id`, so no overlap
+was ever detected and `counts_once` constrained nothing.
+
+**What changed:** the overlap comparison partitions on **account identity** —
+`(institution_id, mask, name, account_type, account_subtype)` — rather than on `account_id`.
+`SupersededSpan`, `counts_once` and `only_superseded` kept their shape, so every reader is fixed at
+the one chokepoint they already route through: `query_transactions`, `money_summary` and the
+coverage paths. Verified against the live sandbox store, read through `query.money_summary` on the
+store file rather than through a running MCP server: 2026-08 outflow reads `1114946`, each account
+appears once, `list_transactions` returns 16 rows with zero duplicate
+`(description, amount, ledger_date)` groups, and a `rule-applied` caveat names accounts 1–5 with
+their exact superseded ranges.
+
+🔴 **Ordering never licenses an exclusion — `still_reported` does.** Generation order is
+`(enrolled_at, accounts.created_at, account_id)`, newest first, and it is built from two
+**instants** on purpose: the calendar date that reads more naturally, `last_seen_date`, cannot
+separate two generations born on the same day, and a re-link happens right after the sync it
+replaces. But a total order alone would declare one of two **live** accounts older and delete money
+really spent. Supersession across two account rows additionally requires the older one to have
+stopped being listed by its institution.
+`test_two_accounts_the_institution_still_lists_are_never_superseded` is what holds that invariant.
+
+**The grouping tuple is `tuple[str | int, ...]`, and that is load-bearing.** These tuples are
+sorted, so a `None` in one raises `TypeError` out of *every* read — not a mis-grouped total, every
+query down, for questions that never mentioned the account. `mask` and `account_subtype` are both
+nullable and both guarded, and adding another nullable column without a guard is now a mypy error.
+
+**This is a read-path exclusion, and it is not precedent for a write-path merge.** Grouping two
+account rows as "the same account" is what #95 is parked at `stage: research` over, and its own
+production evidence says a checking account and its overdraft line share a mask at the one real
+institution. The distinction that made this shippable: an exclusion is disclosed and reversible,
+where a merge permanently fuses two real accounts' history. The write path is untouched — duplicate
+account rows are still created, and the local `account_id` still does not survive a re-link.
+
+**What is deliberately not fixed, and is filed:** where the aggregator publishes
+`source_persistent_account_id` **and** the re-link updates the connection row in place, both
+generations land on one `account_id` under one `lineage_id` — no second span to compare, no caveat,
+and the doubling is undetectable. Reachable only at the three TAN banks and not reproducible in
+sandbox, since no persistent id exists there. Filed as **#99**; separating them needs
+transaction-level identity, which `lineage.py` rejects on the record. The module docstring now
+enumerates all four re-link shapes and marks that one uncovered — read it before triaging any
+"totals are doubled" report. **Balances** still include the stale generation, flagged, which is the
+`api-contract` include-and-flag norm working as ruled rather than a gap; this work changed
+transaction aggregates only.
+
+**[RESIDUAL RISK] A reused mask can over-supersede.** An institution that closes an account and
+later issues one reusing the same last-four *and* name *and* type *and* subtype, with overlapping
+activity, has the older one's overlapping rows excluded. It is disclosed by the caveat, so it is
+visible. The tightening that would close it — requiring the newer generation to start at or before
+the older's — was rejected because it breaks the common case of a new Item granting *less* history.
+
 ## 2026-09-11: A write on an environment nobody chose is refused
 
 <!-- prawduct: scope=environment-guard -->

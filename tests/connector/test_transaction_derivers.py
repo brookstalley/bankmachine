@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -30,7 +31,7 @@ from bankmachine.store.schema import (
     sync_state,
     transactions,
 )
-from bankmachine.store.types import now_utc
+from bankmachine.store.types import UtcInstant, now_utc, utc_instant
 
 SOURCE_ACCOUNT = "acct-checking"
 CONNECTION_ID = 1
@@ -41,8 +42,16 @@ def _account_entry(
     *,
     name: str = "Plaid Checking",
     persistent_account_id: str | None = None,
+    mask: str | None = "0000",
+    subtype: str = "checking",
 ) -> Any:
-    """One account in the shape both `/accounts/get` and `/transactions/sync` send it."""
+    """One account in the shape both `/accounts/get` and `/transactions/sync` send it.
+
+    `mask` and `subtype` are parameters because the lineage rule partitions on
+    them: they are two of the four fields that decide whether two account rows
+    describe the same real account. A fixture that could not vary them could only
+    exercise the case where they happen to agree.
+    """
     return {
         "account_id": account_id,
         **(
@@ -52,9 +61,9 @@ def _account_entry(
         ),
         "name": name,
         "official_name": "Plaid Gold Checking",
-        "mask": "0000",
+        "mask": mask,
         "type": "depository",
-        "subtype": "checking",
+        "subtype": subtype,
         "balances": {
             "current": "110.94",
             "available": "100.00",
@@ -159,15 +168,28 @@ def synced(initialized_config: Config) -> Config:
 
 
 def _apply(
-    config: Config, endpoint: str, body: bytes, *, connection_id: int = CONNECTION_ID
+    config: Config,
+    endpoint: str,
+    body: bytes,
+    *,
+    connection_id: int = CONNECTION_ID,
+    received_at: UtcInstant | None = None,
 ) -> None:
+    """Record one response, optionally as of a stated instant.
+
+    `received_at` is a parameter because the roster observation date is derived
+    from it, and "this account is no longer listed" is expressed as an account's
+    last-seen date falling BEHIND its connection's latest observation. A test
+    that could only record everything at one instant could not build that state
+    at all -- every account would look current.
+    """
     with writer_connection(config) as conn:
         apply_response(
             conn,
             connection_id=connection_id,
             endpoint=endpoint,
             body=body,
-            received_at=now_utc(),
+            received_at=received_at if received_at is not None else now_utc(),
             derivers=ALL_DERIVERS,
         )
 
@@ -1112,6 +1134,77 @@ def _relinked_history(config: Config, *, older_tail: bool = False) -> int:
     return relinked
 
 
+#: The account id the aggregator mints for the SAME real account behind a new
+#: Item. Distinct from `RELINKED_ACCOUNT` only so a test reading both fixtures can
+#: tell which path produced a row.
+REISSUED_ACCOUNT = "acct-checking-reissued"
+
+#: A re-link is a repair for something that broke, so it happens after the sync it
+#: replaces -- and the roster read that stops listing the old account is what makes
+#: it detectable. A day is the resolution `last_seen_date` records.
+_A_DAY = timedelta(days=1)
+
+
+def _converging_relink_history(
+    config: Config,
+    *,
+    older_tail: bool = False,
+    mask: str | None = "0000",
+) -> None:
+    """One real account synced under two Items WITHOUT converging on one row.
+
+    🔴 The difference from `_relinked_history` is the whole point, and it is the
+    case production actually produces. There, the account carries a
+    `persistent_account_id`, the roster matches on it, and both generations land
+    on ONE account row. Here nothing carries one -- which is the rule outside the
+    three banks that publish the field -- so the roster INSERTS a second account
+    row, and the connection is converged in place rather than retired, so both
+    generations also share one lineage.
+
+    Neither `account_id` nor `lineage_id` separates the two generations. That is
+    exactly the state in which the aggregates used to report every figure twice.
+
+    🔴 The re-link is recorded a day AFTER the sync it replaces, and the offset is
+    load-bearing rather than cosmetic. `last_seen_date` is a monotone maximum over
+    roster reads, so the evidence that the institution stopped listing the first
+    account is that account's date falling BEHIND the connection's latest
+    observation. Recording both at one instant leaves the two indistinguishable --
+    which is also true in production, where a re-link inside the same day as the
+    previous sync is below the resolution `last_seen_date` records.
+    """
+    _apply(config, ACCOUNTS_GET.path, _accounts_body([_account_entry(mask=mask)]))
+    first = [
+        _purchase(SOURCE_ACCOUNT, "t-spring", "10.00", SPRING),
+        _purchase(SOURCE_ACCOUNT, "t-summer", "20.00", SUMMER),
+    ]
+    if older_tail:
+        first.append(_purchase(SOURCE_ACCOUNT, "t-autumn", "30.00", LAST_AUTUMN))
+    _apply(config, TRANSACTIONS_SYNC.path, _sync_body(added=first))
+
+    # The re-link. The connection row is NOT retired and NOT replaced, so
+    # `connection_id` -- and with it `lineage_id` -- is unchanged, and this roster
+    # no longer lists the account the first one did.
+    relinked_at = utc_instant(now_utc() + _A_DAY)
+    _apply(
+        config,
+        ACCOUNTS_GET.path,
+        _accounts_body([_account_entry(REISSUED_ACCOUNT, mask=mask)]),
+        received_at=relinked_at,
+    )
+    _apply(
+        config,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(
+            added=[
+                _purchase(REISSUED_ACCOUNT, "t-spring-reissued", "10.00", SPRING),
+                _purchase(REISSUED_ACCOUNT, "t-summer-reissued", "20.00", SUMMER),
+            ],
+            next_cursor="cursor-reissued",
+        ),
+        received_at=relinked_at,
+    )
+
+
 def _total(config: Config, *, superseded: bool = False, rule: bool = True) -> int:
     """What a total over this store comes to, with the lineage rule on or off.
 
@@ -1263,6 +1356,197 @@ def test_an_older_lineage_still_answers_outside_the_range_the_newer_one_covers(
     assert _total(synced, superseded=True) == -3000, (
         "the tail was counted as superseded, so the exclusion reaches past the overlap"
     )
+
+
+def test_a_relink_that_splits_the_account_does_not_double_the_total(
+    synced: Config,
+) -> None:
+    """🔴 The same defect as the headline one, by the route production takes.
+
+    `test_a_relink_does_not_double_the_annual_total` builds its second generation
+    by RETIRING the connection and matching the account on its persistent
+    identity. Both of those are the lucky case: a new connection gives a new
+    lineage, and a matched account keeps one row. Production supplies neither --
+    the field is null outside three institutions, and a re-link converges the
+    connection in place -- so the store ends up with two account rows under ONE
+    lineage, which is the shape no ordering over `(account_id, lineage_id)` can
+    see.
+
+    Measured on the live sandbox store before this rule existed: `money_summary`
+    reported 2229892 for a month whose true figure is 1114946.
+    """
+    _converging_relink_history(synced)
+
+    with reader_connection(synced) as conn:
+        listed = conn.execute(select(accounts.c.account_id)).scalars().all()
+        lineages = {row["lineage_id"] for row in _rows(synced)}
+    assert len(listed) == 2, (
+        "the roster converged the account onto one row, so this fixture is building the "
+        "path that already worked rather than the one that did not"
+    )
+    assert lineages == {CONNECTION_ID}, (
+        "the re-link minted a second lineage, so this passes for a reason the production "
+        "path does not supply"
+    )
+    assert len(_rows(synced)) == 4, "a row was deleted or deduped; every row is meant to be kept"
+    assert _total(synced, rule=False) == -6000, (
+        "the store no longer holds the doubled history this test exists to correct"
+    )
+    assert _total(synced) == -3000, (
+        "the re-issued generation is still counted beside the one that replaced it, so "
+        "every figure over this store reads double"
+    )
+
+
+def test_a_split_relink_discloses_the_generation_it_excluded(synced: Config) -> None:
+    """🔴 A correct total and a wrong one look identical unless the answer says.
+
+    The exclusion is the reason the figure is right, so the span must name the
+    account and the range -- an operator told "some rows were left out" has been
+    handed nothing to check.
+    """
+    _converging_relink_history(synced)
+
+    with reader_connection(synced) as conn:
+        spans = superseded_spans(conn)
+        superseded_account = conn.execute(
+            select(accounts.c.account_id).where(accounts.c.source_account_id == SOURCE_ACCOUNT)
+        ).scalar_one()
+    assert [(span.account_id, span.start.isoformat(), span.end.isoformat()) for span in spans] == [
+        (superseded_account, SPRING, SUMMER)
+    ], "the disclosure does not name the account and range the total left out"
+    assert _total(synced, superseded=True) == -3000, (
+        "the superseded rows cannot be asked for, so an operator is told a range was excluded "
+        "and handed nothing to check it against"
+    )
+    assert all(row["removed_at"] is None for row in _rows(synced)), (
+        "a superseded row was soft-deleted; exclusion is a reading of the rows, not a change "
+        "to them"
+    )
+
+
+def test_a_split_relink_keeps_the_tail_the_older_generation_alone_holds(
+    synced: Config,
+) -> None:
+    """🔴 The undercount arriving inside the fix for the overcount.
+
+    A new Item routinely grants less history than the store already holds.
+    Excluding the older generation outright -- rather than only where the newer
+    one covers it -- would delete every month before the new grant begins, and
+    the loss would look exactly like a household that spent nothing.
+    """
+    _converging_relink_history(synced, older_tail=True)
+
+    assert len(_rows(synced)) == 5
+    assert _total(synced) == -6000, (
+        "the purchase from before the new Item's window was dropped with the generation it "
+        "belongs to, so the store now reports months it holds as empty"
+    )
+    assert _total(synced, superseded=True) == -3000, (
+        "the tail was counted as superseded, so the exclusion reaches past the overlap"
+    )
+
+
+def test_two_accounts_the_institution_still_lists_are_never_superseded(
+    synced: Config,
+) -> None:
+    """🔴 The exclusion that would delete money really spent.
+
+    A household can hold a checking account and an overdraft line that share a
+    four-digit mask, and at the one real institution measured here it does. They
+    resemble each other on every field this rule partitions by, and both are on
+    every roster. Resemblance is therefore NOT what licenses an exclusion; the
+    institution having STOPPED listing one of them is.
+
+    Without that guard this is the failure mode: one live account silently
+    stops being counted, and an undercount is the direction that gets believed.
+    """
+    _apply(
+        synced,
+        ACCOUNTS_GET.path,
+        _accounts_body([_account_entry(), _account_entry("acct-overdraft")]),
+    )
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(
+            added=[
+                _purchase(SOURCE_ACCOUNT, "t-spring", "10.00", SPRING),
+                _purchase("acct-overdraft", "t-spring-overdraft", "20.00", SPRING),
+            ]
+        ),
+    )
+
+    with reader_connection(synced) as conn:
+        assert superseded_spans(conn) == (), (
+            "one of two accounts the institution still lists was superseded by the other, so "
+            "money that was really spent has left the totals"
+        )
+    assert _total(synced) == -3000
+
+
+def test_an_account_with_no_mask_is_never_matched_to_another_row(
+    synced: Config,
+) -> None:
+    """🔴 A null mask means the aggregator did not state one, never that two agree.
+
+    Grouping on an absence would let every unmasked account at one institution
+    fall into a single partition, where the first roster read to drop any of them
+    would supersede it against an unrelated account's history.
+    """
+    _converging_relink_history(synced, mask=None)
+
+    with reader_connection(synced) as conn:
+        assert superseded_spans(conn) == (), (
+            "two accounts were matched on a mask neither of them has"
+        )
+    assert _total(synced, rule=False) == -6000
+    assert _total(synced) == -6000, (
+        "the rule excluded rows on the strength of a field nobody stated; the doubling is "
+        "meant to stay VISIBLE here rather than be silently half-corrected"
+    )
+
+
+def test_an_unstated_subtype_neither_groups_nor_crashes_the_read(
+    synced: Config,
+) -> None:
+    """🔴 A null in the partition key is a crash, not a mis-grouping.
+
+    `account_subtype` is nullable and `mask` is too. `superseded_spans` ORDERS by
+    the partition key, and comparing a tuple holding `None` against one holding a
+    string raises `TypeError` -- so an account with an unstated subtype beside one
+    that states it would not quietly skew a total, it would take down every query
+    over the store, including the ones that never mention either account.
+
+    The rule that prevents it is the same one the mask follows: a component
+    nobody stated cannot say two accounts agree, so the row partitions alone.
+    """
+    _apply(
+        synced,
+        ACCOUNTS_GET.path,
+        _accounts_body(
+            [
+                _account_entry(),
+                {**_account_entry("acct-no-subtype"), "subtype": None},
+            ]
+        ),
+    )
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(
+            added=[
+                _purchase(SOURCE_ACCOUNT, "t-spring", "10.00", SPRING),
+                _purchase("acct-no-subtype", "t-spring-unstated", "20.00", SPRING),
+            ]
+        ),
+    )
+
+    with reader_connection(synced) as conn:
+        # The assertion is that this RETURNS at all; the emptiness is the second
+        # claim, not the first.
+        assert superseded_spans(conn) == ()
+    assert _total(synced) == -3000
 
 
 def test_a_transaction_with_no_lineage_is_counted_rather_than_excluded(
