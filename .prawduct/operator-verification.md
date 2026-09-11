@@ -241,7 +241,7 @@ transactions, which do come from the fictional institutions.
 
 ## VRF-003 — the hosted enrollment flow reads correctly to a human
 
-**Chunk:** enrollment-v1 Chunk 02 · **Raised:** 2026-09-07 · **Status:** pending
+**Chunk:** enrollment-v1 Chunk 02 · **Raised:** 2026-09-07 · **Status:** verified · **Verified:** 2026-09-10
 
 **Why a human:** the offline suite fakes the aggregator, and a Hosted Link session
 cannot be completed programmatically — `/sandbox/public_token/create` bypasses Link
@@ -275,6 +275,7 @@ not a tty):
    the single-list value recorded then.)
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-003`
+
 
 ## VRF-004 — the MCP surface answers usefully in a real client
 
