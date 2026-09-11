@@ -239,8 +239,10 @@ dispositioned.
 Chunk 01 landed. Verified on the live sandbox store: `money_summary` for 2026-08
 now reports `outflow_minor_units: 1114946` where it reported `2229892`, each account
 appears once, and a `rule-applied` caveat names accounts 1-5 with the exact ranges
-superseded. Suite green; `mypy` reports the same 13 pre-existing errors as the
-merge-base, none in the changed files.
+superseded. Suite green; `mypy` reports exactly the errors the merge-base reports and
+no others -- none in the changed files, which is the half that is load-bearing. The
+count is deliberately not written down: it moves whenever a sibling branch fixes one,
+and it did (`develop` dropped five between this build and the merge).
 
 Two things the build changed from the plan, both recorded above in place:
 

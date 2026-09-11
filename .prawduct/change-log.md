@@ -100,6 +100,7 @@ later issues one reusing the same last-four *and* name *and* type *and* subtype,
 activity, has the older one's overlapping rows excluded. It is disclosed by the caveat, so it is
 visible. The tightening that would close it — requiring the newer generation to start at or before
 the older's — was rejected because it breaks the common case of a new Item granting *less* history.
+
 ## 2026-09-11: A write on an environment nobody chose is refused
 
 <!-- prawduct: scope=environment-guard -->

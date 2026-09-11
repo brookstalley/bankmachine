@@ -542,7 +542,6 @@ the obligation now lives. Verify against VRF-004's steps and drain this id.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-008`
 
-
 **Accepted:** 2026-09-11 — rationale: the owner's one ruling, which unblocked both PR #101 and
 PR #104. VRF-009 (#22) and VRF-010 (#23) require production data the sandbox cannot produce: it
 has never held a pending row and is single-connection, and neither branch enrolls anything or
@@ -566,7 +565,6 @@ pending rows — the sandbox has never had one, which is why the check needs pro
 Verify against VRF-005's steps and drain this id.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-009`
-
 
 **Accepted:** 2026-09-11 — rationale: the owner's one ruling, which unblocked both PR #101 and
 PR #104. VRF-009 (#22) and VRF-010 (#23) require production data the sandbox cannot produce: it
@@ -619,11 +617,6 @@ against sandbox, but only against a server on the build under test. Measured 202
 reachable sandbox MCP server was on `296b7a0` — an ancestor of neither `develop` nor either branch
 — and still reported the pre-fix doubled state (28 accounts, 784 transactions). Relaunch the
 server on the merged build first; until then this cannot be drained from inside a session.
-
-🔴 **This entry exists because VRF-008's acceptance discharged the block AND the obligation.** The
-ruling it quoted had discharged only the block, by re-raising. This restores that property, and
-gives the obligation the backlog home it lacked — VRF-009 and VRF-010 name #22 and #23; this one
-named nothing.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-011`
 
