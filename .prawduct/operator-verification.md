@@ -5,7 +5,7 @@ correctness a test cannot speak to. Entries are appended by the chunk that
 creates them and drained with `prawduct-hook verify-operator-verification <ID>`.
 ## VRF-001 — Chunk 04 — `bankmachine sync shell` output and redaction
 
-**Status:** pending
+**Status:** verified
 
 **Why a human:** the chunk's acceptance criterion is that an operator can open
 the shell against a real datastore, run a query, and *read the result*. The
@@ -116,6 +116,8 @@ Items 1-8 were exercised in that session. Item 9 is the terminal-only half:
 
 ---
 
+
+**Verified:** 2026-09-10
 ## VRF-002 — Chunk 01 (connector-v1) — `bankmachine connector check` against the real sandbox
 
 **Status:** verified
