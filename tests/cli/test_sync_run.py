@@ -49,6 +49,7 @@ from bankmachine.store.schema import (
     transactions,
 )
 from bankmachine.store.types import now_utc
+from conftest import use_cli_env
 
 SOURCE_ACCOUNT = "acct-checking"
 ITEM_ID = "item-sync-tests"
@@ -180,16 +181,9 @@ def _reset() -> None:
 
 @pytest.fixture
 def cli_env(initialized_config: Config, monkeypatch: pytest.MonkeyPatch) -> Iterator[Config]:
-    config = initialized_config
-    for key, value in {
-        "BANKMACHINE_DATASTORE_PATH": str(config.datastore_path),
-        "BANKMACHINE_LOG_DIR": str(config.log_dir),
-        "BANKMACHINE_KEYCHAIN_SERVICE": config.keychain_service,
-        "BANKMACHINE_ENVIRONMENT": config.environment,
-        "BANKMACHINE_CONFIG": str(config.datastore_path.parent / "absent.toml"),
-        "BANKMACHINE_PLAID_CLIENT_ID": "test-client-id",
-    }.items():
-        monkeypatch.setenv(key, value)
+    config = use_cli_env(
+        monkeypatch, initialized_config, BANKMACHINE_PLAID_CLIENT_ID="test-client-id"
+    )
     set_plaid_secret(config, "test-secret")
     credential_ref = config.connection_keychain_account(ITEM_ID)
     set_access_token(config, credential_ref, ACCESS_TOKEN)

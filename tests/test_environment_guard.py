@@ -358,7 +358,7 @@ def test_enrollment_refuses_before_it_can_mint_an_item(
 
 
 def test_releasing_at_the_aggregator_never_raises_on_a_defaulted_environment(
-    initialized_config: Config,
+    initialized_config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`release_at_aggregator` documents that it never raises, and callers rely on it.
 
@@ -366,14 +366,50 @@ def test_releasing_at_the_aggregator_never_raises_on_a_defaulted_environment(
     `ConnectionCapReachedError`, so a cap refusal exits 2 instead of 1 -- the
     exact collapse the exit-code contract forbids. `UnchosenEnvironmentError` is
     a `ConfigError`, so it sat outside all three of this function's catch arms.
+
+    🔴 The credential is seeded, and the aggregator stubbed, so execution
+    actually REACHES the arm this names. Without the seed `get_access_token`
+    raises `AccessTokenMissingError` on the first line and a pre-existing arm
+    returns True -- so the test passes with every `ConfigError` widening
+    deleted, which is a fixture whose input cannot trigger the guard.
     """
-    from bankmachine.cli.connections import release_at_aggregator
+    from bankmachine.cli import connections as connections_module
 
-    config = unchosen(initialized_config)
-    ref = config.connection_keychain_account("item-1")
+    chosen = initialized_config
+    ref = chosen.connection_keychain_account("item-1")
+    set_access_token(chosen, ref, "the-live-token")
 
-    # Returns a bool rather than raising; which bool is not this test's claim.
-    assert release_at_aggregator(config, credential_ref=ref, connection_id=1) in (True, False)
+    removed: list[str] = []
+
+    class _FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None: ...
+        def __enter__(self) -> _FakeClient:
+            return self
+
+        def __exit__(self, *exc_info: object) -> None:
+            return None
+
+        def item_remove(self, access_token: str, **kwargs: object) -> None:
+            removed.append(access_token)
+
+    monkeypatch.setattr(connections_module, "get_plaid_secret", lambda config: "secret")
+    monkeypatch.setattr(connections_module, "PlaidClient", _FakeClient)
+
+    try:
+        released = connections_module.release_at_aggregator(
+            unchosen(chosen), credential_ref=ref, connection_id=1
+        )
+
+        # The remote removal is the operation, and it succeeded -- so this
+        # reports success, not failure, even though the local cleanup was
+        # refused. That is the arm the environment refusal actually reaches.
+        assert released is True
+        assert removed == ["the-live-token"], "the item was never removed at the aggregator"
+        assert keyring.get_password(chosen.keychain_service, ref) == "the-live-token", (
+            "the refused deletion should leave a stale entry, not remove it"
+        )
+    finally:
+        delete_access_token(chosen, ref)
 
 
 def test_every_handle_but_the_read_one_refuses_a_defaulted_environment(

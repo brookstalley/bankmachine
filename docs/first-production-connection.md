@@ -61,8 +61,19 @@ guessing. One line, once:
 
 ```sh
 mkdir -p ~/.config/bankmachine
-printf 'environment = "sandbox"\n' >> ~/.config/bankmachine/config.toml
+$EDITOR ~/.config/bankmachine/config.toml
 ```
+
+so that the file contains exactly one `environment` line:
+
+```toml
+environment = "sandbox"
+```
+
+🔴 **One line, not an appended one.** TOML forbids a duplicate key, so a file carrying two
+`environment` entries fails to parse and every command — reads included — exits 2 with an error
+about TOML syntax rather than about the step that caused it. § 3.1 edits this same line rather than
+adding a second.
 
 `export BANKMACHINE_ENVIRONMENT=sandbox` does the same for one shell. § 3.1 switches this to
 production when you cut over; until then everything here stays safely in sandbox.

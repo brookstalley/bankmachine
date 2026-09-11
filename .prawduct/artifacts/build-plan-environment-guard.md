@@ -205,6 +205,14 @@ enumeration this plan just argued against.]
 **Context:** built 2026-09-11 on `fix/environment-guard-and-until-ready`. All three chunks
 landed in one cycle; suite green (`prawduct-hook test-status`).
 
+The reviews found a third thing, and it is the one that mattered most: **the guard's placement
+was right and its TIMING was not.** `enroll` writes per-environment state only after the exchange
+has minted a durable, billable Item, so refusing at the write burned that Item and discarded the
+only handle to it. The refusal moved to `cmd_enroll`'s first statement. The lesson generalises past
+this plan: placing a guard at the single point every write passes through says nothing about
+whether that point is early enough to be safe, and for anything with an irreversible far end those
+are different questions.
+
 Two things the build found that the plan did not predict:
 
 - **`ConfigError` raised from a handler reached the unexpected-failure arm** of

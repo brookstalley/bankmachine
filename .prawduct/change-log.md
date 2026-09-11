@@ -72,6 +72,14 @@ shell, so `source .env` no longer suffices and the value belongs in
 `operational-spec.md` all say so now; the runbook's sandbox rehearsal declares the environment
 before its first write rather than after.
 
+🔴 **`enroll` refuses at its very first statement**, before the datastore check, the cap
+pre-check, and any aggregator call. Not where the write happens: enrollment writes per-environment
+state twice and both writes land AFTER the exchange has minted a durable, billable Item, so a
+refusal there would burn a real Item and discard the only handle to it — leaving nothing, not even
+`connections retire`, able to remove it. `release_at_aggregator` likewise swallows the refusal
+rather than raising past its documented contract, because an escape there collapses a `1` into a
+`2`.
+
 **Also:** `bankmachine sync run --until-ready` re-runs while exit 75 says history is still owed,
 returns any other code unchanged (a `1` needs a person, not another attempt), and stops at a
 bounded cap still reporting 75 — so the runbook no longer instructs the operator to be the loop.
