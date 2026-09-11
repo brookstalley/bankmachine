@@ -80,6 +80,26 @@ refusal there would burn a real Item and discard the only handle to it — leavi
 rather than raising past its documented contract, because an escape there collapses a `1` into a
 `2`.
 
+🔴 **`connections retire` refuses at its first statement too, and for the same predicate.** Its
+already-retired RETRY path ran only reads before `item_remove`, and reads are exempt -- so on a
+defaulted environment the Item was really removed, `delete_access_token` was then refused, and
+`release_at_aggregator` swallowed that refusal by contract. The command exited 0 saying "no longer
+billing" while the credential survived, which `_credential_survives` reads as *removal never
+confirmed*; every later retry hit `ITEM_NOT_FOUND` and reported "may still be billing" about an Item
+that was gone, and nothing cleared it. `operational-spec.md` § Configuration now carries the
+membership rule -- an irreversible remote or keychain effect reachable before that command's first
+guarded write -- so a third command is decided by the predicate rather than by matching these two.
+The chokepoints remain the guarantee; a front guard only moves where the refusal lands.
+
+**Also in this scope:** `child_env` neutralises `BANKMACHINE_CONFIG` the way its in-process twin
+already did, so a spawned test child cannot read the operator's real config file -- which stopped
+being theoretical the moment this branch started telling operators to put
+`environment = "production"` in exactly that file. Both twins take an explicit override from the
+caller. The README's configure section no longer calls sandbox a default that needs nothing, forty
+lines above the explanation of why a write refuses without a declared environment. And `ruff format`
+ran over the two files this branch already touches, which takes `ruff format --check .` green
+repo-wide (half of #92).
+
 **Also:** `bankmachine sync run --until-ready` re-runs while exit 75 says history is still owed,
 returns any other code unchanged (a `1` needs a person, not another attempt), and stops at a
 bounded cap still reporting 75 — so the runbook no longer instructs the operator to be the loop.

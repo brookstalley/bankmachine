@@ -10,6 +10,14 @@ the value it replaced is simply gone.
 🔴 These tests assert the guard where it actually lives -- the one writer factory
 and the keychain mutators -- rather than command by command. A test per command
 would pass forever for the seventh command nobody added it for.
+
+🔴 Two per-command tests sit below that rule rather than beside it. `cmd_enroll`
+and `cmd_retire` ask the guard at their first statement because each can reach an
+irreversible far end BEFORE its own first guarded write, so for them the
+chokepoint refusal is correct and already too late; what those two tests pin is
+*where the refusal lands*, not that it happens. The membership predicate is in
+`operational-spec.md` § Configuration -- a third command is decided by it, never
+by matching these two.
 """
 
 from __future__ import annotations
@@ -372,8 +380,13 @@ def test_retiring_refuses_before_it_can_remove_an_item(
     survives, `_credential_survives` keeps reading "removal never confirmed", and
     every later retry reports "may still be billing" about an Item that is gone.
 
-    Asserted the way the enrollment case is: every aggregator entry point
-    explodes, so a late guard fails with that error instead of the refusal.
+    🔴 What makes this red without the guard is the refusal itself. On this
+    fixture there are no connections, so an unguarded `cmd_retire` returns
+    EXIT_UNHEALTHY at the missing row and never reaches the aggregator at all --
+    the `_never` patches do NOT fire here and are not the discriminator. They are
+    the backstop for an edit that moves a far-end call earlier, and naming them
+    honestly is cheaper than a docstring claiming a mechanism this fixture never
+    reaches.
     """
     from bankmachine.cli import connections as connections_module
 

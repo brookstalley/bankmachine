@@ -139,6 +139,25 @@ an explicit argument, but no command offers one for this value, so the two real 
 variable and the file. The guard is at those two chokepoints rather than in a list of command names, because
 a guarantee defined by an enumeration decays at the first command nobody adds to the list.
 
+🔴 **Two commands additionally ask the guard at their first statement, and that is a bounded
+exception to the sentence above rather than a retreat from it.** The chokepoints remain the
+guarantee: every per-environment write is refused there whether or not a command remembers. What a
+front guard buys is *where the refusal lands*, and it is owed by a command that can reach an
+irreversible remote or keychain effect **before its own first guarded write** — because at the
+chokepoint the refusal is correct and already too late.
+
+- `cmd_enroll` (`cli/enroll.py`) — enrollment's two per-environment writes both follow the exchange
+  that mints a durable, billable Item, so a refusal at the write burns a real Item and discards the
+  only handle to it. Not even `connections retire` could then remove it.
+- `cmd_retire` (`cli/connections.py`) — the already-retired retry path runs only reads before
+  `item_remove`, and reads are exempt. Refused at the chokepoint, the Item is already gone while
+  `delete_access_token` fails, leaving a surviving credential that reads as "removal never
+  confirmed" forever.
+
+**The predicate is the membership rule, not the pair.** A new command joins this list when that
+predicate holds of it, and a reader deciding about a third command asks the predicate rather than
+matching against these two. Neither member is special; both are instances.
+
 🔴 **`.env` is not loaded automatically, on purpose.** There is no dotenv dependency: *a file that is
 silently read is a file whose contents are silently trusted.* `.env.example` documents the variables;
 the operator `source`s it or moves the values into the config file. **For an unattended run the
