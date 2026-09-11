@@ -120,9 +120,20 @@ datastore key**, a different **keychain account for the aggregator secret**, and
 every startup** (AC-10.6). Distinct default paths mean mixing them takes an explicit act rather than
 an omission — and setting the sandbox secret cannot overwrite production's.
 
+🔴 **A fifth separation, and the only one that refuses rather than diverging: a command that WRITES
+per-environment state will not run on an environment nobody chose.** The other four keep the two
+environments apart once you have said which one you are in; this one covers the case where nobody
+said. `environment` has a default, and reads still take it — but the write path
+(`require_chosen_environment`, called from the one writer factory in `store.connection` and from
+the keychain mutators in `secrets`) refuses unless an argument, an exported variable or a
+config-file entry selected it. The guard is at those two chokepoints rather than in a list of command names, because
+a guarantee defined by an enumeration decays at the first command nobody adds to the list.
+
 🔴 **`.env` is not loaded automatically, on purpose.** There is no dotenv dependency: *a file that is
 silently read is a file whose contents are silently trusted.* `.env.example` documents the variables;
-the operator `source`s it or moves the values into the config file.
+the operator `source`s it or moves the values into the config file. **For an unattended run the
+config file is the answer, not a dotenv loader** — a scheduled job has no login shell to source
+anything into, and `~/.config/bankmachine/config.toml` carries the same keys without the prefix.
 
 🔴 **The aggregator secret has no environment variable at all**, and adding one would put a live
 credential into every process listing and shell history that touched it. It is set through

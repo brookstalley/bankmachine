@@ -23,6 +23,12 @@ APP_NAME: Final = "bankmachine"
 Environment = Literal["sandbox", "production"]
 ENVIRONMENTS: Final[tuple[str, ...]] = get_args(Environment)
 
+#: Where a resolved value came from. 🔴 `"default"` is the only one that means
+#: *nobody said*: an explicit argument, an exported variable and a config-file
+#: entry are all somebody choosing, and the guard below cares about that
+#: distinction and about nothing else.
+ValueSource = Literal["argument", "environment variable", "config file", "default"]
+
 ENV_PREFIX: Final = "BANKMACHINE_"
 
 #: 🔴 The largest history window the aggregator will grant, and the one this
@@ -58,6 +64,17 @@ class ConfigError(Exception):
     """The configuration could not be resolved, or resolved to something invalid."""
 
 
+class UnchosenEnvironmentError(ConfigError):
+    """A command that writes per-environment state ran on an environment nobody chose.
+
+    🔴 A `ConfigError` subclass so that it inherits the existing exit-2 mapping
+    rather than picking a code at the call site. `2` is "could not run", which is
+    exactly what this is: the command is well-formed and the machine is healthy,
+    but the one value that decides *which* of two containers the write lands in
+    was never supplied by anyone.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class Config:
     """Fully resolved configuration. Every field is absolute by the time it is here."""
@@ -87,6 +104,26 @@ class Config:
     """
     config_path: Path | None
     """The file the values came from, or None when nothing but defaults and env applied."""
+    environment_source: ValueSource = "argument"
+    """Who chose `environment`.
+
+    🔴 Defaults to `"argument"` because constructing a Config directly IS
+    choosing one -- the caller named the environment in the constructor. Only
+    `load_config`'s fallback produces `"default"`, which is the single state
+    `require_chosen_environment` refuses.
+    """
+
+    @property
+    def environment_chosen(self) -> bool:
+        """Whether anybody actually selected this environment.
+
+        Every per-environment container -- `datastore:<env>` and `plaid:<env>` in
+        the keychain, `connection:<env>:<id>`, and the datastore filename itself
+        -- is keyed on `environment`. When nothing chose it, a write does not go
+        somewhere harmless; it goes to whichever container the fallback names,
+        which is indistinguishable at the keychain from the operator meaning it.
+        """
+        return self.environment_source != "default"
 
     @property
     def lock_path(self) -> Path:
@@ -195,23 +232,86 @@ def _read_config_file(path: Path) -> dict[str, object]:
         raise ConfigError(f"{path} could not be read: {exc}") from exc
 
 
+def _resolve_sourced(
+    key: str,
+    env: Mapping[str, str],
+    file_values: Mapping[str, object],
+) -> tuple[str | None, ValueSource]:
+    """One value and where it came from, by precedence: environment, then config file.
+
+    The sourced form is the real one and `_resolve` discards half of it, rather
+    than the two walking the precedence separately: two implementations of one
+    precedence order drift, and the one that drifts silently is the one nothing
+    reads back.
+    """
+    from_env = env.get(ENV_PREFIX + key.upper(), "").strip()
+    if from_env:
+        return from_env, "environment variable"
+    from_file = file_values.get(key)
+    if from_file is None:
+        return None, "default"
+    if not isinstance(from_file, str | int):
+        raise ConfigError(
+            f"config key {key!r} must be a string or integer, got {type(from_file).__name__}"
+        )
+    return str(from_file), "config file"
+
+
 def _resolve(
     key: str,
     env: Mapping[str, str],
     file_values: Mapping[str, object],
 ) -> str | None:
     """One value, by precedence: environment variable, then config file."""
-    from_env = env.get(ENV_PREFIX + key.upper(), "").strip()
-    if from_env:
-        return from_env
-    from_file = file_values.get(key)
-    if from_file is None:
-        return None
-    if not isinstance(from_file, str | int):
-        raise ConfigError(
-            f"config key {key!r} must be a string or integer, got {type(from_file).__name__}"
-        )
-    return str(from_file)
+    return _resolve_sourced(key, env, file_values)[0]
+
+
+def display_path(path: Path) -> str:
+    """A path with the operator's home elided.
+
+    Here rather than beside its first caller because two surfaces need it and
+    `config` is the one they both already depend on: the log formatter (logs get
+    pasted into bug reports) and the refusals below (an error naming
+    `/Users/<someone>/...` puts an account name on a terminal and in whatever
+    captures it).
+    """
+    try:
+        return "~/" + str(path.relative_to(Path.home()))
+    except ValueError:
+        return str(path)
+
+
+def require_chosen_environment(config: Config) -> None:
+    """Refuse to write per-environment state on an environment nobody selected.
+
+    🔴 Called from the two places that perform such writes -- the one writer
+    factory in `store.connection` and the keychain mutators in `secrets` --
+    rather than from a list of command names. Every per-environment container is
+    reached through one of those two, so a command added later is covered
+    without anyone remembering to add it; a guard written as an enumeration of
+    commands is a guarantee that decays on the first one nobody lists.
+
+    Reads are deliberately not guarded. `store status`, `connections list` and
+    the MCP server keep answering under the fallback, because the hazard here is
+    not *looking at* the wrong environment -- which is visible and free to
+    correct -- but *writing* to it, which at the keychain is indistinguishable
+    from having meant it, and for a secret is unrecoverable.
+    """
+    if config.environment_chosen:
+        return
+    raise UnchosenEnvironmentError(
+        f"no environment was chosen, so {config.environment!r} was assumed -- and this "
+        f"command writes state that belongs to one environment. Nothing was written. "
+        f"Choose one, either for this shell:\n"
+        f"    export {ENV_PREFIX}ENVIRONMENT={config.environment}\n"
+        # Double-quoted explicitly rather than through `!r`: this line is meant
+        # to be pasted into a TOML file, and Python's repr would hand over
+        # single quotes -- legal TOML, but not what every example in the docs
+        # shows, which is how a paste turns into a question.
+        f"or once, by putting\n"
+        f'    environment = "{config.environment}"\n'
+        f"in {display_path(config.config_path or default_config_path())}"
+    )
 
 
 def load_config(
@@ -232,7 +332,15 @@ def load_config(
     explicit_config = config_path.exists()
     file_values = _read_config_file(config_path)
 
-    environment = _as_environment(_resolve("environment", env, file_values) or "sandbox")
+    environment_raw, environment_source = _resolve_sourced("environment", env, file_values)
+    if not environment_raw:
+        # 🔴 A key present but empty (`environment = ""`) resolves to the same
+        # fallback as a key that is absent, so it is the same amount of choosing:
+        # none. Without this, an empty entry would satisfy the write guard while
+        # the value it selected came from nowhere -- the exact state the guard
+        # exists to refuse, reached by a typo.
+        environment_source = "default"
+    environment = _as_environment(environment_raw or "sandbox")
 
     data_home = _base_dir(env, "XDG_DATA_HOME", ".local", "share") / APP_NAME
     state_home = _base_dir(env, "XDG_STATE_HOME", ".local", "state") / APP_NAME
@@ -295,4 +403,5 @@ def load_config(
         connection_cap=connection_cap,
         history_days=history_days,
         config_path=config_path if explicit_config else None,
+        environment_source=environment_source,
     )

@@ -79,9 +79,9 @@ about.
   (*what identity should stand in where the aggregator gives none?*). `_match_account` deliberately
   refuses to guess, and its reason is sound: a false merge of two real accounts is silent and
   unrecoverable, while a duplicate is at least visible. Update mode prevents the second generation;
-  it does not give the store a way to reconcile one that already exists. **#91.**
+  it does not give the store a way to reconcile one that already exists. **#95.**
 - **Disclosing an already-doubled store.** Nothing today says "these two rows look like one account
-  seen twice", and `account_no_longer_active` misattributes it to closure. Also **#91**.
+  seen twice", and `account_no_longer_active` misattributes it to closure. **#96.**
 - **Repairing the sandbox store that is currently doubled on purpose.** It is the only reproduction
   and is kept until the fix lands (handoff notes).
 - `ITEM_LOCKED` and the other FR-4 states. Update mode is the remedy for `ITEM_LOGIN_REQUIRED`; a
@@ -123,7 +123,7 @@ about.
 > differ, because that is the duplication path arriving by another door. Whether the *accounts*
 > beneath an unchanged Item keep their ids is not assertable from one call and is enqueued as
 > operator verification. **If it turns out they do not, #67 reduces the frequency of the
-> duplication without eliminating it and #91's identity fallback is needed regardless** — which is
+> duplication without eliminating it and #95's identity fallback is needed regardless** — which is
 > the discovery's own conclusion, unchanged by this build. **]**
 
 ## Chunk 01 — the update-mode link token, and `connections reauth`
@@ -287,7 +287,7 @@ more than one place. Grep for it rather than fixing the file that prompted this.
 > the question this build answers and keeps the two it does not"*, and on reading the three
 > questions none of them is answered here: the first — *does update mode preserve `account_id`?* —
 > is the one this plan's own `[ASSUMPTION]` records as **not** assertable, and the other two are
-> #91. Deleting it would have dropped a live open question to satisfy a sentence written before the
+> #95 and #96. Deleting it would have dropped a live open question to satisfy a sentence written before the
 > code. It is **rewritten** instead: it now records the half `connections reauth` does settle (the
 > item id, asserted and refused on) and names where the unsettled half now lives (VRF-007, against
 > production). **| Why:** *never silently drop a requirement* outranks the plan's own prose, and a

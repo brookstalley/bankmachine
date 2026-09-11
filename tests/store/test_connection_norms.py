@@ -430,9 +430,11 @@ def test_only_the_two_named_roles_are_exempt_from_the_schema_check(
         conn.execute("COMMIT")
 
     for name in sorted(handles - exempt):
-        with pytest.raises(SchemaVersionUnsupportedError, match=str(future)):
-            with getattr(connection, name)(initialized_config):
-                pass
+        with (
+            pytest.raises(SchemaVersionUnsupportedError, match=str(future)),
+            getattr(connection, name)(initialized_config),
+        ):
+            pass
 
     for name in sorted(exempt):
         with getattr(connection, name)(initialized_config) as conn:
@@ -518,6 +520,11 @@ def test_a_migration_killed_between_its_ddl_and_its_stamp_leaves_nothing_healthy
             "BANKMACHINE_DATASTORE_PATH": str(config.datastore_path),
             "BANKMACHINE_KEYCHAIN_SERVICE": config.keychain_service,
             "BANKMACHINE_LOG_DIR": str(config.log_dir),
+            # The child WRITES, so it has to say which environment it means --
+            # the same declaration a real operator now owes. Inherited
+            # `os.environ` cannot supply it: conftest strips these variables so
+            # no test resolves its paths from the developer's shell.
+            "BANKMACHINE_ENVIRONMENT": config.environment,
         },
         capture_output=True,
         text=True,
@@ -692,6 +699,11 @@ def _spawn_lock_holder(config: Config) -> subprocess.Popen[str]:
             "BANKMACHINE_DATASTORE_PATH": str(config.datastore_path),
             "BANKMACHINE_KEYCHAIN_SERVICE": config.keychain_service,
             "BANKMACHINE_LOG_DIR": str(config.log_dir),
+            # The child WRITES, so it has to say which environment it means --
+            # the same declaration a real operator now owes. Inherited
+            # `os.environ` cannot supply it: conftest strips these variables so
+            # no test resolves its paths from the developer's shell.
+            "BANKMACHINE_ENVIRONMENT": config.environment,
         },
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

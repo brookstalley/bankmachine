@@ -328,9 +328,11 @@ def test_a_store_this_build_cannot_serve_is_still_backed_up(
     # The precondition, asserted rather than assumed: the ordinary writer really
     # does refuse this store, so the backup below is exercising the exemption
     # and not passing because nothing was in the way.
-    with pytest.raises(connection.SchemaVersionUnsupportedError):
-        with connection.writer(initialized_config):
-            pass
+    with (
+        pytest.raises(connection.SchemaVersionUnsupportedError),
+        connection.writer(initialized_config),
+    ):
+        pass
 
     report = back_up(initialized_config, tmp_path / "backup.db")
 

@@ -222,7 +222,7 @@ def test_every_surface_states_the_read_only_guarantee_in_the_same_words(
     This is what makes the sweep unnecessary next time rather than merely done
     this time. One constant, asserted at every surface that renders it.
     """
-    from bankmachine.cli.sync import READ_ONLY_SENTENCE, _HELP
+    from bankmachine.cli.sync import _HELP, READ_ONLY_SENTENCE
 
     banner = _run(initialized_config, ["SELECT 1;"]).partition("bankmachine>")[0]
     assert READ_ONLY_SENTENCE in banner

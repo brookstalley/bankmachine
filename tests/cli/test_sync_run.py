@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
-from bankmachine.cli import run, sync_run
+from bankmachine.cli import build_parser, run, sync_run
 from bankmachine.cli.sync_run import MAX_PAGINATION_RESTARTS
 from bankmachine.config import Config
 from bankmachine.connector import (
@@ -1109,3 +1109,108 @@ def test_a_degraded_connection_outranks_one_that_is_still_arriving(
         }
     assert rows[1] == "active", "the still-arriving connection was not synced"
     assert rows[2] == "degraded"
+
+
+# --- `--until-ready`: the loop the runbook used to ask a person to be ---------
+#
+# 🔴 Every test here drives the real command through `run()` and lets the page
+# script advance between attempts. `FakeClient.calls` accumulates across runs,
+# so attempt N sees page N -- which is the point: a fake that returned the same
+# page forever would pass a loop that never re-fetched anything.
+#
+# `--retry-delay 0` rather than an injected clock, and `--no-wait` so each
+# attempt makes exactly one call instead of spending `NOT_READY_DELAYS` inside
+# the run.
+
+
+def test_until_ready_keeps_running_while_history_is_still_owed(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Exit 0 only when nothing is owed -- reached by re-running, not by waiting."""
+    FakeClient.pages = [
+        _page(status="NOT_READY"),
+        _page(status="NOT_READY"),
+        _page(added=[_txn("t1")], next_cursor="cursor-1"),
+    ]
+
+    assert run(["sync", "run", "--until-ready", "--no-wait", "--retry-delay", "0"]) == 0
+
+    assert len(FakeClient.calls) == 3, "the loop did not re-fetch between attempts"
+    assert len(_txn_rows(cli_env)) == 1
+    assert "still owed after attempt 1" in capsys.readouterr().out
+
+
+def test_until_ready_returns_a_problem_unchanged_rather_than_retrying_it(
+    cli_env: Config,
+) -> None:
+    """🔴 `1` outranks `75`. A stuck connection needs a person, and another
+    twelve attempts would bury the one signal that says so."""
+    FakeClient.pages = [
+        _page(status="NOT_READY"),
+        TransportError("the aggregator is unreachable", endpoint=TRANSACTIONS_SYNC),
+    ]
+
+    assert run(["sync", "run", "--until-ready", "--no-wait", "--retry-delay", "0"]) == 1
+
+    assert len(FakeClient.calls) == 2, "the loop kept going after a problem"
+
+
+def test_until_ready_stops_at_the_attempt_cap_and_still_reports_unfinished(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A backfill that never lands must not spin forever -- and giving up
+    waiting is not the same event as finishing, so the code stays 75."""
+    FakeClient.pages = [_page(status="NOT_READY")]
+
+    code = run(
+        ["sync", "run", "--until-ready", "--no-wait", "--retry-delay", "0", "--max-attempts", "3"]
+    )
+
+    assert code == 75
+    assert len(FakeClient.calls) == 3, "the cap was not honoured"
+    assert "still owed after 3 attempts" in capsys.readouterr().err
+
+
+def test_without_the_flag_a_run_is_still_one_run(cli_env: Config) -> None:
+    """The default path is untouched: 75 is returned, not retried."""
+    FakeClient.pages = [_page(status="NOT_READY")]
+
+    assert run(["sync", "run", "--no-wait"]) == 75
+
+    assert len(FakeClient.calls) == 1
+
+
+def test_an_attempt_cap_below_one_is_refused_rather_than_clamped(cli_env: Config) -> None:
+    """Zero attempts would exit 75 having done nothing, which is exactly what a
+    backfill that never landed looks like."""
+    FakeClient.pages = [_page(status="NOT_READY")]
+
+    assert run(["sync", "run", "--until-ready", "--max-attempts", "0"]) == 2
+
+    assert FakeClient.calls == [], "a refused cap still ran the command"
+
+
+def test_a_negative_retry_delay_is_refused(cli_env: Config) -> None:
+    FakeClient.pages = [_page(status="NOT_READY")]
+
+    assert run(["sync", "run", "--until-ready", "--retry-delay", "-1"]) == 2
+
+    assert FakeClient.calls == []
+
+
+def test_until_ready_waits_the_configured_delay_between_attempts(cli_env: Config) -> None:
+    """The delay is real. Asserted through the injected clock because a test
+    that actually waited five minutes would be deleted by the first person who
+    ran the suite."""
+    FakeClient.pages = [_page(status="NOT_READY")]
+    slept: list[float] = []
+
+    args = build_parser().parse_args(
+        ["sync", "run", "--until-ready", "--no-wait", "--retry-delay", "90", "--max-attempts", "3"]
+    )
+    code = sync_run.cmd_sync_run(cli_env, args, sleep=slept.append)
+
+    assert code == 75
+    # Two waits for three attempts: the loop does not sleep after the last one,
+    # which would be a delay nobody is waiting through.
+    assert slept == [90.0, 90.0]

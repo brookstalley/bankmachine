@@ -251,6 +251,8 @@ def test_a_process_killed_mid_derivation_leaves_the_cursor_where_it_was(
             "BANKMACHINE_DATASTORE_PATH": str(enrolled.datastore_path),
             "BANKMACHINE_KEYCHAIN_SERVICE": enrolled.keychain_service,
             "BANKMACHINE_LOG_DIR": str(enrolled.log_dir),
+            # The child WRITES, so it has to say which environment it means.
+            "BANKMACHINE_ENVIRONMENT": enrolled.environment,
             "BANKMACHINE_CONFIG": str(Path(enrolled.datastore_path).parent / "absent.toml"),
         },
         capture_output=True,

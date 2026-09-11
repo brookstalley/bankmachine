@@ -30,10 +30,9 @@ import logging
 import re
 import sys
 from collections.abc import Collection
-from pathlib import Path
 from typing import Final
 
-from bankmachine.config import Config
+from bankmachine.config import Config, display_path
 
 REDACTED: Final = "[REDACTED]"
 
@@ -184,13 +183,5 @@ def log_startup(config: Config) -> None:
     logger.warning(
         "environment=%s datastore=%s",
         config.environment.upper(),
-        _display_path(config.datastore_path),
+        display_path(config.datastore_path),
     )
-
-
-def _display_path(path: Path) -> str:
-    """A path with the operator's home elided -- logs are pasted into bug reports."""
-    try:
-        return "~/" + str(path.relative_to(Path.home()))
-    except ValueError:
-        return str(path)

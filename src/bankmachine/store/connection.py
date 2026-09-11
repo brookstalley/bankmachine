@@ -34,7 +34,7 @@ from typing import Final
 
 from sqlcipher3 import dbapi2
 
-from bankmachine.config import Config
+from bankmachine.config import Config, require_chosen_environment
 from bankmachine.secrets import SecretsError, get_datastore_key, validate_candidate_key
 
 Connection = dbapi2.Connection
@@ -348,7 +348,17 @@ def _diagnose_first_read(exc: dbapi2.DatabaseError, config: Config) -> StoreErro
 
 @contextmanager
 def _writer(config: Config, *, create: bool) -> Iterator[Connection]:
-    """The one writer factory. It holds the exclusive lock before it yields."""
+    """The one writer factory. It holds the exclusive lock before it yields.
+
+    🔴 The environment check is here, before the path is touched, because this
+    is the single point every datastore write passes through -- `store init`,
+    the migration runner, `enroll`, `sync run`, `connections retire` and the raw
+    archive all arrive by way of it. Checking here rather than in each command
+    is what keeps the guarantee from decaying as commands are added. `reader`
+    does not call it: reading the wrong environment is visible and free to
+    correct, writing to it is neither.
+    """
+    require_chosen_environment(config)
     if not create and not config.datastore_path.exists():
         raise DatastoreMissingError(
             f"no datastore at {config.datastore_path} -- run `bankmachine store init` "
