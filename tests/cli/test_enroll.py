@@ -23,7 +23,7 @@ from sqlalchemy import insert, update
 
 from bankmachine.cli import connections as connections_module
 from bankmachine.cli import run
-from bankmachine.cli.enroll import MIN_HOSTED_WAIT_SECONDS
+from bankmachine.cli.hosted_link import MIN_HOSTED_WAIT_SECONDS
 from bankmachine.config import Config
 from bankmachine.connector import (
     ITEM_GET,
@@ -213,7 +213,7 @@ def offline_client(monkeypatch: pytest.MonkeyPatch) -> type[FakeClient]:
     # client, so patching only the enroll module would leave the removal reaching
     # a real network -- and failing silently, which is exactly the bug below.
     monkeypatch.setattr("bankmachine.cli.connections.PlaidClient", FakeClient)
-    monkeypatch.setattr("bankmachine.cli.enroll.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("bankmachine.cli.hosted_link.time.sleep", lambda _seconds: None)
     return FakeClient
 
 
@@ -509,7 +509,7 @@ def test_re_enrolling_the_same_institution_updates_rather_than_duplicates(
     second = rows[0]._mapping
     assert second["connection_id"] == first_id
     # Preserved: it records when the operator first linked this institution, and
-    # re-linking after an expired login is that enrollment continuing.
+    # a deliberate re-link to widen the window is that enrollment continuing.
     assert second["enrolled_at"] == enrolled_at
     assert len(_rows(cli_env, institutions)) == 1
 
@@ -609,7 +609,7 @@ def test_an_abandoned_session_exits_one_and_names_the_session(
     # seconds to assert a branch. Advancing the monotonic clock past the deadline
     # exercises exactly the comparison the loop makes.
     clock = iter([0.0, 0.0, 10_000.0])
-    monkeypatch.setattr("bankmachine.cli.enroll.time.monotonic", lambda: next(clock))
+    monkeypatch.setattr("bankmachine.cli.hosted_link.time.monotonic", lambda: next(clock))
 
     assert run(["enroll", "--yes", "--timeout", str(MIN_HOSTED_WAIT_SECONDS)]) == 1
 
@@ -817,7 +817,7 @@ def test_re_enrolling_removes_the_item_it_superseded(
     first_token = f"{ACCESS_TOKEN}-{ITEM_ID}"
 
     FakeClient.item_id = "item-relinked"
-    assert run(["enroll", "--yes"]) == 0
+    assert run(["enroll", "--yes", "--relink"]) == 0
 
     assert FakeClient.removed_tokens == [first_token]
     rows = _rows(cli_env, connections)
@@ -850,7 +850,7 @@ def test_removal_happens_only_after_the_replacement_is_committed(
 
     monkeypatch.setattr("bankmachine.cli.enroll.release_at_aggregator", observing)
     FakeClient.item_id = "item-relinked"
-    assert run(["enroll", "--yes"]) == 0
+    assert run(["enroll", "--yes", "--relink"]) == 0
 
     assert observed["source_connection_id"] == "item-relinked", (
         "the release ran before the replacement was committed, so a crash between "
@@ -883,19 +883,24 @@ def test_re_linking_to_a_new_item_clears_the_cursor_and_the_granted_window(
 ) -> None:
     """🔴 A cursor belongs to the item that issued it, and the row outlives the item.
 
-    Re-linking is the only remedy this product offers for an expired login, and it
-    mints a NEW item behind the SAME connection row. Keeping the old cursor sends
+    Re-linking mints a NEW item behind the SAME connection row. Keeping the old
+    cursor sends
     one item's bookmark with another item's credential, which the aggregator
     refuses permanently -- so every later sync degrades the connection and no
     command can clear it. The granted window goes for the same reason: it measures
     what the retired item granted, and the `gapped` warning built on it would then
     describe a connection that no longer exists.
+
+    🔴 Driven through `--relink`, because this clearing is exactly what the flag
+    exists to gate. It is correct and it is expensive, and it is no longer the
+    remedy for an expired login -- `connections reauth` is, and it costs none of
+    this.
     """
     assert run(["enroll", "--yes"]) == 0
     _seed_item_scoped_state(cli_env, connection_id=1)
 
     FakeClient.item_id = "item-relinked"
-    assert run(["enroll", "--yes"]) == 0
+    assert run(["enroll", "--yes", "--relink"]) == 0
 
     assert _rows(cli_env, sync_state) == [], (
         "the new item's first sync must start from the beginning, not from a "
@@ -920,7 +925,7 @@ def test_re_linking_to_a_new_item_says_so_in_the_log(
     _seed_item_scoped_state(cli_env, connection_id=1)
 
     FakeClient.item_id = "item-relinked"
-    assert run(["enroll", "--yes"]) == 0
+    assert run(["enroll", "--yes", "--relink"]) == 0
 
     written = _log_text(cli_env)
     assert "re-linked" in written
@@ -959,7 +964,7 @@ def test_a_re_link_leaves_the_accounts_and_transactions_alone(
     account_id = _seed_account(cli_env, connection_id=1)
 
     FakeClient.item_id = "item-relinked"
-    assert run(["enroll", "--yes"]) == 0
+    assert run(["enroll", "--yes", "--relink"]) == 0
 
     rows = _rows(cli_env, accounts)
     assert [row._mapping["account_id"] for row in rows] == [account_id]
@@ -1343,7 +1348,7 @@ def test_a_failed_release_of_the_superseded_item_is_reported_not_swallowed(
     monkeypatch.setattr(FakeClient, "item_remove", refuse)
     FakeClient.item_id = "item-relinked"
 
-    assert run(["enroll", "--yes"]) == 1
+    assert run(["enroll", "--yes", "--relink"]) == 1
 
     # The enrollment still stands -- the new connection is usable.
     assert _rows(cli_env, connections)[0]._mapping["source_connection_id"] == "item-relinked"
@@ -1656,3 +1661,122 @@ def test_an_item_orphaned_by_the_cap_race_becomes_a_retirable_connection(
     assert orphan["status"] == "retired"
     # And the command that retries it can now find it.
     assert run(["connections", "list", "--all"]) == 0
+
+
+# --------------------------------------------------------------------------
+# The re-link guard (#67) -- `enroll` stops repointing a live connection by accident
+# --------------------------------------------------------------------------
+
+
+def test_an_unflagged_enrollment_that_would_replace_the_item_is_refused(
+    cli_env: Config, offline_client: type[FakeClient], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """🔴 The refusal sits on the branch that would commit the duplication.
+
+    A new item re-issues every `source_account_id`, and the identity that would
+    survive one is null at all but three institutions -- so the roster inserts a
+    second row per account, the re-fetched window lands on those rows, and every
+    total doubles with nothing saying so. Measured: 390 transactions became 784.
+    """
+    assert run(["enroll", "--yes"]) == 0
+    _seed_item_scoped_state(cli_env, connection_id=1)
+
+    FakeClient.item_id = "item-relinked"
+    assert run(["enroll", "--yes"]) == 1
+
+    rows = _rows(cli_env, connections)
+    assert len(rows) == 1
+    assert rows[0]._mapping["source_connection_id"] == ITEM_ID, "the row kept its original item"
+    assert _rows(cli_env, sync_state) != [], "the cursor the refusal protects is still there"
+    err = capsys.readouterr().err
+    assert "connections reauth 1" in err
+    assert "--relink" in err
+
+
+def test_the_item_a_refused_re_link_minted_is_released_not_left_billing(
+    cli_env: Config, offline_client: type[FakeClient]
+) -> None:
+    """The refusal still costs the operator a completed browser session.
+
+    It must not also cost them a bill: an item exists at the aggregator that this
+    side has just declined to record, and the only handle to it is the credential
+    this run wrote.
+    """
+    assert run(["enroll", "--yes"]) == 0
+
+    FakeClient.item_id = "item-relinked"
+    assert run(["enroll", "--yes"]) == 1
+
+    assert FakeClient.removed_tokens == [f"{ACCESS_TOKEN}-item-relinked"], (
+        "the refused item was released; the original connection's token was not touched"
+    )
+
+
+def test_a_re_link_that_cannot_be_released_becomes_an_orphan_row(
+    cli_env: Config, offline_client: type[FakeClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal path inherits the cap race's recovery, because it leaves the same wreckage."""
+    assert run(["enroll", "--yes"]) == 0
+
+    def unreachable(self: FakeClient, access_token: str, **kwargs: Any) -> FetchedResponse:
+        raise TransportError("the aggregator is unreachable", endpoint=ITEM_REMOVE)
+
+    FakeClient.item_id = "item-relinked"
+    monkeypatch.setattr(FakeClient, "item_remove", unreachable)
+    assert run(["enroll", "--yes"]) == 1
+
+    retired = [
+        row._mapping
+        for row in _rows(cli_env, connections)
+        if row._mapping["source_connection_id"] == "item-relinked"
+    ]
+    assert retired, "an item nothing can reach needs a row to be retried from"
+    assert retired[0]["retired_at"] is not None
+
+
+def test_a_converging_re_run_against_the_same_item_needs_no_flag(
+    cli_env: Config, offline_client: type[FakeClient]
+) -> None:
+    """🔴 The case the guard must NOT catch, and the reason it is keyed on the item.
+
+    Re-running `enroll` against the same institution when nothing has changed
+    replaces nothing, so it re-issues nothing and costs nothing. A guard keyed on
+    "this institution is already linked" would refuse this, which is both wrong
+    and the shape that teaches an operator to pass `--relink` reflexively.
+    """
+    assert run(["enroll", "--yes"]) == 0
+    _seed_item_scoped_state(cli_env, connection_id=1)
+
+    assert run(["enroll", "--yes"]) == 0
+
+    assert _rows(cli_env, sync_state) != [], "a converging re-run must not clear the cursor"
+    assert _rows(cli_env, connections)[0]._mapping["granted_history_days"] == 180
+
+
+def test_the_signpost_names_the_cheaper_command_before_the_url(
+    cli_env: Config, offline_client: type[FakeClient], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Where it costs nobody a session, unlike the refusal it usually makes unnecessary."""
+    assert run(["enroll", "--yes"]) == 0
+    capsys.readouterr()
+
+    FakeClient.item_id = "item-relinked"
+    run(["enroll", "--yes"])
+
+    out = capsys.readouterr().out
+    assert "already linked:" in out
+    assert "connections reauth" in out
+    assert out.index("already linked:") < out.index("open this URL"), (
+        "a warning after the URL reaches the operator only once the session is spent"
+    )
+
+
+def test_the_signpost_is_absent_when_nothing_is_enrolled(
+    cli_env: Config, offline_client: type[FakeClient], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An unconditional notice is one an operator learns to skip -- including when it mattered."""
+    assert run(["enroll", "--yes"]) == 0
+
+    out = capsys.readouterr().out
+    assert "already linked:" not in out
+    assert "connections reauth" not in out

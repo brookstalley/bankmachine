@@ -121,7 +121,10 @@ _GUIDANCE: dict[str, _Guidance] = {
             "name the failing institution when you report the number, and treat a drop against "
             "an earlier period as unexplained rather than as a change in the operator's "
             "behaviour. `get_pipeline_health` carries `last_error_code`, which is what an "
-            "operator needs in order to fix it."
+            "operator needs in order to fix it. If it names an expired or rejected login, the "
+            "repair is `bankmachine connections reauth <id>`, which keeps the history and the "
+            "cursor. Never suggest enrolling the institution again -- that mints a second "
+            "connection at the aggregator and doubles every total this datastore can report."
         ),
     ),
     "gapped": _Guidance(

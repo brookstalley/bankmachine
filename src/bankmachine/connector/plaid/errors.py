@@ -18,11 +18,12 @@ a behavioural test cannot tell them apart, and "the system still classified it"
 is exactly how a lost layer hides.
 
 🔴 **`ITEM_ERROR` is deliberately absent from the type layer.** It spans
-`ITEM_LOGIN_REQUIRED` (re-link it), `ITEM_LOCKED` (go to your bank) and
-`NO_ACCOUNTS` (nothing to sync) -- three different remedies. Mapping it to any
-one of them would produce a confident classification that is wrong two-thirds of
-the time, which is worse than the refusal `UnrecognizedAggregatorError` gives,
-because a wrong remedy sends the operator somewhere that cannot help them.
+`ITEM_LOGIN_REQUIRED` (renew the login in place, `connections reauth`),
+`ITEM_LOCKED` (go to your bank) and `NO_ACCOUNTS` (nothing to sync) -- three
+different remedies. Mapping it to any one of them would produce a confident
+classification that is wrong two-thirds of the time, which is worse than the
+refusal `UnrecognizedAggregatorError` gives, because a wrong remedy sends the
+operator somewhere that cannot help them.
 """
 
 from __future__ import annotations

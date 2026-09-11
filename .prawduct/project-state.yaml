@@ -164,7 +164,7 @@ product_definition:
       description: "launchd wakes the daemon daily: per Item, /transactions/sync to cursor exhaustion, daily balance snapshot, investments where the Item supports them. Raw responses persisted before normalization; cursor advanced transactionally with its data."
       priority: must-have
     - name: "Detect and repair a degraded Item"
-      description: "Per-Item error capture never aborts the others; degraded state plus last-successful-sync is recorded and surfaced; `sync repair` issues an update-mode Hosted Link that preserves history and cursor."
+      description: "Per-Item error capture never aborts the others; degraded state plus last-successful-sync is recorded and surfaced; `connections reauth <id>` issues an update-mode Hosted Link that preserves history and cursor."
       priority: must-have
     - name: "Import what Plaid cannot reach"
       description: "CSV import into the same normalized tables with source='manual', via a per-format adapter selected by config. Provenance survives into every query result."

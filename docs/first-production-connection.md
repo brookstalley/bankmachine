@@ -453,14 +453,16 @@ whatever is still in `store.db-wal` — a measured `cp` of a source with a hot W
 keeps going; the run exits 1 and `connections list` shows the connection degraded.
 
 - **`ITEM_LOGIN_REQUIRED`** — your login at that institution expired, or its MFA needs re-answering.
-  **Re-run `uv run bankmachine enroll` and pick the same institution.** It converges on the existing
-  connection instead of adding a second one: the connection id, its accounts and its transactions
-  are kept, the degraded flag and error code are cleared, and the Item it replaced is removed at the
-  aggregator so it stops billing. 🔴 If the re-link yields a **new** Item, the connection's cursor
-  and its measured granted window are reset with it — both are Item-scoped and neither survives the
-  credential they belonged to — so the next sync re-fetches the history from the start of the
-  window. That is idempotent, but it is not instant. The dedicated repair command (update-mode
-  re-auth, AC-4.3) is specified and **not built**.
+  **Run `uv run bankmachine connections reauth <id>`** — `connections list` gives you the id. It
+  prints an update-mode hosted URL; complete it in the browser and the connection returns to
+  `active`. It renews the login against the Item the connection already has, so the connection id,
+  its accounts, its transactions, its cursor and its measured granted window all survive, and the
+  next `sync run` continues from where the last one stopped rather than re-fetching the window.
+  🔴 **Do not re-run `enroll` here.** That mints a **new** Item, and a new Item re-issues every
+  account id and every transaction id: your store gains a second copy of the same accounts and the
+  same transactions, and every total spanning them doubles with **no warning naming it**. `enroll`
+  now refuses that case for you and points you back here; `--relink` is the deliberate override,
+  and it exists only because AC-1.2 makes re-linking the one way to widen the history window.
 - **Institution down, or rate limited** — nothing to do; run again later.
 - **`ITEM_LOCKED`** — the institution locked the account. Fix it at the institution first.
 

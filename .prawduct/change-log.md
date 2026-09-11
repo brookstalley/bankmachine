@@ -34,6 +34,92 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-10: An expired login is repaired in place, not re-linked
+
+<!-- prawduct: scope=connections-reauth -->
+
+**Why:** the product's only answer to `ITEM_LOGIN_REQUIRED` — its most common production event —
+was *re-run `bankmachine enroll` and pick the same institution*, and that operation destroys data
+silently. Reproduced on the sandbox store: the re-link mints a new item, the new item re-issues
+every `source_account_id`, `_match_account` matches nothing because
+`source_persistent_account_id` is NULL, and 14 accounts become 28 with the re-fetched window
+landing on the new ones. **390 transactions became 784**, and `money_summary` returned exactly
+twice the true outflow with no warning naming it. The discovery behind #67 established that NULL is
+the rule, not the exception: the field exists at three institutions, depository accounts only.
+
+**What changed:** `bankmachine connections reauth <id>` opens an update-mode Link session against
+the connection's existing item and waits for the operator to complete it. It clears `status`,
+`last_error_code` and `last_error_at`, and stamps `updated_at` as every command that changes that
+row does. Nothing else on the row moves: the cursor, the granted window,
+`enrolled_at`, the accounts and the transactions are all left alone, which is AC-4.3's requirement
+rather than an implementation detail.
+
+🔴 **Completion is the item's error clearing, not a public token.** `LinkSession.finished` is
+derived from `public_token` so the two cannot disagree — and update mode mints no public token,
+because the item already exists and nothing is exchanged. So the repair polls `/item/get` and waits
+for the item to stop reporting `ITEM_LOGIN_REQUIRED`. Not for *no* error: an absent `error` key and
+a null one are different observations, and a complaint update mode was never going to fix would
+otherwise be waited out to the timeout.
+
+🔴 **The item id is compared before anything is written.** Update mode is supposed to repair the
+item in place; if one came back different, a second generation of ids would stand behind the
+connection and the next sync would duplicate everything. The repair refuses and leaves the
+connection degraded, which is recoverable, rather than marking it active, which is not. Whether the
+*accounts* beneath an unchanged item keep their ids is not assertable from one call — it is
+**VRF-007**, and if they move then #91's identity fallback is needed regardless.
+
+**Two methods on the client, not one with a flag.** `link_token_create` makes `history_days`
+required with no default because AC-1.2 freezes the window at enrollment. Update mode requests no
+window at all, so a single method would have to accept that argument and ignore it in one of its two
+modes — which is exactly how a forgotten window reaches the path where it is irreversible.
+
+🔴 **`enroll` no longer repoints a live connection at a new item by accident.** The repair only
+helps if the destroying path stops being the one an operator falls into, so the branch that would
+have committed the duplication now refuses, and releases the fresh item at the aggregator on the
+way out so nothing is left billing. `--relink` is the deliberate override, and it exists because
+AC-1.2 makes re-linking the only way to widen the history window. A re-run that lands on the **same**
+item is untouched and needs no flag — the guard is keyed on the item changing, not on the
+institution already being linked, because a guard on the latter would refuse a harmless re-run and
+teach the operator to pass `--relink` reflexively. A signpost before the URL lists the live
+connections and points at `connections reauth`, so the refusal is the backstop rather than the first
+thing an operator meets: the institution is not known until Link has been completed in a browser,
+so a refusal necessarily spends that session.
+
+**Every surface that named `enroll` as the remedy now names the repair.** A superseded recovery is
+a sweep, not an edit: `docs/system-requirements.md` (AC-4.3, and AC-1.4's idempotency bound),
+`docs/first-production-connection.md`, the operational spec's failure-recovery table,
+`ReauthRequiredError`'s docstring, the aggregator error taxonomy's `ITEM_LOGIN_REQUIRED` gloss, the
+`degraded` guidance an MCP client reads, and `sync run`'s own degraded report — which now names
+`bankmachine connections reauth <id>` with the connection id already filled in, and only for an
+expired login, because a line printed under every degradation is one an operator learns to skip.
+
+🔴 **`updated_at` has one owner, and the repair is why.** `connections reauth` is the first path in the product that archives `/item/get`
+against a real connection id — enrollment archives it with none, and `sync run` archives only
+accounts and transactions pages. That made the item-standing deriver reachable on replay, and it
+was stamping `connections.updated_at`, a column the commands that change the row stamp with the
+clock. So the first `store rebuild` after a repair would have found content changed at an unchanged
+derivation version, rolled back, and told the operator a deriver was impure or the archive had been
+pruned — neither true, and `operational-spec.md` sends them to `store rebuild` after exactly this
+repair. The column now has one owner: the commands that change the row. The deriver writes what it
+derives, and a repaired connection rebuilds.
+
+**The condition is established before the URL is printed.** The repair reads the item once up
+front and refuses what update mode cannot renew, naming what the aggregator actually says. Without
+that read, completion would mean "the item is not reporting an expired login *now*" — which a
+healthy connection satisfies on the first look, so the command would print a URL and then report
+"repaired" for a session nobody opened, and tell an operator whose item was LOCKED that the
+aggregator had accepted a new login.
+
+**A foreign item body is archived, not derived.** The identity question is settled before the
+derivation runs, so a body describing some other item is archived with no connection id. Deriving
+first would write another item's consent date into the column the MCP consent warnings are built
+from — on the very path that then prints "Nothing was changed". The expired-login code is asked of
+`errors.py`, which owns that vocabulary, rather than held a second time as a string literal in the
+CLI.
+
+**Not built here:** reconciling a store that is *already* doubled, and an identity fallback for the
+institutions that give no stable account id. Both are #91.
+
 ## 2026-09-10: The sync shell's role line stops stranding its reader
 
 <!-- prawduct: scope=shell-banner-role-line -->

@@ -43,6 +43,7 @@ from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchan
 from plaid.model.item_remove_request import ItemRemoveRequest
 from plaid.model.link_token_create_hosted_link import LinkTokenCreateHostedLink
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
+from plaid.model.link_token_create_request_update import LinkTokenCreateRequestUpdate
 from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
 from plaid.model.link_token_get_request import LinkTokenGetRequest
 from plaid.model.link_token_transactions import LinkTokenTransactions
@@ -68,6 +69,7 @@ from bankmachine.connector import (
     LinkSession,
     LinkToken,
     MalformedResponseError,
+    RepairSession,
     TransportError,
     parse_response_body,
 )
@@ -616,6 +618,63 @@ class PlaidClient:
             ),
             **extra,
         )
+        token, expiration, hosted_url = self._issue_link_token(request)
+        return LinkToken(
+            token=token,
+            expires_at=expiration,
+            requested_history_days=history_days,
+            hosted_link_url=hosted_url,
+        )
+
+    def link_token_create_update(
+        self,
+        *,
+        access_token: str,
+        client_user_id: str,
+        country_codes: list[str],
+        hosted_url_lifetime_seconds: int = DEFAULT_HOSTED_URL_LIFETIME_SECONDS,
+    ) -> RepairSession:
+        """Open an update-mode session: re-authenticate an Item that already exists.
+
+        🔴 **A second method rather than an `access_token` argument on the one
+        above, and the signature is the whole reason.** `link_token_create` makes
+        `history_days` required with no default because AC-1.2 freezes the window
+        at enrollment and a caller who forgets it must fail to typecheck. Update
+        mode requests no window -- the grant belongs to the Item that survives the
+        repair -- so one method covering both would have to accept the parameter
+        and ignore it in one mode, which is precisely how a forgotten window
+        reaches the path where it matters. Here it cannot be passed at all.
+
+        🔴 **No `products` either.** Update mode re-authenticates an Item rather
+        than choosing what a new one will carry; sending products would ask the
+        aggregator to widen an Item during a repair, which is not what the
+        operator asked for and not what AC-4.3 promises.
+
+        The access token is a request argument and nothing more: it is read from
+        the keychain at the call site and never stored, printed or logged.
+        """
+        request = LinkTokenCreateRequest(
+            client_name=LINK_CLIENT_NAME,
+            language=LINK_LANGUAGE,
+            country_codes=[CountryCode(code) for code in country_codes],
+            user=LinkTokenCreateRequestUser(client_user_id=client_user_id),
+            access_token=access_token,
+            update=LinkTokenCreateRequestUpdate(),
+            hosted_link=LinkTokenCreateHostedLink(
+                url_lifetime_seconds=hosted_url_lifetime_seconds,
+            ),
+        )
+        _, expiration, hosted_url = self._issue_link_token(request)
+        return RepairSession(expires_at=expiration, hosted_link_url=hosted_url)
+
+    def _issue_link_token(self, request: LinkTokenCreateRequest) -> tuple[str, str, str]:
+        """Send one `/link/token/create` and read the three fields both modes return.
+
+        Shared so the response handling cannot drift between enrollment and
+        repair: the two requests differ, the reply's shape does not, and two
+        copies of these refusals would eventually disagree about which absence
+        means what.
+        """
         body = self._fetch_bytes(LINK_TOKEN_CREATE, self._api.link_token_create, request)
         payload = _payload(LINK_TOKEN_CREATE, body)
         token = payload.get("link_token")
@@ -635,17 +694,12 @@ class PlaidClient:
             # would send the operator looking at their link token.
             raise MalformedResponseError(
                 f"{LINK_TOKEN_CREATE} returned no hosted_link_url, so there is no URL to "
-                f"enrol at. The request asked for a hosted session; an account without "
+                f"open. The request asked for a hosted session; an account without "
                 f"Hosted Link enabled is the likely cause",
                 endpoint=LINK_TOKEN_CREATE,
                 failed_at=self._now(),
             )
-        return LinkToken(
-            token=token,
-            expires_at=expiration,
-            requested_history_days=history_days,
-            hosted_link_url=hosted_url,
-        )
+        return token, expiration, hosted_url
 
     def link_token_get(self, link_token: str) -> LinkSession:
         """Poll one Link session. Never archived: a finished one carries a credential.

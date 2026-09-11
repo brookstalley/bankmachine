@@ -49,8 +49,8 @@ class ConnectorError(Exception):
     **The subclasses below are the taxonomy FR-4 is written in, and they are
     organized by what the caller must do next rather than by what the aggregator
     called it.** An operator reading "the sync failed" learns nothing; the four
-    outcomes that actually differ are *re-link this connection*, *wait and it
-    will fix itself*, *fix this code*, and *fix the configuration*. A taxonomy
+    outcomes that actually differ are *repair this connection's login*, *wait and
+    it will fix itself*, *fix this code*, and *fix the configuration*. A taxonomy
     keyed on the aggregator's own vocabulary would put `ITEM_LOCKED` and
     `ITEM_LOGIN_REQUIRED` side by side as if they were the same kind of thing,
     when one needs the operator at their bank's website and the other needs them
@@ -222,7 +222,14 @@ class AggregatorError(ConnectorError, grouping=True):
 
 
 class ReauthRequiredError(AggregatorError):
-    """The connection's credentials no longer work; the operator must re-link it (AC-4.1).
+    """The connection's credentials no longer work (AC-4.1).
+
+    The remedy is `bankmachine connections reauth <id>`, which renews the login
+    through update mode against the item this connection already names.
+    🔴 **Not a re-link:** enrolling the institution again mints a NEW item, whose
+    roster re-issues every account and transaction id, so the store gains a
+    second generation of both and every total spanning them doubles with no
+    warning naming it (AC-4.3).
 
     Terminal until a human acts, so retrying is not merely useless -- it delays
     the report that tells them to act, and AC-4.4 names silent staleness as this
@@ -236,9 +243,9 @@ class ConnectionLockedError(AggregatorError):
     """The institution has locked the account (AC-4.1).
 
     Separate from `ReauthRequiredError` because the remedy is at the
-    institution's own website, not in this product, and telling an operator to
-    re-link an account their bank has locked sends them somewhere that cannot
-    help.
+    institution's own website, not in this product, and pointing an operator at
+    `connections reauth` for an account their bank has locked sends them
+    somewhere that cannot help.
     """
 
     retryable = False
@@ -532,6 +539,31 @@ class LinkToken:
             f"requested_history_days={self.requested_history_days}, "
             f"hosted_link_url={self.hosted_link_url!r})"
         )
+
+
+@dataclass(frozen=True, slots=True)
+class RepairSession:
+    """An update-mode Link session: the URL that repairs a connection in place.
+
+    🔴 **Deliberately not a `LinkToken`.** That type carries
+    `requested_history_days` because AC-11.8's shortfall has no left-hand side
+    without it, and an update-mode session requests no window at all -- the grant
+    belongs to the Item that survives the repair. Widening the field to optional
+    would push a "not applicable" into every reader of the one number AC-1.2
+    freezes, to describe a session that never had one.
+
+    There is no `token` field, and its absence is the same decision: nothing
+    polls an update-mode session. The Item already exists, so its own error
+    clearing is what says the operator finished, and a credential nothing reads
+    is a credential worth not holding.
+
+    `hosted_link_url` is what the operator opens, and is not redacted -- a
+    session someone is being asked to complete is not a secret being kept from
+    them, which is the reasoning `LinkToken` records for the same field.
+    """
+
+    expires_at: str
+    hosted_link_url: str
 
 
 @dataclass(frozen=True, slots=True)

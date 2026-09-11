@@ -49,6 +49,7 @@ SECRETS = pathlib.Path("src/bankmachine/secrets.py")
 CLI_CONNECTOR = pathlib.Path("src/bankmachine/cli/connector.py")
 CLI_ENROLL = pathlib.Path("src/bankmachine/cli/enroll.py")
 CLI_CONNECTIONS = pathlib.Path("src/bankmachine/cli/connections.py")
+CLI_HOSTED_LINK = pathlib.Path("src/bankmachine/cli/hosted_link.py")
 CLI_MAIN = pathlib.Path("src/bankmachine/cli/__init__.py")
 CONNECTOR_CLIENT = pathlib.Path("src/bankmachine/connector/plaid/client.py")
 CONNECTOR_PACKAGE = pathlib.Path("src/bankmachine/connector/__init__.py")
@@ -659,7 +660,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     ),
     (
         "AC-1.2: --timeout is floored, because it is also the URL's lifetime",
-        CLI_ENROLL,
+        CLI_HOSTED_LINK,
         "    if seconds < MIN_HOSTED_WAIT_SECONDS:",
         "    if False:",
         f"{ENROLL_CLI_TESTS}::test_a_timeout_below_the_floor_is_refused_before_the_aggregator",

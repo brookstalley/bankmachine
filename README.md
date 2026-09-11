@@ -40,8 +40,10 @@ multi-user, not distributed.
 **Status:** enrollment, sync and the MCP server work end to end — build steps 1–4 of
 `docs/system-requirements.md` §8 are complete. Five of the eight specified MCP tools are serving
 (§5); the other three are recorded as descoped in `.prawduct/artifacts/api-contract.md`.
-Step 5 is partial (balances land on every sync; holdings are not pulled at all) and so is step 6
-(connection health yes, the update-mode repair command no). **Not started:** scheduling (step 8 —
+Step 5 is partial (balances land on every sync; holdings are not pulled at all). Step 6's repair
+has landed — `connections reauth <id>` renews an expired login through an update-mode session
+without losing the connection's history or cursor — alongside the connection health and
+per-connection error handling that were already there. **Not started:** scheduling (step 8 —
 run `sync run` yourself, daily), the verification gate, and the file-import path.
 
 ## Install

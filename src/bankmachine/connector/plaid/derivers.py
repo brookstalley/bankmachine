@@ -367,8 +367,20 @@ def _record_item_standing(
     written. A body that omits `consent_expiration_time` entirely says nothing
     about consent, so blanking a date already recorded would discard the only
     warning the operator was going to get.
+
+    🔴 **`connections.updated_at` is NOT written here, and the omission is
+    load-bearing.** That column is stamped by the commands that change the row --
+    enrollment, retirement, a degrade, a recorded success, a repair -- and
+    `rebuild.content_digest` hashes it like any other. A deriver that also set it
+    would overwrite the live value with the archived `received_at` on every
+    replay, so `store rebuild` would report content changed at an unchanged
+    `DERIVATION_VERSION` and refuse -- blaming an impure deriver or a pruned
+    archive, when the truth is that one column had two owners. The columns below
+    are derived from the body and replay to the same values; `updated_at` is not
+    one of them. (`accounts.updated_at` is owned the other way round, by its
+    deriver, because every column on that table is derived.)
     """
-    values: dict[str, Any] = {"updated_at": response.received_at}
+    values: dict[str, Any] = {}
     if "consent_expiration_time" in item:
         raw = item.get("consent_expiration_time")
         values["consent_expires_at"] = (
@@ -379,7 +391,7 @@ def _record_item_standing(
         values["source_error_code"] = (
             _optional(error.get("error_code")) if isinstance(error, dict) else None
         )
-    if len(values) == 1:
+    if not values:
         return
     conn.execute(
         update(connections)

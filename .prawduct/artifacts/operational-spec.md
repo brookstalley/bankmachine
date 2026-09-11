@@ -202,8 +202,8 @@ read `no_longer_reported`. After 004, `roster_observed_date` is null for every c
 frozen balance with no warning** — FR-9's own failure, restored for the length of the window.
 
 **For a healthy connection the window closes at the next successful sync.** For a connection that
-never syncs successfully again — login required, never re-linked — **it never closes on its own, and
-that is exactly the connection whose absent accounts matter most.**
+never syncs successfully again — login expired, never repaired with `connections reauth` — **it
+never closes on its own, and that is exactly the connection whose absent accounts matter most.**
 
 🔴 **So run `bankmachine store rebuild` after step 5 if any connection is not syncing** — and
 `bankmachine connections list` is how you tell, since at this point in the procedure the MCP client
@@ -409,7 +409,7 @@ The exceptions are marked.
 
 | Failure | Signal | Recovery |
 |---|---|---|
-| **One connection broke** (auth required, locked, institution down) | `status = 'degraded'` + error code + `last_success_at` | `sync repair` → update-mode enrollment URL. 🔴 **History and cursor are preserved** (AC-4.3). The other connections were never affected (AC-4.1) *(specified — step 6)* |
+| **One connection broke** (auth required, locked, institution down) | `status = 'degraded'` + error code + `last_success_at` | `connections reauth <id>` → update-mode enrollment URL. 🔴 **History and cursor are preserved** (AC-4.3), because it renews the login against the Item the connection already has. Re-running `enroll` is NOT the repair: a new Item re-issues every account and transaction id and doubles every total spanning them. The other connections were never affected (AC-4.1) |
 | **Rate limited** | Error code on that connection | Backoff; the next scheduled run resumes. Never a crash |
 | **Initial backfill not ready** | Not-yet-ready response; exit `75` | 🔴 Backoff-and-retry, not failure (AC-2.6). A multi-year backfill takes time to materialize |
 | **Backfill only partly arrived** | Exit `75` with pages applied; `last_success_at` still null, so every answer carries `partial` | 🔴 Run again. `INITIAL_UPDATE_COMPLETE` is ~30 days of a 730-day grant and the rest follows minutes to hours later. Nothing is wrong and nothing is lost; the connection is simply not yet whole, and it says so on both surfaces rather than on neither |

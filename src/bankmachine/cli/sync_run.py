@@ -41,6 +41,7 @@ from bankmachine.config import Config
 from bankmachine.connector import (
     ConnectorError,
     FetchedResponse,
+    ReauthRequiredError,
     TransactionsPaginationRestartError,
     parse_response_body,
 )
@@ -111,6 +112,11 @@ class ConnectionOutcome:
     stopped_short: bool = False
     degraded: bool = False
     reason: str | None = None
+    #: Whether the failure is an expired login, which `connections reauth` repairs
+    #: in place. Carried as its own field rather than re-derived from the error
+    #: code, because the code recorded on the row is the exception's class name
+    #: and a report keyed on that string would drift the moment the class moved.
+    login_expired: bool = False
     still_materializing: bool = False
     historical_complete: bool = False
     granted_history_days: int | None = None
@@ -362,6 +368,12 @@ def _sync_one(
                     connection_id,
                     MAX_PAGES_PER_RUN,
                 )
+    except ReauthRequiredError as exc:
+        # Named before the broad connector catch below so the report can offer the
+        # repair. Everything else about the handling is identical -- this one
+        # connection degrades and the run carries on (AC-4.1).
+        outcome.login_expired = True
+        return _degrade(config, outcome, type(exc).__name__, str(exc))
     except (ConnectorError, StoreError) as exc:
         # 🔴 `StoreError`, not `DerivationError`. `_persist` takes the exclusive
         # writer lock per page and does not wait, so an ordinary `store backup`
@@ -603,6 +615,19 @@ def _report(run: RunOutcome) -> None:
     for outcome in run.outcomes:
         if outcome.degraded:
             print(f"  {outcome.connection_id}  {outcome.institution_name}: {outcome.reason}")
+            if outcome.login_expired:
+                # 🔴 The line an operator acts on, and the reason it names the
+                # command rather than the institution: enrolling again is the
+                # move they will otherwise make, and it mints a SECOND item whose
+                # roster re-issues every account and transaction id -- doubling
+                # every total with no warning naming it (AC-4.3). `reauth`
+                # renews the login against the item this connection already has,
+                # so the cursor and the history survive.
+                print(
+                    "       the login expired. Repair it in place with\n"
+                    f"       `bankmachine connections reauth {outcome.connection_id}` --\n"
+                    "       enrolling again would duplicate this connection's history"
+                )
         elif outcome.still_materializing:
             print(
                 f"  {outcome.connection_id}  {outcome.institution_name}: history is still "

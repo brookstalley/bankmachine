@@ -241,7 +241,9 @@ transactions, which do come from the fictional institutions.
 
 ## VRF-003 — the hosted enrollment flow reads correctly to a human
 
-**Chunk:** enrollment-v1 Chunk 02 · **Raised:** 2026-09-07 · **Status:** verified · **Verified:** 2026-09-10
+**Status:** verified
+
+**Chunk:** enrollment-v1 Chunk 02 · **Raised:** 2026-09-07 · **Verified:** 2026-09-10
 
 **Why a human:** the offline suite fakes the aggregator, and a Hosted Link session
 cannot be completed programmatically — `/sandbox/public_token/create` bypasses Link
@@ -279,7 +281,9 @@ not a tty):
 
 ## VRF-004 — the MCP surface answers usefully in a real client
 
-**Chunk:** the MCP surface · **Raised:** 2026-09-08 · **Status:** pending
+**Status:** accepted
+
+**Chunk:** the MCP surface · **Raised:** 2026-09-08
 
 **Why a human:** every tool is tested and driven end to end over stdio, but no test can say whether
 an *agent* can use these answers to reason correctly. What is unverified is the judgement layer:
@@ -379,9 +383,13 @@ warnings are read rather than skipped.
      data is connected -- they gate trusting a current-period figure, not connecting. Enqueuing
      them is not a commitment to perform them today. -->
 
+
+**Accepted:** 2026-09-11 — rationale: Accepted to unblock the connections-reauth PR, which none of the three bears on. VRF-004 (the MCP surface in a real client), VRF-005 (a real pending transaction across settlement) and VRF-006 (the sign convention at two institutions) each need production data or a real MCP client, and none is made more or less true by this branch. This branch's own entry, VRF-007, was verified end to end on 2026-09-11 and needed no override. Each of the three is re-raised immediately as a fresh pending entry (VRF-008/009/010), so this acceptance discharges the block and not the obligation.
 ## VRF-005 — one real pending transaction watched across settlement
 
-**Chunk:** production-data semantics (#22) · **Raised:** 2026-09-09 · **Status:** pending
+**Status:** accepted
+
+**Chunk:** production-data semantics (#22) · **Raised:** 2026-09-09
 
 **Why a human:** the sandbox has zero pending rows and has never had one — `pending` is 0 on all
 388, `source_pending_transaction_id` is NULL on all 388. The deriver's pending→posted branch is
@@ -406,9 +414,13 @@ the delivery sequence.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-005`
 
+
+**Accepted:** 2026-09-11 — rationale: Accepted to unblock the connections-reauth PR, which none of the three bears on. VRF-004 (the MCP surface in a real client), VRF-005 (a real pending transaction across settlement) and VRF-006 (the sign convention at two institutions) each need production data or a real MCP client, and none is made more or less true by this branch. This branch's own entry, VRF-007, was verified end to end on 2026-09-11 and needed no override. Each of the three is re-raised immediately as a fresh pending entry (VRF-008/009/010), so this acceptance discharges the block and not the obligation.
 ## VRF-006 — the sign convention on a real inflow, across two institutions
 
-**Chunk:** production-data semantics (#23) · **Raised:** 2026-09-09 · **Status:** pending
+**Status:** accepted
+
+**Chunk:** production-data semantics (#23) · **Raised:** 2026-09-09
 
 **Why a human:** normalization is an unconditional negation, and it is already exercised in both
 directions by the suite and by the sandbox (49 of 388 rows are stored positive). What no test can
@@ -432,3 +444,126 @@ ground truth about money you already know about.
 6. Record the `raw_response` id of the page carrying the observed deposit (AC-14.9).
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-006`
+
+
+**Accepted:** 2026-09-11 — rationale: Accepted to unblock the connections-reauth PR, which none of the three bears on. VRF-004 (the MCP surface in a real client), VRF-005 (a real pending transaction across settlement) and VRF-006 (the sign convention at two institutions) each need production data or a real MCP client, and none is made more or less true by this branch. This branch's own entry, VRF-007, was verified end to end on 2026-09-11 and needed no override. Each of the three is re-raised immediately as a fresh pending entry (VRF-008/009/010), so this acceptance discharges the block and not the obligation.
+## VRF-007 — an update-mode repair, completed in a browser
+
+**Status:** verified
+
+**Chunk:** connections reauth (#67) · **Raised:** 2026-09-10 · **Verified:** 2026-09-11
+· **Visual change:** yes
+
+**Why a human:** a Hosted Link session cannot be completed programmatically — the whole reason
+`test_enroll.py` fakes the aggregator. Every test of `connections reauth` fakes the item's recovery,
+so what none of them can say is whether update mode *actually repairs the item in place* when a real
+browser completes it. Two of the three things this command promises are only observable on the far
+side of that session.
+
+🔴 **This is also the only cheap read on the discovery's open question.** `persistent_account_id` is
+NULL at every institution but three, so if update mode re-issues `account_id` the way a re-link does,
+#67 reduces the frequency of the duplication without eliminating it and #91's identity fallback is
+needed regardless. The sandbox gives a *signal*, not the answer — a sandbox institution is not
+evidence about a real one — but a signal costs one session here and nothing at all to look at.
+
+**Where to verify:** the sandbox store, against a connection that has synced at least once.
+
+```
+# 1. Record what must survive, BEFORE anything is broken.
+bankmachine sync shell
+  select connection_id, source_connection_id, granted_history_days, enrolled_at from connections;
+  select connection_id, domain, cursor from sync_state;
+  select account_id, source_account_id, name from accounts order by account_id;
+  select count(*) from transactions;
+
+# 2. Break the login the way an institution's password change does.
+#    (`/sandbox/item/reset_login`, driven with the connection's access token.)
+
+# 3. Confirm the product notices.
+bankmachine sync run          # expect the connection degraded, ITEM_LOGIN_REQUIRED
+bankmachine connections list
+
+# 4. Repair it.
+bankmachine connections reauth <id>
+```
+
+**Verify:**
+
+1. The command prints the connection's current state and an `https://` URL **before** it starts
+   waiting, and says how long the URL lives.
+2. Completing the URL in a browser (sandbox credentials `user_good` / `pass_good`) returns the
+   command within a poll or two, exit `0`.
+3. 🔴 **`source_connection_id` is unchanged.** If the command refused instead, saying the item came
+   back different, that refusal is the correct outcome and this entry has found the thing it was
+   written to find — record it and stop: update mode does not preserve the item, and the plan's
+   assumption is false.
+4. The cursor from step 1 is **still there**, byte for byte. `granted_history_days` and
+   `enrolled_at` are unchanged.
+5. 🔴 **The `account_id`s from step 1 are the same rows** — not new ones beside them. Count the
+   accounts: 14 becoming 28 is the duplication this command exists to prevent, arriving anyway.
+6. `bankmachine sync run` continues from the cursor rather than re-fetching the window: it should
+   finish quickly and the transaction count should not double. **Compare the count against step 1.**
+7. Read the success message as a sentence. It claims the item, accounts, transactions and cursor are
+   unchanged; steps 3-6 are that claim checked, and if any of them failed the message is a lie the
+   operator would have believed.
+
+**Also worth doing while credentials are exported** (it is not part of this entry, and it skips
+without them):
+
+```
+uv run pytest -m sandbox -k "update_mode_session or expired_login_is_reported"
+```
+
+Those two live probes assert that Hosted Link is available in update mode on this account, and that
+`/item/get` reports an expired login **in the body** rather than by raising — the shape the poll
+loop is written against. Both ran green against the live aggregator on 2026-09-11 — `2 passed`,
+neither skipped — so those two assumptions now hold on this account. They say nothing about steps
+1-7 above: no test can complete a Hosted Link session, which is the whole reason this entry exists.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-007`
+
+🔴 **VRF-008, VRF-009 and VRF-010 re-raise obligations that VRF-004, VRF-005 and VRF-006 were
+accepted out of on 2026-09-11.** The acceptance discharged the block on one PR; it did not discharge
+the checks, none of which has been done. **`accept-operator-verification` takes no id and flips
+every pending entry**, so running the override again would erase these three exactly as it erased
+the originals. If a future PR has to be unblocked that way, restore them by hand afterwards — or
+verify them, which is the point.
+
+## VRF-008 — the MCP surface answers usefully in a real client
+
+**Status:** pending
+
+**Chunk:** the MCP surface · **Raised:** 2026-09-11
+
+**Why a human:** unchanged from **VRF-004**, which carries the full procedure and is the entry to
+follow. VRF-004 was accepted on 2026-09-11 to unblock the connections-reauth PR, which does not
+touch the MCP surface — the block was discharged, the obligation was not, and this entry is where
+the obligation now lives. Verify against VRF-004's steps and drain this id.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-008`
+
+## VRF-009 — one real pending transaction watched across settlement
+
+**Status:** pending
+
+**Chunk:** production-data semantics (#22) · **Raised:** 2026-09-11
+
+**Why a human:** unchanged from **VRF-005**, which carries the full procedure and is the entry to
+follow. VRF-005 was accepted on 2026-09-11 to unblock the connections-reauth PR, which produces no
+pending rows — the sandbox has never had one, which is why the check needs production data at all.
+Verify against VRF-005's steps and drain this id.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-009`
+
+## VRF-010 — the sign convention on a real inflow, across two institutions
+
+**Status:** pending
+
+**Chunk:** production-data semantics (#23) · **Raised:** 2026-09-11
+
+**Why a human:** unchanged from **VRF-006**, which carries the full procedure and is the entry to
+follow. VRF-006 was accepted on 2026-09-11 to unblock the connections-reauth PR, which enrolls
+nothing and syncs no second institution. One feed obeying the convention is still not evidence
+about another. Verify against VRF-006's steps and drain this id.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-010`

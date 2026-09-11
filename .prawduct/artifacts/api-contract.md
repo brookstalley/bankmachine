@@ -353,6 +353,7 @@ The product's headline goal is not "answer the question" but "answer it, or say 
 | `enroll` | Link one institution and record the connection | yes (datastore + keychain + network) |
 | `connections list` | Show enrolled connections and slots used | no |
 | `connections retire` | Stop syncing a connection, keep its history, remove it at the aggregator | yes (datastore + keychain + network) |
+| `connections reauth` | Repair a connection whose login expired, through an update-mode session — 🔴 the item, cursor, granted window and accounts are all preserved, which is the requirement rather than a side effect | yes (datastore + network); on the connection row it writes `status`, `last_error_code`, `last_error_at` and `updated_at` and **nothing else** — no cursor, no granted window, no `enrolled_at`, no account or transaction row. It also archives each `/item/get` it polled, and derives `source_error_code` / `consent_expires_at` from the ones that belong to this connection |
 | `sync run` | Fetch each connection's accounts and transactions since its cursor | yes (datastore + network) |
 | `mcp` | Serve the datastore to an MCP client over stdio — 🔴 read-only | no |
 
@@ -361,9 +362,14 @@ declares its own code — a full roster and an abandoned enrollment are both `1`
 defaults to `2`, so a new refusal that forgets produces the safe answer rather than silently claiming
 the command ran and found a problem.
 
-**Specified, not yet built** (steps 5–10): `sync repair` (update-mode re-auth), `import`, and the
-§7 verification-gate runner. Their
+**Specified, not yet built** (steps 5–10): `import` and the §7 verification-gate runner. Their
 names are not fixed by this document; their *contract obligations* below are.
+
+🔴 **Update-mode re-auth landed as `connections reauth <id>`, not as `sync repair`.** It belongs
+beside `list` and `retire` because all three take a connection id and act on that one connection,
+and because the refusal an operator meets — *re-running `enroll` counts this institution's history
+twice* — has to name a command in the same breath as the listing that shows which id to name. The
+sentence above is why that rename needed no amendment: this document fixes obligations, not names.
 
 🔴 **`sync shell` is built in step 1, not step 9** — deliberately. Page encryption is what breaks
 ad-hoc `sqlite3` and Datasette access, and that access is the primary debugging affordance for every
