@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -31,7 +31,7 @@ from bankmachine.store.schema import (
     sync_state,
     transactions,
 )
-from bankmachine.store.types import now_utc
+from bankmachine.store.types import UtcInstant, now_utc, utc_instant
 
 SOURCE_ACCOUNT = "acct-checking"
 CONNECTION_ID = 1
@@ -173,7 +173,7 @@ def _apply(
     body: bytes,
     *,
     connection_id: int = CONNECTION_ID,
-    received_at: datetime | None = None,
+    received_at: UtcInstant | None = None,
 ) -> None:
     """Record one response, optionally as of a stated instant.
 
@@ -1184,7 +1184,7 @@ def _converging_relink_history(
     # The re-link. The connection row is NOT retired and NOT replaced, so
     # `connection_id` -- and with it `lineage_id` -- is unchanged, and this roster
     # no longer lists the account the first one did.
-    relinked_at = now_utc() + _A_DAY
+    relinked_at = utc_instant(now_utc() + _A_DAY)
     _apply(
         config,
         ACCOUNTS_GET.path,
@@ -1505,6 +1505,48 @@ def test_an_account_with_no_mask_is_never_matched_to_another_row(
         "the rule excluded rows on the strength of a field nobody stated; the doubling is "
         "meant to stay VISIBLE here rather than be silently half-corrected"
     )
+
+
+def test_an_unstated_subtype_neither_groups_nor_crashes_the_read(
+    synced: Config,
+) -> None:
+    """🔴 A null in the partition key is a crash, not a mis-grouping.
+
+    `account_subtype` is nullable and `mask` is too. `superseded_spans` ORDERS by
+    the partition key, and comparing a tuple holding `None` against one holding a
+    string raises `TypeError` -- so an account with an unstated subtype beside one
+    that states it would not quietly skew a total, it would take down every query
+    over the store, including the ones that never mention either account.
+
+    The rule that prevents it is the same one the mask follows: a component
+    nobody stated cannot say two accounts agree, so the row partitions alone.
+    """
+    _apply(
+        synced,
+        ACCOUNTS_GET.path,
+        _accounts_body(
+            [
+                _account_entry(),
+                {**_account_entry("acct-no-subtype"), "subtype": None},
+            ]
+        ),
+    )
+    _apply(
+        synced,
+        TRANSACTIONS_SYNC.path,
+        _sync_body(
+            added=[
+                _purchase(SOURCE_ACCOUNT, "t-spring", "10.00", SPRING),
+                _purchase("acct-no-subtype", "t-spring-unstated", "20.00", SPRING),
+            ]
+        ),
+    )
+
+    with reader_connection(synced) as conn:
+        # The assertion is that this RETURNS at all; the emptiness is the second
+        # claim, not the first.
+        assert superseded_spans(conn) == ()
+    assert _total(synced) == -3000
 
 
 def test_a_transaction_with_no_lineage_is_counted_rather_than_excluded(

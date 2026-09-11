@@ -147,6 +147,32 @@ rows, not sufficient — the decision belongs to the evidence above.
   account across the break, that pair will not group and will go on doubling —
   visibly, as two rows, which is the failure direction this design chooses.
 
+- **A converged account under a converged connection is still undetectable, and
+  still doubles.** Where the account converges (the aggregator publishes a
+  persistent id) AND the connection is updated in place rather than replaced, both
+  generations land on ONE `account_id` under ONE `lineage_id`. There is no second
+  span for the overlap comparison to find, so the total doubles with no
+  `rule-applied` caveat — the same silent 2x this plan fixes, by a route it does
+  not reach. Reachable at the three institutions that publish a persistent id, via
+  `enroll --relink`. Separating those two generations needs transaction-level
+  identity, which is the dedupe `lineage.py` rejects on the record, so this is
+  FILED rather than fixed here. The module docstring now enumerates all four
+  shapes and marks this one as uncovered, so a maintainer triaging a doubled total
+  is not sent looking in the wrong place.
+
+- **[RESIDUAL RISK] A reused mask on a closed-and-replaced account can
+  over-supersede.** If an institution closes an account and later issues a new one
+  reusing the same last-four AND the same name, type and subtype, and the two
+  overlap in time, the older one's overlapping rows are excluded — real history,
+  gone from the totals. Bounded by needing all four components to match and the
+  spans to overlap, and it is DISCLOSED: the `rule-applied` caveat names the
+  account and the exact range, so an operator can see and report it. The
+  tightening that would close it — requiring the newer generation to start at or
+  before the older's — was rejected because it breaks the case a re-link most
+  often produces: a new Item granting LESS history than the store already holds,
+  where the newer generation legitimately starts later. Transaction-level matching
+  would settle it and is the dedupe this module rejects on the record.
+
 ## The learning this design runs against, recorded rather than skirted
 
 `learnings.md` § *Guarantees by construction* names the decay shape: **"an
