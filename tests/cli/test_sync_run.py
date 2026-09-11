@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import re
 from collections.abc import Iterator
 from datetime import timedelta
@@ -1222,6 +1223,47 @@ def test_tuning_the_loop_without_enabling_it_is_a_usage_error(
     assert raised.value.code == 2
     assert "only applies with --until-ready" in capsys.readouterr().err
     assert FakeClient.calls == []
+
+
+def test_until_ready_leaves_its_waiting_in_the_log_not_only_on_the_terminal(
+    cli_env: Config,
+) -> None:
+    """🔴 The flag exists for the run nobody is watching, so stdout is the wrong
+    channel to prove.
+
+    Without this the three `logger` calls are invisible to the suite and can be
+    deleted green, which would leave an hour of polling indistinguishable in the
+    durable record from one ordinary exit 75 -- the consequence
+    `test_run_failures_are_logged.py` already exists to hold for failures.
+    """
+    FakeClient.pages = [_page(status="NOT_READY")]
+
+    code = run(
+        ["sync", "run", "--until-ready", "--no-wait", "--retry-delay", "0", "--max-attempts", "2"]
+    )
+    assert code == 75
+
+    logging.shutdown()
+    log_file = cli_env.log_dir / "bankmachine.log"
+    text = log_file.read_text(encoding="utf-8") if log_file.exists() else ""
+
+    assert "attempt 1 of 2" in text, "the retry was not recorded in the log"
+    assert "WARNING" in text, "giving up waiting was not recorded at WARNING"
+    assert "gave up waiting" in text
+
+
+def test_until_ready_records_the_attempt_it_finished_on(cli_env: Config) -> None:
+    """A run that took three attempts and one that took one are different events."""
+    FakeClient.pages = [
+        _page(status="NOT_READY"),
+        _page(added=[_txn("t1")], next_cursor="cursor-1"),
+    ]
+
+    assert run(["sync", "run", "--until-ready", "--no-wait", "--retry-delay", "0"]) == 0
+
+    logging.shutdown()
+    text = (cli_env.log_dir / "bankmachine.log").read_text(encoding="utf-8")
+    assert "finished at attempt 2" in text
 
 
 def test_until_ready_waits_the_configured_delay_between_attempts(cli_env: Config) -> None:
