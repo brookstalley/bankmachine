@@ -193,8 +193,8 @@ provenance differs per code, so `connector/plaid/errors.py` records it per entry
   least-evidenced line in the taxonomy and is labelled as such in the source.
 
 `ITEM_ERROR` is deliberately **not** in the type layer: it spans
-`ITEM_LOGIN_REQUIRED` (re-link), `ITEM_LOCKED` (go to your bank) and
-`NO_ACCOUNTS` (nothing to sync). Mapping it to any one of them would be
+`ITEM_LOGIN_REQUIRED` (renew the login in place, update mode), `ITEM_LOCKED`
+(go to your bank) and `NO_ACCOUNTS` (nothing to sync). Mapping it to any one of them would be
 confidently wrong most of the time, and a wrong remedy is worse than a refusal.
 
 ### 9. 🔴 An SSL failure escapes the SDK as `AttributeError`, from inside the SDK

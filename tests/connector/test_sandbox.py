@@ -435,9 +435,9 @@ def test_a_reset_login_drives_a_real_item_login_required_through_the_taxonomy(
     it lives beside enrollment rather than beside the taxonomy it exercises.
     `/sandbox/item/reset_login` invalidates a connection's
     credentials exactly as an institution's password change does, so this is the
-    real `ITEM_LOGIN_REQUIRED` -- the state that decides whether an operator is
-    told to re-link, and the one whose remedy is in this product rather than at
-    their bank.
+    real `ITEM_LOGIN_REQUIRED` -- the state that sends an operator to
+    `connections reauth`, and the one whose remedy is in this product rather than
+    at their bank.
     """
     sandbox_client._fetch_bytes(
         Endpoint("/sandbox/item/reset_login"),

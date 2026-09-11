@@ -242,12 +242,28 @@ more than one place. Grep for it rather than fixing the file that prompted this.
 - `connector/__init__.py` — `ReauthRequiredError`'s docstring ("the operator must re-link it").
 - `connector/plaid/errors.py` — the module docstring's `ITEM_LOGIN_REQUIRED` *(re-link it)* gloss.
 - `mcp_resources.py` — the `degraded` guidance string.
-- `cli/sync_run.py` — the degraded reporting an operator actually reads.
+- `cli/sync_run.py` — the degraded reporting an operator actually reads. It named no remedy at
+  all, so the sweep *adds* one rather than rewriting one: a line under an expired-login degradation
+  naming `connections reauth <id>` with the id filled in, and **absent** for every other failure,
+  since a line printed under all of them is one an operator learns to skip. That is behaviour, so
+  it carries a test and its negative control (`tests/cli/test_sync_run.py`), both verified red by
+  hand — the guard forced false, then forced true.
 - `docs/first-production-connection.md` and `.prawduct/artifacts/operational-spec.md` — wherever the
   expired-login recovery is written down as a procedure.
 - `.prawduct/change-log.md` — entry.
-- `.prawduct/artifacts/discovery-relink-account-identity.md` — its *What is still open* section
-  loses the question this build answers and keeps the two it does not.
+- `.prawduct/artifacts/discovery-relink-account-identity.md` — its *What is still open* section,
+  and the *What this changes* paragraph that still called `enroll` the store's only recovery.
+
+> **[DEVIATION from this plan's own instruction, taken at build time.** The line above read *"loses
+> the question this build answers and keeps the two it does not"*, and on reading the three
+> questions none of them is answered here: the first — *does update mode preserve `account_id`?* —
+> is the one this plan's own `[ASSUMPTION]` records as **not** assertable, and the other two are
+> #91. Deleting it would have dropped a live open question to satisfy a sentence written before the
+> code. It is **rewritten** instead: it now records the half `connections reauth` does settle (the
+> item id, asserted and refused on) and names where the unsettled half now lives (VRF-007, against
+> production). **| Why:** *never silently drop a requirement* outranks the plan's own prose, and a
+> plan is a guide rather than scripture. **| Owner may veto** — the alternative is to delete the
+> bullet and let `operator-verification.md` be its only carrier. **]**
 
 🔴 **The sweep is asserted, not just performed.** A test in `tests/preferences/` is the wrong shape
 here (the prose is not patterned), so the check is the grep itself, recorded in the chunk's
@@ -256,6 +272,26 @@ nothing about what it did not reach* applies: no `| head`.
 
 **Done when:** the grep for the superseded claim returns only the paragraphs that are deliberately
 about `enroll --relink`, the suite is green, and `/prawduct:critic cumulative` returns zero blocking.
+
+**Verification — the grep, run 2026-09-10, untruncated.** Two halves because one pattern exceeded
+the matcher's complexity limit, over `src/ tests/ docs/ README.md .prawduct/artifacts/
+.prawduct/operator-verification.md`, excluding `archive/` and `reviews-2026-09-09/` (both are dated
+records of what was true when written):
+
+```
+grep -rniE "(re-?run|re-?enroll|bankmachine enroll|re-?link).{0,100}(login|LOGIN_REQUIRED|expired|degraded)" …
+grep -rniE "(login|LOGIN_REQUIRED|expired|degraded).{0,100}(re-?run|re-?enroll|bankmachine enroll|re-?link)" …
+```
+
+Five hits survive, each deliberate: `enroll.py` and `test_enroll.py` on the `--relink` path, which
+is *supposed* to name the cost; `connections.py`'s **retired**-connection branch, where `enroll` is
+the correct remedy because there is no live connection to duplicate; this plan describing its own
+sweep; and the operational spec's row, which names `enroll` only to say it is not the repair.
+
+🔴 **The grep is line-scoped and therefore a floor, not a proof** — a claim split across two lines
+does not match, and `docs/first-production-connection.md`'s rewritten paragraph is exactly that
+shape. Every file the broader `re-?link|ITEM_LOGIN_REQUIRED` sweep surfaced was opened and read;
+the grep records the mechanical half.
 
 ## Status
 

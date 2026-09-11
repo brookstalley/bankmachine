@@ -54,9 +54,12 @@ Its documentation notes that account ids should still be re-read afterwards rath
 ## What this changes
 
 🔴 **The duplication is not an edge case. It is the default outcome of a re-link at almost every
-institution this product will ever meet.** The store's only current recovery from an expired login
-is `enroll`, which mints a new Item, which re-issues every id, which duplicates every account and
-every transaction, and doubles every money figure with no warning naming it.
+institution this product will ever meet.** At the time of this discovery the store's only recovery
+from an expired login was `enroll`, which mints a new Item, which re-issues every id, which
+duplicates every account and every transaction, and doubles every money figure with no warning
+naming it. **#67 shipped `connections reauth` as the recovery and made `enroll` refuse the
+unflagged re-link**, so that is no longer the path an operator is sent down — but it remains what
+`enroll --relink` costs.
 
 **#67 (reauth via update mode) is therefore the primary mitigation, not an ergonomic improvement.**
 An earlier read in this session — that adding it later is graceful, and that the risk bites only at
@@ -76,10 +79,14 @@ account ids, duplicate rows. It differs only in marking the old accounts inactiv
 ## What is still open
 
 - **Does update mode preserve `account_id` in practice?** The documentation says to re-read them
-  afterwards rather than assume, which stops short of a guarantee. If update mode can also re-issue
-  ids, then #67 reduces the frequency of the duplication without eliminating it, and an identity
-  fallback is needed regardless. **This is the question the next round should answer, and it cannot
-  be answered in sandbox.**
+  afterwards rather than assume, which stops short of a guarantee. **#67 settled the half that is
+  assertable from one call and no more:** `connections reauth` compares the `item_id` the aggregator
+  reports after the session against the one the connection was enrolled with, and refuses if they
+  differ — so a repair cannot silently become a re-link. Whether the *accounts* beneath an unchanged
+  Item keep their ids is not answerable from that call, and **it cannot be answered in sandbox**; it
+  is enqueued as an operator verification against production (`.prawduct/operator-verification.md`).
+  If they are re-issued, #67 reduces the frequency of the duplication without eliminating it and the
+  identity fallback below is needed regardless.
 - **What identity should stand in where `persistent_account_id` is NULL?** `(mask, name, type,
   subtype)` scoped to the connection is the obvious candidate. `_match_account` deliberately refuses
   to guess today, and its stated reason is sound: a false merge of two real accounts is worse than a

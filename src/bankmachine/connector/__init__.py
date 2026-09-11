@@ -49,8 +49,8 @@ class ConnectorError(Exception):
     **The subclasses below are the taxonomy FR-4 is written in, and they are
     organized by what the caller must do next rather than by what the aggregator
     called it.** An operator reading "the sync failed" learns nothing; the four
-    outcomes that actually differ are *re-link this connection*, *wait and it
-    will fix itself*, *fix this code*, and *fix the configuration*. A taxonomy
+    outcomes that actually differ are *repair this connection's login*, *wait and
+    it will fix itself*, *fix this code*, and *fix the configuration*. A taxonomy
     keyed on the aggregator's own vocabulary would put `ITEM_LOCKED` and
     `ITEM_LOGIN_REQUIRED` side by side as if they were the same kind of thing,
     when one needs the operator at their bank's website and the other needs them
@@ -222,7 +222,14 @@ class AggregatorError(ConnectorError, grouping=True):
 
 
 class ReauthRequiredError(AggregatorError):
-    """The connection's credentials no longer work; the operator must re-link it (AC-4.1).
+    """The connection's credentials no longer work (AC-4.1).
+
+    The remedy is `bankmachine connections reauth <id>`, which renews the login
+    through update mode against the item this connection already names.
+    🔴 **Not a re-link:** enrolling the institution again mints a NEW item, whose
+    roster re-issues every account and transaction id, so the store gains a
+    second generation of both and every total spanning them doubles with no
+    warning naming it (AC-4.3).
 
     Terminal until a human acts, so retrying is not merely useless -- it delays
     the report that tells them to act, and AC-4.4 names silent staleness as this
@@ -236,9 +243,9 @@ class ConnectionLockedError(AggregatorError):
     """The institution has locked the account (AC-4.1).
 
     Separate from `ReauthRequiredError` because the remedy is at the
-    institution's own website, not in this product, and telling an operator to
-    re-link an account their bank has locked sends them somewhere that cannot
-    help.
+    institution's own website, not in this product, and pointing an operator at
+    `connections reauth` for an account their bank has locked sends them
+    somewhere that cannot help.
     """
 
     retryable = False

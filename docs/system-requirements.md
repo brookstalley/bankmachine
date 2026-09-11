@@ -203,6 +203,14 @@ read as *no shortfall* — AC-11.8 computes the shortfall only once this is set.
 **AC-1.4** — Enrollment is idempotent: re-running for an already-enrolled institution updates rather
 than duplicating the connection.
 
+> **The idempotency is bounded by the Item the re-run lands on.** A re-run that comes back behind
+> the *same* Item converges in place and keeps the cursor. A re-run that comes back behind a **new**
+> Item is a re-link, not a re-run: the aggregator re-issues every account and transaction id, so the
+> store gains a second generation of both and every total spanning them doubles. `enroll` therefore
+> **refuses** that case and names `bankmachine connections reauth <id>`; `--relink` is the
+> deliberate override, and exists because AC-1.2 makes re-linking the only way to widen the history
+> window.
+
 **AC-1.5** — The system refuses to exceed the configured plan connection cap, explains the limit, and
 lists current connections so one can be removed. 🔴 **The cap is configuration, not a literal** —
 plan tiers change.
@@ -261,16 +269,20 @@ successful sync.**
 **AC-4.3** — A repair command produces an update-mode enrollment URL that re-authenticates a broken
 connection **without losing its history or cursor.**
 
-> *(Specified — build step 6. **Not built:** `bankmachine sync --help` offers `shell` and `run`
-> only, and there is no `sync repair`.)* The recovery that exists today for `ITEM_LOGIN_REQUIRED`
-> is to **re-run `bankmachine enroll` and pick the same institution**. Enrollment converges on the
-> existing connection rather than adding a second one: the row keeps its id, its accounts and its
-> transactions, and its degraded status and error code are cleared. What it does not preserve is
-> the half AC-4.3 names — if the re-link yields a **new** Item at the aggregator, the connection's
-> cursor and its measured granted window are reset with it, because both are Item-scoped and
-> neither survives the credential they were measured against. History is then re-fetched from the
-> start of the granted window, which is idempotent but not free. AC-4.3 stays open for exactly
-> that reason.
+> *(Built as **`bankmachine connections reauth <id>`**.)* It mints an update-mode enrollment URL
+> against the Item the connection already names, waits for the operator to complete it, and clears
+> `status`, `last_error_code` and `last_error_at` — writing nothing else. The cursor, the measured
+> granted window, `enrolled_at`, the accounts and the transactions all survive, which is what this
+> criterion asks for. It refuses if the Item comes back with a different id, because that is a
+> re-link arriving by another door.
+>
+> 🔴 **Re-running `enroll` is not the recovery, and the difference is not ergonomic.** A re-link
+> yields a **new** Item at the aggregator, which re-issues every account and transaction id: the
+> store gains a second generation of both and every money figure spanning them doubles, with no
+> warning naming it. The connection's cursor and its measured granted window are reset with it too,
+> because both are Item-scoped and neither survives the credential they were measured against. All
+> of that is still true of `enroll --relink`, which is why the flag exists and why the unflagged
+> path now refuses (AC-1.4).
 
 **AC-4.4** — Degraded state is visible through `get_pipeline_health`. 🔴 **Silent staleness is the
 primary failure mode of this entire system** — a connection that quietly stopped three weeks ago

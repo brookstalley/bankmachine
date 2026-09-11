@@ -509,7 +509,7 @@ def test_re_enrolling_the_same_institution_updates_rather_than_duplicates(
     second = rows[0]._mapping
     assert second["connection_id"] == first_id
     # Preserved: it records when the operator first linked this institution, and
-    # re-linking after an expired login is that enrollment continuing.
+    # a deliberate re-link to widen the window is that enrollment continuing.
     assert second["enrolled_at"] == enrolled_at
     assert len(_rows(cli_env, institutions)) == 1
 

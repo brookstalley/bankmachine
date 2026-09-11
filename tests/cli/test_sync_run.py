@@ -25,6 +25,7 @@ from bankmachine.connector import (
     ACCOUNTS_GET,
     TRANSACTIONS_SYNC,
     FetchedResponse,
+    ReauthRequiredError,
     TransactionsPaginationRestartError,
     TransportError,
 )
@@ -415,6 +416,49 @@ def test_a_failing_connection_is_recorded_and_the_run_reports_one(
     assert row["last_error_code"] == "TransportError"
     assert row["last_error_at"] is not None
     assert "could not be synced" in capsys.readouterr().out
+
+
+def test_an_expired_login_is_reported_with_the_repair_that_keeps_the_history(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """🔴 AC-4.3 reaching the one surface an operator actually reads.
+
+    The move an operator makes when told their login expired is to enrol the
+    institution again, and that mints a SECOND item whose roster re-issues every
+    account and transaction id -- doubling every total with no warning naming it.
+    The run is where they learn it, so the run is where the repair is named, with
+    the connection id already filled in.
+    """
+    FakeClient.fail_with = ReauthRequiredError(
+        "the login for this item has expired", endpoint=TRANSACTIONS_SYNC
+    )
+
+    assert run(["sync", "run"]) == 1
+
+    out = capsys.readouterr().out
+    assert "connections reauth 1" in out
+    # The reason the line exists at all: without it the remedy an operator
+    # reaches for is the one that duplicates.
+    assert "duplicate" in out
+
+
+def test_a_failure_that_is_not_an_expired_login_offers_no_repair(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The negative control, and it is the half that decays.
+
+    An unreachable aggregator is not repaired by re-authenticating, and a line
+    printed under every degradation is one an operator learns to skip -- which
+    costs exactly the case above, where reading it is the whole point. Same
+    reasoning as `enroll`'s signpost, which is absent when nothing is live.
+    """
+    FakeClient.fail_with = TransportError(
+        "the aggregator is unreachable", endpoint=TRANSACTIONS_SYNC
+    )
+
+    assert run(["sync", "run"]) == 1
+
+    assert "connections reauth" not in capsys.readouterr().out
 
 
 def test_one_connection_failing_does_not_stop_the_others(

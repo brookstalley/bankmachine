@@ -83,7 +83,7 @@ def test_the_four_connection_health_states_are_four_distinct_types() -> None:
 
     Auth-required and locked in particular: they are both `ITEM_ERROR` to the
     aggregator, and their remedies are in different buildings -- one is this
-    product's re-link flow, the other is the operator's own bank.
+    product's `connections reauth`, the other is the operator's own bank.
     """
     states = {
         "auth-required": classify(400, AggregatorErrorDetail(error_code="ITEM_LOGIN_REQUIRED")),
@@ -129,7 +129,7 @@ def test_an_unknown_code_still_classifies_by_its_error_type(
 def test_item_error_is_not_classified_by_its_type() -> None:
     """The deliberate hole in layer 2, asserted so nobody helpfully fills it.
 
-    `ITEM_ERROR` spans re-link, go-to-your-bank and nothing-to-sync. A mapping
+    `ITEM_ERROR` spans renew-the-login, go-to-your-bank and nothing-to-sync. A mapping
     for it would be confidently wrong most of the time, and a wrong remedy sends
     the operator somewhere that cannot help.
     """

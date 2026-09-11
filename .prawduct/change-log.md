@@ -72,6 +72,26 @@ required with no default because AC-1.2 freezes the window at enrollment. Update
 window at all, so a single method would have to accept that argument and ignore it in one of its two
 modes — which is exactly how a forgotten window reaches the path where it is irreversible.
 
+🔴 **`enroll` no longer repoints a live connection at a new item by accident.** The repair only
+helps if the destroying path stops being the one an operator falls into, so the branch that would
+have committed the duplication now refuses, and releases the fresh item at the aggregator on the
+way out so nothing is left billing. `--relink` is the deliberate override, and it exists because
+AC-1.2 makes re-linking the only way to widen the history window. A re-run that lands on the **same**
+item is untouched and needs no flag — the guard is keyed on the item changing, not on the
+institution already being linked, because a guard on the latter would refuse a harmless re-run and
+teach the operator to pass `--relink` reflexively. A signpost before the URL lists the live
+connections and points at `connections reauth`, so the refusal is the backstop rather than the first
+thing an operator meets: the institution is not known until Link has been completed in a browser,
+so a refusal necessarily spends that session.
+
+**Every surface that named `enroll` as the remedy now names the repair.** A superseded recovery is
+a sweep, not an edit: `docs/system-requirements.md` (AC-4.3, and AC-1.4's idempotency bound),
+`docs/first-production-connection.md`, the operational spec's failure-recovery table,
+`ReauthRequiredError`'s docstring, the aggregator error taxonomy's `ITEM_LOGIN_REQUIRED` gloss, the
+`degraded` guidance an MCP client reads, and `sync run`'s own degraded report — which now names
+`bankmachine connections reauth <id>` with the connection id already filled in, and only for an
+expired login, because a line printed under every degradation is one an operator learns to skip.
+
 **Not built here:** reconciling a store that is *already* doubled, and an identity fallback for the
 institutions that give no stable account id. Both are #91.
 

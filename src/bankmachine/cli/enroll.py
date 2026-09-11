@@ -693,8 +693,10 @@ def _record_connection(
     outside it would be wrong -- two enrollments could both see room.
 
     `enrolled_at` is preserved on an update. It records when the operator first
-    linked this institution, and re-linking after an expired login is that
-    enrollment continuing rather than a new one.
+    linked this institution, and a deliberate re-link -- the only way AC-1.2
+    allows the history window to be widened -- is that enrollment continuing
+    rather than a new one. 🔴 An expired login does not come through here at all:
+    its repair is `connections reauth`, which leaves this row's item alone.
 
     🔴 **Everything scoped to the aggregator's item is not preserved, and the
     split is the point.** A re-link mints a NEW item behind the same row. A
