@@ -172,6 +172,90 @@ def test_a_blob_is_summarised_rather_than_printed(initialized_config: Config) ->
 # --------------------------------------------------------------------------
 
 
+def test_the_banner_names_the_four_things_before_the_first_prompt(
+    initialized_config: Config,
+) -> None:
+    """🔴 The banner had NO test, which is how its role line came to garden-path.
+
+    VRF-001's first check is that an operator meets the environment, the path,
+    the role and the redaction before typing anything -- and no assertion here
+    read the banner at all, so its wording was free to drift. Four separate
+    claims rather than one blob, because a banner degrades a line at a time.
+
+    Order matters and is asserted: an operator who has already typed a statement
+    has stopped reading the header, so a banner printed after the first prompt
+    is not a banner.
+    """
+    out = _run(initialized_config, ["SELECT 1;"])
+    banner, _, rest = out.partition("bankmachine>")
+
+    assert "SANDBOX" in banner, "the environment is what stops a production typo"
+    assert str(initialized_config.datastore_path) in banner
+    assert "read-only at the file" in banner
+    assert "redacted" in banner
+    assert ".help" in banner and ".quit" in banner
+    assert rest, "nothing followed the banner, so this proves nothing about order"
+
+
+def _shell_parser_description() -> str:
+    """The `sync shell --help` text, read from a real parser rather than a copy."""
+    import argparse
+
+    from bankmachine.cli import sync as sync_module
+
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers()
+    sync_module.add_arguments(subparsers)
+    return subparsers.choices["sync"]._subparsers._group_actions[0].choices["shell"].description
+
+
+def test_every_surface_states_the_read_only_guarantee_in_the_same_words(
+    initialized_config: Config,
+) -> None:
+    """🔴 The guarantee is stated three times, so it is WRITTEN once.
+
+    The banner, `--help` and `.help` each tell the operator the handle cannot be
+    written to. Three literals meant a rewrite could reach two of them and leave
+    the third disagreeing about what the handle does -- which is exactly what
+    happened: the banner was fixed and `--help` kept the old wording.
+
+    This is what makes the sweep unnecessary next time rather than merely done
+    this time. One constant, asserted at every surface that renders it.
+    """
+    from bankmachine.cli.sync import READ_ONLY_SENTENCE, _HELP
+
+    banner = _run(initialized_config, ["SELECT 1;"]).partition("bankmachine>")[0]
+    assert READ_ONLY_SENTENCE in banner
+    assert READ_ONLY_SENTENCE in _HELP
+    assert READ_ONLY_SENTENCE in _shell_parser_description()
+
+
+def test_the_read_only_sentence_does_not_end_on_a_known_stranding_word() -> None:
+    """A heuristic over the one constant, and it is named as a heuristic.
+
+    The defect it guards: the sentence read `...and no PRAGMA changes that`,
+    where the demonstrative parses just as readily as a conjunction and leaves
+    the reader waiting for a clause that never comes -- on the one sentence
+    stating the guarantee they are trusting.
+
+    🔴 **This is a word list, not a property, and the distinction is the point.**
+    It cannot know whether a sentence strands its reader; it knows five words
+    that commonly do. A rewrite ending on `so` or `while` would pass and still
+    strand. What actually protects the sentence is that there is now only ONE of
+    it, reviewed once -- the list is a cheap tripwire on top, and claiming more
+    for it would be the enumeration-shaped guarantee this repo has been bitten
+    by before (`learnings.md` § Guarantees by construction).
+    """
+    from bankmachine.cli.sync import READ_ONLY_SENTENCE
+
+    last = READ_ONLY_SENTENCE.rstrip(" .").split()[-1].lower()
+    assert last not in {"that", "which", "because", "unless", "whether"}, (
+        f"the sentence ends on {last!r}, a word that commonly reads as opening a "
+        f"clause -- which is how the original wording came to look truncated"
+    )
+    assert "PRAGMA" in READ_ONLY_SENTENCE, "it must still say what cannot undo the refusal"
+
+
 def test_a_write_is_refused_in_the_read_role(initialized_config: Config) -> None:
     out = _run(initialized_config, ["CREATE TABLE nope (a INTEGER);"])
 

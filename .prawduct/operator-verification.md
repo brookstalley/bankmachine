@@ -25,6 +25,13 @@ bankmachine sync shell
 
 1. The banner names the environment, the datastore path, the read-only role and
    the redaction — before the first prompt, not after.
+   🔴 **Read the role line as a sentence, not just for its keywords.** This step
+   FAILED on 2026-09-10 (#89): it read `writes are refused and no PRAGMA changes
+   that`, complete as authored and still stranding the reader, because the
+   demonstrative parses just as readily as a conjunction. Every keyword this step
+   names was present, so a check scanning for them would have passed it. On the
+   one line stating the guarantee an operator is trusting, a sentence that reads
+   as broken IS the defect.
 2. A join across `accounts` and `balances_daily` renders as aligned columns that
    line up, with `(N rows)` under them.
 3. A balance in minor units comes back **whole**. Six figures must not be
@@ -43,6 +50,12 @@ bankmachine sync shell
 
 **Recorded session** (re-run 2026-09-06 after the review fixes, against a scratch datastore seeded
 with two accounts; the datastore path is elided):
+
+🔴 **This transcript is what that session printed, including the `role:` line step 1 later failed
+on.** It was briefly rewritten to the post-fix wording on 2026-09-10 and has been put back: a dated
+transcript is evidence of a run, and editing it to show output nobody saw makes it evidence of
+nothing — on the very step that exists because only a human catches this class. The line now reads
+`writes are refused, and no PRAGMA re-enables them` (#89). Re-date this block only by re-running it.
 
 ```
 bankmachine sync shell -- environment SANDBOX
