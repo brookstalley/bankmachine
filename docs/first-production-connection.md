@@ -162,7 +162,7 @@ BANKMACHINE_ENVIRONMENT=sandbox uv run bankmachine store status
 ```
 
 🔴 **`.env` is not read, deliberately** — a file that is silently read is a file whose contents are
-silently trusted (`.prawduct/artifacts/operational-spec.md` § Direction). `source .env` works because
+silently trusted (`.prawduct/artifacts/operational-spec.md` § Configuration). `source .env` works because
 you ran it; the config file above is the durable equivalent.
 
 *Verifies:* the secret lands under its own keychain account, `plaid:production`
@@ -177,7 +177,7 @@ bankmachine: no environment was chosen, so 'sandbox' was assumed -- and this com
 writes state that belongs to one environment. Nothing was written.
 ```
 
-🔴 **This is the one place the product refuses rather than assuming.** Every per-environment
+🔴 **The product refuses here rather than assuming, and the refusal is the feature.** Every per-environment
 container — `plaid:<env>` and `datastore:<env>` in the keychain, and the datastore filename — is
 keyed on the environment, and a `set-secret` that defaulted would overwrite the *other*
 environment's secret while reporting success. There is no undo for that, so a command that writes
