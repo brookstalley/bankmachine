@@ -1238,10 +1238,15 @@ def _superseded_caveat(spans: Sequence[SupersededSpan]) -> list[Caveat]:
     reason the figure is right, so an answer that applied it and did not say so
     would be asking to be trusted for a reason it kept to itself.
 
-    Names the account and the range each older lineage no longer answers for,
+    Names the account and the range each older generation no longer answers for,
     because the operator's next move is to look at that account over those
     dates -- and because the rows are still there. Nothing was deleted; a caller
     that wants them can ask for exactly the excluded set.
+
+    🔴 **Says "generation", not "connection".** A re-link that converges its
+    connection in place keeps one `connection_id` throughout and still re-issues
+    every id behind it, so naming the connection would make this warning assert
+    something untrue of the case it most often fires on.
 
     Rides `rule-applied`: rows excluded from this aggregate on purpose.
     """
@@ -1255,12 +1260,14 @@ def _superseded_caveat(spans: Sequence[SupersededSpan]) -> list[Caveat]:
         Caveat(
             kind="rule-applied",
             detail=(
-                f"account(s) {named} carry history from more than one connection over those "
+                f"account(s) {named} carry a SUPERSEDED generation of history over those "
                 f"dates, because the institution was linked again and the aggregator re-issued "
-                f"every transaction id. The NEWEST connection answers for the overlap and the "
-                f"older one's rows are excluded ON PURPOSE -- counting both would report that "
-                f"spending twice. Nothing was deleted: the excluded rows are still stored and "
-                f"still reachable by asking about them directly"
+                f"every transaction id -- and, where it also re-issued the account ids, under a "
+                f"second account row describing the same real account. The NEWEST generation "
+                f"answers for the overlap and the older one's rows are excluded ON PURPOSE -- "
+                f"counting both would report that spending twice. Nothing was deleted: the "
+                f"excluded rows are still stored and still reachable by asking about them "
+                f"directly"
             ),
         )
     ]

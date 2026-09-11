@@ -1,13 +1,29 @@
-"""Which rows a total counts when one account carries two Items' worth of history.
+"""Which rows a total counts when one real account carries two Items' worth of history.
 
-Removing a connection and linking it again yields a new Item at the aggregator.
-The new Item re-issues every account id AND every transaction id. The account
-converges -- `source_persistent_account_id` names the same underlying account
-across the break -- but the transactions cannot: the whole granted history
-arrives again as rows this store has never seen, under an account it now
-recognises, with nothing for a unique index to collide with. Summed naively, a
-year of spending doubles, and the only signal is a count of accounts that are no
-longer active.
+Linking an institution again yields a new Item at the aggregator. The new Item
+re-issues every account id AND every transaction id, and the transactions cannot
+converge: the whole granted history arrives again as rows this store has never
+seen, with nothing for a unique index to collide with. Summed naively, a year of
+spending doubles, and the only signal is a count of accounts that are no longer
+active.
+
+**The second generation may or may not land on the same local account row**, and
+the difference is the aggregator's, not this store's:
+
+* Where `source_persistent_account_id` is populated, the account converges --
+  the field names the same underlying account across the break -- and both
+  generations of rows hang off ONE `account_id` under two lineages.
+* Where it is null, which is the rule rather than the exception outside the
+  three banks that publish it, `_match_account` can match nothing and the roster
+  INSERTS a second account row. Both generations then hang off two `account_id`s
+  -- and, on a re-link that converged the connection in place, under the SAME
+  lineage, because `lineage_id` is the `connection_id` and that row was updated
+  rather than replaced.
+
+So neither `account_id` nor `lineage_id` alone separates a generation, and a
+rule keyed on either one in isolation silently answers "nothing is superseded"
+for the case it cannot see. The comparison is partitioned on **account
+identity** instead, and ordered by **generation**; both are defined below.
 
 **Every row is kept; aggregates count one lineage.** For a range covered by more
 than one Item, the NEWEST Item answers, and older ones answer only outside it.
@@ -27,7 +43,7 @@ exclusion, and an operator can see and report both.
 🔴 **The overlap is disclosed, and that is not decoration.** A silent correct
 total and a silent wrong total look identical to whoever reads them; only the
 disclosure tells them apart. `superseded_spans` returns what the disclosure
-names -- the account, and the range each older lineage no longer answers for.
+names -- the account, and the range each older generation no longer answers for.
 
 🔴 **Measured on `ledger_date`, never `posted_date`.** The posting date moves
 when a hold settles, so a row measured on it could cross a lineage boundary
@@ -37,6 +53,18 @@ between two syncs and change which total counts it, with nothing to say so.
 007 and has not been rebuilt" or "came from an operator file, which no Item
 produced" -- never "belongs to the current Item". Excluding one would delete
 money on the strength of a column nothing ever filled.
+
+🔴 **The identity tuple stands in for a relationship the store does not record,
+and is meant to be replaced.** Matching on four institution-supplied strings is
+a rule keyed on NAMES where it means "these two rows are the same real account".
+That substitution is taken knowingly, because no column records the
+relationship: `source_persistent_account_id` is the field that would, and it is
+null wherever this problem actually bites. Two things keep it honest -- the
+exclusion is DISCLOSED and every excluded row stays reachable, so a wrong
+grouping is visible and correctable rather than baked into stored data; and
+grouping alone never excludes anything, because supersession additionally
+requires the generation evidence below. When the store records account identity
+across a re-link, that column should take this tuple's place.
 """
 
 from __future__ import annotations
@@ -48,7 +76,7 @@ from datetime import date, datetime
 from sqlalchemy import ColumnElement, and_, false, func, not_, or_, select, true
 from sqlalchemy import Connection as SAConnection
 
-from bankmachine.store.schema import connections, transactions
+from bankmachine.store.schema import accounts, connections, transactions
 from bankmachine.store.types import CalendarDate, calendar_date
 
 
@@ -68,6 +96,26 @@ class SupersededSpan:
     end: CalendarDate
 
 
+#: What two spans must share before either can supersede the other. Opaque by
+#: design: `_group` is the only thing that builds one and nothing reads inside it.
+_Group = tuple[object, ...]
+
+#: Where a span sits in its partition's order, oldest first: the enrollment of the
+#: Item that produced the rows, then when this store first wrote the account row,
+#: then the account id.
+#:
+#: 🔴 **Ordering only. It never decides that something is superseded** -- that is
+#: `_Coverage.still_reported`'s job, for a reason worth stating: a total order over
+#: two live accounts would happily declare one of them older, and the rule would
+#: then delete money that was really spent.
+#:
+#: 🔴 The account's `created_at` is an INSTANT on purpose, where the obvious choice
+#: -- when the institution last listed it -- is a calendar date. Two generations
+#: born on the same day tie on any date, and a re-link's whole point is that it
+#: happens right after the sync it replaces.
+_Generation = tuple[datetime, datetime, int]
+
+
 @dataclass(frozen=True, slots=True)
 class _Coverage:
     """One lineage's own reach on one account, and where it sits in the order."""
@@ -76,11 +124,52 @@ class _Coverage:
     lineage_id: int
     start: CalendarDate
     end: CalendarDate
-    #: Ordering key: the connection's enrollment, then its local id. Enrollment
-    #: is the fact that makes one Item newer than another -- a re-link enrols
-    #: after the connection it replaces -- and the id breaks a tie so the order
-    #: is total and a replay cannot reshuffle it.
-    enrolled: tuple[datetime, int]
+    #: What this row is a generation OF: the partition inside which two spans can
+    #: supersede one another. Never compared across partitions.
+    #:
+    #: 🔴 Scoped to the institution, never globally and never to the connection.
+    #: Global would let a four-digit mask collision between two banks merge two
+    #: real accounts, which is the worst outcome available here. Connection-scoped
+    #: would miss the re-link that retires its connection and enrols a
+    #: replacement, where the second generation lands under a NEW connection_id --
+    #: institution scope is what covers that path and the converging one together.
+    #:
+    #: 🔴 An account whose mask is null partitions with ITSELF ALONE. A null means
+    #: the aggregator did not state the mask, never that two accounts agree on it,
+    #: and grouping on an absence is how a rule that excludes money gets it wrong
+    #: in the direction that gets believed.
+    group: _Group
+    #: Ordering key WITHIN the partition, oldest first. Total, so the order does
+    #: not depend on the order rows came back and a replay cannot reshuffle it.
+    #:
+    #: 🔴 Both leading halves are load-bearing. Enrollment separates two lineages
+    #: on ONE account row -- the converged re-link, where a single account carries
+    #: two Items. The account's creation instant separates two account ROWS under
+    #: one lineage -- the re-link that converged its connection in place, where
+    #: enrollment is identical because the connection row was updated rather than
+    #: replaced. A key carrying only one of them is blind to the other's case.
+    generation: _Generation
+    #: Whether the institution still lists this account on the roster this store
+    #: last read for it -- the evidence that a generation was REPLACED rather than
+    #: merely being older than something.
+    #:
+    #: 🔴 This, not the order, is what licenses an exclusion across two account
+    #: rows. Ordering alone cannot tell a superseded generation from a second live
+    #: account that merely resembles the first; only the institution having stopped
+    #: listing one of them can.
+    #:
+    #: 🔴 Derived the same way `query._account_lifecycle` derives
+    #: `no_longer_reported`, and held to it by test rather than by memory. Two
+    #: derivations of one fact that disagree are worse than either alone: the
+    #: aggregate would exclude an account the verification surface calls active.
+    #:
+    #: 🔴 **Day granularity is inherited, not chosen.** `last_seen_date` is a
+    #: calendar date (AC-12.4), so a re-link on the same day as the sync it
+    #: replaces leaves the old generation looking listed, and its rows go on being
+    #: counted. That is the pre-existing resolution of the observation this reads,
+    #: not a further loss: `list_accounts` calls such an account `active` too. The
+    #: failure stays in the visible direction -- a duplicate an operator can see.
+    still_reported: bool
 
 
 def _day(value: object) -> CalendarDate:
@@ -105,20 +194,56 @@ def _coverage(conn: SAConnection, account_ids: Iterable[int] | None) -> list[_Co
     account holder committed, so a lineage whose rows were all retired covers
     nothing and must not supersede the lineage that replaced it.
     """
+    # 🔴 The connection joined here is the one that PRODUCED these rows -- the
+    # lineage -- which is not always the account's current connection. A re-link
+    # that retires its connection leaves the older generation's rows pointing at
+    # the retired one, and its enrollment instant is exactly what makes those rows
+    # older. Joining the account's own connection instead would read both
+    # generations as equally recent.
+    # 🔴 Two connections are in play and they are not the same row. `lineage` is
+    # the connection that PRODUCED these transactions; `holder` is the one the
+    # ACCOUNT currently hangs off, which is what says whether the institution
+    # still lists it. A re-link that retires its connection leaves the older
+    # generation pointing at the retired row for both -- and a re-link that
+    # converges in place leaves every generation sharing one row for both. Only
+    # asking the two questions separately answers both shapes.
+    #
+    # The account's connection is OUTER-joined: the FR-7 import path leaves it
+    # null, and such an account is on no roster to be dropped from.
+    lineage = connections.alias("lineage_connection")
+    holder = connections.alias("holder_connection")
     statement = (
         select(
             transactions.c.account_id,
             transactions.c.lineage_id,
             func.min(transactions.c.ledger_date),
             func.max(transactions.c.ledger_date),
-            connections.c.enrolled_at,
+            lineage.c.enrolled_at,
+            accounts.c.institution_id,
+            accounts.c.mask,
+            accounts.c.name,
+            accounts.c.account_type,
+            accounts.c.account_subtype,
+            accounts.c.created_at,
+            accounts.c.last_seen_date,
+            holder.c.roster_observed_date,
+            holder.c.retired_at,
         )
-        .join(connections, connections.c.connection_id == transactions.c.lineage_id)
+        .select_from(
+            transactions.join(lineage, lineage.c.connection_id == transactions.c.lineage_id)
+            .join(accounts, accounts.c.account_id == transactions.c.account_id)
+            .outerjoin(holder, holder.c.connection_id == accounts.c.connection_id)
+        )
         .where(
             transactions.c.lineage_id.is_not(None),
             transactions.c.ledger_date.is_not(None),
             transactions.c.removed_at.is_(None),
         )
+        # The account and connection columns are bare here rather than repeated in
+        # the grouping: each is functionally dependent on a column that IS grouped
+        # -- the account columns on `account_id`, `enrolled_at` on `lineage_id` --
+        # so every row in a group carries the same value and there is nothing for
+        # an arbitrary pick to vary.
         .group_by(transactions.c.account_id, transactions.c.lineage_id)
     )
     if account_ids is not None:
@@ -132,12 +257,75 @@ def _coverage(conn: SAConnection, account_ids: Iterable[int] | None) -> list[_Co
             lineage_id=int(row[1]),
             start=_day(row[2]),
             end=_day(row[3]),
-            enrolled=(row[4], int(row[1])),
+            group=_group(
+                account_id=int(row[0]),
+                institution_id=int(row[5]),
+                mask=row[6],
+                name=row[7],
+                account_type=row[8],
+                account_subtype=row[9],
+            ),
+            generation=(row[4], row[10], int(row[0])),
+            still_reported=_still_reported(
+                last_seen=row[11], roster_observed=row[12], retired_at=row[13]
+            ),
         )
         for row in conn.execute(statement).all()
     ]
-    found.sort(key=lambda item: (item.account_id, item.enrolled), reverse=True)
+    found.sort(key=lambda item: (item.group, item.generation), reverse=True)
     return found
+
+
+def _still_reported(*, last_seen: object, roster_observed: object, retired_at: object) -> bool:
+    """Whether the institution still lists this account on the roster last read.
+
+    🔴 Mirrors `query._account_lifecycle`'s derivation of `no_longer_reported`
+    clause for clause, and `tests/store/test_lineage_agrees_with_lifecycle.py`
+    holds the two to each other. The rule that excludes rows from a total and the
+    field that tells an operator the account is stale are the same claim; if they
+    can disagree, an aggregate drops an account the verification surface is
+    calling active and nothing in either answer explains it.
+
+    A retired connection is not still reporting anything. Its last roster read is
+    frozen at whatever it was, so comparing the two dates would call every account
+    on it current -- and the re-link that retires its connection is exactly the
+    shape that most needs the opposite answer.
+    """
+    if retired_at is not None:
+        return False
+    if roster_observed is None:
+        # This connection's roster has never been observed, so nothing on it can
+        # be called absent -- the same reading `_account_lifecycle` takes, and the
+        # reason a null is not filled in with a guess.
+        return True
+    if last_seen is None:
+        return False
+    return _day(last_seen) >= _day(roster_observed)
+
+
+def _group(
+    *,
+    account_id: int,
+    institution_id: int,
+    mask: str | None,
+    name: str,
+    account_type: str,
+    account_subtype: str | None,
+) -> _Group:
+    """The partition this account's spans can be superseded within.
+
+    Two rows share a partition when the institution describes them the same way
+    -- which is what a re-issued roster leaves behind, because the aggregator
+    mints new ids but re-reports the same mask, name, type and subtype.
+
+    A null mask yields a partition of one, named by the account itself, so such
+    an account can still be superseded by ANOTHER LINEAGE ON ITSELF -- the
+    converged re-link -- while never being matched against a different account
+    row on the strength of a field nobody stated.
+    """
+    if mask is None:
+        return ("account", account_id)
+    return ("identity", institution_id, mask, name, account_type, account_subtype)
 
 
 def superseded_spans(
@@ -152,15 +340,24 @@ def superseded_spans(
     Restricted to `account_ids` where the caller has them, because an account
     nobody asked about contributes an exclusion nobody can act on -- and a
     `rule-applied` naming it would be a warning about somebody else's data.
+
+    🔴 **The restriction narrows what can be COMPARED, not only what is
+    reported**, and the two generations of a re-issued roster are different
+    accounts. Passing one of them alone leaves it looking unsuperseded, because
+    the row that supersedes it was filtered out before the comparison. That is
+    the honest answer to "tell me about THIS account" -- its own rows, not a
+    household total -- but it is the wrong input to an aggregate. Every aggregate
+    here passes nothing and compares the whole store; a caller that narrows is
+    asking a different question and must not present the result as a total.
     """
     spans: list[SupersededSpan] = []
-    newer: dict[int, list[tuple[CalendarDate, CalendarDate]]] = {}
+    newer: dict[_Group, list[_Coverage]] = {}
     for item in _coverage(conn, account_ids):
-        covered = newer.setdefault(item.account_id, [])
+        covered = newer.setdefault(item.group, [])
         overlaps = [
-            (max(item.start, start), min(item.end, end))
-            for start, end in covered
-            if max(item.start, start) <= min(item.end, end)
+            (max(item.start, span.start), min(item.end, span.end))
+            for span in covered
+            if _supersedes(span, item) and max(item.start, span.start) <= min(item.end, span.end)
         ]
         spans.extend(
             SupersededSpan(
@@ -168,9 +365,33 @@ def superseded_spans(
             )
             for start, end in _merged(overlaps)
         )
-        covered.append((item.start, item.end))
+        covered.append(item)
     spans.sort(key=lambda span: (span.account_id, span.lineage_id, span.start))
     return tuple(spans)
+
+
+def _supersedes(newer: _Coverage, older: _Coverage) -> bool:
+    """Whether `newer` is entitled to answer for days `older` also covers.
+
+    Being newer is necessary and, across two account rows, NOT sufficient.
+
+    🔴 **On one account row, order is the whole test.** Two lineages on a single
+    account are two Items' copies of one account's history; the later Item is the
+    one that re-fetched, and there is no second real account for the rule to
+    confuse it with.
+
+    🔴 **Across two account rows, the older one must have STOPPED BEING LISTED.**
+    Two rows that merely resemble each other are the ordinary case -- a household
+    can hold a checking account and an overdraft line that share a four-digit
+    mask, and at the one institution where this was measured it does. Both are on
+    every roster. Excluding either would delete money that was really spent,
+    which is the undercount this module exists to refuse; so resemblance alone
+    licenses nothing, and the institution having dropped one of them is the
+    evidence that makes it a replaced generation rather than a neighbour.
+    """
+    if newer.generation <= older.generation:
+        return False
+    return newer.account_id == older.account_id or not older.still_reported
 
 
 def _merged(
