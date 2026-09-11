@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import inspect
+from collections.abc import Callable
 from pathlib import Path
 
 import keyring
@@ -242,9 +243,9 @@ def test_a_defaulted_environment_cannot_overwrite_an_access_token(
 def test_a_defaulted_environment_cannot_delete_per_environment_credentials(
     tmp_path: Path,
     keychain_service: str,
-    delete,  # noqa: ANN001 -- parametrized over two distinct signatures
-    store,  # noqa: ANN001
-    account_of,  # noqa: ANN001
+    delete: Callable[[Config], None],
+    store: Callable[[Config], None],
+    account_of: Callable[[Config], str],
 ) -> None:
     """Deletion is guarded for the same reason storing is: it is unrecoverable,
     and `delete_*` swallows absence, so an unguarded one would report nothing."""
