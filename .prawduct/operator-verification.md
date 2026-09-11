@@ -435,8 +435,8 @@ ground truth about money you already know about.
 
 ## VRF-007 — an update-mode repair, completed in a browser
 
-**Chunk:** connections reauth (#67) · **Raised:** 2026-09-10 · **Status:** pending
-· **Visual change:** yes
+**Chunk:** connections reauth (#67) · **Raised:** 2026-09-10 · **Status:** verified
+· **Verified:** 2026-09-11 · **Visual change:** yes
 
 **Why a human:** a Hosted Link session cannot be completed programmatically — the whole reason
 `test_enroll.py` fakes the aggregator. Every test of `connections reauth` fakes the item's recovery,
@@ -500,7 +500,8 @@ uv run pytest -m sandbox -k "update_mode_session or expired_login_is_reported"
 
 Those two live probes assert that Hosted Link is available in update mode on this account, and that
 `/item/get` reports an expired login **in the body** rather than by raising — the shape the poll
-loop is written against. They were written with this chunk and have **not** been run: this machine's
-shell had no `BANKMACHINE_PLAID_CLIENT_ID` exported.
+loop is written against. Both ran green against the live aggregator on 2026-09-11 — `2 passed`,
+neither skipped — so those two assumptions now hold on this account. They say nothing about steps
+1-7 above: no test can complete a Hosted Link session, which is the whole reason this entry exists.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-007`

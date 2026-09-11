@@ -332,11 +332,18 @@ Every chunk is built, and the cumulative review that serves as the last one's re
 (`rev-20260911T032912Z-bc3783f1`): 1 blocking finding, fixed, plus ten warnings and five notes
 dispositioned in the same pass.
 
-🔴 **Outstanding, and not discharged by any box above:** the two `-m sandbox` probes have never
-been run against the live aggregator — they SKIP without `BANKMACHINE_PLAID_CLIENT_ID`. They carry
-the two assumptions the feature rests on, and they are owned by **VRF-007**, which blocks
-`/prawduct:pr create` while it is pending. See chunk 01's amendment for why they live there rather
-than in a Done-when.
+**VRF-007 was run end to end on 2026-09-11** — login reset at the aggregator, the connection
+observed degrading, the hosted URL completed in a browser, and both snapshots identical across the
+columns the entry names. The repair preserved the item, all 28 account rows and their
+`source_account_id`s, the cursor, and the transaction count; the follow-on sync applied one page and
+added nothing. The chunk-01 amendment's two assumptions were separately settled by the `-m sandbox`
+probes the same morning (`2 passed`, neither skipped).
+
+🔴 **Outstanding:** the queue still reports VRF-007 pending and `/prawduct:pr create` still blocks —
+a prawduct parser defect, not a verification gap. `operator_verification._STATUS_LINE_RE` only
+matches a `**Status:**` line standing alone, so every entry from VRF-003 on, which carries status
+inside a combined `**Chunk:** … · **Raised:** … · **Status:** …` line, parses as `pending` whatever
+it says. Draining needs the plugin fixed or `--accept-pending-verification`.
 
 ## Context
 
