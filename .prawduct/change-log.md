@@ -103,17 +103,19 @@ pruned — neither true, and `operational-spec.md` sends them to `store rebuild`
 repair. The column now has one owner: the commands that change the row. The deriver writes what it
 derives, and a repaired connection rebuilds.
 
-**Three more in the same command.** It never established the condition it claimed
-to repair — completion was "the item is not reporting an expired login *now*", which a healthy
-connection satisfies on the first look, so it would print a URL and then "repaired" for a session
-nobody opened, and tell an operator whose item was LOCKED that the aggregator accepted a new login.
-It now reads the item once before printing anything and refuses what update mode cannot renew,
-naming what the aggregator actually says. The poll derived a possibly-foreign item onto this row
-*before* the identity comparison, so the refusal path that prints "Nothing was changed" had already
-written another item's consent date into the column the MCP consent warnings are built from; the
-identity question is now settled before the derivation runs, and a foreign body is archived with no
-connection id rather than derived. And the expired-login code is asked of `errors.py`, which owns
-that vocabulary, instead of a string literal held a second time in the CLI.
+**The condition is established before the URL is printed.** The repair reads the item once up
+front and refuses what update mode cannot renew, naming what the aggregator actually says. Without
+that read, completion would mean "the item is not reporting an expired login *now*" — which a
+healthy connection satisfies on the first look, so the command would print a URL and then report
+"repaired" for a session nobody opened, and tell an operator whose item was LOCKED that the
+aggregator had accepted a new login.
+
+**A foreign item body is archived, not derived.** The identity question is settled before the
+derivation runs, so a body describing some other item is archived with no connection id. Deriving
+first would write another item's consent date into the column the MCP consent warnings are built
+from — on the very path that then prints "Nothing was changed". The expired-login code is asked of
+`errors.py`, which owns that vocabulary, rather than held a second time as a string literal in the
+CLI.
 
 **Not built here:** reconciling a store that is *already* doubled, and an identity fallback for the
 institutions that give no stable account id. Both are #91.
