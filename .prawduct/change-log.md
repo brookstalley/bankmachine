@@ -49,7 +49,8 @@ the rule, not the exception: the field exists at three institutions, depository 
 
 **What changed:** `bankmachine connections reauth <id>` opens an update-mode Link session against
 the connection's existing item and waits for the operator to complete it. It clears `status`,
-`last_error_code` and `last_error_at` — and writes nothing else. The cursor, the granted window,
+`last_error_code` and `last_error_at`, and stamps `updated_at` as every command that changes that
+row does. Nothing else on the row moves: the cursor, the granted window,
 `enrolled_at`, the accounts and the transactions are all left alone, which is AC-4.3's requirement
 rather than an implementation detail.
 

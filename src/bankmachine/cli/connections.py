@@ -420,8 +420,10 @@ def cmd_reauth(config: Config, args: argparse.Namespace) -> int:
         # recoverable, rather than silently correct-looking, which is not.
         #
         # The body that discovered this was archived with no connection id, so
-        # nothing of the foreign item's was derived onto this row -- see
-        # `_archive_item`. "Nothing was changed" below is literal.
+        # nothing of the FOREIGN item's reached this row -- see `_archive_item`.
+        # Earlier polls did derive this row's own item standing onto it, which is
+        # what makes "Nothing was changed" below a claim about the repair rather
+        # than about every column.
         logger.error(
             "connection %d came back from update mode behind a different item; "
             "the connection was left degraded",

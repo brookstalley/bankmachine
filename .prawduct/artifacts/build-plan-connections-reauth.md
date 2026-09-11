@@ -157,11 +157,15 @@ about.
    - mints the update-mode token, prints the URL, waits;
    - 🔴 on completion, calls `/item/get` and **compares `item_id` against the row's
      `source_connection_id`, refusing if they differ** — see the ASSUMPTION above;
-   - archives the `/item/get` response through `apply_response` with this connection's id, as the
-     enrollment path does, so FR-5's raw preservation holds on the repair path too;
-   - clears `status`, `last_error_code` and `last_error_at` in one transaction, and writes
-     **nothing else** — no cursor delete, no `granted_history_days` reset, no `enrolled_at` change.
-     That absence is the requirement.
+   - archives the `/item/get` response through `apply_response` — with this connection's id when
+     the body describes this connection's item, and with **none** when it describes a different
+     one, so FR-5's raw preservation holds on the repair path without a foreign item's consent
+     date or error code being derived onto this row *(refined on review: the identity question is
+     settled before the derivation runs, not after it)*;
+   - clears `status`, `last_error_code` and `last_error_at` in one transaction, stamping
+     `updated_at` as every command that changes that row does — and writes **nothing else** on the
+     row: no cursor delete, no `granted_history_days` reset, no `enrolled_at` change. That absence
+     is the requirement.
 
 **Tests** (`tests/cli/test_connections_reauth.py`, `tests/connector/test_client.py`, `tests/connector/test_sandbox.py`)
 
