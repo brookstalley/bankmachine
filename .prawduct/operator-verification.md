@@ -531,7 +531,7 @@ verify them, which is the point.
 
 ## VRF-008 — the MCP surface answers usefully in a real client
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** the MCP surface · **Raised:** 2026-09-11
 
@@ -542,9 +542,11 @@ the obligation now lives. Verify against VRF-004's steps and drain this id.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-008`
 
+
+**Accepted:** 2026-09-11 — rationale: VRF-009 (#22) and VRF-010 (#23) require production data the sandbox cannot produce: it has never held a pending row and is single-connection, and this branch enrolls nothing and syncs nothing. VRF-008 runs against sandbox but cannot be drained from this session: the reachable sandbox MCP server is on build 296b7a0, which is an ancestor of neither develop nor this branch and still reports the pre-fix doubled state (28 accounts, 784 transactions); draining it needs the server relaunched on this build, which is #25. Production access is approved and the cutover is next, which discharges all three against real data within days.
 ## VRF-009 — one real pending transaction watched across settlement
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#22) · **Raised:** 2026-09-11
 
@@ -555,9 +557,11 @@ Verify against VRF-005's steps and drain this id.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-009`
 
+
+**Accepted:** 2026-09-11 — rationale: VRF-009 (#22) and VRF-010 (#23) require production data the sandbox cannot produce: it has never held a pending row and is single-connection, and this branch enrolls nothing and syncs nothing. VRF-008 runs against sandbox but cannot be drained from this session: the reachable sandbox MCP server is on build 296b7a0, which is an ancestor of neither develop nor this branch and still reports the pre-fix doubled state (28 accounts, 784 transactions); draining it needs the server relaunched on this build, which is #25. Production access is approved and the cutover is next, which discharges all three against real data within days.
 ## VRF-010 — the sign convention on a real inflow, across two institutions
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#23) · **Raised:** 2026-09-11
 
@@ -567,3 +571,5 @@ nothing and syncs no second institution. One feed obeying the convention is stil
 about another. Verify against VRF-006's steps and drain this id.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-010`
+
+**Accepted:** 2026-09-11 — rationale: VRF-009 (#22) and VRF-010 (#23) require production data the sandbox cannot produce: it has never held a pending row and is single-connection, and this branch enrolls nothing and syncs nothing. VRF-008 runs against sandbox but cannot be drained from this session: the reachable sandbox MCP server is on build 296b7a0, which is an ancestor of neither develop nor this branch and still reports the pre-fix doubled state (28 accounts, 784 transactions); draining it needs the server relaunched on this build, which is #25. Production access is approved and the cutover is next, which discharges all three against real data within days.
