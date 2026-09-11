@@ -271,9 +271,10 @@ connection **without losing its history or cursor.**
 
 > *(Built as **`bankmachine connections reauth <id>`**.)* It mints an update-mode enrollment URL
 > against the Item the connection already names, waits for the operator to complete it, and clears
-> `status`, `last_error_code` and `last_error_at` — writing nothing else. The cursor, the measured
-> granted window, `enrolled_at`, the accounts and the transactions all survive, which is what this
-> criterion asks for. It refuses if the Item comes back with a different id, because that is a
+> `status`, `last_error_code` and `last_error_at`, stamping `updated_at` as every command that
+> changes that row does. Nothing else on the row moves: the cursor, the measured granted window,
+> `enrolled_at`, the accounts and the transactions all survive, which is what this criterion asks
+> for. It refuses if the Item comes back with a different id, because that is a
 > re-link arriving by another door.
 >
 > 🔴 **Re-running `enroll` is not the recovery, and the difference is not ergonomic.** A re-link

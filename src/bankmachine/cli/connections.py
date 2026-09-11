@@ -419,15 +419,9 @@ def cmd_reauth(config: Config, args: argparse.Namespace) -> int:
         # with no warning naming it. Refusing leaves the row degraded, which is
         # recoverable, rather than silently correct-looking, which is not.
         #
-        # 🔴 The poll that discovered this already archived and derived the body,
-        # so `connections.source_error_code` now carries the FOREIGN item's
-        # standing against this row. That is not suppressed here, and the reason
-        # is that suppressing it would not hold: the deriver keys on the
-        # connection the response was fetched for, so `store rebuild` reaches the
-        # same value from the archive. `status` and `last_error_code` are what
-        # the operator and `get_pipeline_health` read and both stay accurate;
-        # the archived body is the evidence of what happened, and discarding it
-        # to keep one derived column tidy would be the worse trade.
+        # The body that discovered this was archived with no connection id, so
+        # nothing of the foreign item's was derived onto this row -- see
+        # `_archive_item`. "Nothing was changed" below is literal.
         logger.error(
             "connection %d came back from update mode behind a different item; "
             "the connection was left degraded",

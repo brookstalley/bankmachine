@@ -353,7 +353,7 @@ The product's headline goal is not "answer the question" but "answer it, or say 
 | `enroll` | Link one institution and record the connection | yes (datastore + keychain + network) |
 | `connections list` | Show enrolled connections and slots used | no |
 | `connections retire` | Stop syncing a connection, keep its history, remove it at the aggregator | yes (datastore + keychain + network) |
-| `connections reauth` | Repair a connection whose login expired, through an update-mode session — 🔴 the item, cursor, granted window and accounts are all preserved, which is the requirement rather than a side effect | yes (datastore + network); writes **only** `status`, `last_error_code`, `last_error_at` |
+| `connections reauth` | Repair a connection whose login expired, through an update-mode session — 🔴 the item, cursor, granted window and accounts are all preserved, which is the requirement rather than a side effect | yes (datastore + network); on the connection row it writes `status`, `last_error_code`, `last_error_at` and `updated_at` and **nothing else** — no cursor, no granted window, no `enrolled_at`, no account or transaction row. It also archives each `/item/get` it polled, and derives `source_error_code` / `consent_expires_at` from the ones that belong to this connection |
 | `sync run` | Fetch each connection's accounts and transactions since its cursor | yes (datastore + network) |
 | `mcp` | Serve the datastore to an MCP client over stdio — 🔴 read-only | no |
 
