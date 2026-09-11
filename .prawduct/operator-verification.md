@@ -531,7 +531,7 @@ verify them, which is the point.
 
 ## VRF-008 — the MCP surface answers usefully in a real client
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** the MCP surface · **Raised:** 2026-09-11
 
@@ -542,9 +542,11 @@ the obligation now lives. Verify against VRF-004's steps and drain this id.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-008`
 
+
+**Accepted:** 2026-09-11 — rationale: Same three entries and the same rationale the owner ruled on for PR #101, re-raised because that acceptance lives on the other branch. This branch touches config, secrets, the CLI and sync_run; it does not change the MCP surface (VRF-008), enrolls nothing and syncs no second institution (VRF-010), and produces no pending rows (VRF-009) -- the sandbox has never held one. All three need the production cutover, which is next and for which access is approved.
 ## VRF-009 — one real pending transaction watched across settlement
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#22) · **Raised:** 2026-09-11
 
@@ -555,9 +557,11 @@ Verify against VRF-005's steps and drain this id.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-009`
 
+
+**Accepted:** 2026-09-11 — rationale: Same three entries and the same rationale the owner ruled on for PR #101, re-raised because that acceptance lives on the other branch. This branch touches config, secrets, the CLI and sync_run; it does not change the MCP surface (VRF-008), enrolls nothing and syncs no second institution (VRF-010), and produces no pending rows (VRF-009) -- the sandbox has never held one. All three need the production cutover, which is next and for which access is approved.
 ## VRF-010 — the sign convention on a real inflow, across two institutions
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#23) · **Raised:** 2026-09-11
 
@@ -567,3 +571,5 @@ nothing and syncs no second institution. One feed obeying the convention is stil
 about another. Verify against VRF-006's steps and drain this id.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-010`
+
+**Accepted:** 2026-09-11 — rationale: Same three entries and the same rationale the owner ruled on for PR #101, re-raised because that acceptance lives on the other branch. This branch touches config, secrets, the CLI and sync_run; it does not change the MCP surface (VRF-008), enrolls nothing and syncs no second institution (VRF-010), and produces no pending rows (VRF-009) -- the sandbox has never held one. All three need the production cutover, which is next and for which access is approved.
