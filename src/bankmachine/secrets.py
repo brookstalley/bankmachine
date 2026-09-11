@@ -16,7 +16,7 @@ from secrets import token_hex
 import keyring
 from keyring.errors import KeyringError
 
-from bankmachine.config import Config
+from bankmachine.config import Config, require_chosen_environment
 
 #: SQLCipher takes a 256-bit raw key as 64 hex characters. Passing the key raw
 #: rather than as a passphrase skips SQLCipher's KDF, which means the key in the
@@ -170,6 +170,7 @@ def get_datastore_key(config: Config) -> str:
 
 def set_datastore_key(config: Config, key: str) -> None:
     """Store the datastore key, replacing any existing one."""
+    require_chosen_environment(config)
     service, account = config.keychain_service, config.keychain_account
     _validate(key, service=service, account=account)
     try:
@@ -180,6 +181,7 @@ def set_datastore_key(config: Config, key: str) -> None:
 
 def delete_datastore_key(config: Config) -> None:
     """Remove the datastore key. Absence is not an error."""
+    require_chosen_environment(config)
     service, account = config.keychain_service, config.keychain_account
     try:
         keyring.delete_password(service, account)
@@ -215,6 +217,7 @@ def get_plaid_secret(config: Config) -> str:
 
 def set_plaid_secret(config: Config, secret: str) -> None:
     """Store the aggregator secret, replacing any existing one."""
+    require_chosen_environment(config)
     service, account = config.keychain_service, config.plaid_keychain_account
     if not secret.strip():
         raise SecretsError("refusing to store an empty aggregator secret")
@@ -226,6 +229,7 @@ def set_plaid_secret(config: Config, secret: str) -> None:
 
 def delete_plaid_secret(config: Config) -> None:
     """Remove the aggregator secret. Absence is not an error."""
+    require_chosen_environment(config)
     service, account = config.keychain_service, config.plaid_keychain_account
     try:
         keyring.delete_password(service, account)
@@ -262,6 +266,7 @@ def get_access_token(config: Config, credential_ref: str) -> str:
 
 def set_access_token(config: Config, credential_ref: str, access_token: str) -> None:
     """Store one connection's access token under its handle."""
+    require_chosen_environment(config)
     service = config.keychain_service
     if not access_token.strip():
         raise SecretsError("refusing to store an empty access token")
@@ -275,6 +280,7 @@ def set_access_token(config: Config, credential_ref: str, access_token: str) -> 
 
 def delete_access_token(config: Config, credential_ref: str) -> None:
     """Remove one connection's access token. Absence is not an error."""
+    require_chosen_environment(config)
     service = config.keychain_service
     try:
         keyring.delete_password(service, credential_ref)

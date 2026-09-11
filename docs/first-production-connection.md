@@ -54,6 +54,33 @@ accounts inactive, so their balances stop reading as current.
 
 These cost nothing and one of them stops being rehearsable the moment production is enrolled.
 
+🔴 **First, declare that you are in sandbox.** Every step below writes — `enroll`, `store key
+import`, `store backup`, `store init` — and anything that opens the datastore for writing or
+changes a per-environment keychain entry refuses on an environment nobody chose, rather than
+guessing. One line, once:
+
+```sh
+mkdir -p ~/.config/bankmachine
+$EDITOR ~/.config/bankmachine/config.toml
+```
+
+so that the file contains exactly one `environment` line:
+
+```toml
+environment = "sandbox"
+```
+
+🔴 **One line, not an appended one.** TOML forbids a duplicate key, so a file carrying two
+`environment` entries fails to parse and every command — reads included — exits 2 with an error
+about TOML syntax rather than about the step that caused it. § 3.1 edits this same line rather than
+adding a second.
+
+`export BANKMACHINE_ENVIRONMENT=sandbox` does the same for one shell. § 3.1 switches this to
+production when you cut over; until then everything here stays safely in sandbox.
+
+*Failure looks like:* `no environment was chosen, so 'sandbox' was assumed`, and exit 2, with
+nothing written. Reads (`store status`, `connections list`) work either way.
+
 **2.1 Read the enrollment prompt as a human would, in sandbox.** Run `uv run bankmachine enroll`
 against sandbox and read what it prints *before* the URL: the requested window, and the line saying
 it cannot be raised later without removing and re-linking the connection (`_confirm_window` in
@@ -139,21 +166,59 @@ costs a re-link of every institution, so if `enroll` prints a number you did not
 
 ## 3. The cutover
 
-### 3.1 Point the shell at production and store the production secret
+### 3.1 Switch the environment to production, and store the production secret
+
+§ 2 put `environment = "sandbox"` in the config file. 🔴 **Edit that line — do not append a second
+one.** TOML forbids a duplicate key, so a file carrying both `environment` entries fails to parse
+and *every* command, reads included, exits 2 with an error about TOML syntax rather than about the
+step that caused it.
 
 ```sh
-export BANKMACHINE_ENVIRONMENT=production
-export BANKMACHINE_PLAID_CLIENT_ID=<your client id>   # the same id across environments
-uv run bankmachine connector set-secret               # the PRODUCTION secret
+$EDITOR ~/.config/bankmachine/config.toml
 ```
+
+so that the file reads:
+
+```toml
+environment = "production"
+plaid_client_id = "<your client id>"   # the same id across environments
+```
+
+Then store the secret:
+
+```sh
+uv run bankmachine connector set-secret   # the PRODUCTION secret
+```
+
+Either value can still be exported (`BANKMACHINE_ENVIRONMENT`, `BANKMACHINE_PLAID_CLIENT_ID`) and an
+export wins over the file — useful for a one-off command against the other environment:
+
+```sh
+BANKMACHINE_ENVIRONMENT=sandbox uv run bankmachine store status
+```
+
+🔴 **`.env` is not read, deliberately** — a file that is silently read is a file whose contents are
+silently trusted (`.prawduct/artifacts/operational-spec.md` § Configuration). `source .env` works because
+you ran it; the config file above is the durable equivalent.
 
 *Verifies:* the secret lands under its own keychain account, `plaid:production`
 (`Config.plaid_keychain_account` in `src/bankmachine/config.py`), which the sandbox secret cannot
 overwrite. `set-secret` prompts without echoing at a terminal and reads stdin when piped.
 
-*Failure looks like:* a refusal to store an empty secret; or the command appearing to succeed while
-you were in a shell that never exported `BANKMACHINE_ENVIRONMENT=production`, in which case you have
-just replaced the sandbox secret. Check the environment before, not after.
+*Failure looks like:* a refusal to store an empty secret — or, if you skipped the config file and
+exported nothing, a refusal to store anything at all:
+
+```
+bankmachine: no environment was chosen, so 'sandbox' was assumed -- and this command
+writes state that belongs to one environment. Nothing was written.
+```
+
+🔴 **The product refuses here rather than assuming, and the refusal is the feature.** Every per-environment
+container — `plaid:<env>` and `datastore:<env>` in the keychain, and the datastore filename — is
+keyed on the environment, and a `set-secret` that defaulted would overwrite the *other*
+environment's secret while reporting success. There is no undo for that, so a command that writes
+per-environment state will not run until somebody has said which environment they mean. Reads
+(`store status`, `connections list`, the MCP server) still default to sandbox.
 
 ### 3.2 Create the production datastore
 
@@ -290,8 +355,18 @@ and the command waits across five attempts totalling 112 seconds (`NOT_READY_DEL
 shortly` and exiting **75**.
 
 🔴 **Exit 75 is the expected first result on a real institution, and it means run it again.**
-`75` is `EX_TEMPFAIL`: the run worked, nothing is wrong, and history is still owed. Re-run until you
-get **0**. Three states produce it — `NOT_READY` with nothing applied, `INITIAL_UPDATE_COMPLETE`
+`75` is `EX_TEMPFAIL`: the run worked, nothing is wrong, and history is still owed. Let the command
+do the repeating:
+
+```sh
+uv run bankmachine sync run --until-ready
+```
+
+It re-runs until no connection still owes history, waiting five minutes between attempts and giving
+up after twelve (`--retry-delay`, `--max-attempts`). Reaching the cap still exits **75** — giving up
+waiting is not the same event as finishing. Any other non-zero code ends the loop immediately and is
+returned unchanged, because `1` is a connection that needs a person rather than another attempt.
+Three states produce 75 — `NOT_READY` with nothing applied, `INITIAL_UPDATE_COMPLETE`
 with the first pages applied and the rest still arriving, and a page run stopped at its ceiling.
 They are one code on purpose: whichever it is, the action is the same.
 
@@ -428,7 +503,7 @@ name the entries distinctly yourself. *Failure looks like:* two entries you cann
 **5.1 Run `sync run` and `store backup` daily, by hand.**
 
 ```sh
-uv run bankmachine sync run
+uv run bankmachine sync run --until-ready
 uv run bankmachine store backup ~/backups/bankmachine-$(date +%F).db
 ```
 
@@ -442,7 +517,15 @@ or a `cron`/`launchd` entry of your own is the mitigation.
 soon* (a still-arriving backfill or a page ceiling), `1` is a connection that needs you, `2` is a
 run that could not happen at all. A wrapper that treats every non-zero code alike turns `75` into a
 false alarm and, worse, treats `1` and `2` as one thing — which is precisely the collapse
-`.prawduct/artifacts/api-contract.md` § Direction refuses. Retry on `75`; alert on `1` and `2`.
+`.prawduct/artifacts/api-contract.md` § Direction refuses. Retry on `75` — or hand that to
+`--until-ready` and alert on whatever it finally returns; alert on `1` and `2`.
+
+🔴 **The daily entry needs the environment declared, and `store backup` is part of why.** A cron
+or launchd entry inherits no login shell, so it must read `~/.config/bankmachine/config.toml` — an
+entry relying on an export writes nothing and exits 2. `store backup` is guarded along with
+`sync run`, deliberately: a backup silently taken against the wrong environment looks identical to
+a good one and announces itself only at a restore, which is the one moment there is nothing left to
+fall back on.
 
 🔴 **Never `cp` the datastore.** It runs in WAL mode, so copying `store.db` alone silently loses
 whatever is still in `store.db-wal` — a measured `cp` of a source with a hot WAL lost every one of

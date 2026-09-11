@@ -22,18 +22,14 @@ from bankmachine.store.engine import reader_connection
 from bankmachine.store.raw import load_response
 from bankmachine.store.schema import raw_responses
 from bankmachine.store.types import now_utc
+from conftest import use_cli_env
 
 BODY = b'{"institutions": [{"institution_id": "ins_1"}], "total": 42, "request_id": "abc"}'
 
 
 @pytest.fixture
 def cli_env(config: Config, monkeypatch: pytest.MonkeyPatch) -> Iterator[Config]:
-    monkeypatch.setenv("BANKMACHINE_DATASTORE_PATH", str(config.datastore_path))
-    monkeypatch.setenv("BANKMACHINE_LOG_DIR", str(config.log_dir))
-    monkeypatch.setenv("BANKMACHINE_KEYCHAIN_SERVICE", config.keychain_service)
-    monkeypatch.setenv("BANKMACHINE_ENVIRONMENT", config.environment)
-    monkeypatch.setenv("BANKMACHINE_CONFIG", str(config.datastore_path.parent / "absent.toml"))
-    monkeypatch.setenv("BANKMACHINE_PLAID_CLIENT_ID", "test-client-id")
+    use_cli_env(monkeypatch, config, BANKMACHINE_PLAID_CLIENT_ID="test-client-id")
     set_plaid_secret(config, "test-secret")
     try:
         yield config

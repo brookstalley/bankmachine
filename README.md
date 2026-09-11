@@ -77,7 +77,11 @@ about data rather than the one that is about branches.
 
 ## Configure
 
-Sandbox is the default environment and needs nothing but a free Plaid dashboard signup.
+Sandbox needs nothing but a free Plaid dashboard signup — but the environment has to be
+**declared**, not defaulted: anything that opens the datastore for writing, or changes a
+per-environment keychain entry, refuses when nothing chose one. `.env.example` declares it, so
+the block below works as written; a cron entry sources nothing and needs it in the config file
+instead. The reasoning is further down this section.
 
 ```sh
 cp .env.example .env                        # fill in BANKMACHINE_PLAID_CLIENT_ID
@@ -111,6 +115,19 @@ silently trusted. The same keys live in `~/.config/bankmachine/config.toml` with
 `BANKMACHINE_` prefix if you would rather not source anything. `.env.example` lists
 every setting with its default.
 
+🔴 **Anything that opens the datastore for writing, or that changes a per-environment
+keychain entry, needs the environment DECLARED, and will exit 2 rather than guess.** Every per-environment container is keyed on it —
+`datastore:<env>` and `plaid:<env>` in the keychain, `connection:<env>:<item>`, and the
+datastore filename — so a write on an environment nobody chose would land in whichever
+one the fallback names. Reads (`store status`, `connections list`, the MCP server) still
+fall back to sandbox. **A process with no login shell has nothing to `source`, so put it
+in the config file:**
+
+```toml
+# ~/.config/bankmachine/config.toml
+environment = "sandbox"
+```
+
 🔴 **The aggregator secret has no environment variable and will not get one.** It goes
 in the OS keychain, per environment, so it reaches neither a shell history nor a process
 listing — and setting sandbox's cannot overwrite production's.
@@ -127,9 +144,13 @@ uv run bankmachine store backup ~/backups/bankmachine-$(date +%F).db
 
 🔴 **Nothing schedules any of this yet.** `sync run` is manual, and each run is also what appends
 today's row to the daily balance series — the one table no later re-sync can rebuild, because no
-aggregator backfills it. A day you do not run it is a day of balance history gone. Run it daily
-(a `cron` or `launchd` entry of your own is fine until scheduling ships, build step 8), and there
-is no webhook: a connection whose login has expired surfaces on the next run, not before it.
+aggregator backfills it. A day you do not run it is a day of balance history gone. Run it daily —
+`sync run --until-ready` keeps going until no connection still owes history, rather than asking
+you to re-run it yourself. A `cron` or `launchd` entry of your own is fine until scheduling ships
+(build step 8), but 🔴 **it inherits no login shell, so it must get the environment from the config
+file above** — an entry relying on `source .env` writes nothing and exits 2 every night, and the
+daily balance row is the one series no later re-sync can rebuild. There is no webhook: a connection
+whose login has expired surfaces on the next run, not before it.
 
 🔴 **`store backup` is not `cp`.** It takes the writer lock, folds the WAL in and verifies the copy
 by reopening it with the key; a plain `cp` silently loses whatever is still in the WAL. The copy is

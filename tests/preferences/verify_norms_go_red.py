@@ -129,7 +129,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "norm 4 (ruling): the copying handle is exempt from the schema check",
         CONNECTION,
         "    with _writer(config, create=False) as conn:\n        yield conn",
-        '    with _writer(config, create=False) as conn:\n'
+        "    with _writer(config, create=False) as conn:\n"
         '        _require_supported_schema(conn, config, consequence="sabotage")\n'
         "        yield conn",
         f"{NORMS}::test_only_the_two_named_roles_are_exempt_from_the_schema_check",
@@ -654,7 +654,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "exit codes: an unreadable credential does not collapse a cap refusal to 2",
         CLI_CONNECTIONS,
-        "        return True\n    except SecretsError as exc:",
+        "        return True\n    except (SecretsError, ConfigError) as exc:",
         "        return True\n    except AccessTokenMissingError as exc:  # noqa",
         f"{ENROLL_CLI_TESTS}::test_an_unreadable_credential_does_not_collapse_a_cap_refusal_to_two",
     ),

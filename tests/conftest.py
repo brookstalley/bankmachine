@@ -60,6 +60,78 @@ def make_config(
     )
 
 
+def _bankmachine_env(config: Config, **extra: str) -> dict[str, str]:
+    """The `BANKMACHINE_*` pairs that point a run at THIS config.
+
+    One definition, two deliveries: `child_env` merges it into a subprocess
+    environment and `use_cli_env` sets it on the process. Splitting it here is
+    what keeps an in-process fixture and a spawned child from drifting into two
+    different ideas of what "this config" means.
+    """
+    return {
+        "BANKMACHINE_DATASTORE_PATH": str(config.datastore_path),
+        "BANKMACHINE_KEYCHAIN_SERVICE": config.keychain_service,
+        "BANKMACHINE_LOG_DIR": str(config.log_dir),
+        "BANKMACHINE_ENVIRONMENT": config.environment,
+        **extra,
+    }
+
+
+def use_cli_env(monkeypatch: pytest.MonkeyPatch, config: Config, **extra: str) -> Config:
+    """Point an in-process `run([...])` at this config, and return it.
+
+    🔴 The in-process twin of `child_env`, and it exists for the same reason:
+    every CLI test module had its own `cli_env` fixture repeating the same five
+    `setenv` calls, so the environment declaration -- which a write now REFUSES
+    without -- was carried by memory at nine sites. The next module's author
+    inherits it here instead.
+
+    `BANKMACHINE_CONFIG` points at a file that does not exist, so a config file
+    on the developer's machine cannot reach a test.
+    """
+    pairs = _bankmachine_env(
+        config,
+        **{"BANKMACHINE_CONFIG": str(config.datastore_path.parent / "absent.toml"), **extra},
+    )
+    for key, value in pairs.items():
+        monkeypatch.setenv(key, value)
+    return config
+
+
+def child_env(config: Config, **extra: str) -> dict[str, str]:
+    """The environment a spawned child needs to resolve THIS config.
+
+    🔴 One construction rather than a dict pasted at each spawn site. Every
+    entry here is load-bearing and the failure mode differs per omission: drop
+    the datastore path and the child works on the developer's real store, drop
+    the keychain service and it reaches their real credentials, drop the
+    environment and it exits 2 because a write on an environment nobody chose is
+    refused (`require_chosen_environment`).
+
+    That last one is why this exists. The guard was added by pasting
+    `BANKMACHINE_ENVIRONMENT` into the three spawn sites that happened to be
+    red, which carries the property by memory at every site instead of by
+    construction at one -- the same decay the guard itself was written to avoid.
+    The next test that spawns a writer inherits it from here instead.
+
+    🔴 `BANKMACHINE_CONFIG` points at a file that does not exist, for the reason
+    `use_cli_env` does it: a config file on the operator's machine must not reach
+    a test. A child inherits the real environment, so without this it reads
+    ~/.config/bankmachine/config.toml -- and the production runbook now tells the
+    operator to put `environment = "production"` in exactly that file, so the
+    omission stopped being theoretical the moment this branch shipped.
+    """
+    return {
+        **os.environ,
+        # `extra` last: a caller that names its own config file means it, and the
+        # absent-file default is only there for the callers that say nothing.
+        **_bankmachine_env(
+            config,
+            **{"BANKMACHINE_CONFIG": str(config.datastore_path.parent / "absent.toml"), **extra},
+        ),
+    }
+
+
 @pytest.fixture
 def initialized_config(config: Config) -> Config:
     """A configuration whose datastore exists and is at the current schema version."""

@@ -675,7 +675,7 @@ bundle makes both variables inert for the one channel that carries live credenti
 
   🔴 **A signal, not the answer.** One sandbox institution is not evidence about a real one, and
   this account's `persistent_account_id` is NULL here as it is nearly everywhere — so the fallback
-  #91 exists for is untouched by this result. What it does establish is that the duplication has a
+  #95 exists for is untouched by this result. What it does establish is that the duplication has a
   path that does not produce it, which is what #67 was built to offer.
 - **A real rate limit or a real `PRODUCT_NOT_READY`.** Neither was provoked;
   both are exercised against constructed responses only, and `PRODUCT_NOT_READY`

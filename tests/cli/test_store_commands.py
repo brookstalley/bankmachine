@@ -11,15 +11,12 @@ from bankmachine.cli import run
 from bankmachine.config import Config
 from bankmachine.store.connection import SUPPORTED_SCHEMA_VERSION
 from bankmachine.store.rebuild import RebuildReport
+from conftest import use_cli_env
 
 
 @pytest.fixture
 def cli_env(config: Config, monkeypatch: pytest.MonkeyPatch) -> Config:
-    monkeypatch.setenv("BANKMACHINE_DATASTORE_PATH", str(config.datastore_path))
-    monkeypatch.setenv("BANKMACHINE_LOG_DIR", str(config.log_dir))
-    monkeypatch.setenv("BANKMACHINE_KEYCHAIN_SERVICE", config.keychain_service)
-    monkeypatch.setenv("BANKMACHINE_ENVIRONMENT", config.environment)
-    monkeypatch.setenv("BANKMACHINE_CONFIG", str(config.datastore_path.parent / "absent.toml"))
+    use_cli_env(monkeypatch, config)
     return config
 
 
