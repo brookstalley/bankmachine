@@ -37,7 +37,7 @@ from bankmachine.cli.hosted_link import (
     positive_seconds,
     print_invitation,
 )
-from bankmachine.config import Config
+from bankmachine.config import Config, require_chosen_environment
 from bankmachine.connector import LinkSession, LinkToken, MalformedResponseError
 from bankmachine.connector.plaid.client import (
     DEFAULT_HOSTED_URL_LIFETIME_SECONDS,
@@ -379,6 +379,16 @@ def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
 
 
 def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
+    # 🔴 FIRST, and for the reason the datastore check below is early, one step
+    # sharper. Enrollment writes per-environment state twice -- the access token
+    # into the keychain, the connection into the datastore -- and both happen
+    # AFTER the exchange has minted a durable, billable Item. Letting the
+    # environment refusal fire there would burn a real Item and discard the only
+    # handle to it, so not even `connections retire` could remove it. The guard
+    # is idempotent, so asking here costs nothing and moves the refusal to the
+    # one place where nothing has been spent yet.
+    require_chosen_environment(config)
+
     # Before the network call and before the URL, because a typo'd datastore path
     # would otherwise be discovered after the operator had completed a Link
     # session -- at which point the Item exists at the aggregator and this side

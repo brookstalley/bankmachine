@@ -157,16 +157,25 @@ costs a re-link of every institution, so if `enroll` prints a number you did not
 
 ### 3.1 Switch the environment to production, and store the production secret
 
-§ 2 put `environment = "sandbox"` in the config file. Change it to production and add your client
-id, rather than exporting them into every shell:
+§ 2 put `environment = "sandbox"` in the config file. 🔴 **Edit that line — do not append a second
+one.** TOML forbids a duplicate key, so a file carrying both `environment` entries fails to parse
+and *every* command, reads included, exits 2 with an error about TOML syntax rather than about the
+step that caused it.
 
 ```sh
-mkdir -p ~/.config/bankmachine
-cat >> ~/.config/bankmachine/config.toml <<'TOML'
+$EDITOR ~/.config/bankmachine/config.toml
+```
+
+so that the file reads:
+
+```toml
 environment = "production"
 plaid_client_id = "<your client id>"   # the same id across environments
-TOML
+```
 
+Then store the secret:
+
+```sh
 uv run bankmachine connector set-secret   # the PRODUCTION secret
 ```
 

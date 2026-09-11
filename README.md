@@ -111,8 +111,8 @@ silently trusted. The same keys live in `~/.config/bankmachine/config.toml` with
 `BANKMACHINE_` prefix if you would rather not source anything. `.env.example` lists
 every setting with its default.
 
-🔴 **Anything that opens the datastore for writing needs the environment DECLARED, and
-will exit 2 rather than guess.** Every per-environment container is keyed on it —
+🔴 **Anything that opens the datastore for writing, or that changes a per-environment
+keychain entry, needs the environment DECLARED, and will exit 2 rather than guess.** Every per-environment container is keyed on it —
 `datastore:<env>` and `plaid:<env>` in the keychain, `connection:<env>:<item>`, and the
 datastore filename — so a write on an environment nobody chose would land in whichever
 one the fallback names. Reads (`store status`, `connections list`, the MCP server) still

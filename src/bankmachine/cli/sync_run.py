@@ -27,6 +27,7 @@ from thirty days of one.
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import time
 from collections.abc import Callable
@@ -209,6 +210,12 @@ def _retry_delay(raw: str) -> float:
         raise argparse.ArgumentTypeError(f"must be a number, got {raw!r}") from None
     if value < 0:
         raise argparse.ArgumentTypeError(f"must not be negative, got {value}")
+    if not math.isfinite(value):
+        # `float("nan") < 0` is False and `float("inf") < 0` is False, so neither
+        # is caught above -- and `time.sleep(nan)` raises from inside the loop
+        # while `sleep(inf)` waits forever, which is the one outcome a bounded
+        # cap exists to prevent.
+        raise argparse.ArgumentTypeError(f"must be a finite number, got {raw!r}")
     return value
 
 

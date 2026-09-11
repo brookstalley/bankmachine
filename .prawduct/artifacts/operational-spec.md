@@ -133,8 +133,10 @@ there is nothing left to fall back on. The other four keep the two
 environments apart once you have said which one you are in; this one covers the case where nobody
 said. `environment` has a default, and reads still take it — but the write path
 (`require_chosen_environment`, called from the one writer factory in `store.connection` and from
-the keychain mutators in `secrets`) refuses unless an argument, an exported variable or a
-config-file entry selected it. The guard is at those two chokepoints rather than in a list of command names, because
+the keychain mutators in `secrets`) refuses unless an exported variable or a config-file entry
+selected it. **There is no `--environment` option** — the general precedence above still leads with
+an explicit argument, but no command offers one for this value, so the two real channels are the
+variable and the file. The guard is at those two chokepoints rather than in a list of command names, because
 a guarantee defined by an enumeration decays at the first command nobody adds to the list.
 
 🔴 **`.env` is not loaded automatically, on purpose.** There is no dotenv dependency: *a file that is

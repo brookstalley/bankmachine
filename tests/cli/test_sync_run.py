@@ -1192,6 +1192,11 @@ def test_without_the_flag_a_run_is_still_one_run(cli_env: Config) -> None:
         # remembered it. They are argparse converters now, so both paths agree.
         ["sync", "run", "--max-attempts", "0"],
         ["sync", "run", "--retry-delay", "-1"],
+        # Neither is caught by `< 0`: `nan < 0` and `inf < 0` are both False.
+        # `sleep(nan)` raises from inside the loop and `sleep(inf)` waits
+        # forever, which is what the bounded cap exists to prevent.
+        ["sync", "run", "--until-ready", "--retry-delay", "nan"],
+        ["sync", "run", "--until-ready", "--retry-delay", "inf"],
     ],
 )
 def test_a_bound_on_the_loop_is_refused_rather_than_clamped_on_every_path(

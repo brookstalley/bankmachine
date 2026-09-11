@@ -14,6 +14,7 @@ would pass forever for the seventh command nobody added it for.
 
 from __future__ import annotations
 
+import argparse
 import dataclasses
 import inspect
 from pathlib import Path
@@ -130,6 +131,23 @@ def test_the_refusal_names_both_ways_to_choose_an_environment(
     assert "BANKMACHINE_ENVIRONMENT=sandbox" in message
     assert 'environment = "sandbox"' in message
     assert "Nothing was written" in message
+
+
+def test_the_refusal_names_the_config_file_that_will_actually_be_read(tmp_path: Path) -> None:
+    """🔴 Not the documented default, when something pointed elsewhere.
+
+    `config_path` is None while the selected file does not exist yet, so a
+    refusal reading it would tell the operator to edit a path `load_config` is
+    never going to look at -- and they would do it, and nothing would change.
+    """
+    chosen = tmp_path / "elsewhere" / "bankmachine.toml"
+    config = load_config(env={"HOME": str(tmp_path)}, config_path=chosen)
+
+    assert config.config_path is None, "the file does not exist, so nothing came from it"
+    with pytest.raises(UnchosenEnvironmentError) as raised:
+        require_chosen_environment(config)
+
+    assert str(chosen) in str(raised.value)
 
 
 def test_a_chosen_environment_passes_the_guard(tmp_path: Path, keychain_service: str) -> None:
@@ -309,6 +327,53 @@ def test_the_refusal_reaches_the_operator_as_a_sentence_not_a_crash(
     assert "no environment was chosen" in captured.err
     assert "failed unexpectedly" not in captured.err
     assert "Traceback" not in captured.err
+
+
+def test_enrollment_refuses_before_it_can_mint_an_item(
+    initialized_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 The refusal has to land BEFORE the aggregator is touched, not at the
+    keychain write that happens after.
+
+    Enrollment writes per-environment state twice, and both writes come after the
+    exchange has minted a durable, billable Item. A refusal at the write would
+    burn that Item and discard the only handle to it, so not even
+    `connections retire` could remove it -- which is the state `enroll.py`'s own
+    comment calls the worst of the post-exchange failures.
+
+    Asserted by making every aggregator entry point explode: if the guard is
+    late, one of them is reached and the test fails with that error instead.
+    """
+    from bankmachine.cli import enroll as enroll_module
+
+    def _never(*args: object, **kwargs: object) -> object:
+        raise AssertionError("the aggregator was contacted before the refusal")
+
+    monkeypatch.setattr(enroll_module, "get_plaid_secret", _never)
+    monkeypatch.setattr(enroll_module, "PlaidClient", _never)
+
+    args = argparse.Namespace(institution=None, timeout=1, yes=True)
+    with pytest.raises(UnchosenEnvironmentError):
+        enroll_module.cmd_enroll(unchosen(initialized_config), args)
+
+
+def test_releasing_at_the_aggregator_never_raises_on_a_defaulted_environment(
+    initialized_config: Config,
+) -> None:
+    """`release_at_aggregator` documents that it never raises, and callers rely on it.
+
+    🔴 The escape has a consequence two modules away: it pre-empts a pending
+    `ConnectionCapReachedError`, so a cap refusal exits 2 instead of 1 -- the
+    exact collapse the exit-code contract forbids. `UnchosenEnvironmentError` is
+    a `ConfigError`, so it sat outside all three of this function's catch arms.
+    """
+    from bankmachine.cli.connections import release_at_aggregator
+
+    config = unchosen(initialized_config)
+    ref = config.connection_keychain_account("item-1")
+
+    # Returns a bool rather than raising; which bool is not this test's claim.
+    assert release_at_aggregator(config, credential_ref=ref, connection_id=1) in (True, False)
 
 
 def test_every_handle_but_the_read_one_refuses_a_defaulted_environment(

@@ -60,6 +60,47 @@ def make_config(
     )
 
 
+def _bankmachine_env(config: Config, **extra: str) -> dict[str, str]:
+    """The `BANKMACHINE_*` pairs that point a run at THIS config.
+
+    One definition, two deliveries: `child_env` merges it into a subprocess
+    environment and `use_cli_env` sets it on the process. Splitting it here is
+    what keeps an in-process fixture and a spawned child from drifting into two
+    different ideas of what "this config" means.
+    """
+    return {
+        "BANKMACHINE_DATASTORE_PATH": str(config.datastore_path),
+        "BANKMACHINE_KEYCHAIN_SERVICE": config.keychain_service,
+        "BANKMACHINE_LOG_DIR": str(config.log_dir),
+        "BANKMACHINE_ENVIRONMENT": config.environment,
+        **extra,
+    }
+
+
+def use_cli_env(
+    monkeypatch: pytest.MonkeyPatch, config: Config, **extra: str
+) -> Config:
+    """Point an in-process `run([...])` at this config, and return it.
+
+    🔴 The in-process twin of `child_env`, and it exists for the same reason:
+    every CLI test module had its own `cli_env` fixture repeating the same five
+    `setenv` calls, so the environment declaration -- which a write now REFUSES
+    without -- was carried by memory at nine sites. The next module's author
+    inherits it here instead.
+
+    `BANKMACHINE_CONFIG` points at a file that does not exist, so a config file
+    on the developer's machine cannot reach a test.
+    """
+    pairs = _bankmachine_env(
+        config,
+        BANKMACHINE_CONFIG=str(config.datastore_path.parent / "absent.toml"),
+        **extra,
+    )
+    for key, value in pairs.items():
+        monkeypatch.setenv(key, value)
+    return config
+
+
 def child_env(config: Config, **extra: str) -> dict[str, str]:
     """The environment a spawned child needs to resolve THIS config.
 
@@ -76,14 +117,7 @@ def child_env(config: Config, **extra: str) -> dict[str, str]:
     construction at one -- the same decay the guard itself was written to avoid.
     The next test that spawns a writer inherits it from here instead.
     """
-    return {
-        **os.environ,
-        "BANKMACHINE_DATASTORE_PATH": str(config.datastore_path),
-        "BANKMACHINE_KEYCHAIN_SERVICE": config.keychain_service,
-        "BANKMACHINE_LOG_DIR": str(config.log_dir),
-        "BANKMACHINE_ENVIRONMENT": config.environment,
-        **extra,
-    }
+    return {**os.environ, **_bankmachine_env(config, **extra)}
 
 
 @pytest.fixture

@@ -104,6 +104,15 @@ class Config:
     """
     config_path: Path | None
     """The file the values came from, or None when nothing but defaults and env applied."""
+    config_search_path: Path | None = None
+    """Where a config file was LOOKED FOR, whether or not one was there.
+
+    🔴 Distinct from `config_path`, which is None when no file exists -- and a
+    refusal that told the operator to edit a file has to name the one that will
+    actually be read. Under `--config` or `BANKMACHINE_CONFIG` pointing at a
+    path that does not exist yet, `config_path` is None while the file they must
+    create is that path, not the documented default.
+    """
     environment_source: ValueSource = "argument"
     """Who chose `environment`.
 
@@ -307,6 +316,7 @@ def require_chosen_environment(config: Config) -> None:
     """
     if config.environment_chosen:
         return
+    where = config.config_search_path or config.config_path or default_config_path()
     raise UnchosenEnvironmentError(
         f"no environment was chosen, so {config.environment!r} was assumed -- and this "
         f"command writes state that belongs to one environment. Nothing was written. "
@@ -318,7 +328,7 @@ def require_chosen_environment(config: Config) -> None:
         # shows, which is how a paste turns into a question.
         f"or once, by putting\n"
         f'    environment = "{config.environment}"\n'
-        f"in {display_path(config.config_path or default_config_path())}"
+        f"in {display_path(where)}"
     )
 
 
@@ -411,5 +421,6 @@ def load_config(
         connection_cap=connection_cap,
         history_days=history_days,
         config_path=config_path if explicit_config else None,
+        config_search_path=config_path,
         environment_source=environment_source,
     )
