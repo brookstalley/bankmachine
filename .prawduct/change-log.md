@@ -57,7 +57,8 @@ was ever detected and `counts_once` constrained nothing.
 `(institution_id, mask, name, account_type, account_subtype)` — rather than on `account_id`.
 `SupersededSpan`, `counts_once` and `only_superseded` kept their shape, so every reader is fixed at
 the one chokepoint they already route through: `query_transactions`, `money_summary` and the
-coverage paths. Verified on the live sandbox store: 2026-08 outflow reads `1114946`, each account
+coverage paths. Verified against the live sandbox store, read through `query.money_summary` on the
+store file rather than through a running MCP server: 2026-08 outflow reads `1114946`, each account
 appears once, `list_transactions` returns 16 rows with zero duplicate
 `(description, amount, ledger_date)` groups, and a `rule-applied` caveat names accounts 1–5 with
 their exact superseded ranges.

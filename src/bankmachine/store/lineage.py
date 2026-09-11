@@ -33,10 +33,14 @@ cases it cannot see. The comparison is partitioned on **account identity**
 instead, and ordered by **generation**; both are defined below. That covers the
 first three shapes and not the fourth.
 
-**Every row is kept; aggregates count one lineage.** For a range covered by more
-than one Item, the NEWEST Item answers, and older ones answer only outside it.
-The rows an older lineage loses are retained, still queryable by explicit
-request, and never deleted -- the same rule `removed_at` already follows.
+**Every row is kept; aggregates count one generation.** For a range covered by
+more than one generation, the NEWEST answers, and older ones answer only outside
+it. Read that as generation and not as Item: the converging re-enroll leaves both
+generations under one `lineage_id`, so lineage alone cannot say which one a row
+belongs to, which is why the partition above is on identity and the order is on
+generation. The rows an older generation loses are retained, still queryable by
+explicit request, and never deleted -- the same rule `removed_at` already
+follows.
 
 🔴 **Rejected: natural-key dedupe** on `(account_id, ledger_date, amount_minor,
 normalized name)`. It is what most systems do and it is wrong for this one: two
