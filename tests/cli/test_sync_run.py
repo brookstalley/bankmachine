@@ -1248,8 +1248,13 @@ def test_until_ready_leaves_its_waiting_in_the_log_not_only_on_the_terminal(
     text = log_file.read_text(encoding="utf-8") if log_file.exists() else ""
 
     assert "attempt 1 of 2" in text, "the retry was not recorded in the log"
-    assert "WARNING" in text, "giving up waiting was not recorded at WARNING"
-    assert "gave up waiting" in text
+    # 🔴 The level and the sentence on ONE line. A bare `"WARNING" in text`
+    # cannot fail: every CLI run writes the environment banner at WARNING into
+    # this same file, so the assertion would pass with the loop logging nothing
+    # at all -- which is the failure this test exists to catch.
+    assert re.search(r"WARNING.*gave up waiting", text), (
+        "giving up waiting was not recorded at WARNING"
+    )
 
 
 def test_until_ready_records_the_attempt_it_finished_on(cli_env: Config) -> None:
