@@ -281,7 +281,7 @@ not a tty):
 
 ## VRF-004 — the MCP surface answers usefully in a real client
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** the MCP surface · **Raised:** 2026-09-08
 
@@ -383,9 +383,11 @@ warnings are read rather than skipped.
      data is connected -- they gate trusting a current-period figure, not connecting. Enqueuing
      them is not a commitment to perform them today. -->
 
+
+**Accepted:** 2026-09-11 — rationale: Accepted to unblock the connections-reauth PR, which none of the three bears on. VRF-004 (the MCP surface in a real client), VRF-005 (a real pending transaction across settlement) and VRF-006 (the sign convention at two institutions) each need production data or a real MCP client, and none is made more or less true by this branch. This branch's own entry, VRF-007, was verified end to end on 2026-09-11 and needed no override. Each of the three is re-raised immediately as a fresh pending entry (VRF-008/009/010), so this acceptance discharges the block and not the obligation.
 ## VRF-005 — one real pending transaction watched across settlement
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#22) · **Raised:** 2026-09-09
 
@@ -412,9 +414,11 @@ the delivery sequence.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-005`
 
+
+**Accepted:** 2026-09-11 — rationale: Accepted to unblock the connections-reauth PR, which none of the three bears on. VRF-004 (the MCP surface in a real client), VRF-005 (a real pending transaction across settlement) and VRF-006 (the sign convention at two institutions) each need production data or a real MCP client, and none is made more or less true by this branch. This branch's own entry, VRF-007, was verified end to end on 2026-09-11 and needed no override. Each of the three is re-raised immediately as a fresh pending entry (VRF-008/009/010), so this acceptance discharges the block and not the obligation.
 ## VRF-006 — the sign convention on a real inflow, across two institutions
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#23) · **Raised:** 2026-09-09
 
@@ -441,6 +445,8 @@ ground truth about money you already know about.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-006`
 
+
+**Accepted:** 2026-09-11 — rationale: Accepted to unblock the connections-reauth PR, which none of the three bears on. VRF-004 (the MCP surface in a real client), VRF-005 (a real pending transaction across settlement) and VRF-006 (the sign convention at two institutions) each need production data or a real MCP client, and none is made more or less true by this branch. This branch's own entry, VRF-007, was verified end to end on 2026-09-11 and needed no override. Each of the three is re-raised immediately as a fresh pending entry (VRF-008/009/010), so this acceptance discharges the block and not the obligation.
 ## VRF-007 — an update-mode repair, completed in a browser
 
 **Status:** verified
@@ -515,3 +521,42 @@ neither skipped — so those two assumptions now hold on this account. They say 
 1-7 above: no test can complete a Hosted Link session, which is the whole reason this entry exists.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-007`
+
+## VRF-008 — the MCP surface answers usefully in a real client
+
+**Status:** pending
+
+**Chunk:** the MCP surface · **Raised:** 2026-09-11
+
+**Why a human:** unchanged from **VRF-004**, which carries the full procedure and is the entry to
+follow. VRF-004 was accepted on 2026-09-11 to unblock the connections-reauth PR, which does not
+touch the MCP surface — the block was discharged, the obligation was not, and this entry is where
+the obligation now lives. Verify against VRF-004's steps and drain this id.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-008`
+
+## VRF-009 — one real pending transaction watched across settlement
+
+**Status:** pending
+
+**Chunk:** production-data semantics (#22) · **Raised:** 2026-09-11
+
+**Why a human:** unchanged from **VRF-005**, which carries the full procedure and is the entry to
+follow. VRF-005 was accepted on 2026-09-11 to unblock the connections-reauth PR, which produces no
+pending rows — the sandbox has never had one, which is why the check needs production data at all.
+Verify against VRF-005's steps and drain this id.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-009`
+
+## VRF-010 — the sign convention on a real inflow, across two institutions
+
+**Status:** pending
+
+**Chunk:** production-data semantics (#23) · **Raised:** 2026-09-11
+
+**Why a human:** unchanged from **VRF-006**, which carries the full procedure and is the entry to
+follow. VRF-006 was accepted on 2026-09-11 to unblock the connections-reauth PR, which enrolls
+nothing and syncs no second institution. One feed obeying the convention is still not evidence
+about another. Verify against VRF-006's steps and drain this id.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-010`
