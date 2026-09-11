@@ -34,6 +34,33 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-10: The sync shell's role line stops stranding its reader
+
+<!-- prawduct: scope=shell-banner-role-line -->
+
+**Why:** the banner read `writes are refused and no PRAGMA changes that`. It was complete as
+authored — `that` is a demonstrative, standing for the fact that writes are refused — and it still
+read as cut off, because the same word parses just as readily as a conjunction and leaves the
+sentence waiting for a clause that never comes. On the one line naming the guarantee an operator is
+trusting, that is not a style quibble: a reader who doubts the sentence has reason to doubt the
+guarantee.
+
+**What changed:** `writes are refused, and no PRAGMA re-enables them`. The comma closes the first
+clause before `and`, and naming writes outright states the property instead of pointing at it.
+
+**How it was found, and what that says:** operator verification **VRF-001**, whose first check is
+that the banner reads to a human. Every keyword that check names was present, so a scan for them
+would have passed — it took someone reading the line as a sentence. The automated suite could not
+have caught it, and did not: 🔴 **no test asserted this banner at all.** Two now do, one on the four
+claims and their order, one on the property the defect violated — the line does not end on a word
+that opens a clause it never delivers, asserted as the property rather than the exact wording so a
+future rewrite is free to say it differently and not free to strand the reader again. Seen red
+against the original text.
+
+**Filed as #89.** The first diagnosis in the session that found it said the string was *truncated in
+the source*; `git log -L` showed it byte-identical to its only commit. The symptom was real and the
+diagnosis was not, which is why the issue records both.
+
 ## 2026-09-10: A datastore can be backed up at any schema version
 
 <!-- prawduct: scope=backup-at-any-schema-version -->

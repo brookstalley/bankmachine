@@ -172,6 +172,56 @@ def test_a_blob_is_summarised_rather_than_printed(initialized_config: Config) ->
 # --------------------------------------------------------------------------
 
 
+def test_the_banner_names_the_four_things_before_the_first_prompt(
+    initialized_config: Config,
+) -> None:
+    """🔴 The banner had NO test, which is how its role line came to garden-path.
+
+    VRF-001's first check is that an operator meets the environment, the path,
+    the role and the redaction before typing anything -- and no assertion here
+    read the banner at all, so its wording was free to drift. Four separate
+    claims rather than one blob, because a banner degrades a line at a time.
+
+    Order matters and is asserted: an operator who has already typed a statement
+    has stopped reading the header, so a banner printed after the first prompt
+    is not a banner.
+    """
+    out = _run(initialized_config, ["SELECT 1;"])
+    banner, _, rest = out.partition("bankmachine>")
+
+    assert "SANDBOX" in banner, "the environment is what stops a production typo"
+    assert str(initialized_config.datastore_path) in banner
+    assert "read-only at the file" in banner
+    assert "redacted" in banner
+    assert ".help" in banner and ".quit" in banner
+    assert rest, "nothing followed the banner, so this proves nothing about order"
+
+
+def test_the_banner_role_line_does_not_strand_the_reader_mid_clause(
+    initialized_config: Config,
+) -> None:
+    """The line names the one guarantee an operator is trusting, so it has to land.
+
+    It read `writes are refused and no PRAGMA changes that`, where the
+    demonstrative `that` parses just as readily as a conjunction -- leaving the
+    sentence apparently waiting for a clause that never comes. It was complete
+    as authored and still read as broken, which on THIS line is the same defect:
+    a reader who doubts the sentence has reason to doubt the guarantee.
+
+    Asserted as the property (the sentence closes on a word that cannot open a
+    subordinate clause) rather than as the exact wording, so a future rewrite is
+    free to say it differently and not free to strand the reader again.
+    """
+    out = _run(initialized_config, ["SELECT 1;"])
+    role = next(line for line in out.splitlines() if line.startswith("role:"))
+
+    assert role.rstrip().split()[-1] not in {"that", "which", "because", "unless", "whether"}, (
+        f"the role line ends on {role.rstrip().split()[-1]!r}, which reads as the start of a "
+        f"clause the line never delivers"
+    )
+    assert "PRAGMA" in role, "the line must still say what cannot undo the refusal"
+
+
 def test_a_write_is_refused_in_the_read_role(initialized_config: Config) -> None:
     out = _run(initialized_config, ["CREATE TABLE nope (a INTEGER);"])
 

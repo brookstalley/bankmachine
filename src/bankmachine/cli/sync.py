@@ -183,8 +183,15 @@ def _schema_identifiers(conn: connection.Connection) -> frozenset[str]:
 def _print_banner(config: Config, out: OutputStream) -> None:
     print(f"bankmachine sync shell -- environment {config.environment.upper()}", file=out)
     print(f"datastore: {config.datastore_path}", file=out)
+    # 🔴 "no PRAGMA re-enables them", not "no PRAGMA changes that". The
+    # demonstrative read as a conjunction -- "changes that <clause>" -- and
+    # stranded the reader on a clause that never arrived, on the one line naming
+    # the read-only guarantee. A reader who thinks this line is broken has
+    # reason to doubt the guarantee it states, which is the opposite of what a
+    # banner is for. The comma closes the first clause before `and`, and naming
+    # writes outright says the property instead of pointing at it.
     print(
-        "role:      read-only at the file; writes are refused and no PRAGMA changes that",
+        "role:      read-only at the file; writes are refused, and no PRAGMA re-enables them",
         file=out,
     )
     print("output:    access tokens and account numbers redacted (AC-10.3)", file=out)

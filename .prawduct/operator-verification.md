@@ -25,6 +25,13 @@ bankmachine sync shell
 
 1. The banner names the environment, the datastore path, the read-only role and
    the redaction — before the first prompt, not after.
+   🔴 **Read the role line as a sentence, not just for its keywords.** This step
+   FAILED on 2026-09-10 (#89): it read `writes are refused and no PRAGMA changes
+   that`, complete as authored and still stranding the reader, because the
+   demonstrative parses just as readily as a conjunction. Every keyword this step
+   names was present, so a check scanning for them would have passed it. On the
+   one line stating the guarantee an operator is trusting, a sentence that reads
+   as broken IS the defect.
 2. A join across `accounts` and `balances_daily` renders as aligned columns that
    line up, with `(N rows)` under them.
 3. A balance in minor units comes back **whole**. Six figures must not be
@@ -47,7 +54,7 @@ with two accounts; the datastore path is elided):
 ```
 bankmachine sync shell -- environment SANDBOX
 datastore: /tmp/.../opcheck/store.db
-role:      read-only at the file; writes are refused and no PRAGMA changes that
+role:      read-only at the file; writes are refused, and no PRAGMA re-enables them
 output:    access tokens and account numbers redacted (AC-10.3)
 type .help for the command list, .quit to leave
 bankmachine> SELECT a.name, a.mask, a.balance_class, b.current_minor
