@@ -23,6 +23,7 @@ from bankmachine.cli.sync import run_shell
 from bankmachine.config import Config
 from bankmachine.store import connection
 from bankmachine.store.connection import writer
+from conftest import use_cli_env
 
 #: Long enough that a wedged shell fails the test instead of hanging the suite.
 _TIMEOUT: Final = 15.0
@@ -222,7 +223,7 @@ def test_every_surface_states_the_read_only_guarantee_in_the_same_words(
     This is what makes the sweep unnecessary next time rather than merely done
     this time. One constant, asserted at every surface that renders it.
     """
-    from bankmachine.cli.sync import READ_ONLY_SENTENCE, _HELP
+    from bankmachine.cli.sync import _HELP, READ_ONLY_SENTENCE
 
     banner = _run(initialized_config, ["SELECT 1;"]).partition("bankmachine>")[0]
     assert READ_ONLY_SENTENCE in banner
@@ -567,13 +568,7 @@ def test_the_cli_wires_the_shell_up(
     initialized_config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`bankmachine sync shell` reaches the shell through the real parser."""
-    monkeypatch.setenv("BANKMACHINE_DATASTORE_PATH", str(initialized_config.datastore_path))
-    monkeypatch.setenv("BANKMACHINE_LOG_DIR", str(initialized_config.log_dir))
-    monkeypatch.setenv("BANKMACHINE_KEYCHAIN_SERVICE", initialized_config.keychain_service)
-    monkeypatch.setenv("BANKMACHINE_ENVIRONMENT", initialized_config.environment)
-    monkeypatch.setenv(
-        "BANKMACHINE_CONFIG", str(initialized_config.datastore_path.parent / "absent.toml")
-    )
+    use_cli_env(monkeypatch, initialized_config)
     monkeypatch.setattr("sys.stdin", _Script([".quit"]))
 
     assert run(["sync", "shell"]) == 0

@@ -34,6 +34,83 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-11: A write on an environment nobody chose is refused
+
+<!-- prawduct: scope=environment-guard -->
+
+**Why:** `environment` fell back to `sandbox` whenever nothing selected it, and every
+per-environment container is keyed on that value — `plaid:<env>` and `datastore:<env>` in the
+keychain, `connection:<env>:<item>`, and the datastore filename itself. So `connector set-secret`
+run in a shell that had not exported `BANKMACHINE_ENVIRONMENT=production` stored the production
+secret under `plaid:sandbox`, overwriting the sandbox one and reporting success. The production
+runbook documented that footgun as an expected failure mode and made the operator the guard. There
+is no undo: the replaced secret is gone.
+
+**What changed:** `Config` records **who** chose the environment (`environment_source`), and
+`require_chosen_environment` refuses when the answer is nobody. The rule is *opening the
+per-environment datastore under the writer lock, or mutating a per-environment keychain entry*, and
+it is enforced at the two chokepoints every such write already passes through —
+`store.connection._writer` and the six `secrets` mutators — rather than at a list of guarded
+commands, which would be short the first time somebody adds a seventh. Refusal is exit 2 with a
+sentence naming both ways to choose, and nothing is written.
+
+🔴 **Reads are deliberately exempt.** `store status`, `connections list`, `store key export|verify`,
+`sync shell` and the MCP server keep falling back to sandbox: reading the wrong environment is
+visible and free to correct, and writing to it is neither. That asymmetry is what let this ship
+without breaking an existing sandbox workflow.
+
+🔴 **`store backup` is guarded too, and that is the intended reading of the rule rather than an
+accident of where the check sits.** Its handle takes the writer lock to fold the WAL in. A backup
+silently taken against the wrong environment is indistinguishable from a good one and announces
+itself only at a restore — the one moment there is nothing left to fall back on. `store key import`
+is guarded for the plainer reason that it replaces the datastore key.
+
+**Previously-working invocations now exit 2** on a machine that never declared an environment.
+That is the point, but it reaches anything unattended: a cron or launchd entry inherits no login
+shell, so `source .env` no longer suffices and the value belongs in
+`~/.config/bankmachine/config.toml`. The README, `.env.example`, the production runbook and
+`operational-spec.md` all say so now; the runbook's sandbox rehearsal declares the environment
+before its first write rather than after.
+
+🔴 **`enroll` refuses at its very first statement**, before the datastore check, the cap
+pre-check, and any aggregator call. Not where the write happens: enrollment writes per-environment
+state twice and both writes land AFTER the exchange has minted a durable, billable Item, so a
+refusal there would burn a real Item and discard the only handle to it — leaving nothing, not even
+`connections retire`, able to remove it. `release_at_aggregator` likewise swallows the refusal
+rather than raising past its documented contract, because an escape there collapses a `1` into a
+`2`.
+
+🔴 **`connections retire` refuses at its first statement too, and for the same predicate.** Its
+already-retired RETRY path ran only reads before `item_remove`, and reads are exempt -- so on a
+defaulted environment the Item was really removed, `delete_access_token` was then refused, and
+`release_at_aggregator` swallowed that refusal by contract. The command exited 0 saying "no longer
+billing" while the credential survived, which `_credential_survives` reads as *removal never
+confirmed*; every later retry hit `ITEM_NOT_FOUND` and reported "may still be billing" about an Item
+that was gone, and nothing cleared it. `operational-spec.md` § Configuration now carries the
+membership rule -- an irreversible remote or keychain effect reachable before that command's first
+guarded write -- so a third command is decided by the predicate rather than by matching these two.
+The chokepoints remain the guarantee; a front guard only moves where the refusal lands.
+
+**Also in this scope:** `child_env` neutralises `BANKMACHINE_CONFIG` the way its in-process twin
+already did, so a spawned test child cannot read the operator's real config file -- which stopped
+being theoretical the moment this branch started telling operators to put
+`environment = "production"` in exactly that file. Both twins take an explicit override from the
+caller. The README's configure section no longer calls sandbox a default that needs nothing, forty
+lines above the explanation of why a write refuses without a declared environment. And `ruff format`
+ran over the two files this branch already touches, which takes `ruff format --check .` green
+repo-wide (half of #92).
+
+**Also:** `bankmachine sync run --until-ready` re-runs while exit 75 says history is still owed,
+returns any other code unchanged (a `1` needs a person, not another attempt), and stops at a
+bounded cap still reporting 75 — so the runbook no longer instructs the operator to be the loop.
+`--max-attempts` and `--retry-delay` are bounded by argparse converters, so the bounds hold whether
+or not the loop is enabled, and supplying either without `--until-ready` is a usage error rather
+than a silent no-op.
+
+**`.env` is still not read**, and this change does not revisit that: a file that is silently read
+is a file whose contents are silently trusted (`operational-spec.md` § Configuration). The config
+file is the durable answer for anyone who would rather not export.
+
 ## 2026-09-10: An expired login is repaired in place, not re-linked
 
 <!-- prawduct: scope=connections-reauth -->

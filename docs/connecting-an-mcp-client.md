@@ -73,9 +73,20 @@ put the same values in `env` here, because the client does not inherit your shel
 
 ## Before connecting
 
-The datastore has to exist and hold data before the server has anything to answer with. From a
-shell where `BANKMACHINE_PLAID_CLIENT_ID` is exported (every aggregator-touching command needs it;
-`source .env` after filling in `.env.example`):
+The datastore has to exist and hold data before the server has anything to answer with. All four
+commands below WRITE per-environment state, so each needs two things: `BANKMACHINE_PLAID_CLIENT_ID`
+(every aggregator-touching command needs it) and 🔴 **an environment that somebody chose** — they
+refuse with exit 2 rather than assuming one, because a write on a defaulted environment lands in
+whichever container the fallback names and, for the aggregator secret, cannot be undone.
+
+`source .env` after filling in `.env.example` supplies both; so does
+`~/.config/bankmachine/config.toml`, which is what an unattended run needs since it inherits no
+shell:
+
+```toml
+environment = "sandbox"
+plaid_client_id = "<your client id>"
+```
 
 ```sh
 uv run bankmachine store init          # once per environment
@@ -83,6 +94,10 @@ uv run bankmachine connector set-secret
 uv run bankmachine enroll              # opens a hosted URL; complete it in a browser
 uv run bankmachine sync run            # fetches accounts and transactions
 ```
+
+The MCP server itself only reads, so it keeps working under the fallback — but it is answering
+about whichever datastore the environment resolved to, which is why the entries above set
+`BANKMACHINE_ENVIRONMENT` explicitly.
 
 `bankmachine mcp` starts even without a datastore and reports that state (AC-ARCH.3); it never
 creates one, because an empty encrypted store would answer every question with a confident zero.

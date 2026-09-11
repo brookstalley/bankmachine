@@ -30,7 +30,7 @@ from bankmachine.cli.hosted_link import (
     positive_seconds,
     print_invitation,
 )
-from bankmachine.config import Config
+from bankmachine.config import Config, ConfigError, require_chosen_environment
 from bankmachine.connector import (
     ConnectorError,
     FetchedResponse,
@@ -203,6 +203,17 @@ def cmd_list(config: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_retire(config: Config, args: argparse.Namespace) -> int:
+    # 🔴 Guarded at the first statement, for `cmd_enroll`'s reason rather than by
+    # analogy to it. The ordinary path marks the row retired under the writer lock
+    # BEFORE it calls the aggregator, so the refusal lands there with nothing spent.
+    # The already-retired retry path runs only READS before `item_remove`, and reads
+    # are exempt -- so on a defaulted environment the Item is really removed, and
+    # then `delete_access_token` is refused and swallowed. The credential survives,
+    # `_credential_survives` keeps reading "removal never confirmed", and every
+    # later retry hits ITEM_NOT_FOUND and reports "may still be billing" about an
+    # Item that is gone. Nothing clears that state, which is why the guard belongs
+    # ahead of the remote effect and not beside the write it protects.
+    require_chosen_environment(config)
     _require_datastore(config)
     connection_id = int(args.connection_id)
 
@@ -601,13 +612,17 @@ def release_at_aggregator(
         # the credential is already gone, which is the state this aims at.
         logger.info("no stored credential for %s; nothing to remove", credential_ref)
         return True
-    except SecretsError as exc:
+    except (SecretsError, ConfigError) as exc:
         # 🔴 `AccessTokenMissingError` alone was not enough: `get_access_token`
         # also raises plain `SecretsError` on an unreachable keychain or an empty
         # value, and this function's whole contract is that it never raises. The
         # escape had a consequence two modules away -- it pre-empted a pending
         # `ConnectionCapReachedError`, so a cap refusal exited 2 instead of 1,
         # which is the exact collapse the exit-code contract forbids.
+        #
+        # `ConfigError` joins it for the same reason and by the same argument:
+        # the keychain mutators refuse outright on an environment nobody chose,
+        # and that refusal is a `ConfigError`, not a `SecretsError`.
         logger.warning(
             "the credential for %s could not be read, so its item was not removed: %s",
             credential_ref,
@@ -619,10 +634,11 @@ def release_at_aggregator(
         secret = get_plaid_secret(config)
         with PlaidClient(config, secret) as client:
             client.item_remove(access_token, connection_id=connection_id)
-    except (ConnectorError, SecretsError) as exc:
+    except (ConnectorError, SecretsError, ConfigError) as exc:
         # `SecretsError` as well as `ConnectorError`: the aggregator secret is read
         # here too, and a keychain that cannot be reached must not become an
         # exception either -- the docstring's promise is what the callers rely on.
+        # `ConfigError` covers the environment refusal, which is neither.
         logger.warning(
             "could not remove the item behind %s at the aggregator: %s. "
             "It may still be counting against the plan cap",
@@ -633,10 +649,13 @@ def release_at_aggregator(
 
     try:
         delete_access_token(config, credential_ref)
-    except SecretsError as exc:
+    except (SecretsError, ConfigError) as exc:
         # The item IS removed at this point, so this is not a failure of the
         # operation -- it is a stale credential for an item that no longer
         # exists. Reported rather than raised, and reported as what it is.
+        # 🔴 This is the arm the environment refusal actually reached: the remote
+        # removal has already succeeded, so raising here would report a failure
+        # for work that is done.
         logger.warning(
             "removed the item behind %s, but its keychain entry could not be "
             "cleared: %s. The entry is now stale rather than sensitive",

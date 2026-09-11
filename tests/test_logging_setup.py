@@ -101,7 +101,16 @@ def test_the_environment_is_announced_loudly_at_startup(
     records = [r for r in caplog.records if "environment=" in r.getMessage()]
     assert records, "startup did not announce the environment"
     assert records[0].levelno >= logging.WARNING
-    assert "SANDBOX" in records[0].getMessage()
+    message = records[0].getMessage()
+    assert "SANDBOX" in message
+    # 🔴 And WHO chose it. Asserting only the value passed before the source was
+    # recorded and would pass again if it were dropped -- which makes the line
+    # unable to answer the question an investigation actually asks of a read
+    # that was allowed to fall back: did anyone mean sandbox, or did it simply
+    # default?
+    assert config.environment_source in message, (
+        "the banner names the environment but not who chose it"
+    )
 
 
 def test_production_is_announced_just_as_loudly(

@@ -52,7 +52,10 @@ MUST_BE_IGNORED = (
 )
 
 #: The negative control for the ignore check. `.env.example` is deliberately
-#: tracked -- it documents the variables and holds no values. If this became
+#: tracked -- it documents the variables and holds no credential values. (It does
+#: hold non-credential ones: `BANKMACHINE_ENVIRONMENT=sandbox` is set rather than
+#: commented out, because a write on an environment nobody chose is refused, and
+#: the documented `source .env` path has to keep working.) If this became
 #: ignored, the ignore rules would have grown teeth they should not have, and
 #: every assertion above would still pass.
 MUST_NOT_BE_IGNORED = (".env.example", "pyproject.toml")

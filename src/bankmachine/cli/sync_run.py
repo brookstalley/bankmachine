@@ -27,11 +27,12 @@ from thirty days of one.
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Final
 
 from sqlalchemy import func, select, update
 from sqlalchemy.engine import Connection as SAConnection
@@ -84,6 +85,19 @@ HISTORICAL_COMPLETE = "HISTORICAL_UPDATE_COMPLETE"
 #: backfill takes minutes, and a run that gave up in seconds would report an
 #: empty connection as synced.
 NOT_READY_DELAYS: tuple[float, ...] = (2.0, 5.0, 15.0, 30.0, 60.0)
+
+#: What `--until-ready` does between whole runs, and how many it will make.
+#:
+#: 🔴 A different wait from `NOT_READY_DELAYS`, which polls one connection
+#: *inside* a run over about two minutes. This one waits between runs, and the
+#: thing it is waiting for is a multi-year backfill the aggregator delivers over
+#: minutes to hours -- so the two cannot share a schedule. Twelve attempts five
+#: minutes apart bounds the wait at roughly an hour, which is long enough for
+#: the backfills actually measured and short enough that a connection which will
+#: never finish is reported to someone the same morning. A backfill outlasting
+#: it wants the scheduler, not a longer flag.
+DEFAULT_RETRY_DELAY_SECONDS: Final[float] = 300.0
+DEFAULT_MAX_ATTEMPTS: Final[int] = 12
 
 #: A ceiling on pages per connection per run. Not a correctness bound -- the
 #: cursor makes a resumed run continue exactly where this one stopped -- but a
@@ -167,6 +181,44 @@ class RunOutcome:
         return EXIT_OK
 
 
+def _attempt_cap(raw: str) -> int:
+    """`--max-attempts`, bounded where argparse reads it.
+
+    🔴 At the converter rather than inside the loop, because the loop is one
+    branch of two: validating there left `sync run --retry-delay -1` refused
+    under `--until-ready` and accepted without it, which is a bound that holds
+    only on the path somebody remembered. A converter holds on both, and a bad
+    value becomes a usage error -- which is what it is -- instead of borrowing
+    `ConfigError`, whose own docstring says the configuration would not resolve.
+    """
+    try:
+        value = int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be an integer, got {raw!r}") from None
+    if value < 1:
+        # Zero attempts would exit 75 having run nothing, which is exactly what
+        # a backfill that never landed looks like.
+        raise argparse.ArgumentTypeError(f"must be at least 1, got {value}")
+    return value
+
+
+def _retry_delay(raw: str) -> float:
+    """`--retry-delay`, bounded where argparse reads it. See `_attempt_cap`."""
+    try:
+        value = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be a number, got {raw!r}") from None
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"must not be negative, got {value}")
+    if not math.isfinite(value):
+        # `float("nan") < 0` is False and `float("inf") < 0` is False, so neither
+        # is caught above -- and `time.sleep(nan)` raises from inside the loop
+        # while `sleep(inf)` waits forever, which is the one outcome a bounded
+        # cap exists to prevent.
+        raise argparse.ArgumentTypeError(f"must be a finite number, got {raw!r}")
+    return value
+
+
 def add_arguments(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     """Registers `run` under the existing `sync` parser.
 
@@ -198,10 +250,115 @@ def add_arguments(commands: argparse._SubParsersAction[argparse.ArgumentParser])
             "report it and move on"
         ),
     )
-    run_parser.set_defaults(handler=cmd_sync_run)
+    run_parser.add_argument(
+        "--until-ready",
+        action="store_true",
+        help=(
+            "keep running until no connection still owes history (exit 0). Any other "
+            "problem stops the loop and is reported as itself"
+        ),
+    )
+    run_parser.add_argument(
+        "--max-attempts",
+        type=_attempt_cap,
+        default=None,
+        metavar="N",
+        help=(
+            f"with --until-ready, how many runs to make before giving up "
+            f"(default: {DEFAULT_MAX_ATTEMPTS})"
+        ),
+    )
+    run_parser.add_argument(
+        "--retry-delay",
+        type=_retry_delay,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            f"with --until-ready, how long to wait between runs "
+            f"(default: {DEFAULT_RETRY_DELAY_SECONDS:.0f})"
+        ),
+    )
+    # The parser itself, so the handler can raise a real usage error through
+    # argparse's own channel rather than inventing a second one.
+    run_parser.set_defaults(handler=cmd_sync_run, tuning_parser=run_parser)
 
 
-def cmd_sync_run(config: Config, args: argparse.Namespace) -> int:
+def cmd_sync_run(
+    config: Config,
+    args: argparse.Namespace,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
+    """One run, or -- under `--until-ready` -- as many as it takes.
+
+    🔴 The loop re-enters the whole command rather than retrying anything
+    inside it. A run is already idempotent and resumes from its own cursor
+    (AC-2.5), so "run it again" is the operation the runbook has always
+    prescribed; this flag stops making a person be the one who repeats it.
+    """
+    if not args.until_ready:
+        # 🔴 A usage error, not a silent no-op. Without this,
+        # `sync run --max-attempts 20` makes exactly one attempt and exits 75
+        # with nothing said -- and an operator who believes they enabled the
+        # loop reads that 75 as the loop having given up.
+        tuning = (("--max-attempts", args.max_attempts), ("--retry-delay", args.retry_delay))
+        supplied = [name for name, value in tuning if value is not None]
+        if supplied:
+            args.tuning_parser.error(f"{' and '.join(supplied)} only applies with --until-ready")
+        return _run_once(config, args)
+
+    max_attempts = DEFAULT_MAX_ATTEMPTS if args.max_attempts is None else args.max_attempts
+    retry_delay = DEFAULT_RETRY_DELAY_SECONDS if args.retry_delay is None else args.retry_delay
+
+    for attempt in range(1, max_attempts + 1):
+        code = _run_once(config, args)
+        # 🔴 Only 75 is retried. `1` outranks it (`exit_codes.py`): a stuck
+        # connection needs a person, and another attempt would bury the one
+        # signal that says so under an hour of polling. Every other code,
+        # including an unrecognised one, is returned unchanged rather than
+        # interpreted here.
+        if code != EXIT_RUN_AGAIN:
+            if attempt > 1:
+                # 🔴 The durable record of the wait. Without it the log of an
+                # hour of polling is indistinguishable from one ordinary exit,
+                # and nobody is watching the terminal of a flag built to be run
+                # unattended.
+                logger.info(
+                    "--until-ready finished at attempt %d of %d with exit %d",
+                    attempt,
+                    max_attempts,
+                    code,
+                )
+            return code
+        if attempt == max_attempts:
+            break
+        logger.info(
+            "--until-ready: history still owed after attempt %d of %d; waiting %.0fs",
+            attempt,
+            max_attempts,
+            retry_delay,
+        )
+        print(f"\nstill owed after attempt {attempt} of {max_attempts}; waiting {retry_delay:.0f}s")
+        sleep(retry_delay)
+
+    # Still 75, deliberately. Reaching the cap is not a new state: history is
+    # still owed and the answer is still to come back. Saying so on stderr
+    # separates "I stopped waiting" from "it finished", which the exit code
+    # alone cannot.
+    logger.warning(
+        "--until-ready gave up waiting after %d attempts; history is still owed",
+        max_attempts,
+    )
+    print(
+        f"bankmachine: history is still owed after {max_attempts} attempts; "
+        f"giving up waiting. Nothing is wrong with the connections -- run again "
+        f"later, or leave it to the scheduler",
+        file=sys.stderr,
+    )
+    return EXIT_RUN_AGAIN
+
+
+def _run_once(config: Config, args: argparse.Namespace) -> int:
     status = inspect(config)
     if not status.healthy:
         raise DatastoreMissingError(

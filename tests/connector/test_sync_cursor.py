@@ -9,7 +9,6 @@ built and proved before anything writes a transaction row.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import textwrap
@@ -27,6 +26,7 @@ from bankmachine.store.derivation import DerivationError, apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
 from bankmachine.store.schema import TRANSACTIONS_DOMAIN, connections, institutions, sync_state
 from bankmachine.store.types import now_utc
+from conftest import child_env
 
 CURSOR_ONE = "cursor-after-page-one"
 CURSOR_TWO = "cursor-after-page-two"
@@ -247,11 +247,10 @@ def test_a_process_killed_mid_derivation_leaves_the_cursor_where_it_was(
     result = subprocess.run(
         [sys.executable, "-c", _KILL_MID_DERIVATION],
         env={
-            **os.environ,
-            "BANKMACHINE_DATASTORE_PATH": str(enrolled.datastore_path),
-            "BANKMACHINE_KEYCHAIN_SERVICE": enrolled.keychain_service,
-            "BANKMACHINE_LOG_DIR": str(enrolled.log_dir),
-            "BANKMACHINE_CONFIG": str(Path(enrolled.datastore_path).parent / "absent.toml"),
+            **child_env(
+                enrolled,
+                BANKMACHINE_CONFIG=str(Path(enrolled.datastore_path).parent / "absent.toml"),
+            ),
         },
         capture_output=True,
         text=True,

@@ -131,9 +131,17 @@ def run(argv: Sequence[str] | None = None) -> int:
         else:
             logger.warning("command %s refused: %s", args.command, exc, extra=_FILE_ONLY)
         return exc.exit_code
-    except (StoreError, SecretsError, ConnectorError) as exc:
+    except (StoreError, SecretsError, ConnectorError, ConfigError) as exc:
         # Expected failures get a sentence, not a traceback -- but they are never
         # silent, which is the one outcome this project disallows.
+        #
+        # 🔴 `ConfigError` is caught HERE as well as around `load_config` above.
+        # The two are different moments: that one is "the configuration would not
+        # resolve", this one is a handler refusing because of what the
+        # configuration says -- a write on an environment nobody chose. Without
+        # this arm such a refusal reaches the unexpected-failure arm, which still
+        # exits 2 but prints a traceback and calls it a crash, and a deliberate
+        # refusal that looks like a crash is a refusal nobody trusts.
         #
         # 🔴 The log record is not a duplicate of the stderr line. Nobody is
         # watching stderr on a scheduled run, so without this the log cannot tell
