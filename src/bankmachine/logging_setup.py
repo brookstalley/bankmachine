@@ -178,10 +178,17 @@ def log_startup(config: Config) -> None:
     accident this guards against runs in both directions -- fixture data into
     the real datastore, and a real sync that quietly went to the sandbox store
     and looks like it did nothing -- so neither state is the quiet one.
+
+    🔴 The line names WHO chose the environment as well as which it is. That is
+    the distinction the write guard turns on, and a log that records only the
+    value cannot answer the question an investigation actually asks -- "did
+    anyone mean sandbox, or did it simply fall through?" -- about the reads,
+    which are still allowed to fall through.
     """
     logger = get_logger(APP_LOGGER)
     logger.warning(
-        "environment=%s datastore=%s",
+        "environment=%s (%s) datastore=%s",
         config.environment.upper(),
+        config.environment_source,
         display_path(config.datastore_path),
     )

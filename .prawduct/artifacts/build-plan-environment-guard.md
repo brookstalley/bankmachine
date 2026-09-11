@@ -1,7 +1,7 @@
 ---
 artifact: build-plan
 version: 2
-scope: null
+scope: environment-guard
 branch: fix/environment-guard-and-until-ready
 depends_on:
   - artifact: operational-spec
@@ -10,14 +10,22 @@ depends_on:
 governed_by:
   - artifact: operational-spec
     dispositions:
-      - "no filesystem path is hardcoded → conforms; the refusal message interpolates `default_config_path()` and elides the operator's home, it never spells a literal path"
-      - "a backup destination is never created implicitly and never overwritten → inapplicable because this plan touches no backup path"
+      - "no filesystem path is hardcoded → conforms; the refusal message interpolates `default_config_path()` and elides the operator's home through the same `_home` seam the paths resolve through, it never spells a literal path"
+      - "a backup destination is never created implicitly and never overwritten → conforms, and the plan DOES touch backup after all: `copying_writer` routes through the guarded `_writer`, so `store backup` refuses on a defaulted environment. Nothing about the destination's creation or overwrite behaviour changes; the refusal happens before a destination is opened"
   - artifact: api-contract
     dispositions:
-      - "the CLI's exit code is a contract (0/1/2, plus 75 'ran and still owes work'); 1 outranks 75; the code is carried on the exception, not decided by the caller → conforms; the new refusal is a `ConfigError` subclass, so it inherits the existing 2 mapping rather than choosing one, and `--until-ready` returns the inner run's code unchanged"
+      - "the CLI's exit code is a contract (0/1/2, plus 75 'ran and still owes work'); 1 outranks 75; the code is carried on the exception, not decided by the caller → conforms; the refusal is a `ConfigError` subclass inheriting the existing 2 mapping rather than choosing one, bad flag VALUES are argparse usage errors (also 2), and `--until-ready` returns the inner run's code unchanged"
+      - "the MCP surface is read-only → conforms; the guard exempts reads, so no MCP tool changes behaviour"
+      - "every response carries a freshness stamp, and incompleteness rides the success path as a warning → inapplicable because this plan emits no MCP response"
+      - "a tool's boundary is drawn where the answer shape changes → inapplicable because this plan adds no tool"
+      - "a stored balance is reported with its lifecycle, and no total over balances is emitted without it → inapplicable because this plan reports no balance"
   - artifact: architecture
     dispositions:
       - "retry/backoff applies on exactly one channel, the aggregator HTTPS one → conforms; `--until-ready` re-invokes the whole command and adds no retry inside the datastore channel"
+      - "every writable handle comes from the one writer factory, and that factory takes the exclusive lock → conforms, and this plan leans on it: the guard is placed IN that factory precisely because the norm makes it the single point every write passes through"
+      - "every read-role handle is opened read-only at the file → conforms; `reader` is untouched and is the guard's one deliberate exemption"
+      - "no component creates the datastore implicitly → conforms, and is strengthened: `initializing_writer` now also refuses when no environment was chosen, so an implicit creation cannot happen under a defaulted environment either"
+      - "a process that does not recognize the datastore's schema version refuses to serve, loudly → inapplicable because this plan changes no schema check; the environment guard runs before it and is a separate refusal"
 partition: serial — chunk 02 re-enters the function chunk 01 guards, and chunk 03 is documentation the first two make true
 last_validated: 2026-09-11
 ---
@@ -80,6 +88,13 @@ So the property is carried where the writes actually happen:
   `engine.writer_connection`, because `initializing_writer` does not pass through that
   layer and creating the wrong environment's datastore is the same hazard.
 
+**Three handles route through it, not two** -- `writer`, `initializing_writer` and
+`copying_writer`. The third is `store backup`'s, so backup refuses on a defaulted
+environment. That is the intended reading of the rule: a backup taken against the wrong
+environment is indistinguishable from a good one and announces itself only at a restore.
+`tests/test_environment_guard.py` walks the module for handles rather than naming them,
+so a fourth cannot arrive unrecorded -- which is exactly how this one nearly did.
+
 Reads are untouched. `store status`, `connections list`, `store key export|verify`,
 `sync shell` and the MCP server keep defaulting to sandbox, which is what makes this
 safe to ship without breaking an existing sandbox workflow.
@@ -137,7 +152,8 @@ enumeration this plan just argued against.]
       with either, it reports that one.
 - [x] Each of the six mutators refuses on a defaulted environment; each keychain
       account is proven untouched afterwards.
-- [x] Both writer handles refuse; `reader` does not.
+- [x] Every handle in `store.connection` but `reader` refuses, discovered by walking the
+      module rather than by naming them.
 - [x] The refusal text contains no literal path and no operator home directory.
 - [x] Suite green.
 

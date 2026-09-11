@@ -37,7 +37,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.engine import Connection as SAConnection
 
 from bankmachine.cli.exit_codes import EXIT_OK, EXIT_RUN_AGAIN, EXIT_UNHEALTHY
-from bankmachine.config import Config, ConfigError
+from bankmachine.config import Config
 from bankmachine.connector import (
     ConnectorError,
     FetchedResponse,
@@ -180,6 +180,38 @@ class RunOutcome:
         return EXIT_OK
 
 
+def _attempt_cap(raw: str) -> int:
+    """`--max-attempts`, bounded where argparse reads it.
+
+    🔴 At the converter rather than inside the loop, because the loop is one
+    branch of two: validating there left `sync run --retry-delay -1` refused
+    under `--until-ready` and accepted without it, which is a bound that holds
+    only on the path somebody remembered. A converter holds on both, and a bad
+    value becomes a usage error -- which is what it is -- instead of borrowing
+    `ConfigError`, whose own docstring says the configuration would not resolve.
+    """
+    try:
+        value = int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be an integer, got {raw!r}") from None
+    if value < 1:
+        # Zero attempts would exit 75 having run nothing, which is exactly what
+        # a backfill that never landed looks like.
+        raise argparse.ArgumentTypeError(f"must be at least 1, got {value}")
+    return value
+
+
+def _retry_delay(raw: str) -> float:
+    """`--retry-delay`, bounded where argparse reads it. See `_attempt_cap`."""
+    try:
+        value = float(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be a number, got {raw!r}") from None
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"must not be negative, got {value}")
+    return value
+
+
 def add_arguments(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     """Registers `run` under the existing `sync` parser.
 
@@ -221,8 +253,8 @@ def add_arguments(commands: argparse._SubParsersAction[argparse.ArgumentParser])
     )
     run_parser.add_argument(
         "--max-attempts",
-        type=int,
-        default=DEFAULT_MAX_ATTEMPTS,
+        type=_attempt_cap,
+        default=None,
         metavar="N",
         help=(
             f"with --until-ready, how many runs to make before giving up "
@@ -231,15 +263,17 @@ def add_arguments(commands: argparse._SubParsersAction[argparse.ArgumentParser])
     )
     run_parser.add_argument(
         "--retry-delay",
-        type=float,
-        default=DEFAULT_RETRY_DELAY_SECONDS,
+        type=_retry_delay,
+        default=None,
         metavar="SECONDS",
         help=(
             f"with --until-ready, how long to wait between runs "
             f"(default: {DEFAULT_RETRY_DELAY_SECONDS:.0f})"
         ),
     )
-    run_parser.set_defaults(handler=cmd_sync_run)
+    # The parser itself, so the handler can raise a real usage error through
+    # argparse's own channel rather than inventing a second one.
+    run_parser.set_defaults(handler=cmd_sync_run, tuning_parser=run_parser)
 
 
 def cmd_sync_run(
@@ -256,17 +290,20 @@ def cmd_sync_run(
     prescribed; this flag stops making a person be the one who repeats it.
     """
     if not args.until_ready:
+        # 🔴 A usage error, not a silent no-op. Without this,
+        # `sync run --max-attempts 20` makes exactly one attempt and exits 75
+        # with nothing said -- and an operator who believes they enabled the
+        # loop reads that 75 as the loop having given up.
+        tuning = (("--max-attempts", args.max_attempts), ("--retry-delay", args.retry_delay))
+        supplied = [name for name, value in tuning if value is not None]
+        if supplied:
+            args.tuning_parser.error(f"{' and '.join(supplied)} only applies with --until-ready")
         return _run_once(config, args)
 
-    # Refused rather than clamped, and before the first run rather than after
-    # it: a zero cap means "make no attempts", which would exit 75 having done
-    # nothing while looking exactly like a backfill that never landed.
-    if args.max_attempts < 1:
-        raise ConfigError(f"--max-attempts must be at least 1, got {args.max_attempts}")
-    if args.retry_delay < 0:
-        raise ConfigError(f"--retry-delay must not be negative, got {args.retry_delay}")
+    max_attempts = DEFAULT_MAX_ATTEMPTS if args.max_attempts is None else args.max_attempts
+    retry_delay = DEFAULT_RETRY_DELAY_SECONDS if args.retry_delay is None else args.retry_delay
 
-    for attempt in range(1, args.max_attempts + 1):
+    for attempt in range(1, max_attempts + 1):
         code = _run_once(config, args)
         # 🔴 Only 75 is retried. `1` outranks it (`exit_codes.py`): a stuck
         # connection needs a person, and another attempt would bury the one
@@ -274,21 +311,39 @@ def cmd_sync_run(
         # including an unrecognised one, is returned unchanged rather than
         # interpreted here.
         if code != EXIT_RUN_AGAIN:
+            if attempt > 1:
+                # 🔴 The durable record of the wait. Without it the log of an
+                # hour of polling is indistinguishable from one ordinary exit,
+                # and nobody is watching the terminal of a flag built to be run
+                # unattended.
+                logger.info(
+                    "--until-ready finished at attempt %d of %d with exit %d",
+                    attempt,
+                    max_attempts,
+                    code,
+                )
             return code
-        if attempt == args.max_attempts:
+        if attempt == max_attempts:
             break
-        print(
-            f"\nstill owed after attempt {attempt} of {args.max_attempts}; "
-            f"waiting {args.retry_delay:.0f}s"
+        logger.info(
+            "--until-ready: history still owed after attempt %d of %d; waiting %.0fs",
+            attempt,
+            max_attempts,
+            retry_delay,
         )
-        sleep(args.retry_delay)
+        print(f"\nstill owed after attempt {attempt} of {max_attempts}; waiting {retry_delay:.0f}s")
+        sleep(retry_delay)
 
     # Still 75, deliberately. Reaching the cap is not a new state: history is
     # still owed and the answer is still to come back. Saying so on stderr
     # separates "I stopped waiting" from "it finished", which the exit code
     # alone cannot.
+    logger.warning(
+        "--until-ready gave up waiting after %d attempts; history is still owed",
+        max_attempts,
+    )
     print(
-        f"bankmachine: history is still owed after {args.max_attempts} attempts; "
+        f"bankmachine: history is still owed after {max_attempts} attempts; "
         f"giving up waiting. Nothing is wrong with the connections -- run again "
         f"later, or leave it to the scheduler",
         file=sys.stderr,

@@ -34,6 +34,55 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-11: A write on an environment nobody chose is refused
+
+<!-- prawduct: scope=environment-guard -->
+
+**Why:** `environment` fell back to `sandbox` whenever nothing selected it, and every
+per-environment container is keyed on that value — `plaid:<env>` and `datastore:<env>` in the
+keychain, `connection:<env>:<item>`, and the datastore filename itself. So `connector set-secret`
+run in a shell that had not exported `BANKMACHINE_ENVIRONMENT=production` stored the production
+secret under `plaid:sandbox`, overwriting the sandbox one and reporting success. The production
+runbook documented that footgun as an expected failure mode and made the operator the guard. There
+is no undo: the replaced secret is gone.
+
+**What changed:** `Config` records **who** chose the environment (`environment_source`), and
+`require_chosen_environment` refuses when the answer is nobody. The rule is *opening the
+per-environment datastore under the writer lock, or mutating a per-environment keychain entry*, and
+it is enforced at the two chokepoints every such write already passes through —
+`store.connection._writer` and the six `secrets` mutators — rather than at a list of guarded
+commands, which would be short the first time somebody adds a seventh. Refusal is exit 2 with a
+sentence naming both ways to choose, and nothing is written.
+
+🔴 **Reads are deliberately exempt.** `store status`, `connections list`, `store key export|verify`,
+`sync shell` and the MCP server keep falling back to sandbox: reading the wrong environment is
+visible and free to correct, and writing to it is neither. That asymmetry is what let this ship
+without breaking an existing sandbox workflow.
+
+🔴 **`store backup` is guarded too, and that is the intended reading of the rule rather than an
+accident of where the check sits.** Its handle takes the writer lock to fold the WAL in. A backup
+silently taken against the wrong environment is indistinguishable from a good one and announces
+itself only at a restore — the one moment there is nothing left to fall back on. `store key import`
+is guarded for the plainer reason that it replaces the datastore key.
+
+**Previously-working invocations now exit 2** on a machine that never declared an environment.
+That is the point, but it reaches anything unattended: a cron or launchd entry inherits no login
+shell, so `source .env` no longer suffices and the value belongs in
+`~/.config/bankmachine/config.toml`. The README, `.env.example`, the production runbook and
+`operational-spec.md` all say so now; the runbook's sandbox rehearsal declares the environment
+before its first write rather than after.
+
+**Also:** `bankmachine sync run --until-ready` re-runs while exit 75 says history is still owed,
+returns any other code unchanged (a `1` needs a person, not another attempt), and stops at a
+bounded cap still reporting 75 — so the runbook no longer instructs the operator to be the loop.
+`--max-attempts` and `--retry-delay` are bounded by argparse converters, so the bounds hold whether
+or not the loop is enabled, and supplying either without `--until-ready` is a usage error rather
+than a silent no-op.
+
+**`.env` is still not read**, and this change does not revisit that: a file that is silently read
+is a file whose contents are silently trusted (`operational-spec.md` § Configuration). The config
+file is the durable answer for anyone who would rather not export.
+
 ## 2026-09-10: An expired login is repaired in place, not re-linked
 
 <!-- prawduct: scope=connections-reauth -->

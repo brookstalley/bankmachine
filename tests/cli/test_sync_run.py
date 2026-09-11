@@ -1180,21 +1180,47 @@ def test_without_the_flag_a_run_is_still_one_run(cli_env: Config) -> None:
     assert len(FakeClient.calls) == 1
 
 
-def test_an_attempt_cap_below_one_is_refused_rather_than_clamped(cli_env: Config) -> None:
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["sync", "run", "--until-ready", "--max-attempts", "0"],
+        ["sync", "run", "--until-ready", "--retry-delay", "-1"],
+        # 🔴 The same bounds without the flag. They used to hold only on the
+        # `--until-ready` branch, so `--retry-delay -1` was refused on one path
+        # and accepted on the other -- a bound that holds only where somebody
+        # remembered it. They are argparse converters now, so both paths agree.
+        ["sync", "run", "--max-attempts", "0"],
+        ["sync", "run", "--retry-delay", "-1"],
+    ],
+)
+def test_a_bound_on_the_loop_is_refused_rather_than_clamped_on_every_path(
+    cli_env: Config, argv: list[str]
+) -> None:
     """Zero attempts would exit 75 having done nothing, which is exactly what a
     backfill that never landed looks like."""
     FakeClient.pages = [_page(status="NOT_READY")]
 
-    assert run(["sync", "run", "--until-ready", "--max-attempts", "0"]) == 2
+    with pytest.raises(SystemExit) as raised:
+        run(argv)
 
-    assert FakeClient.calls == [], "a refused cap still ran the command"
+    assert raised.value.code == 2
+    assert FakeClient.calls == [], "a refused bound still ran the command"
 
 
-def test_a_negative_retry_delay_is_refused(cli_env: Config) -> None:
+@pytest.mark.parametrize("flag", [["--max-attempts", "20"], ["--retry-delay", "5"]])
+def test_tuning_the_loop_without_enabling_it_is_a_usage_error(
+    cli_env: Config, capsys: pytest.CaptureFixture[str], flag: list[str]
+) -> None:
+    """🔴 Not a silent no-op. `sync run --max-attempts 20` used to make exactly
+    one attempt and exit 75 saying nothing, which an operator who believed they
+    had enabled the loop would read as the loop giving up."""
     FakeClient.pages = [_page(status="NOT_READY")]
 
-    assert run(["sync", "run", "--until-ready", "--retry-delay", "-1"]) == 2
+    with pytest.raises(SystemExit) as raised:
+        run(["sync", "run", *flag])
 
+    assert raised.value.code == 2
+    assert "only applies with --until-ready" in capsys.readouterr().err
     assert FakeClient.calls == []
 
 

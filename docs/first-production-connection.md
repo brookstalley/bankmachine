@@ -54,6 +54,22 @@ accounts inactive, so their balances stop reading as current.
 
 These cost nothing and one of them stops being rehearsable the moment production is enrolled.
 
+🔴 **First, declare that you are in sandbox.** Every step below writes — `enroll`, `store key
+import`, `store backup`, `store init` — and anything that opens the datastore for writing or
+changes a per-environment keychain entry refuses on an environment nobody chose, rather than
+guessing. One line, once:
+
+```sh
+mkdir -p ~/.config/bankmachine
+printf 'environment = "sandbox"\n' >> ~/.config/bankmachine/config.toml
+```
+
+`export BANKMACHINE_ENVIRONMENT=sandbox` does the same for one shell. § 3.1 switches this to
+production when you cut over; until then everything here stays safely in sandbox.
+
+*Failure looks like:* `no environment was chosen, so 'sandbox' was assumed`, and exit 2, with
+nothing written. Reads (`store status`, `connections list`) work either way.
+
 **2.1 Read the enrollment prompt as a human would, in sandbox.** Run `uv run bankmachine enroll`
 against sandbox and read what it prints *before* the URL: the requested window, and the line saying
 it cannot be raised later without removing and re-linking the connection (`_confirm_window` in
@@ -139,10 +155,10 @@ costs a re-link of every institution, so if `enroll` prints a number you did not
 
 ## 3. The cutover
 
-### 3.1 Declare the environment, then store the production secret
+### 3.1 Switch the environment to production, and store the production secret
 
-Put the environment and your client id in the config file, once, rather than exporting them into
-every shell:
+§ 2 put `environment = "sandbox"` in the config file. Change it to production and add your client
+id, rather than exporting them into every shell:
 
 ```sh
 mkdir -p ~/.config/bankmachine
@@ -483,6 +499,13 @@ run that could not happen at all. A wrapper that treats every non-zero code alik
 false alarm and, worse, treats `1` and `2` as one thing — which is precisely the collapse
 `.prawduct/artifacts/api-contract.md` § Direction refuses. Retry on `75` — or hand that to
 `--until-ready` and alert on whatever it finally returns; alert on `1` and `2`.
+
+🔴 **The daily entry needs the environment declared, and `store backup` is part of why.** A cron
+or launchd entry inherits no login shell, so it must read `~/.config/bankmachine/config.toml` — an
+entry relying on an export writes nothing and exits 2. `store backup` is guarded along with
+`sync run`, deliberately: a backup silently taken against the wrong environment looks identical to
+a good one and announces itself only at a restore, which is the one moment there is nothing left to
+fall back on.
 
 🔴 **Never `cp` the datastore.** It runs in WAL mode, so copying `store.db` alone silently loses
 whatever is still in `store.db-wal` — a measured `cp` of a source with a hot WAL lost every one of

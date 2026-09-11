@@ -31,6 +31,7 @@ from bankmachine.store.connection import (
     writer,
 )
 from bankmachine.store.migrations import Migration, migrate
+from conftest import child_env
 
 # --------------------------------------------------------------------------
 # Norm 1: every writable handle comes from the one writer factory, and that
@@ -272,13 +273,7 @@ def _kill_a_writer_holding_a_hot_wal(config: Config) -> None:
     """Leave a WAL behind that no clean close ever checkpointed."""
     killed = subprocess.run(
         [sys.executable, "-c", _HOT_WAL_WRITER],
-        env={
-            **os.environ,
-            "BANKMACHINE_DATASTORE_PATH": str(config.datastore_path),
-            "BANKMACHINE_KEYCHAIN_SERVICE": config.keychain_service,
-            "BANKMACHINE_LOG_DIR": str(config.log_dir),
-            "BANKMACHINE_ENVIRONMENT": config.environment,
-        },
+        env=child_env(config),
         capture_output=True,
         text=True,
     )
@@ -515,17 +510,7 @@ def test_a_migration_killed_between_its_ddl_and_its_stamp_leaves_nothing_healthy
 
     result = subprocess.run(
         [sys.executable, "-c", _KILL_MID_MIGRATION],
-        env={
-            **os.environ,
-            "BANKMACHINE_DATASTORE_PATH": str(config.datastore_path),
-            "BANKMACHINE_KEYCHAIN_SERVICE": config.keychain_service,
-            "BANKMACHINE_LOG_DIR": str(config.log_dir),
-            # The child WRITES, so it has to say which environment it means --
-            # the same declaration a real operator now owes. Inherited
-            # `os.environ` cannot supply it: conftest strips these variables so
-            # no test resolves its paths from the developer's shell.
-            "BANKMACHINE_ENVIRONMENT": config.environment,
-        },
+        env=child_env(config),
         capture_output=True,
         text=True,
         timeout=60,
@@ -694,17 +679,7 @@ _KILL_MID_MIGRATION = textwrap.dedent(
 def _spawn_lock_holder(config: Config) -> subprocess.Popen[str]:
     return subprocess.Popen(
         [sys.executable, "-c", _LOCK_HOLDER],
-        env={
-            **os.environ,
-            "BANKMACHINE_DATASTORE_PATH": str(config.datastore_path),
-            "BANKMACHINE_KEYCHAIN_SERVICE": config.keychain_service,
-            "BANKMACHINE_LOG_DIR": str(config.log_dir),
-            # The child WRITES, so it has to say which environment it means --
-            # the same declaration a real operator now owes. Inherited
-            # `os.environ` cannot supply it: conftest strips these variables so
-            # no test resolves its paths from the developer's shell.
-            "BANKMACHINE_ENVIRONMENT": config.environment,
-        },
+        env=child_env(config),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

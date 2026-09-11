@@ -185,6 +185,16 @@ place a filesystem path is decided (AC-ARCH.4).
 sandbox and production resolve to different datastore files and different
 keychain accounts, so cross-contamination requires an explicit override (AC-10.6).
 
+`Config` also carries **who chose the environment** (`environment_source`), and
+`require_chosen_environment` refuses when nobody did. The predicate is *opening
+the per-environment datastore under the writer lock, or mutating a
+per-environment keychain entry* — enforced at `store.connection._writer` and the
+`secrets` mutators, not at a list of commands. So a consumer that writes needs
+the environment supplied by an argument, a `BANKMACHINE_ENVIRONMENT` export or a
+config-file entry; the fallback to `sandbox` now serves reads only. **A consumer
+with no login shell (cron, launchd, a spawned test child) must therefore carry
+the config file or the variable explicitly.**
+
 ### Credential Seam
 
 **Producer:** `src/bankmachine/secrets.py` — the only module that imports

@@ -266,7 +266,7 @@ def _resolve(
     return _resolve_sourced(key, env, file_values)[0]
 
 
-def display_path(path: Path) -> str:
+def display_path(path: Path, env: Mapping[str, str] | None = None) -> str:
     """A path with the operator's home elided.
 
     Here rather than beside its first caller because two surfaces need it and
@@ -274,9 +274,17 @@ def display_path(path: Path) -> str:
     pasted into bug reports) and the refusals below (an error naming
     `/Users/<someone>/...` puts an account name on a terminal and in whatever
     captures it).
+
+    🔴 Home comes from `_home`, the same seam the paths themselves resolve
+    through, rather than from `Path.home()`. The two agree for the process
+    environment, so nothing changes today -- but a config built from an injected
+    `env=` would otherwise resolve its paths against one home and elide against
+    another, which makes the elision the one thing in this module a test cannot
+    prove through the seam it proves everything else through.
     """
+    home = _home(os.environ if env is None else env)
     try:
-        return "~/" + str(path.relative_to(Path.home()))
+        return "~/" + str(path.relative_to(home))
     except ValueError:
         return str(path)
 

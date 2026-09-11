@@ -120,8 +120,16 @@ datastore key**, a different **keychain account for the aggregator secret**, and
 every startup** (AC-10.6). Distinct default paths mean mixing them takes an explicit act rather than
 an omission — and setting the sandbox secret cannot overwrite production's.
 
-🔴 **A fifth separation, and the only one that refuses rather than diverging: a command that WRITES
-per-environment state will not run on an environment nobody chose.** The other four keep the two
+🔴 **A fifth separation, and the only one that refuses rather than diverging: opening the
+per-environment datastore under the writer lock, or mutating a per-environment keychain entry,
+will not run on an environment nobody chose.**
+
+The predicate is stated as a property because the handles are what enforce it, and a list of
+command names would already be wrong: it also refuses `store backup` (whose `copying_writer`
+takes the writer lock to fold the WAL in) and `store key import` (which replaces the datastore
+key). **That is deliberate for backup** — § 5.1 makes it a daily habit, and a backup silently
+taken against the wrong environment announces itself only at a restore, which is the one moment
+there is nothing left to fall back on. The other four keep the two
 environments apart once you have said which one you are in; this one covers the case where nobody
 said. `environment` has a default, and reads still take it — but the write path
 (`require_chosen_environment`, called from the one writer factory in `store.connection` and from

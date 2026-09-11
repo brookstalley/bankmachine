@@ -60,6 +60,32 @@ def make_config(
     )
 
 
+def child_env(config: Config, **extra: str) -> dict[str, str]:
+    """The environment a spawned child needs to resolve THIS config.
+
+    🔴 One construction rather than a dict pasted at each spawn site. Every
+    entry here is load-bearing and the failure mode differs per omission: drop
+    the datastore path and the child works on the developer's real store, drop
+    the keychain service and it reaches their real credentials, drop the
+    environment and it exits 2 because a write on an environment nobody chose is
+    refused (`require_chosen_environment`).
+
+    That last one is why this exists. The guard was added by pasting
+    `BANKMACHINE_ENVIRONMENT` into the three spawn sites that happened to be
+    red, which carries the property by memory at every site instead of by
+    construction at one -- the same decay the guard itself was written to avoid.
+    The next test that spawns a writer inherits it from here instead.
+    """
+    return {
+        **os.environ,
+        "BANKMACHINE_DATASTORE_PATH": str(config.datastore_path),
+        "BANKMACHINE_KEYCHAIN_SERVICE": config.keychain_service,
+        "BANKMACHINE_LOG_DIR": str(config.log_dir),
+        "BANKMACHINE_ENVIRONMENT": config.environment,
+        **extra,
+    }
+
+
 @pytest.fixture
 def initialized_config(config: Config) -> Config:
     """A configuration whose datastore exists and is at the current schema version."""

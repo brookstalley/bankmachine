@@ -15,6 +15,7 @@ would pass forever for the seventh command nobody added it for.
 from __future__ import annotations
 
 import dataclasses
+import inspect
 from pathlib import Path
 
 import keyring
@@ -37,6 +38,7 @@ from bankmachine.secrets import (
     set_datastore_key,
     set_plaid_secret,
 )
+from bankmachine.store import connection
 from bankmachine.store.connection import initializing_writer, reader, writer
 from conftest import make_config
 
@@ -134,13 +136,19 @@ def test_a_chosen_environment_passes_the_guard(tmp_path: Path, keychain_service:
     require_chosen_environment(make_config(tmp_path, keychain_service))
 
 
-def test_the_refusal_elides_the_operators_home_directory() -> None:
+def test_the_refusal_elides_the_operators_home_directory(tmp_path: Path) -> None:
     """Errors reach terminals, bug reports and log files; an absolute path in one
     carries the operator's account name with it."""
     assert display_path(Path.home() / ".config" / "bankmachine" / "config.toml") == (
         "~/.config/bankmachine/config.toml"
     )
     assert display_path(Path("/etc/bankmachine.toml")) == "/etc/bankmachine.toml"
+
+    # Through the injected seam, which is the branch that would otherwise
+    # resolve paths against one home and elide against another.
+    injected = {"HOME": str(tmp_path)}
+    assert display_path(tmp_path / ".config" / "x.toml", injected) == "~/.config/x.toml"
+    assert display_path(Path.home() / "x.toml", injected) == str(Path.home() / "x.toml")
 
 
 # --- the keychain mutators --------------------------------------------------
@@ -301,6 +309,47 @@ def test_the_refusal_reaches_the_operator_as_a_sentence_not_a_crash(
     assert "no environment was chosen" in captured.err
     assert "failed unexpectedly" not in captured.err
     assert "Traceback" not in captured.err
+
+
+def test_every_handle_but_the_read_one_refuses_a_defaulted_environment(
+    initialized_config: Config,
+) -> None:
+    """🔴 The handles are discovered, not listed, so a fourth cannot arrive quietly.
+
+    This is the test the first cut of this feature did not have, and the gap it
+    leaves is not hypothetical: `copying_writer` -- `store backup`'s handle --
+    routes through `_writer` and was therefore guarded from the first commit,
+    while the build plan said "both writer handles" and no document mentioned
+    backup at all. An enumeration would have agreed with the plan and stayed
+    green.
+
+    `reader` is the only exemption, and it is stated as one: reading the wrong
+    environment is visible and free to correct, writing to it is neither.
+    """
+    reads = {"reader"}
+
+    handles = {
+        name
+        for name, value in vars(connection).items()
+        if not name.startswith("_")
+        and callable(value)
+        and hasattr(value, "__wrapped__")
+        and "config" in inspect.signature(value).parameters
+    }
+    assert reads <= handles, f"the named read handle no longer exists: {reads - handles}"
+    assert handles - reads, "no writer handles found -- the walk matched nothing"
+
+    unchosen_config = unchosen(initialized_config)
+    for name in sorted(handles - reads):
+        with (
+            pytest.raises(UnchosenEnvironmentError),
+            getattr(connection, name)(unchosen_config),
+        ):
+            pass  # pragma: no cover -- refused before a handle exists
+
+    for name in sorted(reads):
+        with getattr(connection, name)(unchosen_config) as conn:
+            assert conn is not None
 
 
 def test_a_defaulted_environment_may_still_read(initialized_config: Config) -> None:
