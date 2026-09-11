@@ -34,6 +34,47 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-10: An expired login is repaired in place, not re-linked
+
+<!-- prawduct: scope=connections-reauth -->
+
+**Why:** the product's only answer to `ITEM_LOGIN_REQUIRED` — its most common production event —
+was *re-run `bankmachine enroll` and pick the same institution*, and that operation destroys data
+silently. Reproduced on the sandbox store: the re-link mints a new item, the new item re-issues
+every `source_account_id`, `_match_account` matches nothing because
+`source_persistent_account_id` is NULL, and 14 accounts become 28 with the re-fetched window
+landing on the new ones. **390 transactions became 784**, and `money_summary` returned exactly
+twice the true outflow with no warning naming it. The discovery behind #67 established that NULL is
+the rule, not the exception: the field exists at three institutions, depository accounts only.
+
+**What changed:** `bankmachine connections reauth <id>` opens an update-mode Link session against
+the connection's existing item and waits for the operator to complete it. It clears `status`,
+`last_error_code` and `last_error_at` — and writes nothing else. The cursor, the granted window,
+`enrolled_at`, the accounts and the transactions are all left alone, which is AC-4.3's requirement
+rather than an implementation detail.
+
+🔴 **Completion is the item's error clearing, not a public token.** `LinkSession.finished` is
+derived from `public_token` so the two cannot disagree — and update mode mints no public token,
+because the item already exists and nothing is exchanged. So the repair polls `/item/get` and waits
+for the item to stop reporting `ITEM_LOGIN_REQUIRED`. Not for *no* error: an absent `error` key and
+a null one are different observations, and a complaint update mode was never going to fix would
+otherwise be waited out to the timeout.
+
+🔴 **The item id is compared before anything is written.** Update mode is supposed to repair the
+item in place; if one came back different, a second generation of ids would stand behind the
+connection and the next sync would duplicate everything. The repair refuses and leaves the
+connection degraded, which is recoverable, rather than marking it active, which is not. Whether the
+*accounts* beneath an unchanged item keep their ids is not assertable from one call — it is
+**VRF-007**, and if they move then #91's identity fallback is needed regardless.
+
+**Two methods on the client, not one with a flag.** `link_token_create` makes `history_days`
+required with no default because AC-1.2 freezes the window at enrollment. Update mode requests no
+window at all, so a single method would have to accept that argument and ignore it in one of its two
+modes — which is exactly how a forgotten window reaches the path where it is irreversible.
+
+**Not built here:** reconciling a store that is *already* doubled, and an identity fallback for the
+institutions that give no stable account id. Both are #91.
+
 ## 2026-09-10: The sync shell's role line stops stranding its reader
 
 <!-- prawduct: scope=shell-banner-role-line -->

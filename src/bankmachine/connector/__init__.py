@@ -535,6 +535,31 @@ class LinkToken:
 
 
 @dataclass(frozen=True, slots=True)
+class RepairSession:
+    """An update-mode Link session: the URL that repairs a connection in place.
+
+    🔴 **Deliberately not a `LinkToken`.** That type carries
+    `requested_history_days` because AC-11.8's shortfall has no left-hand side
+    without it, and an update-mode session requests no window at all -- the grant
+    belongs to the Item that survives the repair. Widening the field to optional
+    would push a "not applicable" into every reader of the one number AC-1.2
+    freezes, to describe a session that never had one.
+
+    There is no `token` field, and its absence is the same decision: nothing
+    polls an update-mode session. The Item already exists, so its own error
+    clearing is what says the operator finished, and a credential nothing reads
+    is a credential worth not holding.
+
+    `hosted_link_url` is what the operator opens, and is not redacted -- a
+    session someone is being asked to complete is not a secret being kept from
+    them, which is the reasoning `LinkToken` records for the same field.
+    """
+
+    expires_at: str
+    hosted_link_url: str
+
+
+@dataclass(frozen=True, slots=True)
 class LinkSession:
     """One polled look at a Link session the operator is completing in a browser.
 

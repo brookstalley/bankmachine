@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import time
 from dataclasses import dataclass
 
 from sqlalchemy import delete, insert, select, update
@@ -32,6 +31,12 @@ from bankmachine.cli.connections import (
     release_at_aggregator,
 )
 from bankmachine.cli.exit_codes import EXIT_ERROR, EXIT_OK, EXIT_UNHEALTHY
+from bankmachine.cli.hosted_link import (
+    LINK_COUNTRIES,
+    await_hosted_session,
+    positive_seconds,
+    print_invitation,
+)
 from bankmachine.config import Config
 from bankmachine.connector import LinkSession, LinkToken, MalformedResponseError
 from bankmachine.connector.plaid.client import (
@@ -172,21 +177,6 @@ ENROLLMENT_PRODUCTS: tuple[str, ...] = ("transactions",)
 #: where the institution has the product, and narrows the picker nowhere.
 ENROLLMENT_OPTIONAL_PRODUCTS: tuple[str, ...] = ("investments",)
 
-#: Countries the institution picker offers. Configuration would be premature:
-#: the roster is one operator's, and a second country is a config knob the day
-#: someone needs one rather than a setting nobody has ever set.
-ENROLLMENT_COUNTRIES: tuple[str, ...] = ("US",)
-
-#: How often the hosted session is polled, and for how long. The ceiling is the
-#: hosted URL's own lifetime: polling past the point the URL can still be used
-#: would report a timeout the operator could no longer do anything about.
-POLL_INTERVAL_SECONDS = 3.0
-
-#: The floor on `--timeout`. It is also the hosted URL's lifetime now, so a value
-#: below this is not a short wait -- it is a URL that expires before anyone could
-#: use it, and an aggregator rejection rather than a fast local abandon.
-MIN_HOSTED_WAIT_SECONDS = 30
-
 
 class EnrollmentError(Exception):
     """Enrollment could not be completed.
@@ -273,6 +263,44 @@ class ConnectionCapReachedError(EnrollmentError):
         super().__init__(explain_cap(live, cap))
 
 
+class RelinkNotAuthorizedError(EnrollmentError):
+    """This enrollment would repoint a live connection at a NEW aggregator item.
+
+    🔴 **The refusal sits on the branch that would commit the duplication, not on
+    a guess about what the operator meant.** A new item re-issues every
+    `source_account_id`, and `source_persistent_account_id` -- the only identity
+    that survives one -- is populated at three institutions and null everywhere
+    else. So `_match_account` matches nothing, the roster inserts a second row per
+    account, the re-fetched window lands on those rows, and every total doubles
+    with no warning naming it. Measured on 390 transactions becoming 784.
+
+    A converging re-run against the SAME item reaches none of this and is not
+    refused: nothing is re-issued when nothing is replaced.
+
+    `--relink` is the deliberate override, and it has a real use -- AC-1.2 makes
+    re-linking the only way to widen the history window. What it must not be is
+    the default, because the operator most likely to take this path is one whose
+    login expired, for whom `connections reauth` is both cheaper and lossless.
+    """
+
+    exit_code: int = EXIT_UNHEALTHY  # ran and found a problem: this would cost data
+
+    def __init__(self, *, connection_id: int, institution_name: str) -> None:
+        self.connection_id = connection_id
+        super().__init__(
+            f"connection {connection_id} ({institution_name}) is already linked, and this "
+            f"enrollment came back behind a DIFFERENT item at the aggregator. Recording it "
+            f"would re-issue every account and transaction id, so this institution's history "
+            f"would be counted twice with nothing saying so.\n\n"
+            f"    If the login expired, this is the wrong command:\n"
+            f"        bankmachine connections reauth {connection_id}\n\n"
+            f"    If you meant to re-link -- to widen the history window, which AC-1.2 allows "
+            f"no other way -- re-run with:\n"
+            f"        bankmachine enroll --relink\n\n"
+            f"Nothing was recorded, and the item this enrollment created is being removed."
+        )
+
+
 class EnrollmentAbandonedError(EnrollmentError):
     """The operator did not finish the hosted session before it expired.
 
@@ -326,8 +354,18 @@ def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
         ),
     )
     enroll.add_argument(
+        "--relink",
+        action="store_true",
+        help=(
+            "allow this enrollment to replace a live connection's aggregator item. "
+            "🔴 every account and transaction is re-issued, so the institution's history "
+            "is counted twice -- use `connections reauth ID` for an expired login. This is "
+            "for deliberately re-linking, which is the only way to widen the history window"
+        ),
+    )
+    enroll.add_argument(
         "--timeout",
-        type=_positive_seconds,
+        type=positive_seconds,
         default=DEFAULT_HOSTED_URL_LIFETIME_SECONDS,
         metavar="SECONDS",
         help=(
@@ -338,28 +376,6 @@ def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
         ),
     )
     enroll.set_defaults(handler=cmd_enroll)
-
-
-def _positive_seconds(raw: str) -> int:
-    """A wait that is also the URL's lifetime, so it must be a value the vendor accepts.
-
-    Before the two numbers were unified, a zero or negative timeout only shortened
-    a local loop. It is now sent as `url_lifetime_seconds`, where it would come
-    back as an aggregator rejection -- exit 2, "could not run" -- for what is
-    really a mistyped argument.
-    """
-    try:
-        seconds = int(raw)
-    except ValueError:
-        raise argparse.ArgumentTypeError(
-            f"expected a whole number of seconds, got {raw!r}"
-        ) from None
-    if seconds < MIN_HOSTED_WAIT_SECONDS:
-        raise argparse.ArgumentTypeError(
-            f"must be at least {MIN_HOSTED_WAIT_SECONDS} seconds; the hosted URL is live for "
-            f"exactly this long and nobody completes a bank login faster"
-        )
-    return seconds
 
 
 def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
@@ -400,7 +416,7 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
         issued = client.link_token_create(
             history_days=config.history_days,
             client_user_id=f"bankmachine-{config.environment}",
-            country_codes=list(ENROLLMENT_COUNTRIES),
+            country_codes=list(LINK_COUNTRIES),
             products=list(ENROLLMENT_PRODUCTS),
             optional_products=list(ENROLLMENT_OPTIONAL_PRODUCTS),
             # 🔴 ONE number, not two that happen to agree. The URL outliving the
@@ -411,12 +427,17 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
             # lifetime from the wait means the URL dies when we stop listening.
             hosted_url_lifetime_seconds=args.timeout,
         )
+        _signpost_the_repair(live, relinking=args.relink)
         if not _confirm_window(config, issued, assume_yes=args.yes):
             logger.info("enrollment cancelled at the window confirmation; nothing was linked")
             print("enrollment cancelled; nothing was linked", file=sys.stderr)
             return EXIT_UNHEALTHY
 
-        _print_invitation(config, issued, timeout_seconds=args.timeout)
+        print_invitation(
+            issued.hosted_link_url,
+            what_it_does=f"link an institution ({config.environment})",
+            timeout_seconds=args.timeout,
+        )
         # `EnrollmentAbandonedError` propagates rather than being caught here.
         # Catching it to return a code would put the exit-code decision in two
         # places, which is the split that made one condition answer 1 and 2
@@ -468,19 +489,27 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
                     capabilities=capabilities_of(item.body),
                     requested_history_days=issued.requested_history_days,
                     connection_cap=config.connection_cap,
+                    allow_new_item=args.relink,
                     now=now_utc(),
                 )
-    except ConnectionCapReachedError:
-        # 🔴 The cap race, reached only past the exchange: the pre-flight check saw
-        # room and the transaction did not. An Item now exists that this product
-        # has just refused to record, so it is released rather than left behind --
-        # anything else bills the operator for a connection they were simultaneously
-        # told they could not have. The refusal itself still stands and still exits
-        # 1; releasing does not turn it into a success.
+    except (ConnectionCapReachedError, RelinkNotAuthorizedError):
+        # 🔴 The two refusals this product makes PAST the exchange, and they share
+        # a handler because they leave the same wreckage. An Item now exists that
+        # this side has just declined to record, so it is released rather than
+        # left behind -- anything else bills the operator for a connection they
+        # were simultaneously told they could not have. Neither refusal becomes a
+        # success by being cleaned up after: both still stand and both still exit 1.
+        #
+        # The cap one is a race -- the pre-flight check saw room and the
+        # transaction did not. The re-link one is not a race at all: the
+        # institution is unknowable until the operator has picked it in a browser,
+        # so the only place the decision CAN be made is here, after the item
+        # exists. That is why `enroll` also signposts `connections reauth` before
+        # printing the URL, where it costs nobody a session.
         if not release_at_aggregator(config, credential_ref):
             logger.error(
-                "the connection refused by the cap could not be removed at the aggregator; "
-                "item %s may still be billing",
+                "the connection this enrollment refused could not be removed at the "
+                "aggregator; item %s may still be billing",
                 grant.source_connection_id,
             )
             _record_orphan(config, item.body, grant.source_connection_id, credential_ref)
@@ -562,6 +591,36 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _signpost_the_repair(live: list[ConnectionRow], *, relinking: bool) -> None:
+    """Name `connections reauth` before the operator spends a browser session.
+
+    🔴 **Printed, never prompted.** An unattended `--yes` run must not block on a
+    question, and this is not a decision point: the institution is unknowable
+    until it has been picked in a browser, so nothing here can tell whether THIS
+    enrollment is the one that would duplicate. What it can do is put the cheaper
+    command in front of the operator most likely to need it -- the one whose login
+    expired and who reached for the command they used the first time.
+
+    The refusal in `_record_connection` is the guarantee; this is the courtesy
+    that usually makes the refusal unnecessary. Absent when nothing is enrolled,
+    because an unconditional notice is one an operator learns to skip -- including
+    on the run where it mattered.
+    """
+    if not live or relinking:
+        return
+    print()
+    print("already linked:")
+    for row in live:
+        print(f"    {row.connection_id:>4}  {row.institution_name} ({row.status})")
+    print()
+    print(
+        "🔴 if you are here because one of these stopped working, this is the wrong "
+        "command -- `bankmachine connections reauth ID` repairs a login in place, keeping "
+        "the connection's history and cursor. Enrolling one of these again re-issues every "
+        "account and transaction id, so its history is counted twice."
+    )
+
+
 def _confirm_window(config: Config, issued: LinkToken, *, assume_yes: bool) -> bool:
     """The last moment AC-1.2 is reversible.
 
@@ -582,31 +641,6 @@ def _confirm_window(config: Config, issued: LinkToken, *, assume_yes: bool) -> b
     return answer in {"y", "yes"}
 
 
-def _print_invitation(config: Config, issued: LinkToken, *, timeout_seconds: int) -> None:
-    """The deadline is printed here because here is where it can still be changed.
-
-    A production first link can mean an OAuth redirect to the bank's own site, a
-    password reset, an SMS code and a device registration -- none of which the
-    sandbox has. When the wait runs out the URL dies with it, and an operator who
-    only learns the number afterwards learns it from an abandoned session.
-    """
-    print()
-    print(f"open this URL to link an institution ({config.environment}):")
-    print()
-    print(f"    {issued.hosted_link_url}")
-    print()
-    print(
-        f"waiting up to {timeout_seconds} seconds for you to finish; the URL expires with "
-        f"the wait.",
-        flush=True,
-    )
-    print(
-        "  a bank login with OAuth, MFA or a device registration can take longer -- "
-        "cancel and re-run with `--timeout SECONDS` for more time",
-        flush=True,
-    )
-
-
 def _await_completion(
     client: PlaidClient,
     issued: LinkToken,
@@ -615,23 +649,27 @@ def _await_completion(
 ) -> LinkSession:
     """Poll until the operator finishes, or until waiting stops being useful.
 
-    The deadline is a wall-clock budget rather than an attempt count so that a
-    slow aggregator does not shorten the operator's window to finish -- the thing
-    being waited on is a human in a browser, not a request.
+    🔴 The last unfinished poll is kept, and is the reason this is not a bare
+    `await_hosted_session` call at the call site: the abandonment message names
+    the session id, which only an unfinished look carries here.
     """
-    deadline = time.monotonic() + timeout_seconds
-    while True:
-        session = client.link_token_get(issued.token)
-        if session.finished:
-            return session
-        if time.monotonic() >= deadline:
-            logger.warning("enrollment abandoned after %ss", timeout_seconds)
-            raise EnrollmentAbandonedError(
-                f"the hosted session was not completed within {timeout_seconds}s"
-                + (f" (session {session.session_id})" if session.session_id else "")
-                + ". Nothing was linked; run `bankmachine enroll` again to start over"
-            )
-        time.sleep(POLL_INTERVAL_SECONDS)
+    last_seen: LinkSession | None = None
+
+    def look() -> LinkSession | None:
+        nonlocal last_seen
+        last_seen = client.link_token_get(issued.token)
+        return last_seen if last_seen.finished else None
+
+    session = await_hosted_session(look, timeout_seconds=timeout_seconds)
+    if session is not None:
+        return session
+    logger.warning("enrollment abandoned after %ss", timeout_seconds)
+    session_id = last_seen.session_id if last_seen is not None else None
+    raise EnrollmentAbandonedError(
+        f"the hosted session was not completed within {timeout_seconds}s"
+        + (f" (session {session_id})" if session_id else "")
+        + ". Nothing was linked; run `bankmachine enroll` again to start over"
+    )
 
 
 def _record_connection(
@@ -643,6 +681,7 @@ def _record_connection(
     capabilities: frozenset[str],
     requested_history_days: int,
     connection_cap: int,
+    allow_new_item: bool,
     now: UtcInstant,
 ) -> EnrolledConnection:
     """The `connections` row, converged on the institution rather than inserted.
@@ -673,6 +712,14 @@ def _record_connection(
     re-link" AC-1.2 names as the only way to change the window. So the new value
     is what was actually asked for this time, and preserving the old one would
     make the column describe a request nobody made.
+
+    🔴 **And that clearing is why `allow_new_item` exists.** Everything the
+    paragraph above describes is correct and costly: the cleared cursor re-fetches
+    the window onto accounts the new item has re-issued, so the institution's
+    history lands twice. `connections reauth` repairs an expired login without any
+    of it, so the replacement branch is taken only when the operator says they
+    mean it. The same-item branch is untouched -- it replaces nothing, so it costs
+    nothing.
     """
     institution = conn.execute(
         select(institutions.c.institution_id, institutions.c.name).where(
@@ -704,6 +751,13 @@ def _record_connection(
         previous_credential_ref = str(existing[2])
         previous_source_id = str(existing[3])
         replaced_the_item = previous_source_id != source_connection_id
+        if replaced_the_item and not allow_new_item:
+            # 🔴 Raised BEFORE the UPDATE, so the refusal and the row are never
+            # briefly out of step. The transaction would roll back either way;
+            # raising first means there is no ordering to get wrong later.
+            raise RelinkNotAuthorizedError(
+                connection_id=connection_id, institution_name=institution_name
+            )
         rewritten: dict[str, object] = {
             "source_connection_id": source_connection_id,
             "credential_ref": credential_ref,

@@ -657,6 +657,21 @@ bundle makes both variables inert for the one channel that carries live credenti
 - ~~**A real `ITEM_LOGIN_REQUIRED`**~~ Done — driven live through
   `/sandbox/item/reset_login` in `test_sandbox.py`, once the exchange call
   existed to mint an Item.
+- 🔴 **Hosted Link in UPDATE mode.** `link_token_create_update` sends `access_token` and an
+  `update` object and no `products`; the SDK accepts all three *(verified against the pinned
+  package: `LinkTokenCreateRequest.openapi_types` carries `access_token` and `update`)*. What is
+  **not** verified is that the aggregator returns a `hosted_link_url` for such a token on this
+  account — and without one `connections reauth` has nothing to print, because AC-1.1 rules out a
+  local web server for the repair exactly as for the enrollment.
+  `test_sandbox.py::test_an_update_mode_session_is_hosted_too` is the probe and it has not been
+  run: the machine it was written on had no `BANKMACHINE_PLAID_CLIENT_ID` exported. It skips rather
+  than failing, so **a green `-m sandbox` run is not evidence this was checked.**
+- 🔴 **Whether update mode re-issues `account_id`.** The aggregator documents update mode as the
+  repair for expired credentials and says to re-read account ids afterwards rather than assume they
+  are stable, which stops short of a guarantee. `connections reauth` asserts the half it can — the
+  item id must come back unchanged or the repair is refused — and the account half is
+  **VRF-007**. If ids do move, update mode reduces the frequency of the duplication rather than
+  eliminating it, and #91's identity fallback is needed regardless.
 - **A real rate limit or a real `PRODUCT_NOT_READY`.** Neither was provoked;
   both are exercised against constructed responses only, and `PRODUCT_NOT_READY`
   remains the least-evidenced entry in the taxonomy.

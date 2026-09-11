@@ -46,8 +46,8 @@ store on 2026-09-10 (connection 1):
    `1114946` — exactly 2×, **with no warning naming it.**
 
 `.prawduct/artifacts/discovery-relink-account-identity.md` establishes that this is the *default*
-outcome, not an edge case: `persistent_account_id` is populated at three institutions only (depository
-accounts; the aggregator's Accounts API reference names them). **NULL is the rule.** Lineage exclusion (#68) cannot cover it —
+outcome, not an edge case: `persistent_account_id` is populated at three US banks only, depository
+accounts only. **NULL is the rule.** Lineage exclusion (#68) cannot cover it —
 `_coverage` groups by `(account_id, lineage_id)` and the two generations differ in `account_id`.
 "Retire first, then re-enroll" takes the same path.
 
@@ -122,14 +122,18 @@ about.
 
 **Delivers**
 
-1. `PlaidClient.link_token_create` accepts `access_token: str | None = None`. When given, the
-   request carries it and `update=LinkTokenCreateRequestUpdate(...)`, and `products` is omitted —
-   an update-mode session re-authenticates an Item rather than choosing products for a new one.
-   Keyword-only already, so this is non-breaking *(verified: plaid 44.0.0's
-   `LinkTokenCreateRequest.openapi_types` carries `access_token` and `update`)*.
-   🔴 `history_days` stays **required and defaulted-never** for the new-Item path. Update mode does
-   not re-request a window — the grant belongs to the Item that persists — so the update path must
-   not send one, and must not be reachable by a caller who simply forgot the window.
+1. `PlaidClient.link_token_create_update(access_token=…)` — a **second method**, not a mode flag on
+   the first. It carries the access token and `update=LinkTokenCreateRequestUpdate(...)`, sends no
+   `products`, and **has no `history_days` parameter at all** *(verified: plaid 44.0.0's
+   `LinkTokenCreateRequest.openapi_types` carries both `access_token` and `update`)*.
+   🔴 **Why two methods rather than `access_token: str | None = None`.** `link_token_create`'s
+   signature makes `history_days` required with no default *because* AC-1.2 makes the window
+   immutable, and a caller who forgets it must fail to typecheck. Update mode does not re-request a
+   window — the grant belongs to the Item that persists — so a single method would have to accept
+   the parameter and then ignore it in one of its two modes, which is the shape that lets a forgotten
+   window reach the new-Item path unnoticed. Two signatures, each making its own error
+   unrepresentable (`learnings.md` § *Guarantees by construction*). The fetch-and-parse half is one
+   private helper, so the response handling cannot drift between them.
 2. `cli/hosted_link.py` — the hosted-session machinery both commands need, extracted rather than
    duplicated: the URL invitation, the poll interval and wait floor, and
    `await_hosted_session(poll, *, timeout_seconds)` returning `T | None`. Generic over *what counts
@@ -169,9 +173,9 @@ about.
   `connections reauth <id>` again, and **no write to the row at all**.
 - Unknown id, retired connection, and absent keychain credential — one case each, each asserting
   the remedy it names.
-- `link_token_create` builds an update-mode request that carries the access token and **no
-  `products`**, and a new-Item request that carries `products` and **no `access_token`** — two
-  cases, because one would pass against either implementation.
+- `link_token_create_update` builds a request carrying the access token, the `update` object and
+  **no `products`**; `link_token_create` still builds one carrying `products` and **no
+  `access_token`** — two cases, because one would pass against either implementation.
 - `-m sandbox`: mint an Item via `/sandbox/public_token/create`, exchange it, and assert an
   update-mode `link_token_create` comes back with a `hosted_link_url`. 🔴 This is the one thing no
   fixture can establish — that Hosted Link is available in update mode on this account — and it is
@@ -255,9 +259,14 @@ about `enroll --relink`, the suite is green, and `/prawduct:critic cumulative` r
 
 ## Status
 
-- [ ] Chunk 01 — the update-mode link token, and `connections reauth`
+- [x] Chunk 01 — the update-mode link token, and `connections reauth`
 - [ ] Chunk 02 — `enroll` stops repointing a live connection by accident
 - [ ] Chunk 03 — the sweep
+
+🔴 **Chunk 02's code and tests are written and green; the box is UNTICKED because its
+review has not run.** The build cycle ticks after the chunk's review, and the last tick is
+what disarms the Stop gates — so a box ticked ahead of the review would disarm them on
+work nothing has looked at. Chunk 03 is not started.
 
 ## Context
 

@@ -1218,3 +1218,104 @@ def test_an_aggregator_rejection_of_a_removal_is_a_connector_error(
         client._api.item_remove = refuse
         with pytest.raises(ConnectorError):
             client.item_remove("fake-access-token-for-tests")
+
+
+# --------------------------------------------------------------------------
+# AC-4.3 -- update mode, which repairs an item rather than minting one
+# --------------------------------------------------------------------------
+
+
+def test_update_mode_sends_the_access_token_and_asks_for_no_products(
+    client_config: Config,
+) -> None:
+    """🔴 Both halves, because either alone would pass against the wrong request.
+
+    The access token is what makes the session repair *this* item rather than
+    open a new one. Omitting `products` is what keeps the repair a repair: sending
+    them asks the aggregator to widen an item mid-recovery, which is neither what
+    the operator asked for nor what AC-4.3 promises.
+    """
+    invoke = _answering(
+        {
+            "link_token": "link-sandbox-x",
+            "expiration": "2026-09-08T00:00:00Z",
+            "hosted_link_url": "https://secure.example/hl/repair",
+        }
+    )
+
+    with _client(client_config) as client:
+        client._api.link_token_create = invoke
+        session = client.link_token_create_update(
+            access_token="fake-access-token-for-tests",
+            client_user_id="operator",
+            country_codes=["US"],
+            hosted_url_lifetime_seconds=120,
+        )
+
+    request = invoke.captured["request"]
+    assert request.access_token == "fake-access-token-for-tests"
+    assert request.update is not None
+    assert not hasattr(request, "products")
+    # No window is requested: the grant belongs to the item that survives the
+    # repair, and AC-1.2 freezes it for that item's life.
+    assert not hasattr(request, "transactions")
+    assert request.hosted_link.url_lifetime_seconds == 120
+    assert session.hosted_link_url == "https://secure.example/hl/repair"
+
+
+def test_enrollment_mode_is_the_negative_control_for_that_request(
+    client_config: Config,
+) -> None:
+    """The other half of the pair.
+
+    Without it, the assertions above would still pass against a client that had
+    stopped sending `products` on the enrollment path too -- which would silently
+    change which institutions the picker offers.
+    """
+    invoke = _answering(
+        {
+            "link_token": "link-sandbox-x",
+            "expiration": "2026-09-08T00:00:00Z",
+            "hosted_link_url": "https://secure.example/hl/session",
+        }
+    )
+
+    with _client(client_config) as client:
+        client._api.link_token_create = invoke
+        client.link_token_create(
+            history_days=365,
+            client_user_id="operator",
+            country_codes=["US"],
+            products=["transactions"],
+        )
+
+    request = invoke.captured["request"]
+    assert [str(product.value) for product in request.products] == ["transactions"]
+    assert not hasattr(request, "access_token")
+    assert not hasattr(request, "update")
+
+
+def test_a_repair_session_carries_no_credential_to_leak(client_config: Config) -> None:
+    """`RepairSession` holds no token, so there is none for a `repr` to spill.
+
+    Asserted rather than assumed: the absence is the security property, and an
+    absence nothing checks is one a later field can quietly end.
+    """
+    invoke = _answering(
+        {
+            "link_token": "link-sandbox-x",
+            "expiration": "2026-09-08T00:00:00Z",
+            "hosted_link_url": "https://secure.example/hl/repair",
+        }
+    )
+
+    with _client(client_config) as client:
+        client._api.link_token_create = invoke
+        session = client.link_token_create_update(
+            access_token="fake-access-token-for-tests",
+            client_user_id="operator",
+            country_codes=["US"],
+        )
+
+    assert "fake-access-token-for-tests" not in repr(session)
+    assert "link-sandbox-x" not in repr(session)

@@ -432,3 +432,75 @@ ground truth about money you already know about.
 6. Record the `raw_response` id of the page carrying the observed deposit (AC-14.9).
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-006`
+
+## VRF-007 — an update-mode repair, completed in a browser
+
+**Chunk:** connections reauth (#67) · **Raised:** 2026-09-10 · **Status:** pending
+· **Visual change:** yes
+
+**Why a human:** a Hosted Link session cannot be completed programmatically — the whole reason
+`test_enroll.py` fakes the aggregator. Every test of `connections reauth` fakes the item's recovery,
+so what none of them can say is whether update mode *actually repairs the item in place* when a real
+browser completes it. Two of the three things this command promises are only observable on the far
+side of that session.
+
+🔴 **This is also the only cheap read on the discovery's open question.** `persistent_account_id` is
+NULL at every institution but three, so if update mode re-issues `account_id` the way a re-link does,
+#67 reduces the frequency of the duplication without eliminating it and #91's identity fallback is
+needed regardless. The sandbox gives a *signal*, not the answer — a sandbox institution is not
+evidence about a real one — but a signal costs one session here and nothing at all to look at.
+
+**Where to verify:** the sandbox store, against a connection that has synced at least once.
+
+```
+# 1. Record what must survive, BEFORE anything is broken.
+bankmachine sync shell
+  select connection_id, source_connection_id, granted_history_days, enrolled_at from connections;
+  select connection_id, domain, cursor from sync_state;
+  select account_id, source_account_id, name from accounts order by account_id;
+  select count(*) from transactions;
+
+# 2. Break the login the way an institution's password change does.
+#    (`/sandbox/item/reset_login`, driven with the connection's access token.)
+
+# 3. Confirm the product notices.
+bankmachine sync run          # expect the connection degraded, ITEM_LOGIN_REQUIRED
+bankmachine connections list
+
+# 4. Repair it.
+bankmachine connections reauth <id>
+```
+
+**Verify:**
+
+1. The command prints the connection's current state and an `https://` URL **before** it starts
+   waiting, and says how long the URL lives.
+2. Completing the URL in a browser (sandbox credentials `user_good` / `pass_good`) returns the
+   command within a poll or two, exit `0`.
+3. 🔴 **`source_connection_id` is unchanged.** If the command refused instead, saying the item came
+   back different, that refusal is the correct outcome and this entry has found the thing it was
+   written to find — record it and stop: update mode does not preserve the item, and the plan's
+   assumption is false.
+4. The cursor from step 1 is **still there**, byte for byte. `granted_history_days` and
+   `enrolled_at` are unchanged.
+5. 🔴 **The `account_id`s from step 1 are the same rows** — not new ones beside them. Count the
+   accounts: 14 becoming 28 is the duplication this command exists to prevent, arriving anyway.
+6. `bankmachine sync run` continues from the cursor rather than re-fetching the window: it should
+   finish quickly and the transaction count should not double. **Compare the count against step 1.**
+7. Read the success message as a sentence. It claims the item, accounts, transactions and cursor are
+   unchanged; steps 3-6 are that claim checked, and if any of them failed the message is a lie the
+   operator would have believed.
+
+**Also worth doing while credentials are exported** (it is not part of this entry, and it skips
+without them):
+
+```
+uv run pytest -m sandbox -k "update_mode_session or expired_login_is_reported"
+```
+
+Those two live probes assert that Hosted Link is available in update mode on this account, and that
+`/item/get` reports an expired login **in the body** rather than by raising — the shape the poll
+loop is written against. They were written with this chunk and have **not** been run: this machine's
+shell had no `BANKMACHINE_PLAID_CLIENT_ID` exported.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-007`

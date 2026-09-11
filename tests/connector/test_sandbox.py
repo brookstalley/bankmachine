@@ -455,3 +455,53 @@ def test_a_reset_login_drives_a_real_item_login_required_through_the_taxonomy(
     assert type(failure).retryable is False, (
         "retrying a connection that needs a human delays the report that tells them"
     )
+
+
+# --------------------------------------------------------------------------
+# AC-4.3 -- update mode, live
+# --------------------------------------------------------------------------
+
+
+def test_an_update_mode_session_is_hosted_too(sandbox_client: Any, enrolled_item: str) -> None:
+    """🔴 The assumption the whole repair command rests on, and the only place it is testable.
+
+    `connections reauth` prints a hosted URL because AC-1.1 rules out a local web
+    server -- for the repair exactly as for the enrollment. Nothing in a fixture
+    can establish that Hosted Link is available in UPDATE mode on this account;
+    the aggregator either returns a `hosted_link_url` for an update-mode token or
+    it does not, and if it does not the command has nothing to print.
+    """
+    session = sandbox_client.link_token_create_update(
+        access_token=enrolled_item,
+        client_user_id="bankmachine-suite",
+        country_codes=["US"],
+    )
+
+    assert session.hosted_link_url.startswith("https://"), (
+        "the repair prints this URL to the operator; anything but https is not printable"
+    )
+    assert session.expires_at, "a session with no expiry is not a session"
+
+
+def test_an_expired_login_is_reported_inside_the_item_body(
+    sandbox_client: Any, enrolled_item: str
+) -> None:
+    """🔴 The live shape `connections reauth` polls against.
+
+    The repair waits on `item.error.error_code` rather than on a public token,
+    because update mode mints none. That decision is only sound if `/item/get`
+    answers 200 with the complaint *in the body* -- if the call raised instead,
+    the poll loop would never get a body to read. Asserted against the real
+    aggregator rather than against the fixture that encodes the same belief.
+    """
+    sandbox_client._fetch_bytes(
+        Endpoint("/sandbox/item/reset_login"),
+        sandbox_client._api.sandbox_item_reset_login,
+        SandboxItemResetLoginRequest(access_token=enrolled_item),
+    )
+
+    fetched = sandbox_client.item_get(enrolled_item, connection_id=1)
+    item = json.loads(fetched.body)["item"]
+
+    assert item["item_id"], "the repair compares this against the row before trusting anything"
+    assert item["error"]["error_code"] == "ITEM_LOGIN_REQUIRED"

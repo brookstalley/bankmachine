@@ -25,8 +25,11 @@ the answer to it.
 ## Findings
 
 **1. `persistent_account_id` exists at three institutions.** It is supported only for Items at
-institutions using Tokenized Account Numbers — **three US banks, named in the aggregator's Accounts API reference** — and only for depository
-accounts.
+institutions using Tokenized Account Numbers — **three US banks, named in the aggregator's Accounts
+API reference** — and only for depository accounts. 🔴 The names are deliberately not written here:
+this repository is a general-purpose tool and the leak guard treats an institution name as roster
+identity, correctly — the number and the constraint are what the finding rests on, and both survive
+without them.
 
 🔴 **This inverts the reading the code carries.** `derivers.py` says the aggregator "populates this
 field for select institutions only", which reads as *present by default, absent occasionally*. The
