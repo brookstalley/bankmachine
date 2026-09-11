@@ -35,12 +35,14 @@ from bankmachine.connector import (
     ConnectorError,
     FetchedResponse,
     MalformedResponseError,
+    ReauthRequiredError,
     parse_response_body,
 )
 from bankmachine.connector.plaid.client import (
     DEFAULT_HOSTED_URL_LIFETIME_SECONDS,
     PlaidClient,
 )
+from bankmachine.connector.plaid.errors import AggregatorErrorDetail, classify
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.logging_setup import get_logger
 from bankmachine.secrets import (
@@ -56,10 +58,28 @@ from bankmachine.store.engine import reader_connection, transaction, writer_conn
 from bankmachine.store.schema import accounts, connections, institutions
 from bankmachine.store.types import UtcInstant, calendar_date, now_utc
 
-#: The aggregator's complaint that update mode exists to clear. Any *other*
-#: complaint is a different problem with a different remedy (`errors.py` keeps
-#: them apart deliberately), so the repair reports it rather than waiting it out.
-LOGIN_REQUIRED = "ITEM_LOGIN_REQUIRED"
+
+def _is_expired_login(code: str | None) -> bool:
+    """Whether a complaint on an item body is the one update mode exists to clear.
+
+    🔴 **Asked of `errors.py`, never of a string literal here.** That module owns
+    the aggregator's vocabulary -- it is where a second expired-login code would
+    be added, and its own docstring says the code layer is "precise and
+    incomplete" precisely because the aggregator adds codes. A copy of one code
+    in this file would be invisible to whoever extends that map, and the repair
+    would then read a still-expired item as "repaired, but complaining about
+    something else". `sync_run.py` asks the same question by catching
+    `ReauthRequiredError`; this is the same question against a body rather than
+    against a raised refusal, because `/item/get` reports an unwell item in its
+    body with a 200 (`api-notes-plaid.md` §13) and nothing is raised to catch.
+
+    A body with no complaint is not an expired login: `None` is "the aggregator
+    is not complaining", which is the state the repair is trying to REACH.
+    """
+    if code is None:
+        return False
+    return classify(None, AggregatorErrorDetail(error_code=code)) is ReauthRequiredError
+
 
 logger = get_logger("cli.connections")
 
@@ -308,6 +328,53 @@ def cmd_reauth(config: Config, args: argparse.Namespace) -> int:
 
     secret = get_plaid_secret(config)
     with PlaidClient(config, secret) as client:
+        # 🔴 **Establish the condition being repaired before printing a URL.**
+        # Completion is "the item is no longer reporting an expired login", and
+        # a connection that was never reporting one satisfies that on the first
+        # poll -- before the operator has opened the URL at all. Without this
+        # read the command prints `repaired connection N` and writes
+        # `status="active"` for a session nobody completed, and tells an operator
+        # whose item is LOCKED that the aggregator "accepted the new login".
+        # `operational-spec.md`'s recovery row lists this command for a broken
+        # connection generally, so both are reachable by following the product's
+        # own instructions.
+        pre_flight = client.item_get(access_token, connection_id=connection_id)
+        before, present_item_id = _item_standing(pre_flight)
+        _archive_item(config, pre_flight, row, item_id=present_item_id)
+        if present_item_id != row.source_connection_id:
+            # The stored credential no longer opens the item this row names. Not
+            # the post-session guard below -- that one catches update mode minting
+            # a successor -- but the same duplication arriving before any session
+            # exists, and there is nothing here to repair in place.
+            print(
+                f"bankmachine: connection {connection_id} ({row.institution_name}) has a stored "
+                f"credential that opens item {present_item_id}, but the connection was enrolled "
+                f"with {row.source_connection_id}. Nothing was changed",
+                file=sys.stderr,
+            )
+            return EXIT_UNHEALTHY
+        if not _is_expired_login(before):
+            # Refused rather than repaired: this command renews a login, and an
+            # item that is not asking for one cannot be made better by renewing
+            # it. Naming what the aggregator DOES say is the whole value here --
+            # `ITEM_LOCKED` sends the operator to their bank, and nothing at all
+            # means the row's degraded flag is stale and a sync will clear it.
+            said = f"reports {before}" if before is not None else "reports no problem"
+            print(
+                f"bankmachine: connection {connection_id} ({row.institution_name}) is not "
+                f"reporting an expired login, so there is nothing for update mode to renew. "
+                f"The aggregator {said}.",
+                file=sys.stderr,
+            )
+            if before is None:
+                print(
+                    "       If `connections list` still shows it degraded, that records the "
+                    "last sync ATTEMPT; run `bankmachine sync run` to clear it",
+                    file=sys.stderr,
+                )
+            return EXIT_UNHEALTHY
+        print(f"  the aggregator reports {before}; update mode renews exactly that")
+
         session = client.link_token_create_update(
             access_token=access_token,
             client_user_id=f"bankmachine-{config.environment}",
@@ -429,18 +496,40 @@ def _poll_for_repair(
     response" costs little enough to take literally.
     """
     fetched = client.item_get(access_token, connection_id=row.connection_id)
+    complaint, item_id = _item_standing(fetched)
+    _archive_item(config, fetched, row, item_id=item_id)
+    return None if _is_expired_login(complaint) else (complaint, item_id)
+
+
+def _archive_item(
+    config: Config, fetched: FetchedResponse, row: ConnectionRow, *, item_id: str
+) -> None:
+    """Archive one `/item/get` body; derive it onto this row only if it IS this row's item.
+
+    🔴 **The identity question is settled before the derivation runs, not after.**
+    `derive_item_get` writes `consent_expires_at` and `source_error_code` onto
+    whichever connection the response was fetched for, and `query.py` turns
+    `consent_expires_at` into the consent caveats the MCP surface attaches to
+    every answer about this connection. A foreign item's consent date landing
+    there would make the datastore warn -- or stop warning -- about a connection
+    on the strength of a body that describes a different one, on the very path
+    that then prints "Nothing was changed."
+
+    Archived either way, with no connection id when the body is foreign. FR-5
+    wants every response kept, and this is the one that evidences why the repair
+    refused; `enroll` archives its pre-connection responses the same way.
+    """
+    belongs_here = item_id == row.source_connection_id
     with writer_connection(config) as conn:
         apply_response(
             conn,
-            connection_id=row.connection_id,
+            connection_id=row.connection_id if belongs_here else None,
             endpoint=fetched.endpoint.path,
             body=fetched.body,
             received_at=fetched.received_at,
             derivers=ALL_DERIVERS,
             request_context=fetched.request_context,
         )
-    complaint, item_id = _item_standing(fetched)
-    return None if complaint == LOGIN_REQUIRED else (complaint, item_id)
 
 
 def _item_standing(fetched: FetchedResponse) -> tuple[str | None, str]:

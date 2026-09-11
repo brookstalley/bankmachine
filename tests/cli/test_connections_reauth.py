@@ -28,6 +28,7 @@ from sqlalchemy import insert, select, update
 from bankmachine.cli import run
 from bankmachine.config import Config
 from bankmachine.connector import ITEM_GET, FetchedResponse, RepairSession
+from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.secrets import (
     SecretsError,
     delete_access_token,
@@ -35,16 +36,20 @@ from bankmachine.secrets import (
     set_access_token,
     set_plaid_secret,
 )
+from bankmachine.store.derivation import ensure_derivation_version
 from bankmachine.store.engine import reader_connection, transaction, writer_connection
+from bankmachine.store.rebuild import rebuild
 from bankmachine.store.schema import (
     TRANSACTIONS_DOMAIN,
     accounts,
     connections,
     institutions,
+    manual_imports,
     raw_responses,
     sync_state,
+    transactions,
 )
-from bankmachine.store.types import calendar_date, now_utc
+from bankmachine.store.types import calendar_date, minor_units, now_utc
 
 # Declared per line, as any file must. The real token SHAPE is carried because a
 # redaction sweep proves nothing against a value that could not have been
@@ -103,10 +108,22 @@ class FakeClient:
     under test is a poll. A fake returning one fixed answer cannot tell polling
     from a single read -- the repair would pass against an implementation that
     never looked twice.
+
+    🔴 **The first entry is the PRE-FLIGHT read, not a poll.** The command
+    establishes that the login really is expired before it prints a URL, so a
+    script starting at `None` describes a connection with nothing to repair and
+    the command refuses it -- correctly. A repair therefore reads
+    `[LOGIN_REQUIRED, ..., None]`: expired when asked, clear once the operator
+    has finished.
     """
 
-    error_codes: list[str | None] = [None]
-    item_id = ITEM_ID
+    error_codes: list[str | None] = [LOGIN_REQUIRED, None]
+    #: A SCRIPT for the same reason `error_codes` is one. "The item came back
+    #: different" is a change ACROSS the session -- this row's item before it,
+    #: a successor after -- and a fake holding one fixed id cannot express that
+    #: separately from "the stored credential never opened this item at all",
+    #: which is a different refusal on a different path.
+    item_ids: list[str] = [ITEM_ID]
     instances: list[FakeClient] = []
 
     def __init__(self, config: Config, secret: str, **kwargs: Any) -> None:
@@ -138,10 +155,14 @@ class FakeClient:
 
     def item_get(self, access_token: str, **kwargs: Any) -> FetchedResponse:
         index = min(self.item_gets, len(FakeClient.error_codes) - 1)
+        id_index = min(self.item_gets, len(FakeClient.item_ids) - 1)
         self.item_gets += 1
         return FetchedResponse(
             endpoint=ITEM_GET,
-            body=_item_body(item_id=FakeClient.item_id, error_code=FakeClient.error_codes[index]),
+            body=_item_body(
+                item_id=FakeClient.item_ids[id_index],
+                error_code=FakeClient.error_codes[index],
+            ),
             received_at=now_utc(),
             request_context=None,
         )
@@ -150,8 +171,8 @@ class FakeClient:
 @pytest.fixture(autouse=True)
 def _reset_fake() -> None:
     FakeClient.instances = []
-    FakeClient.error_codes = [None]
-    FakeClient.item_id = ITEM_ID
+    FakeClient.error_codes = [LOGIN_REQUIRED, None]
+    FakeClient.item_ids = [ITEM_ID]
 
 
 @pytest.fixture
@@ -232,7 +253,7 @@ def degraded_connection(cli_env: Config) -> Config:
                 updated_at=now,
             )
         )
-        conn.execute(
+        account_key = conn.execute(
             insert(accounts).values(
                 institution_id=institution_id,
                 connection_id=connection_id,
@@ -245,6 +266,45 @@ def degraded_connection(cli_env: Config) -> Config:
                 first_seen_date=calendar_date(ENROLLED_ON),
                 source="aggregator",
                 created_at=now,
+                updated_at=now,
+            )
+        ).inserted_primary_key
+        assert account_key is not None  # an INTEGER PRIMARY KEY insert always yields one
+        # 🔴 A transaction, because the command PRINTS that transactions are
+        # unchanged and that half of the claim had nothing reading it. A repair
+        # writes one `connections` row, so the risk is small -- but "small" is
+        # the reason a claim goes unchecked, not a reason it should.
+        import_key = conn.execute(
+            insert(manual_imports).values(
+                account_id=int(account_key[0]),
+                adapter="csv",
+                source_name="export.csv",
+                file_sha256="0" * 64,
+                file_bytes=100,
+                imported_at=now,
+                rows_seen=1,
+                rows_applied=1,
+            )
+        ).inserted_primary_key
+        assert import_key is not None  # an INTEGER PRIMARY KEY insert always yields one
+        # Manual rather than aggregator-sourced: an aggregator row must carry the
+        # `raw_response_id` it was derived from, and seeding one here would tie
+        # this fixture to a transactions page the repair never fetches. What is
+        # being asserted is that a repair leaves transaction rows alone, and a
+        # row is a row.
+        conn.execute(
+            insert(transactions).values(
+                account_id=int(account_key[0]),
+                pending=0,
+                posted_date=calendar_date(ENROLLED_ON),
+                amount_minor=minor_units(-42_00),
+                currency="USD",
+                description="Coffee",
+                source="manual",
+                manual_import_id=int(import_key[0]),
+                import_fingerprint="fp-reauth-1",
+                derivation_version_id=ensure_derivation_version(conn),
+                first_seen_at=now,
                 updated_at=now,
             )
         )
@@ -266,6 +326,21 @@ def _account_ids(config: Config) -> list[int]:
         return [int(row[0]) for row in conn.execute(select(accounts.c.account_id)).all()]
 
 
+def _transaction_rows(config: Config) -> list[tuple[Any, ...]]:
+    with reader_connection(config) as conn:
+        return [
+            tuple(row)
+            for row in conn.execute(
+                select(
+                    transactions.c.transaction_id,
+                    transactions.c.amount_minor,
+                    transactions.c.description,
+                    transactions.c.updated_at,
+                )
+            ).all()
+        ]
+
+
 # --------------------------------------------------------------------------
 # AC-4.3 -- the repair, and what it must not touch
 # --------------------------------------------------------------------------
@@ -280,6 +355,7 @@ def test_a_repair_clears_the_error_and_leaves_every_item_scoped_value_alone(
     config = degraded_connection
     before = _connection(config)
     accounts_before = _account_ids(config)
+    transactions_before = _transaction_rows(config)
 
     assert run(["connections", "reauth", "1"]) == 0
 
@@ -295,10 +371,128 @@ def test_a_repair_clears_the_error_and_leaves_every_item_scoped_value_alone(
     assert after["credential_ref"] == before["credential_ref"]
     assert after["requested_history_days"] == before["requested_history_days"]
     assert _account_ids(config) == accounts_before
+    # The command PRINTS that the transactions are unchanged; this is the half of
+    # that claim that reads it back.
+    assert _transaction_rows(config) == transactions_before
 
     out = capsys.readouterr().out
     assert "https://secure.example/hl/repair" in out
     assert "sync run" in out
+
+
+def test_a_connection_that_is_not_reporting_an_expired_login_is_refused(
+    degraded_connection: Config,
+    offline_client: type[FakeClient],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """🔴 The command must establish the condition it claims to have repaired.
+
+    Completion here is "the item is no longer reporting an expired login", and an
+    item that was never reporting one satisfies that on the first look -- before
+    the operator has opened the printed URL. Without a check before the URL, this
+    fixture reaches `repaired connection 1` and a `status="active"` write for a
+    session nobody completed.
+    """
+    FakeClient.error_codes = [None]
+
+    assert run(["connections", "reauth", "1"]) == 1
+
+    # Nothing was written: the row is exactly as degraded as it was.
+    assert _connection(degraded_connection)["status"] == "degraded"
+    err = capsys.readouterr().err
+    assert "not reporting an expired login" in err
+    # The stale-flag case has its own remedy, and it is not this command.
+    assert "sync run" in err
+
+
+def test_a_connection_locked_at_the_bank_is_refused_before_a_url_is_printed(
+    degraded_connection: Config,
+    offline_client: type[FakeClient],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The negative control's other half: a complaint update mode cannot clear.
+
+    `ITEM_LOCKED`'s remedy is at the operator's own bank. Reached before the URL,
+    it costs them nothing; reached after, the command tells them the aggregator
+    "accepted the new login", which is an assertion about a session that never
+    happened.
+    """
+    FakeClient.error_codes = ["ITEM_LOCKED"]
+
+    assert run(["connections", "reauth", "1"]) == 1
+
+    assert _connection(degraded_connection)["status"] == "degraded"
+    captured = capsys.readouterr()
+    assert "ITEM_LOCKED" in captured.err
+    assert "https://secure.example/hl/repair" not in captured.out
+
+
+def test_a_credential_that_opens_a_different_item_is_refused_before_any_session(
+    degraded_connection: Config,
+    offline_client: type[FakeClient],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Foreign from the first read is a different fault from foreign after the session.
+
+    The stored credential no longer opens the item this row names, so there is
+    nothing to repair in place and no session worth printing. Distinguished from
+    the post-session guard because the message an operator can act on differs.
+    """
+    FakeClient.item_ids = [OTHER_ITEM_ID]
+
+    assert run(["connections", "reauth", "1"]) == 1
+
+    row = _connection(degraded_connection)
+    assert row["status"] == "degraded"
+    assert row["source_connection_id"] == ITEM_ID
+    captured = capsys.readouterr()
+    assert OTHER_ITEM_ID in captured.err
+    assert "https://secure.example/hl/repair" not in captured.out
+
+
+def test_a_foreign_item_does_not_derive_onto_this_connection(
+    degraded_connection: Config, offline_client: type[FakeClient]
+) -> None:
+    """🔴 The refusal path says "Nothing was changed", so nothing may have changed.
+
+    `derive_item_get` writes `consent_expires_at` onto whichever connection the
+    response was fetched for, and `query.py` turns that column into the consent
+    caveats the MCP surface attaches to every answer about this connection. A
+    foreign item's consent date landing there would make the datastore warn about
+    this connection on the strength of a body describing a different one.
+    """
+    FakeClient.item_ids = [ITEM_ID, OTHER_ITEM_ID]
+
+    assert run(["connections", "reauth", "1"]) == 1
+
+    assert _connection(degraded_connection)["consent_expires_at"] is None
+    # Kept, though: FR-5 wants every response, and this one evidences the refusal.
+    with reader_connection(degraded_connection) as conn:
+        foreign = conn.execute(
+            select(raw_responses.c.connection_id).where(raw_responses.c.connection_id.is_(None))
+        ).all()
+    assert len(foreign) == 1
+
+
+def test_a_repaired_connection_can_still_be_rebuilt(
+    degraded_connection: Config, offline_client: type[FakeClient]
+) -> None:
+    """🔴 `store rebuild` must not report a repaired connection as content-changed.
+
+    This is the first path in the product that archives `/item/get` against a real
+    connection id, which is what makes the item-standing deriver reachable on
+    replay. If that deriver also owned `connections.updated_at` -- which the
+    commands that change the row stamp with the clock -- the replay would
+    overwrite the live value with the archived `received_at`, and `rebuild` would
+    refuse at an unchanged derivation version, blaming an impure deriver or a
+    pruned archive. `operational-spec.md` sends the operator here after exactly
+    this repair.
+    """
+    assert run(["connections", "reauth", "1"]) == 0
+
+    report = rebuild(degraded_connection, derivers=ALL_DERIVERS)
+
+    assert not report.content_changed
 
 
 def test_the_repair_waits_for_the_item_rather_than_reading_it_once(
@@ -310,10 +504,11 @@ def test_the_repair_waits_for_the_item_rather_than_reading_it_once(
     that never looks twice, which is the whole failure mode a one-shot fixture
     hides (`learnings.md` -- write the guard from the failure's point of view).
     """
-    FakeClient.error_codes = [LOGIN_REQUIRED, LOGIN_REQUIRED, None]
+    FakeClient.error_codes = [LOGIN_REQUIRED, LOGIN_REQUIRED, LOGIN_REQUIRED, None]
 
     assert run(["connections", "reauth", "1"]) == 0
-    assert FakeClient.instances[-1].item_gets == 3
+    # One pre-flight read plus three polls: the last is the one that changed.
+    assert FakeClient.instances[-1].item_gets == 4
     assert _connection(degraded_connection)["status"] == "active"
 
 
@@ -347,8 +542,13 @@ def test_an_item_that_came_back_different_is_refused_and_nothing_is_repaired(
     A different item id means a SECOND item now stands behind this connection --
     every account re-issued, every transaction counted twice, every total doubled
     with no warning naming it. Left degraded is recoverable; marked active is not.
+
+    🔴 The id changes ACROSS the session: this row's item on the pre-flight read,
+    a successor once the operator has finished. An id that was foreign from the
+    first read is a different fault with a different message, and a fixture that
+    could not tell them apart would pass against a command that only had one.
     """
-    FakeClient.item_id = OTHER_ITEM_ID
+    FakeClient.item_ids = [ITEM_ID, OTHER_ITEM_ID]
 
     assert run(["connections", "reauth", "1"]) == 1
 
@@ -369,7 +569,7 @@ def test_the_matching_item_is_the_negative_control_for_that_guard(
     Without this, the refusal above would still pass against code that refused
     every repair.
     """
-    assert FakeClient.item_id == ITEM_ID
+    assert FakeClient.item_ids == [ITEM_ID]
     assert run(["connections", "reauth", "1"]) == 0
     assert _connection(degraded_connection)["status"] == "active"
 
@@ -405,6 +605,7 @@ def test_every_poll_is_archived(
         archived = conn.execute(
             select(raw_responses.c.endpoint, raw_responses.c.connection_id)
         ).all()
+    # The pre-flight read and the one poll that answered.
     assert len(archived) == 2
     assert {row[0] for row in archived} == {ITEM_GET.path}
     assert {row[1] for row in archived} == {1}

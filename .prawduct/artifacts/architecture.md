@@ -197,7 +197,7 @@ contact.
   | `enroll` | writer (network) | step 3 — **built** 2026-09-07 |
   | `connections list` | reader | step 3 — **built** 2026-09-07 |
   | `connections retire` | writer (network) | step 3 — **built** 2026-09-07; local retirement plus `POST /item/remove` |
-  | `repair` | writer | step 6 |
+  | `connections reauth` | writer (network) | step 6 — **built** 2026-09-10; update-mode Link against the item the connection already holds |
   | `sync run` | writer (network) | step 4 — **built** 2026-09-08 |
   | `mcp` | reader | step 7 — **first slice built** 2026-09-08; stdio JSON-RPC, read-only, 4 of 10 tools |
   | `import` | writer | step 10 |

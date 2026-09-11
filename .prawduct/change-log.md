@@ -92,6 +92,29 @@ a sweep, not an edit: `docs/system-requirements.md` (AC-4.3, and AC-1.4's idempo
 `bankmachine connections reauth <id>` with the connection id already filled in, and only for an
 expired login, because a line printed under every degradation is one an operator learns to skip.
 
+🔴 **What the cumulative review caught, and it was the one nobody could have found by reading the
+command alone.** `connections reauth` is the first path in the product that archives `/item/get`
+against a real connection id — enrollment archives it with none, and `sync run` archives only
+accounts and transactions pages. That made the item-standing deriver reachable on replay, and it
+was stamping `connections.updated_at`, a column the commands that change the row stamp with the
+clock. So the first `store rebuild` after a repair would have found content changed at an unchanged
+derivation version, rolled back, and told the operator a deriver was impure or the archive had been
+pruned — neither true, and `operational-spec.md` sends them to `store rebuild` after exactly this
+repair. The column now has one owner: the commands that change the row. The deriver writes what it
+derives, and a repaired connection rebuilds.
+
+**Three more the review found in the same command.** It never established the condition it claimed
+to repair — completion was "the item is not reporting an expired login *now*", which a healthy
+connection satisfies on the first look, so it would print a URL and then "repaired" for a session
+nobody opened, and tell an operator whose item was LOCKED that the aggregator accepted a new login.
+It now reads the item once before printing anything and refuses what update mode cannot renew,
+naming what the aggregator actually says. The poll derived a possibly-foreign item onto this row
+*before* the identity comparison, so the refusal path that prints "Nothing was changed" had already
+written another item's consent date into the column the MCP consent warnings are built from; the
+identity question is now settled before the derivation runs, and a foreign body is archived with no
+connection id rather than derived. And the expired-login code is asked of `errors.py`, which owns
+that vocabulary, instead of a string literal held a second time in the CLI.
+
 **Not built here:** reconciling a store that is *already* doubled, and an identity fallback for the
 institutions that give no stable account id. Both are #91.
 

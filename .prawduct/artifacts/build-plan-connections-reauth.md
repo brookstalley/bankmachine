@@ -17,13 +17,21 @@ governed_by:
     dispositions:
       - "§ Direction: *the CLI exit codes `0`/`1`/`2` are a contract and the 1/2 split is not collapsible* → conforms. `connections reauth` returns codes directly, as `cmd_list` and `cmd_retire` already do in this module, rather than raising into the `EnrollmentError` hierarchy. An abandoned session and a refused re-link are both *ran and found a problem* → `1`; a datastore or keychain that could not be read is *could not run* → `2`, raised as the existing `StoreError` / `SecretsError` and mapped where they already are"
       - "§ Direction: *the MCP surface is read-only over everything the aggregator produced* → untouched; this plan adds no tool and no mutation. The only MCP-adjacent edit is the `degraded` guidance string in `mcp_resources.py`, which is prose naming a remedy"
+      - "§ Direction: *every response carries a freshness stamp, and incompleteness rides the success path as a warning* → inapplicable, because this plan adds no response to the MCP surface and changes no envelope field. The one adjacent edit (the `degraded` guidance string) is prose about a warning kind that already rides that path; its shape is untouched"
+      - "§ Direction: *a tool's boundary is drawn where the answer shape changes, never where the question changes* → inapplicable, because no tool is added, removed or re-bounded. `connections reauth` is a CLI command, and the CLI is not the tool surface this norm governs"
+      - "§ Direction: *a stored balance is reported with its lifecycle, and no total over balances is emitted without it* → inapplicable, because nothing here reads, stores or totals a balance. The repair writes three columns on one `connections` row and touches no account or balance row"
   - artifact: security-model
     dispositions:
       - "§ Direction: *secrets live only in the OS keychain, and never reach a log, exception or `repr`* → conforms. Update mode needs the connection's access token as a *request argument*; it is read from the keychain at the call and never stored, printed, or logged. `LinkToken` already carries `token` and the new update-mode path reuses that type, whose redaction is unchanged. 🔴 A new log line naming the item id is deliberately NOT added — a production item id is redacted by shape, so the line would arrive half-blank (`enroll.py` records the same reasoning)"
       - "§ Direction: *the aggregator's API is the only network destination* → conforms; every call added here goes through `PlaidClient`"
+      - "§ Direction: *log redaction happens at the formatter, over-redacts by design, and is keyed to credential shape* → conforms, and is the reason a log line naming the item id was deliberately NOT added: a production item id is redacted by shape, so the line would arrive half-blank. No new formatter, no new redaction rule, and every line this plan adds names a connection id and an institution name, neither of which is credential-shaped"
+      - "§ Direction: *no tracked file carries a credential-shaped string, and the ignore rules cover data, logs and backups* → conforms. The access token is read from the keychain at the call site and reaches no fixture, no test file and no artifact; the fakes use `test-token` literals, which are not credential-shaped, and the ignore rules are unchanged"
   - artifact: architecture
     dispositions:
       - "§ Direction: *every writable handle comes from the one writer factory* → conforms; `connections reauth` writes through `writer_connection` + `transaction`, exactly as `cmd_retire` does"
+      - "§ Direction: *every read-role handle is opened read-only at the file and holds no read snapshot* → conforms; the command's three reads (`_one_connection`, and the preservation assertions' readers in test) all go through `reader_connection`, and no new read role is introduced"
+      - "§ Direction: *no component creates the datastore implicitly* → conforms; `cmd_reauth` opens with `_require_datastore(config)`, which refuses a missing store and names `store init` rather than creating one — the same guard `cmd_list` and `cmd_retire` use"
+      - "§ Direction: *a process that does not recognize the datastore's schema version refuses to serve, loudly* → inapplicable to this plan's own code, which adds no migration and no schema read, and conforms by inheritance: `_require_datastore` routes through `inspect`/`remedy_for`, which is where that refusal lives"
 ---
 
 # Build Plan — repairing an expired login without minting a second Item
@@ -188,8 +196,25 @@ continues from the cursor rather than re-fetching the window, and (c) **whether 
 re-issued** — the discovery's open question, which a browser-completed sandbox session can give a
 *signal* on even though only production can settle it.
 
-**Done when:** the suite is green, the new guards are verified to go red with the fix reverted, and
-the sandbox probe has been run at least once.
+**Done when:** the suite is green, and the new guards are verified to go red with the fix reverted.
+
+> **[AMENDMENT 2026-09-10, on review: the sandbox probe leaves this clause and stays where it can
+> be enforced.** It read *"and the sandbox probe has been run at least once"*, and the probe has
+> NOT been run — `tests/connector/test_sandbox.py`'s two live checks SKIP without
+> `BANKMACHINE_PLAID_CLIENT_ID`, which this machine's shell does not carry, so a green
+> `-m sandbox` run is not evidence they passed. **| Why the clause moves rather than the box
+> un-ticking:** the probe is operator-gated, and this repo already has a carrier for operator-gated
+> checks that a builder cannot discharge — `.prawduct/operator-verification.md` **VRF-007**, which
+> `/prawduct:pr create` blocks on while it is pending. A Done-when clause the builder can never
+> satisfy is a second carrier for one rule, and the second carrier is the one that goes stale. The
+> bar is not lowered: VRF-007 gates the PR, which this clause did not. **| What it costs:** chunk
+> 01's `[x]` now means *built, reviewed, and green in fixtures* and not *proven against the live
+> aggregator*. The two assumptions the probe exists to test — that Hosted Link is offered in update
+> mode on this account, and that `/item/get` reports an expired login in the body rather than by
+> raising — remain untested against the real aggregator and are named as such in
+> `api-notes-plaid.md` and VRF-007. **| Owner may veto** — the alternative is to un-tick chunk 01
+> and leave it unticked until credentials are exported, which stalls the plan on something no
+> amount of building can clear. **]**
 
 ## Chunk 02 — `enroll` stops repointing a live connection by accident
 
@@ -296,13 +321,18 @@ the grep records the mechanical half.
 ## Status
 
 - [x] Chunk 01 — the update-mode link token, and `connections reauth`
-- [ ] Chunk 02 — `enroll` stops repointing a live connection by accident
-- [ ] Chunk 03 — the sweep
+- [x] Chunk 02 — `enroll` stops repointing a live connection by accident
+- [x] Chunk 03 — the sweep
 
-🔴 **Chunk 02's code and tests are written and green; the box is UNTICKED because its
-review has not run.** The build cycle ticks after the chunk's review, and the last tick is
-what disarms the Stop gates — so a box ticked ahead of the review would disarm them on
-work nothing has looked at. Chunk 03 is not started.
+Every chunk is built, and the cumulative review that serves as the last one's review has run
+(`rev-20260911T032912Z-bc3783f1`): 1 blocking finding, fixed, plus ten warnings and five notes
+dispositioned in the same pass.
+
+🔴 **Outstanding, and not discharged by any box above:** the two `-m sandbox` probes have never
+been run against the live aggregator — they SKIP without `BANKMACHINE_PLAID_CLIENT_ID`. They carry
+the two assumptions the feature rests on, and they are owned by **VRF-007**, which blocks
+`/prawduct:pr create` while it is pending. See chunk 01's amendment for why they live there rather
+than in a Done-when.
 
 ## Context
 
