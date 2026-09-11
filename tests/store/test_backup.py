@@ -386,9 +386,7 @@ def test_the_wal_guarantee_holds_at_an_unservable_version(
     )
 
 
-def test_the_documented_recovery_path_is_walked_end_to_end(
-    config: Config, tmp_path: Path
-) -> None:
+def test_the_documented_recovery_path_is_walked_end_to_end(config: Config, tmp_path: Path) -> None:
     """🔴 `operational-spec.md` § Rollback: "Recovery is restore-from-backup".
 
     A documented remedy is a claim, and this walks it against a genuinely older
@@ -516,9 +514,7 @@ def test_a_store_that_records_no_schema_version_is_copied_and_reported(
 
     assert report.schema_version is None
     assert report.destination.exists()
-    assert (
-        connection.schema_problem_for(None) is connection.DatastoreProblem.NO_SCHEMA_VERSION
-    )
+    assert connection.schema_problem_for(None) is connection.DatastoreProblem.NO_SCHEMA_VERSION
     verified = [r for r in caplog.records if "backup verified" in r.getMessage()]
     assert verified, "the record an unattended run depends on was never written"
     assert "none recorded" in verified[0].getMessage()

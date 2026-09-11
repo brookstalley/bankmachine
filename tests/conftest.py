@@ -77,9 +77,7 @@ def _bankmachine_env(config: Config, **extra: str) -> dict[str, str]:
     }
 
 
-def use_cli_env(
-    monkeypatch: pytest.MonkeyPatch, config: Config, **extra: str
-) -> Config:
+def use_cli_env(monkeypatch: pytest.MonkeyPatch, config: Config, **extra: str) -> Config:
     """Point an in-process `run([...])` at this config, and return it.
 
     🔴 The in-process twin of `child_env`, and it exists for the same reason:
@@ -93,8 +91,7 @@ def use_cli_env(
     """
     pairs = _bankmachine_env(
         config,
-        BANKMACHINE_CONFIG=str(config.datastore_path.parent / "absent.toml"),
-        **extra,
+        **{"BANKMACHINE_CONFIG": str(config.datastore_path.parent / "absent.toml"), **extra},
     )
     for key, value in pairs.items():
         monkeypatch.setenv(key, value)
@@ -116,8 +113,23 @@ def child_env(config: Config, **extra: str) -> dict[str, str]:
     red, which carries the property by memory at every site instead of by
     construction at one -- the same decay the guard itself was written to avoid.
     The next test that spawns a writer inherits it from here instead.
+
+    🔴 `BANKMACHINE_CONFIG` points at a file that does not exist, for the reason
+    `use_cli_env` does it: a config file on the operator's machine must not reach
+    a test. A child inherits the real environment, so without this it reads
+    ~/.config/bankmachine/config.toml -- and the production runbook now tells the
+    operator to put `environment = "production"` in exactly that file, so the
+    omission stopped being theoretical the moment this branch shipped.
     """
-    return {**os.environ, **_bankmachine_env(config, **extra)}
+    return {
+        **os.environ,
+        # `extra` last: a caller that names its own config file means it, and the
+        # absent-file default is only there for the callers that say nothing.
+        **_bankmachine_env(
+            config,
+            **{"BANKMACHINE_CONFIG": str(config.datastore_path.parent / "absent.toml"), **extra},
+        ),
+    }
 
 
 @pytest.fixture

@@ -30,7 +30,7 @@ from bankmachine.cli.hosted_link import (
     positive_seconds,
     print_invitation,
 )
-from bankmachine.config import Config, ConfigError
+from bankmachine.config import Config, ConfigError, require_chosen_environment
 from bankmachine.connector import (
     ConnectorError,
     FetchedResponse,
@@ -203,6 +203,17 @@ def cmd_list(config: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_retire(config: Config, args: argparse.Namespace) -> int:
+    # 🔴 Guarded at the first statement, for `cmd_enroll`'s reason rather than by
+    # analogy to it. The ordinary path marks the row retired under the writer lock
+    # BEFORE it calls the aggregator, so the refusal lands there with nothing spent.
+    # The already-retired retry path runs only READS before `item_remove`, and reads
+    # are exempt -- so on a defaulted environment the Item is really removed, and
+    # then `delete_access_token` is refused and swallowed. The credential survives,
+    # `_credential_survives` keeps reading "removal never confirmed", and every
+    # later retry hits ITEM_NOT_FOUND and reports "may still be billing" about an
+    # Item that is gone. Nothing clears that state, which is why the guard belongs
+    # ahead of the remote effect and not beside the write it protects.
+    require_chosen_environment(config)
     _require_datastore(config)
     connection_id = int(args.connection_id)
 

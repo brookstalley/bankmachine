@@ -358,6 +358,36 @@ def test_enrollment_refuses_before_it_can_mint_an_item(
         enroll_module.cmd_enroll(unchosen(initialized_config), args)
 
 
+def test_retiring_refuses_before_it_can_remove_an_item(
+    initialized_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 Same reason as enrollment, reached by the opposite route.
+
+    `cmd_retire`'s ordinary path marks the row retired under the writer lock
+    before it calls the aggregator, so a defaulted environment is refused there
+    with nothing spent. Its already-retired RETRY path runs only reads before
+    `item_remove`, and reads are exempt from the guard -- so without a guard at
+    the top the Item is really removed, `delete_access_token` is then refused,
+    and `release_at_aggregator` swallows that refusal by contract. The credential
+    survives, `_credential_survives` keeps reading "removal never confirmed", and
+    every later retry reports "may still be billing" about an Item that is gone.
+
+    Asserted the way the enrollment case is: every aggregator entry point
+    explodes, so a late guard fails with that error instead of the refusal.
+    """
+    from bankmachine.cli import connections as connections_module
+
+    def _never(*args: object, **kwargs: object) -> object:
+        raise AssertionError("the aggregator was contacted before the refusal")
+
+    monkeypatch.setattr(connections_module, "get_plaid_secret", _never)
+    monkeypatch.setattr(connections_module, "PlaidClient", _never)
+
+    args = argparse.Namespace(connection_id=1)
+    with pytest.raises(UnchosenEnvironmentError):
+        connections_module.cmd_retire(unchosen(initialized_config), args)
+
+
 def test_releasing_at_the_aggregator_never_raises_on_a_defaulted_environment(
     initialized_config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -77,7 +77,11 @@ about data rather than the one that is about branches.
 
 ## Configure
 
-Sandbox is the default environment and needs nothing but a free Plaid dashboard signup.
+Sandbox needs nothing but a free Plaid dashboard signup — but the environment has to be
+**declared**, not defaulted: anything that opens the datastore for writing, or changes a
+per-environment keychain entry, refuses when nothing chose one. `.env.example` declares it, so
+the block below works as written; a cron entry sources nothing and needs it in the config file
+instead. The reasoning is under **Configuration** below.
 
 ```sh
 cp .env.example .env                        # fill in BANKMACHINE_PLAID_CLIENT_ID
