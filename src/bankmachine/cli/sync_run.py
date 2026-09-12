@@ -41,6 +41,7 @@ from bankmachine.cli.exit_codes import EXIT_OK, EXIT_RUN_AGAIN, EXIT_UNHEALTHY
 from bankmachine.cli.parser import AnyParser
 from bankmachine.config import Config
 from bankmachine.connector import (
+    INVESTMENTS_PRODUCT,
     ConnectorError,
     FetchedResponse,
     ReauthRequiredError,
@@ -63,6 +64,7 @@ from bankmachine.store.schema import (
     TRANSACTIONS_DOMAIN,
     accounts,
     connections,
+    decode_capabilities,
     institutions,
     sync_state,
     transactions,
@@ -134,6 +136,12 @@ class ConnectionOutcome:
     login_expired: bool = False
     still_materializing: bool = False
     historical_complete: bool = False
+    #: Whether this run pulled the connection's positions. Reported because the
+    #: gate is silent by design -- a connection that cannot serve investments and
+    #: one whose capabilities could not be read both simply do not call, and
+    #: without a word in the report the two are indistinguishable from a run that
+    #: pulled them and found nothing.
+    investments_pulled: bool = False
     granted_history_days: int | None = None
     history_shortfall_days: int | None = None
 
@@ -388,7 +396,7 @@ def _run_once(config: Config, args: argparse.Namespace) -> int:
     # and discovering it once per connection would report N problems for one cause.
     secret = get_plaid_secret(config)
     run = RunOutcome()
-    for connection_id, institution_name, credential_ref in targets:
+    for connection_id, institution_name, credential_ref, capabilities in targets:
         run.outcomes.append(
             _sync_one(
                 config,
@@ -396,6 +404,7 @@ def _run_once(config: Config, args: argparse.Namespace) -> int:
                 connection_id=connection_id,
                 institution_name=institution_name,
                 credential_ref=credential_ref,
+                capabilities=capabilities,
                 wait=not args.no_wait,
             )
         )
@@ -404,12 +413,22 @@ def _run_once(config: Config, args: argparse.Namespace) -> int:
     return run.exit_code
 
 
-def _live_connections(conn: SAConnection, *, only: int | None) -> list[tuple[int, str, str]]:
+def _live_connections(
+    conn: SAConnection, *, only: int | None
+) -> list[tuple[int, str, str, frozenset[str]]]:
+    """Every connection to sync, and what each of them reports it can serve.
+
+    The capabilities ride along because AC-3.2 decides per connection whether the
+    investments endpoints are called at all, and the alternative -- re-reading the
+    column inside the per-connection loop -- would open a second handle per
+    connection to answer a question this one already had in hand.
+    """
     statement = (
         select(
             connections.c.connection_id,
             institutions.c.name,
             connections.c.credential_ref,
+            connections.c.capabilities,
         )
         .select_from(connections.join(institutions))
         .where(connections.c.retired_at.is_(None))
@@ -417,7 +436,26 @@ def _live_connections(conn: SAConnection, *, only: int | None) -> list[tuple[int
     )
     if only is not None:
         statement = statement.where(connections.c.connection_id == only)
-    return [(int(r[0]), str(r[1]), str(r[2])) for r in conn.execute(statement).all()]
+    targets: list[tuple[int, str, str, frozenset[str]]] = []
+    for row in conn.execute(statement).all():
+        connection_id = int(row[0])
+        try:
+            capabilities = decode_capabilities(str(row[3]))
+        except ValueError as exc:
+            # 🔴 Said out loud rather than defaulted to "can do nothing". An
+            # unreadable capabilities column means this connection's optional
+            # domains go unpulled, and a connection that quietly stops pulling
+            # investments looks exactly like one whose institution never offered
+            # them. The domains it has no choice about still run.
+            logger.warning(
+                "connection %d has an unreadable capabilities record, so only the domains "
+                "every connection has are synced for it: %s",
+                connection_id,
+                exc,
+            )
+            capabilities = frozenset()
+        targets.append((connection_id, str(row[1]), str(row[2]), capabilities))
+    return targets
 
 
 def _sync_one(
@@ -427,6 +465,7 @@ def _sync_one(
     connection_id: int,
     institution_name: str,
     credential_ref: str,
+    capabilities: frozenset[str],
     wait: bool,
     sleep: Callable[[float], None] = time.sleep,
 ) -> ConnectionOutcome:
@@ -438,6 +477,7 @@ def _sync_one(
     one per run.
     """
     outcome = ConnectionOutcome(connection_id=connection_id, institution_name=institution_name)
+    investments_failure: Exception | None = None
     try:
         access_token = get_access_token(config, credential_ref)
     except SecretsError as exc:
@@ -460,6 +500,57 @@ def _sync_one(
             # operator linked the institution.
             accounts_page = client.accounts_get(access_token, connection_id=connection_id)
             _persist(config, accounts_page, connection_id)
+
+            # 🔴 AC-3.2: pulled for a connection that reports it can serve them,
+            # and for no other reason. Whole-value membership of the recorded
+            # list -- nothing here looks at which institution this is, and the
+            # roster stays out of the code.
+            #
+            # Before the page loop, not after it, because that loop returns early
+            # while the aggregator is still materializing a transactions backfill
+            # (`NOT_READY`, which can persist for minutes on a first sync). The
+            # positions are ready regardless -- they share no cursor and no
+            # window with the transactions -- so ordering them after that return
+            # would leave an investments-capable connection with no holdings for
+            # as long as its transactions took to build.
+            if INVESTMENTS_PRODUCT in capabilities:
+                try:
+                    holdings_page = client.investments_holdings_get(
+                        access_token, connection_id=connection_id
+                    )
+                    _persist(config, holdings_page, connection_id)
+                    outcome.investments_pulled = True
+                except ReauthRequiredError:
+                    # 🔴 Re-raised, because this one IS about the login. It
+                    # degrades the connection through the path that prints the
+                    # repair, which is the whole difference between a failure an
+                    # operator can fix and one they can only stare at.
+                    raise
+                except (ConnectorError, StoreError) as exc:
+                    # 🔴 **Carried, not raised: the investments pull must not
+                    # cost this connection its transactions.** The capability
+                    # gate opens for any connection whose recorded capabilities
+                    # name the product, and those include products the Item has
+                    # never initialized -- so this call can fail for a connection
+                    # whose transactions are perfectly healthy. Raising here
+                    # would abandon the page loop before it started, and the
+                    # archived history would go unsynced on this run and every
+                    # run after it, for a reason that has nothing to do with
+                    # transactions.
+                    #
+                    # The connection is still degraded for it, below, once the
+                    # pages are in. Recording the failure against the investments
+                    # DOMAIN rather than the connection -- so a product error
+                    # stops sending the operator to `connections reauth` -- needs
+                    # the per-domain error columns, and is the next piece of work
+                    # rather than a half-built version of it here.
+                    investments_failure = exc
+                    logger.warning(
+                        "connection %d could not pull investments; its transactions are "
+                        "synced regardless and the connection is reported degraded: %s",
+                        connection_id,
+                        exc,
+                    )
 
             while outcome.pages < MAX_PAGES_PER_RUN:
                 cursor = _cursor_for(config, connection_id)
@@ -544,6 +635,12 @@ def _sync_one(
 
     if outcome.historical_complete:
         _record_granted_window(config, connection_id, outcome)
+    if investments_failure is not None:
+        # After the transactions are in, so the run's work is not thrown away by
+        # the report of what else went wrong with the same connection.
+        return _degrade(
+            config, outcome, type(investments_failure).__name__, str(investments_failure)
+        )
     # 🔴 A run that still owes history has NOT finished, and stamping it `active`
     # with a fresh `last_success_at` would tell every later reader -- the
     # freshness warning in `query.py` and `get_pipeline_health` most of all --
@@ -798,9 +895,10 @@ def _report(run: RunOutcome) -> None:
                 if (outcome.stopped_short)
                 else ""
             )
+            positions = ", positions recorded" if outcome.investments_pulled else ""
             print(
                 f"  {outcome.connection_id}  {outcome.institution_name}: "
-                f"{outcome.pages} {pages} applied{more}"
+                f"{outcome.pages} {pages} applied{positions}{more}"
             )
             if not outcome.historical_complete:
                 # 🔴 A bare "N pages applied" reads as finished, and at

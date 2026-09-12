@@ -721,3 +721,55 @@ way this build assumes. This entry needs a second **real** institution and a rea
 up to a pay cycle. The obligation is **#23**, and it blocks production.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-016`
+
+## VRF-017 — a real sandbox sync records positions, and the operator can read them
+
+**Status:** pending
+
+**Chunk:** investments — holdings end to end · **Raised:** 2026-09-12
+
+**Why a human:** this is the chunk's Early Feedback Milestone and the one claim its tests
+cannot make. The deriver is proven against the payload the aggregator actually sent, and the
+capability gate is proven across two connections in-process — but nothing here has run
+`bankmachine sync run` against an enrolled sandbox connection end to end, because enrolling
+one goes through Hosted Link in a browser. What the operator is checking is that the whole
+path works when the parts are joined by the real command, and that what lands is legible.
+
+**Prerequisite:** a sandbox connection at an institution that serves investments. The
+aggregator's `ins_109511` is one *(measured: `api-notes-plaid.md` §24)*; `ins_109508` also
+answers, because its capabilities carry investments among `available_products` and the gate
+reads the union.
+
+```
+export BANKMACHINE_PLAID_CLIENT_ID=<client id>   # or `source .env`
+bankmachine enroll                               # complete the hosted link in a browser
+bankmachine sync run --no-wait
+```
+
+**Verify:**
+
+1. The run's report says `positions recorded` for the investments-capable connection, and
+   does **not** say it for a connection that is not.
+2. `bankmachine sync shell`, then:
+   ```sql
+   SELECT s.ticker, s.name, h.quantity, h.market_value_minor, h.currency, h.as_of_date
+     FROM holdings h JOIN securities s USING (security_id);
+   ```
+   Rows come back. `quantity` is exact decimal text — a fractional position must not read as
+   a rounded one. `as_of_date` is **today**, not the price's date.
+3. `SELECT domain, last_success_at, last_error_code FROM sync_state;` shows a row at
+   `domain = 'investments'` beside the transactions one, and the two advance independently.
+4. Run `bankmachine sync run --no-wait` a second time the same day. The holdings rows are
+   **unchanged** — same `captured_at`, same values (AC-2.4).
+5. 🔴 Read the value of an investment account against its balance:
+   ```sql
+   SELECT a.name, b.current_minor, (SELECT SUM(market_value_minor) FROM holdings h
+          WHERE h.account_id = a.account_id AND h.as_of_date = b.as_of_date)
+     FROM accounts a JOIN balances_daily b USING (account_id) WHERE a.type = 'investment';
+   ```
+   They may well **disagree** — the aggregator's own sandbox is off by 6% on one account
+   *(§23)*. That is expected and is exactly why nothing sums the two. What must be true is
+   that both are present: the positions decompose the account, they do not replace it.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-017`
+

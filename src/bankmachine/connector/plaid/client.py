@@ -38,6 +38,7 @@ from plaid.api import plaid_api
 from plaid.model.accounts_get_request import AccountsGetRequest
 from plaid.model.country_code import CountryCode
 from plaid.model.institutions_get_request import InstitutionsGetRequest
+from plaid.model.investments_holdings_get_request import InvestmentsHoldingsGetRequest
 from plaid.model.item_get_request import ItemGetRequest
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
 from plaid.model.item_remove_request import ItemRemoveRequest
@@ -55,6 +56,7 @@ from bankmachine.config import MAX_HISTORY_DAYS, Config
 from bankmachine.connector import (
     ACCOUNTS_GET,
     INSTITUTIONS_GET,
+    INVESTMENTS_HOLDINGS_GET,
     ITEM_GET,
     ITEM_PUBLIC_TOKEN_EXCHANGE,
     ITEM_REMOVE,
@@ -870,5 +872,27 @@ class PlaidClient:
             ACCOUNTS_GET,
             self._api.accounts_get,
             AccountsGetRequest(access_token=access_token),
+            connection_id=connection_id,
+        )
+
+    def investments_holdings_get(
+        self, access_token: str, *, connection_id: int | None = None
+    ) -> FetchedResponse:
+        """Every position in this connection's investment accounts, in one reply.
+
+        Unpaginated and unwindowed, unlike every other bulk read here: the
+        aggregator answers with the whole set of current positions, so there is
+        no cursor to store and no page ceiling to stop at *(measured against the
+        live sandbox, `api-notes-plaid.md` §22)*.
+
+        The call is made only for a connection whose recorded capabilities
+        include the investments product (AC-3.2); the decision is the caller's,
+        because what a connection can do is a fact in the datastore rather than
+        one this client can see.
+        """
+        return self._fetch(
+            INVESTMENTS_HOLDINGS_GET,
+            self._api.investments_holdings_get,
+            InvestmentsHoldingsGetRequest(access_token=access_token),
             connection_id=connection_id,
         )

@@ -473,6 +473,11 @@ def test_a_page_this_build_cannot_read_degrades_its_own_connection(
         connection_id=1,
         institution_name="First Platypus Bank",
         credential_ref="connection:sandbox:item-for-cursor-tests",
+        # Named rather than defaulted, because the parameter is: a caller that
+        # could forget it would stop pulling a domain with nothing saying so.
+        # This connection reports none, so only the domains every connection has
+        # run -- which is what this test is about.
+        capabilities=frozenset(),
         wait=False,
     )
 

@@ -39,6 +39,7 @@ governed_by:
     dispositions:
       - "Secrets live only in the OS keychain and never reach a log, exception or `repr` → conforms; the investments calls take the same access token by the same path"
       - "The aggregator's API is the only network destination → conforms; two new endpoints on the same host, no new destination"
+      - "Log redaction happens at the formatter, over-redacts by design, and is keyed to credential shape → conforms, and is worth naming because this build deliberately logs values it did not log before. The valuation-rounding line carries a security's amount and currency and the per-row refusal names the instrument; neither is credential-shaped, and the formatter over-redacts anything that is. No redaction rule is added and none is relaxed — which also means a long opaque `security_id` may well come back `[REDACTED]` in a log line, and that is the over-redaction working"
       - "No tracked file carries a credential shape, and no roster or operator identity reaches a remote → 🔴 conforms, and carries a real risk this plan must handle deliberately. The `verify-api` probe in Chunk 01 captures a REAL response containing security names, tickers and quantities, and it is committed as a fixture. **The probe is run against the SANDBOX, never against a real connection** — that is what makes the capture canned data rather than the operator's holdings, and it is the whole safety argument, not a preference. `tests/connector/fixtures/accounts_get.json` is the precedent: sandbox ids and balances, committed as captured. `tests/preferences/check-no-personal-data.sh` is the backstop at push time, and it matches the roster's own tokens, so it would not catch a real holding from an institution the roster does not name — the sandbox rule is the one doing the work here"
   - artifact: operational-spec
     dispositions:
@@ -122,7 +123,7 @@ waves 2–3 that is **not** Medium: it was derived and argued in
 
 ## Status
 
-- [ ] Chunk 01: One capable connection's holdings, end to end
+- [x] Chunk 01: One capable connection's holdings, end to end
 - [ ] Chunk 02: Investment transactions, and the window that actually came back
 - [ ] Chunk 03: Investments fails on its own, and the health surface says so
 - [ ] Chunk 04: Rebuild, idempotency, and the properties that hold across both
@@ -131,10 +132,13 @@ waves 2–3 that is **not** Medium: it was derived and argued in
 - [ ] Chunk 07: `balance_history` — one series, read two ways
 - [ ] Chunk 08: Net worth, and the two ways it can be quietly wrong
 
-Context: Plan written 2026-09-12; nothing built. The blocker is discharged — the
-`fix/mypy-green-and-gated` PR merged, `feat/investment-sync` is cut off the `develop` that
-carries it, and this plan is that branch's first commit, so every investments PR has CI
-from the start. Next: Chunk 01, starting with its `verify-api` sandbox probe.
+Context: Chunk 01 built and reviewed 2026-09-12 (0 blocking after one fix round). Its
+`verify-api` probe ran against the live sandbox first and moved three things the field
+mapping had assumed — `api-notes-plaid.md` §22-25 carries the measurements, and §23 is the
+one waves 2-3 lean on: holdings decompose an account's balance and need not sum to it. Next:
+Chunk 02, starting with its own `verify-api` step, which has a question waiting for it —
+the SDK's investment-transaction model carries no settlement date and no removal signal, so
+this chunk's soft-delete deliverable is written against a shape nobody has measured.
 
 ## The Program
 
@@ -184,8 +188,8 @@ Tests are the floor, and three things here are not testable from a fixture:
 2. **Two institutions, not one.** 🔴 The capability gate cannot be proven against a single
    enrolled connection, and this project has already been burned by exactly that: every
    capability fixture was drawn from `ins_109508`, where investments happens to sit in
-   `available_products`, so the right read and the wrong read agreed and 552 tests passed
-   against a criterion that was inverted. `ins_109511` reports `products: ['investments',
+   `available_products`, so the right read and the wrong read agreed and the whole suite
+   passed against a criterion that was inverted. `ins_109511` reports `products: ['investments',
    'transactions']` and is the discriminating case. Chunk 01 enrolls it in the sandbox and
    keeps both.
 3. **The operator's own run.** After Chunk 04, `bankmachine sync run` against the sandbox
@@ -243,6 +247,7 @@ Tests are the floor, and three things here are not testable from a fixture:
   call; a second run the same day changes nothing.
 - **Foreign API:** plaid-investments-holdings
 - **Done when:**
+  <!-- prawduct:allow prawduct/chunk-ref-missing -- the aggregator's own HTTP endpoint path, which a verify-api step is obliged to name; not a file this repo has or should have -->
   0. verify-api — probe the live sandbox for `/investments/holdings/get`, capture the actual
      response shape into `.prawduct/artifacts/api-notes-plaid.md` as a new measured section,
      and confirm which fields are nullable in practice. Fakes and fixtures are written after
@@ -281,6 +286,7 @@ Tests are the floor, and three things here are not testable from a fixture:
   changes nothing.
 - **Foreign API:** plaid-investments-transactions
 - **Done when:**
+  <!-- prawduct:allow prawduct/chunk-ref-missing -- as in Chunk 01: the aggregator's endpoint path, named because probing it IS the step; not a file reference -->
   0. verify-api — probe the live sandbox for `/investments/transactions/get`, capture the
      real pagination shape (how "more" is signalled, and whether the returned range is
      stated or must be computed from the rows) into `.prawduct/artifacts/api-notes-plaid.md`
@@ -302,6 +308,12 @@ Tests are the floor, and three things here are not testable from a fixture:
   - per-domain error recording in `src/bankmachine/cli/sync_run.py`: an investments failure
     writes `last_error_code` / `last_error_at` on the investments `sync_state` row and
     leaves the transactions domain's success intact, and vice versa
+  - 🔴 **the carried failure recorded even when the page loop returns early.** Chunk 01
+    carries an investments failure past the transactions pages and degrades the connection
+    afterwards — but a connection still materializing its history returns from inside that
+    loop, before the degrade lands, so on a first sync the failure is logged and reaches no
+    column at all. Recording against the domain rather than the connection is what closes
+    it, which is why it is this chunk's rather than a patch on the one before
   - the decision above made structural — a credential error reached through an investments
     call still degrades the connection; a product error does not
   - the three `domain == TRANSACTIONS_DOMAIN` reads in `src/bankmachine/query.py` widened

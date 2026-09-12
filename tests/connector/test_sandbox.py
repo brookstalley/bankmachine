@@ -31,6 +31,7 @@ import pytest
 from plaid.api import plaid_api
 from plaid.model.country_code import CountryCode
 from plaid.model.institutions_get_request import InstitutionsGetRequest
+from plaid.model.investments_holdings_get_request import InvestmentsHoldingsGetRequest
 from plaid.model.item_public_token_exchange_request import (  # noqa: F401
     ItemPublicTokenExchangeRequest,
 )
@@ -505,3 +506,117 @@ def test_an_expired_login_is_reported_inside_the_item_body(
 
     assert item["item_id"], "the repair compares this against the row before trusting anything"
     assert item["error"]["error_code"] == "ITEM_LOGIN_REQUIRED"
+
+
+# --------------------------------------------------------------------------
+# Investments (AC-3.2), probed before the deriver that will read it exists
+# --------------------------------------------------------------------------
+
+#: The sandbox institution that actually holds positions, and the one whose
+#: `products` and `available_products` disagree about investments.
+#:
+#: 🔴 Not `ins_109508`. On that institution investments sits in
+#: `available_products`, so a capability read that is exactly inverted looks
+#: right against it -- which is how an inverted criterion once passed 552 tests
+#: and a live probe. A holdings payload recorded from an institution whose
+#: positions are an accident of which list was read is not evidence about the
+#: endpoint this product will call for real.
+SANDBOX_INVESTMENTS_INSTITUTION = "ins_109511"
+
+
+@pytest.fixture
+def investments_item(sandbox_client: Any) -> str:
+    """A disposable sandbox connection enrolled WITH investments.
+
+    Enrolled with the product rather than merely at an institution that offers
+    it: `/investments/holdings/get` answers for an Item that has the product
+    initialized, and an Item that could have had it is not the same thing.
+    """
+    public = sandbox_client._fetch_bytes(
+        Endpoint("/sandbox/public_token/create"),
+        sandbox_client._api.sandbox_public_token_create,
+        SandboxPublicTokenCreateRequest(
+            institution_id=SANDBOX_INVESTMENTS_INSTITUTION,
+            initial_products=[Products("investments")],
+        ),
+    )
+    public_token = json.loads(public)["public_token"]
+    assert isinstance(public_token, str)
+    grant: AccessGrant = sandbox_client.exchange_public_token(public_token)
+    return grant.access_token
+
+
+def test_holdings_come_back_and_carry_what_the_schema_declares_not_null(
+    sandbox_client: Any, investments_item: str
+) -> None:
+    """🔴 The measured shape the holdings deriver is written FROM, not checked against.
+
+    Called through the raw fetch rather than through a client method because
+    there is no client method yet, and that ordering is the point: the field
+    mapping is reasoned from a payload the aggregator actually sent, so a column
+    the schema declares NOT NULL is known to have something to hold before any
+    code assumes it does.
+
+    Asserted per column rather than per key, because an absent field and a
+    present-but-null one are the same refusal to a NOT NULL column and the
+    aggregator documents several of these as nullable.
+    """
+    body = sandbox_client._fetch_bytes(
+        Endpoint("/investments/holdings/get"),
+        sandbox_client._api.investments_holdings_get,
+        InvestmentsHoldingsGetRequest(access_token=investments_item),
+    )
+    payload = _record_or_compare("investments_holdings_get", body)
+
+    assert payload["holdings"], (
+        "a connection enrolled with investments answered with no positions, so this is not "
+        "the fixture the deriver should be written from"
+    )
+    assert payload["securities"], (
+        "holdings reference securities by id and nothing else names the instrument; an "
+        "answer with none of them cannot be derived into two tables"
+    )
+
+    for holding in payload["holdings"]:
+        # `holdings.quantity`, `market_value_minor` and `currency` are NOT NULL,
+        # and `security_id` is half the row's primary key.
+        for field in ("account_id", "security_id", "quantity", "institution_value"):
+            assert holding.get(field) is not None, (
+                f"a live holding carries no {field}, which the schema declares NOT NULL"
+            )
+        assert (
+            holding.get("iso_currency_code") is not None
+            or holding.get("unofficial_currency_code") is not None
+        ), "a live holding states neither currency, and the row cannot be denominated"
+
+    for security in payload["securities"]:
+        assert security.get("security_id"), (
+            "`securities.source_security_id` is the identity holdings upsert on"
+        )
+
+
+def test_the_investments_institution_reports_the_product_only_in_products(
+    sandbox_client: Any, investments_item: str
+) -> None:
+    """🔴 The live case where the two product lists disagree, which is the whole rule.
+
+    `ins_109508` carries investments in `available_products`, so against it a
+    reading of `available_products` alone and the union agree -- and a criterion
+    that was exactly inverted passed 552 tests and a live probe on that agreement.
+    This institution is the discriminating one: enrolled WITH investments, it
+    reports the product among `products` and the aggregator guarantees its
+    absence from `available_products`.
+    """
+    fetched = sandbox_client.item_get(investments_item, connection_id=1)
+    item = json.loads(fetched.body)["item"]
+
+    assert "investments" in item["products"]
+    assert "investments" not in item["available_products"], (
+        "the aggregator documents `available_products` as mutually exclusive with what the "
+        "Item already has; if this ever holds, the two lists have stopped discriminating "
+        "and this test can no longer catch a read of the wrong one"
+    )
+    assert "investments" in capabilities_of(fetched.body), (
+        "capability discovery reads the UNION; reading `available_products` alone would "
+        "record the connection that actually holds a 401k as unable to serve investments"
+    )

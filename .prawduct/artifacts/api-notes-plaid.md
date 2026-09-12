@@ -644,6 +644,112 @@ bundle makes both variables inert for the one channel that carries live credenti
 
 ---
 
+## What the investments verify-api established
+
+*(Measured 2026-09-12 against the live sandbox, `ins_109511`, an Item enrolled with
+`investments`. Recorded verbatim as `tests/connector/fixtures/investments_holdings_get.json`
+by `test_holdings_come_back_and_carry_what_the_schema_declares_not_null`.)*
+
+### 22. `/investments/holdings/get` — the shape, and the two fields the schema wanted that are not in it
+
+The body is five keys: `accounts`, `holdings`, `securities`, `item`, `request_id`.
+🔴 `is_investments_fallback_item`, which the pinned SDK's response model declares, is
+**absent from the body** — so a deriver that read it off the model's field list would be
+reading a key that is not there.
+
+`accounts` is **every account on the Item** (14 here, the same shape `/accounts/get`
+returns), not the investment ones alone. Only two of them hold positions. The
+`balances` object has grown a field since §14 was measured: `margin_loan_amount`, beside
+`available`, `current`, `iso_currency_code`, `limit` and `unofficial_currency_code`.
+
+**A holding carries no capture date of its own.** The fields are `account_id`,
+`security_id`, `quantity`, `institution_price`, `institution_value`, `cost_basis`,
+`institution_price_as_of`, `institution_price_datetime`, `iso_currency_code`,
+`unofficial_currency_code`, `tax_lots`, `vested_quantity`, `vested_value` — and the only
+date among them is the price's, not the position's. So `holdings.as_of_date` is **this
+system's capture date**, derived from `received_at` exactly as `balances_daily.as_of_date`
+is, and the two series line up by construction rather than by the aggregator's agreement.
+
+🔴 **And the price is four years stale in the sandbox**: `institution_price_as_of` is
+`2021-05-25` on all 13 positions, `institution_price_datetime` is null on all 13. That is
+canned data, but it is the aggregator deliberately serving a price older than the answer —
+the case `list_holdings` has to disclose rather than smooth away.
+
+What is nullable **in practice**, over 13 positions and 13 securities:
+
+| Field | Nulls | Note |
+|---|---|---|
+| `holdings.quantity`, `institution_price`, `institution_value`, `account_id`, `security_id` | 0/13 | every NOT NULL column has something to hold |
+| `holdings.cost_basis` | 0/13 | populated throughout here, which is **not** a guarantee — the aggregator documents it nullable |
+| `holdings.iso_currency_code` | 0/13 | `unofficial_currency_code` null 13/13 |
+| `holdings.institution_price_datetime`, `vested_quantity`, `vested_value` | 13, 12, 12 | |
+| `securities.security_id`, `name`, `type`, `iso_currency_code`, `is_cash_equivalent` | 0/13 | |
+| `securities.ticker_symbol` | 3/13 | |
+| `securities.close_price`, `close_price_as_of`, `cusip`, `isin`, `sedol`, `figi`, `cfi_code`, `sector`, `industry`, `subtype`, `market_identifier_code`, `option_contract`, `fixed_income`, `update_datetime` | 13/13 | 🔴 **`close_price` is null on every security**, so `securities.close_price_minor` and `close_price_as_of` get nothing from this feed and their rounding path is unexercised live |
+| `securities.institution_id`, `institution_security_id`, `proxy_security_id` | 12/13 | |
+
+`security_type` takes seven values here: `cash`, `cryptocurrency`, `derivative`, `equity`,
+`etf`, `fixed income`, `mutual fund`.
+
+**Sub-cent valuations are ordinary, and quantities are finer still.** Four of thirteen
+`institution_value`s and one `cost_basis` carry more precision than the cent:
+`115.57268`, `636.309`, `1373.6865`, `1855.875`, `542.041`. So `to_minor`'s half-even
+rounding fires on a third of a real payload rather than at an edge. Quantities include
+`0.00293644` (a Bitcoin position) and `12345.67` — exact decimal text, never a float.
+
+🔴 **A cryptocurrency holding is still denominated in USD.** The BTC position carries
+`iso_currency_code: "USD"` and a null `unofficial_currency_code`: the currency on a holding
+is the currency of the *value*, not of the instrument. Nothing in this payload can provoke
+the undenominable-row refusal, so that path stays a constructed fixture — and this is the
+measurement that says so, rather than an assumption that it would be easy.
+
+### 23. 🔴 Holdings decompose an account's balance, and the two do not have to add up
+
+The reason net worth must read one series or the other and never sum them is already in
+this payload, and the arithmetic is not what the name suggests:
+
+| Account | `balances.current` | Σ `institution_value` | Difference |
+|---|---|---|---|
+| Plaid IRA | 320.76 | 320.76 | 0 |
+| Plaid 401k | 23631.9805 | 25125.63318 | **−1493.65268** |
+
+The IRA reconciles exactly; the 401k does not, and no `margin_loan_amount` explains it —
+the IRA is the account carrying one (100), and the 401k's is null. So:
+
+- **Summing the two is a double count.** The 401k's value is already in `balances_daily`
+  by way of `/accounts/get`; its positions are what that value is *made of*.
+- **Neither can be derived from the other.** A reconciliation asserting
+  Σ holdings = balance would go red on the aggregator's own canned data, so it is not a
+  test this product can write, and a total built by substituting one for the other would be
+  wrong by 6% on this account.
+
+### 24. Capabilities, measured a second time on the institution that discriminates
+
+`ins_109511` enrolled with `investments` alone reports `products: ['investments']` and an
+`available_products` of twelve entries that **does not include investments**. §13's rule
+survives its second measurement: reading `available_products` alone would record this
+connection — the one actually holding a 401k — as incapable of the only thing it does.
+
+### 25. An Item answers for investments it has only *available*, not initialized
+
+The capability gate reads the union of `products` and `available_products` (§13), so in
+production it will call for Items that have never had the product added. Probed directly
+rather than reasoned about: an `ins_109508` Item enrolled with `transactions` alone reports
+`products: ['transactions']`, carries `investments` (and `investments_auth`, which is why the
+gate compares whole values) among fourteen `available_products` — and
+`/investments/holdings/get` **answers it normally**, 13 holdings and 13 securities. No
+`PRODUCT_NOT_READY`, no refusal.
+
+🔴 **What this does NOT settle is the bill.** The aggregator adds a product to an Item on
+first use and bills for it; the sandbox bills nothing, so this probe can say the call
+succeeds and cannot say what it costs. An operator whose institutions mostly *could* serve
+investments will therefore have them all initialized by the first sync after this ships. That
+is a cost decision and it belongs to the owner, which is why it is written here rather than
+quietly gated around: narrowing the gate to `products` alone is what §13 measured as the read
+that never discovers anything.
+
+---
+
 ## Still to verify
 
 - ~~**The success path has not been probed.**~~ Done 2026-09-06 — see §7. The fixture is
@@ -677,6 +783,13 @@ bundle makes both variables inert for the one channel that carries live credenti
   this account's `persistent_account_id` is NULL here as it is nearly everywhere — so the fallback
   #95 exists for is untouched by this result. What it does establish is that the duplication has a
   path that does not produce it, which is what #67 was built to offer.
+- ~~**The `/investments/holdings/get` response shape.**~~ Done 2026-09-12 — see §22-24.
+  The fixture is recorded and the probe compares against it on every `-m sandbox` run.
+- **`/investments/transactions/get`.** Not probed. The pinned SDK's model carries no
+  settlement date and **no removal signal** — `cancel_transaction_id` and an
+  offset/count window over `total_investment_transactions` are all it offers — which
+  the investments build plan's Chunk 02 assumes otherwise about. Its own `verify-api`
+  step settles it.
 - **A real rate limit or a real `PRODUCT_NOT_READY`.** Neither was provoked;
   both are exercised against constructed responses only, and `PRODUCT_NOT_READY`
   remains the least-evidenced entry in the taxonomy.

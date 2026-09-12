@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import ClassVar
+from typing import ClassVar, Final
 
 from bankmachine.store.types import UtcInstant
 
@@ -499,6 +499,34 @@ TRANSACTIONS_SYNC = Endpoint("/transactions/sync")
 
 #: The accounts behind one connection.
 ACCOUNTS_GET = Endpoint("/accounts/get")
+
+#: The positions held inside one connection's investment accounts, and the
+#: securities they reference. Archivable: the body carries holdings, securities
+#: and the account roster, and no credential.
+#:
+#: Both risk properties are spelled out rather than inherited: a read with no
+#: cursor consumes nothing at the far end, so a repeat answers with the same
+#: positions, and the body carries holdings and securities but no token. Written
+#: out because a comment claiming a property is declared, resting on a default,
+#: is one edit away from being false -- the same reason `LINK_TOKEN_GET` states
+#: its `retry_safe` explicitly.
+INVESTMENTS_HOLDINGS_GET = Endpoint(
+    "/investments/holdings/get", retry_safe=True, issues_credential=False
+)
+
+
+#: The aggregator's own name for the investments product, as it appears in an
+#: Item's `products` and `available_products` -- and therefore in the
+#: `connections.capabilities` those two are recorded into at enrollment.
+#:
+#: 🔴 **The gate is this name against that column, never an institution.** AC-3.2
+#: says a connection's investments are pulled because the connection reports it
+#: can serve them, and the roster stays out of the code entirely.
+#:
+#: Spelled the same as `sync_state`'s `INVESTMENTS_DOMAIN` and not the same fact:
+#: this one is the aggregator's vocabulary, which only this layer is allowed to
+#: know.
+INVESTMENTS_PRODUCT: Final = "investments"
 
 
 @dataclass(frozen=True, slots=True)

@@ -34,6 +34,65 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-12: What is inside an investment account, recorded for the first time
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** the schema for investments has existed since build step 1 and every one of its
+tables was empty. `securities`, `holdings` and `investment_transactions` were created,
+constrained and never written to; `connections.capabilities` has recorded which connections
+could serve investments since build step 3 and **nothing read that column.** An operator
+holding a 401k saw a brokerage account with a balance and nothing whatsoever about what was
+inside it, and AC-3.2 was one of two acceptance criteria in FR-3 with no implementation.
+
+**What changed (Chunk 01 — holdings, end to end):** `/investments/holdings/get` is pulled
+for a connection whose recorded capabilities name the investments product — **capability,
+never institution** — and derived into `securities` and `holdings`, with a `sync_state` row
+at `domain = 'investments'` written inside the derivation's own transaction. The pull is
+made before the transactions page loop, because that loop returns early while a backfill is
+still materializing and positions share neither its cursor nor its window.
+
+The first-capture-of-the-day rule is now **one implementation shared** by the balance series
+and the holdings series rather than two written from the same paragraph: same comparison of
+`(captured_at, raw_response_id)`, same refusal to replace a row the operator imported. Two
+series disagreeing about what "first" means would have surfaced as a rebuild that could not
+reproduce its own content.
+
+**Measured before it was written.** The plan's `verify-api` step ran against the live sandbox
+first, and the capture (`api-notes-plaid.md` §22-24, fixture committed) moved three things
+the field mapping had reasoned about:
+
+- **A position carries no date of its own.** The only date on a holding is the *price's*, and
+  in the sandbox it is four years old. So `holdings.as_of_date` is this system's capture date,
+  the same one the balance series is keyed on — deriving it from the price would have filed
+  today's observation under 2021.
+- **Sub-cent valuations are ordinary**, not an edge: four of thirteen positions carry more
+  precision than the cent, so the half-even rounding runs on a third of a real payload.
+- 🔴 **Holdings decompose an account's balance and do not have to add up to it.** The
+  aggregator's own sandbox has one investment account reconciling exactly and another off by
+  6%, with no margin loan to explain it. Net worth must therefore read one series or the
+  other and never sum them — the guard wave 3 owes — and no reconciliation between the two is
+  a test this product can write.
+
+**What is NOT here, stated rather than left to be found:** an investments failure still
+degrades the whole **connection**, because recording it against the investments *domain* —
+so that a product error stops sending the operator to `connections reauth` — needs the
+per-domain error columns and the health surface that reports them, which is the next chunk.
+What it no longer does is cost that connection its transactions: the pull is carried rather
+than raised, the page loop runs, and the degrade lands after the history is in. A credential
+error is re-raised on the spot instead, because that one IS about the login and the operator
+needs the repair printed.
+
+The gate itself is silent by design — a connection that cannot serve investments simply does
+not call — so the run's report names the connections that did, and an unreadable
+`capabilities` record is logged rather than read as "cannot".
+
+**The holdings reply's own account roster is derived**, through the one account deriver every
+other endpoint's roster goes through. An account that has closed or been de-selected drops
+out of `/accounts/get` while its positions keep arriving, and refusing the reply for it would
+roll back every other position — permanently, since the archived body replays the same
+refusal on every rebuild.
+
 ## 2026-09-12: The gate runs somewhere that is not the author's machine
 
 <!-- prawduct: scope=ci-runs-the-gate -->

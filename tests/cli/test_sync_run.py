@@ -24,6 +24,7 @@ from bankmachine.cli.sync_run import MAX_PAGINATION_RESTARTS
 from bankmachine.config import Config
 from bankmachine.connector import (
     ACCOUNTS_GET,
+    INVESTMENTS_HOLDINGS_GET,
     TRANSACTIONS_SYNC,
     FetchedResponse,
     ReauthRequiredError,
@@ -42,8 +43,11 @@ from bankmachine.store.connection import AnotherWriterRunningError
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
 from bankmachine.store.schema import (
+    INVESTMENTS_DOMAIN,
     TRANSACTIONS_DOMAIN,
+    accounts,
     connections,
+    holdings,
     institutions,
     sync_state,
     transactions,
@@ -76,6 +80,52 @@ def _accounts_body() -> bytes:
             ],
             "item": {"item_id": ITEM_ID},
             "request_id": "req-accounts",
+        }
+    ).encode()
+
+
+SECURITY_ID = "sec-index-fund"
+
+
+def _holdings_body(*, quantity: str = "10", value: str = "1855.875") -> bytes:
+    """One position, in the shape `api-notes-plaid.md` §22 recorded.
+
+    The sub-cent default value is not decoration: four of thirteen positions in
+    the live capture carry more precision than the cent, so a fake that only ever
+    sent round numbers would exercise a path the aggregator does not use.
+    """
+    return json.dumps(
+        {
+            "accounts": [],
+            "holdings": [
+                {
+                    "account_id": SOURCE_ACCOUNT,
+                    "security_id": SECURITY_ID,
+                    "quantity": quantity,
+                    "institution_price": "24.5",
+                    "institution_price_as_of": "2021-05-25",
+                    "institution_value": value,
+                    "cost_basis": "1666.5",
+                    "iso_currency_code": "USD",
+                    "unofficial_currency_code": None,
+                }
+            ],
+            "securities": [
+                {
+                    "security_id": SECURITY_ID,
+                    "name": "Dreyfus Index Fund",
+                    "ticker_symbol": "DBLTX",
+                    "cusip": None,
+                    "isin": None,
+                    "type": "mutual fund",
+                    "close_price": None,
+                    "close_price_as_of": None,
+                    "iso_currency_code": "USD",
+                    "unofficial_currency_code": None,
+                }
+            ],
+            "item": {"item_id": ITEM_ID},
+            "request_id": "req-holdings",
         }
     ).encode()
 
@@ -127,6 +177,15 @@ class FakeClient:
     #: succeeds -- which is the only way to observe AC-4.1 at all.
     fail_for_token: str | None = None
     accounts_calls: int = 0
+    #: The tokens `/investments/holdings/get` was called with, in order. A list
+    #: rather than a count because the gate's whole question is WHICH connections
+    #: reached the endpoint, and a count cannot tell two connections apart.
+    holdings_tokens: list[str] = []
+    #: What the investments call raises, if anything. Its own switch rather than
+    #: `fail_with`, because the whole question is whether ONE endpoint failing
+    #: takes the others down with it -- a fake that could only fail everywhere
+    #: could not express the case.
+    holdings_error: Exception | None = None
 
     def __init__(self, config: Config, secret: str, **kwargs: Any) -> None:
         pass
@@ -144,6 +203,17 @@ class FakeClient:
         return FetchedResponse(
             endpoint=ACCOUNTS_GET,
             body=_accounts_body(),
+            received_at=now_utc(),
+            request_context=None,
+        )
+
+    def investments_holdings_get(self, access_token: str, **kwargs: Any) -> FetchedResponse:
+        FakeClient.holdings_tokens.append(access_token)
+        if FakeClient.holdings_error is not None:
+            raise FakeClient.holdings_error
+        return FetchedResponse(
+            endpoint=INVESTMENTS_HOLDINGS_GET,
+            body=_holdings_body(),
             received_at=now_utc(),
             request_context=None,
         )
@@ -177,6 +247,8 @@ def _reset() -> None:
     FakeClient.fail_with = None
     FakeClient.fail_for_token = None
     FakeClient.accounts_calls = 0
+    FakeClient.holdings_tokens = []
+    FakeClient.holdings_error = None
 
 
 @pytest.fixture
@@ -354,7 +426,7 @@ def test_a_second_run_is_a_no_op(cli_env: Config) -> None:
 # --------------------------------------------------------------------------
 
 
-def _enroll_a_second_connection(config: Config) -> str:
+def _enroll_a_second_connection(config: Config, *, capabilities: str = "[]") -> str:
     """A second live connection, and the access token that reaches it.
 
     AC-4.1 is only observable across two connections: with one, "the loop
@@ -379,7 +451,7 @@ def _enroll_a_second_connection(config: Config) -> str:
                 institution_id=primary_key[0],
                 source_connection_id="item-two",
                 credential_ref=second_ref,
-                capabilities="[]",
+                capabilities=capabilities,
                 requested_history_days=730,
                 status="active",
                 enrolled_at=now,
@@ -1286,3 +1358,188 @@ def test_until_ready_waits_the_configured_delay_between_attempts(cli_env: Config
     # Two waits for three attempts: the loop does not sleep after the last one,
     # which would be a delay nobody is waiting through.
     assert slept == [90.0, 90.0]
+
+
+# --------------------------------------------------------------------------
+# AC-3.2 — the capability gate, which is about the connection and never the bank
+# --------------------------------------------------------------------------
+
+
+def _capable_connection(config: Config) -> str:
+    """A second connection that reports it can serve investments."""
+    return _enroll_a_second_connection(config, capabilities='["investments", "transactions"]')
+
+
+def test_investments_are_pulled_for_the_connection_that_reports_them_and_no_other(
+    cli_env: Config,
+) -> None:
+    """🔴 Both directions in one run, because either alone proves nothing.
+
+    A test with only the capable connection cannot tell a working gate from no
+    gate at all; one with only the incapable connection cannot tell a working
+    gate from a broken client. The discrimination is the assertion.
+    """
+    capable_token = _capable_connection(cli_env)
+    FakeClient.pages = [_page()]
+
+    assert run(["sync", "run", "--no-wait"]) == 0
+
+    assert FakeClient.holdings_tokens == [capable_token], (
+        "the endpoint was reached for exactly the connection whose recorded "
+        "capabilities name the product"
+    )
+    stored = _holdings_rows(cli_env)
+    assert len(stored) == 1
+    assert {row["account_id"] for row in stored} == {_account_of(cli_env, "item-two")}
+
+
+def test_a_capability_that_merely_contains_the_product_name_does_not_open_the_gate(
+    cli_env: Config,
+) -> None:
+    """🔴 Whole values, never a substring.
+
+    The aggregator's product list holds `investments_auth` beside `investments`,
+    and a substring test would pull holdings for a connection that reports only
+    the former -- the same shape of error that once recorded a connection's
+    capabilities from `available_products` alone and inverted AC-3.2's criterion
+    for exactly the connections that have investments.
+    """
+    _enroll_a_second_connection(cli_env, capabilities='["investments_auth"]')
+    FakeClient.pages = [_page()]
+
+    assert run(["sync", "run", "--no-wait"]) == 0
+
+    assert FakeClient.holdings_tokens == []
+    assert _holdings_rows(cli_env) == []
+
+
+def test_a_capable_connection_records_its_investments_domain_and_says_so(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The run's own report distinguishes a connection that pulled positions.
+
+    Without the line, a connection that cannot serve investments and one whose
+    capabilities could not be read look identical to one that pulled them and
+    found an empty portfolio.
+    """
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page()]
+
+    assert run(["sync", "run", "--no-wait"]) == 0
+
+    out = capsys.readouterr().out
+    assert "positions recorded" in out
+    with reader_connection(cli_env) as conn:
+        domains = conn.execute(
+            select(sync_state.c.connection_id, sync_state.c.domain).where(
+                sync_state.c.domain == INVESTMENTS_DOMAIN
+            )
+        ).all()
+    assert [row[0] for row in domains] == [2]
+
+
+def test_a_second_run_the_same_day_leaves_the_positions_alone(cli_env: Config) -> None:
+    """AC-2.4 for the holdings series: the first capture of the day is the one kept."""
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page()]
+    assert run(["sync", "run", "--no-wait"]) == 0
+    before = _holdings_rows(cli_env)
+
+    FakeClient.pages = [_page(next_cursor="cursor-2")]
+    assert run(["sync", "run", "--no-wait"]) == 0
+
+    assert _holdings_rows(cli_env) == before
+
+
+def test_an_unreadable_capability_record_is_reported_rather_than_read_as_incapable(
+    cli_env: Config, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A connection that quietly stops pulling investments looks exactly like one
+    whose institution never offered them, so the difference is logged and the
+    domains every connection has still run."""
+    _enroll_a_second_connection(cli_env, capabilities="not json at all")
+    FakeClient.pages = [_page(added=[_txn("t-capability")], next_cursor="cursor-1")]
+
+    with caplog.at_level(logging.WARNING, logger="bankmachine.cli.sync_run"):
+        assert run(["sync", "run", "--no-wait"]) == 0
+
+    assert FakeClient.holdings_tokens == []
+    assert any("unreadable capabilities" in record.getMessage() for record in caplog.records)
+    assert len(_txn_rows(cli_env)) == 2, "the domains it has no choice about still ran"
+
+
+def _holdings_rows(config: Config) -> list[dict[str, Any]]:
+    with reader_connection(config) as conn:
+        return [dict(row) for row in conn.execute(select(holdings)).mappings()]
+
+
+def _account_of(config: Config, source_connection_id: str) -> int:
+    with reader_connection(config) as conn:
+        return int(
+            conn.execute(
+                select(accounts.c.account_id)
+                .join(connections, connections.c.connection_id == accounts.c.connection_id)
+                .where(connections.c.source_connection_id == source_connection_id)
+            ).scalar_one()
+        )
+
+
+def test_an_investments_failure_does_not_cost_the_connection_its_transactions(
+    cli_env: Config,
+) -> None:
+    """🔴 The new feature must not be able to break the old one.
+
+    The gate opens for any connection whose recorded capabilities name the
+    product, and those include products the Item has never initialized — so this
+    call can fail for a connection whose transactions are entirely healthy.
+    Raising from the pull would abandon the page loop before it started, on this
+    run and on every run after it.
+
+    The connection is still reported degraded: recording the failure against the
+    investments domain instead is the next chunk's work, and until it exists,
+    saying nothing would be the silent staleness this product refuses.
+    """
+    _capable_connection(cli_env)
+    FakeClient.holdings_error = TransportError(
+        "the aggregator is unreachable", endpoint=INVESTMENTS_HOLDINGS_GET
+    )
+    FakeClient.pages = [_page(added=[_txn("t-despite-investments")], next_cursor="cursor-1")]
+
+    assert run(["sync", "run", "--no-wait"]) == 1
+
+    assert FakeClient.holdings_tokens, "the gate still opened; the failure is the endpoint's"
+    assert _holdings_rows(cli_env) == []
+    with reader_connection(cli_env) as conn:
+        synced = conn.execute(
+            select(sync_state.c.cursor).where(
+                sync_state.c.connection_id == 2, sync_state.c.domain == TRANSACTIONS_DOMAIN
+            )
+        ).scalar_one()
+        status = conn.execute(
+            select(connections.c.status, connections.c.last_error_code).where(
+                connections.c.connection_id == 2
+            )
+        ).one()
+    assert synced == "cursor-1", "the transactions paged to the end despite the other failure"
+    assert status[0] == "degraded"
+    assert status[1] == "TransportError"
+
+
+def test_an_expired_login_found_through_the_investments_call_still_offers_the_repair(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """🔴 A credential error IS about the login, whichever call happens to meet it.
+
+    Swallowing it with the other investments failures would degrade the
+    connection with no repair printed — and the operator's next move would be to
+    enrol again, which mints a second Item and doubles the history.
+    """
+    _capable_connection(cli_env)
+    FakeClient.holdings_error = ReauthRequiredError(
+        "the login expired", endpoint=INVESTMENTS_HOLDINGS_GET
+    )
+    FakeClient.pages = [_page()]
+
+    assert run(["sync", "run", "--no-wait"]) == 1
+
+    assert "connections reauth 2" in capsys.readouterr().out

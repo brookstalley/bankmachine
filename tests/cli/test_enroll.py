@@ -1391,6 +1391,13 @@ def test_every_endpoint_declares_both_of_its_risk_properties_deliberately() -> N
             "same page, which is what lets a killed process resume",
         ),
         "ACCOUNTS_GET": (True, False, "a read of the connection's accounts"),
+        "INVESTMENTS_HOLDINGS_GET": (
+            True,
+            False,
+            "an unpaginated read of current positions -- no cursor is advanced and nothing "
+            "at the far end is spent, and the body carries holdings, securities and the "
+            "account roster with no token among them",
+        ),
     }
     found = {name: value for name, value in vars(boundary).items() if isinstance(value, Endpoint)}
 

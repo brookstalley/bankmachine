@@ -17,6 +17,8 @@ are in the database rather than only in the code.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Iterable
 from typing import Final
 
 from sqlalchemy import (
@@ -462,14 +464,54 @@ Index(
     investment_transactions.c.trade_date,
 )
 
-#: The `sync_state.domain` a transaction cursor is keyed under. One domain today;
-#: the column exists because balances and holdings advance on their own schedules
-#: and a single cursor per connection would make one wait for another.
+#: The `sync_state.domain` a transaction cursor is keyed under. The column is
+#: keyed by domain because the domains advance on their own schedules and a
+#: single cursor per connection would make one wait for another.
 #:
 #: Homed here rather than beside the aggregator's deriver because it is a fact
 #: about this table's key, and the read surface needs it without reaching into
 #: `connector/` to get it.
 TRANSACTIONS_DOMAIN: Final = "transactions"
+
+#: The `sync_state.domain` the investments pull records itself under.
+#:
+#: 🔴 **Not the aggregator's `investments` product, though the two are spelled
+#: alike.** This is a key in this product's own table, and every investments row
+#: ever written is stored under it; the product name is the aggregator's
+#: vocabulary, lives in `connector/`, and is what `connections.capabilities`
+#: records. Kept as two constants so that the aggregator renaming its product
+#: cannot silently rewrite the key this table's history is filed under.
+INVESTMENTS_DOMAIN: Final = "investments"
+
+
+def encode_capabilities(capabilities: Iterable[str]) -> str:
+    """What `connections.capabilities` holds: a sorted JSON array of product names.
+
+    🔴 **The encoding has one home, and this is it.** The column is written at
+    enrollment and read by the sync run to decide whether a connection's
+    investments are pulled at all (AC-3.2) -- a writer and a reader in different
+    layers, which is exactly the shape where `json.dumps` on one side and a
+    hand-rolled parse on the other drift apart. Sorted so that two enrollments
+    reporting the same capabilities store the same bytes.
+    """
+    return json.dumps(sorted(capabilities))
+
+
+def decode_capabilities(stored: str) -> frozenset[str]:
+    """The product names in a stored `capabilities` value.
+
+    Raises `ValueError` on anything that is not an array of strings rather than
+    returning an empty set: *this connection reports no capabilities* and *this
+    column cannot be read* are different facts, and collapsing them would make a
+    connection stop pulling investments with nothing anywhere saying why.
+    """
+    parsed = json.loads(stored)
+    if not isinstance(parsed, list) or not all(isinstance(name, str) for name in parsed):
+        raise ValueError(
+            f"capabilities is {type(parsed).__name__}, expected an array of product names"
+        )
+    return frozenset(parsed)
+
 
 #: The two values `source` may take on every silver table, spelled once for the
 #: readers that must report a zero for a source with no rows -- a breakdown that

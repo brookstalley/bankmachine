@@ -38,15 +38,16 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import ROUND_HALF_EVEN, Decimal
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from typing import Any, Final
 
 from sqlalchemy import Connection as SAConnection
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import Table, delete, insert, select, update
 
 from bankmachine.connector import (
     ACCOUNTS_GET,
     INSTITUTIONS_GET,
+    INVESTMENTS_HOLDINGS_GET,
     ITEM_GET,
     ITEM_REMOVE,
     TRANSACTIONS_SYNC,
@@ -57,11 +58,14 @@ from bankmachine.logging_setup import get_logger
 from bankmachine.store.derivation import DerivationContext, DerivationError, Deriver
 from bankmachine.store.raw import RawResponse
 from bankmachine.store.schema import (
+    INVESTMENTS_DOMAIN,
     TRANSACTIONS_DOMAIN,
     accounts,
     balances_daily,
     connections,
+    holdings,
     institutions,
+    securities,
     sync_state,
     transactions,
 )
@@ -444,26 +448,7 @@ def derive_transactions_sync(
     # rolled back, the cursor never moved, and every later run re-fetched and
     # re-archived the identical page until the archive itself could not be
     # replayed.
-    listed = payload.get("accounts")
-    if listed is not None:
-        institution_id = conn.execute(
-            select(connections.c.institution_id).where(
-                connections.c.connection_id == response.connection_id
-            )
-        ).scalar_one_or_none()
-        if institution_id is None:
-            raise DerivationError(
-                f"raw response {response.raw_response_id} names connection "
-                f"{response.connection_id}, which is not in this datastore"
-            )
-        _derive_account_entries(
-            conn,
-            response=response,
-            context=context,
-            institution_id=int(institution_id),
-            listed=listed,
-            roster=False,
-        )
+    _derive_carried_accounts(conn, response=response, context=context, payload=payload)
 
     applied = _apply_transaction_changes(conn, response, context)
 
@@ -487,36 +472,108 @@ def derive_transactions_sync(
             )
         return
 
+    _record_domain_success(
+        conn,
+        connection_id=response.connection_id,
+        domain=TRANSACTIONS_DOMAIN,
+        at=response.received_at,
+        cursor=next_cursor,
+    )
+
+
+def _record_domain_success(
+    conn: SAConnection,
+    *,
+    connection_id: int,
+    domain: str,
+    at: UtcInstant,
+    cursor: str | None = None,
+) -> None:
+    """One domain of one connection got what it asked for, as of this response.
+
+    🔴 **Written by the deriver, inside the derivation's own transaction.** The
+    row says a body was successfully turned into rows, so it has to commit with
+    those rows or it is a claim about work that may have been rolled back.
+
+    `cursor` is passed only by a domain that has one. A domain without one still
+    owns a `sync_state` row: `last_success_at` is what every freshness reader
+    computes staleness from, and a domain with no row at all is a domain that has
+    never run -- a distinction the health surface has to keep.
+    """
+    values: dict[str, Any] = {
+        "last_success_at": at,
+        "last_error_code": None,
+        "last_error_at": None,
+        "updated_at": at,
+    }
+    if cursor is not None:
+        values["cursor"] = cursor
     existing = conn.execute(
         select(sync_state.c.connection_id).where(
-            sync_state.c.connection_id == response.connection_id,
-            sync_state.c.domain == TRANSACTIONS_DOMAIN,
+            sync_state.c.connection_id == connection_id,
+            sync_state.c.domain == domain,
         )
     ).one_or_none()
     if existing is None:
         conn.execute(
-            insert(sync_state).values(
-                connection_id=response.connection_id,
-                domain=TRANSACTIONS_DOMAIN,
-                cursor=next_cursor,
-                last_success_at=response.received_at,
-                updated_at=response.received_at,
-            )
+            insert(sync_state).values(connection_id=connection_id, domain=domain, **values)
         )
         return
     conn.execute(
         update(sync_state)
-        .where(
-            sync_state.c.connection_id == response.connection_id,
-            sync_state.c.domain == TRANSACTIONS_DOMAIN,
+        .where(sync_state.c.connection_id == connection_id, sync_state.c.domain == domain)
+        .values(**values)
+    )
+
+
+def _derive_carried_accounts(
+    conn: SAConnection,
+    *,
+    response: RawResponse,
+    context: DerivationContext,
+    payload: dict[str, Any],
+) -> None:
+    """The `accounts` array a body carries alongside its own rows, if it has one.
+
+    🔴 **Not the roster.** `/accounts/get` answers *these are the accounts this
+    connection has*; every other endpoint's array answers *these are the accounts
+    the rows in this body belong to*, so `roster=False` keeps
+    `accounts.last_seen_date` a record of having LOOKED rather than of having
+    seen a name in passing.
+
+    🔴 **Why every such endpoint derives it.** An account that has closed, been
+    de-selected in Account Select, or stopped being shared drops out of
+    `/accounts/get` while the endpoints that report its rows keep naming it. A
+    body whose rows hang from an account this datastore has no row for refuses —
+    correctly, because the alternative is a row pointing at nothing — and that
+    refusal would then be permanent: the body is archived, the derivation rolls
+    back, and every later run and every rebuild reproduces it. The aggregator
+    names the account right here, in the same body, which is what makes the
+    refusal avoidable rather than merely regrettable.
+
+    An absent array is not an empty one: a body that says nothing about accounts
+    leaves the roster alone.
+    """
+    listed = payload.get("accounts")
+    if listed is None:
+        return
+    institution_id = conn.execute(
+        select(connections.c.institution_id).where(
+            connections.c.connection_id == response.connection_id
         )
-        .values(
-            cursor=next_cursor,
-            last_success_at=response.received_at,
-            last_error_code=None,
-            last_error_at=None,
-            updated_at=response.received_at,
+    ).scalar_one_or_none()
+    if institution_id is None:
+        raise DerivationError(
+            f"raw response {response.raw_response_id} names connection "
+            f"{response.connection_id}, which is not in this datastore"
         )
+    _derive_account_entries(
+        conn,
+        response=response,
+        context=context,
+        institution_id=int(institution_id),
+        listed=listed,
+        roster=False,
     )
 
 
@@ -1580,59 +1637,387 @@ def _write_balance(
         "derivation_version_id": context.derivation_version_id,
     }
 
-    # 🔴 **One capture per account per day, and the first one wins.**
-    #
-    # `docs/system-requirements.md` AC-3.1, `data-model.md` and the DDL comment
-    # above this table all say the same thing: a second capture on a day already
-    # recorded is *rejected* rather than allowed to overwrite, so the series does
-    # not depend on what time of day anyone happened to look, and a re-run
-    # changes nothing (AC-2.4). No aggregator backfills a balance series, so a
-    # day not captured is a day gone for good -- which is why the rule leans
-    # toward keeping what is already there.
-    #
-    # Skipped rather than raised, because rejecting loudly would make a rebuild
-    # fail on an archive that is perfectly legitimate: two `/accounts/get`
-    # responses on one day is an ordinary thing for a sync to have recorded.
-    #
-    # **"First" is decided by comparing captures, not by arriving first.** Replay
-    # order would give the same answer today and would stop doing so the moment
-    # two responses shared a `received_at`, which the archive explicitly allows.
-    #
-    # This also protects a row the manual-import path wrote: overwriting one
-    # would turn it into an aggregator row that the next rebuild deletes, since
-    # a rebuild empties exactly the rows carrying a `raw_response_id`.
-    existing = conn.execute(
-        select(balances_daily.c.captured_at, balances_daily.c.raw_response_id).where(
+    if not _claim_capture_day(
+        conn,
+        table=balances_daily,
+        where=(
             balances_daily.c.account_id == account_id,
             balances_daily.c.as_of_date == as_of,
+        ),
+        response=response,
+    ):
+        return
+    conn.execute(insert(balances_daily).values(account_id=account_id, as_of_date=as_of, **values))
+
+
+def _claim_capture_day(
+    conn: SAConnection, *, table: Table, where: Sequence[Any], response: RawResponse
+) -> bool:
+    """Whether this response is the capture an append-only day-keyed row keeps.
+
+    True once the day is this response's to write -- a row belonging to a later
+    capture having been removed first. False when what is already there stands.
+
+    🔴 **One capture per key per day, and the first one wins.** `data-model.md`
+    says it of the daily balance series and of the holdings series in one breath,
+    and the DDL comments above both tables repeat it: a second capture on a day
+    already recorded is *rejected* rather than allowed to overwrite, so a series
+    does not depend on what time of day anyone happened to look, and a re-run
+    changes nothing (AC-2.4). No aggregator backfills either series, so a day not
+    captured is a day gone for good -- which is why the rule leans toward keeping
+    what is already there.
+
+    🔴 **Shared rather than written once per table.** Two derivers implementing
+    this from the same paragraph is how the balance series and the holdings
+    series come to disagree about what "first" means, and the disagreement would
+    show up as a rebuild that cannot reproduce its own content rather than as
+    anything a reader could trace back to here.
+
+    Skipped rather than raised, because rejecting loudly would make a rebuild
+    fail on an archive that is perfectly legitimate: two responses carrying the
+    same day is an ordinary thing for a sync to have recorded.
+
+    **"First" is decided by comparing captures, not by arriving first.** Replay
+    order would give the same answer today and would stop doing so the moment two
+    responses shared a `received_at`, which the archive explicitly allows.
+
+    This also protects a row the manual-import path wrote: overwriting one would
+    turn it into an aggregator row that the next rebuild deletes, since a rebuild
+    empties exactly the rows carrying a `raw_response_id`.
+    """
+    existing = conn.execute(
+        select(table.c.captured_at, table.c.raw_response_id).where(*where)
+    ).one_or_none()
+    if existing is None:
+        return True
+    captured_at, raw_response_id = existing
+    if (captured_at, raw_response_id or 0) <= (response.received_at, response.raw_response_id):
+        return False
+    if raw_response_id is None:
+        # 🔴 A row this deriver did not write, and must not remove.
+        # `manual_import_id` rows come from FR-7's import path -- the operator's
+        # own statement -- and a rebuild deletes exactly the rows carrying a
+        # `raw_response_id`. Replacing one with an aggregator row would make it
+        # disappear a rebuild later, with nothing connecting the loss to the sync
+        # that caused it. The comparison above already covers ties and later
+        # captures; this covers the *earlier* archived response, which is the
+        # case the comparison would otherwise let through.
+        return False
+    # The archive holds an earlier capture for this day than the row that is
+    # here. Replaying it must still land on the earliest, or a rebuild would
+    # depend on the order rows happened to be written in the first place.
+    conn.execute(delete(table).where(*where))
+    return True
+
+
+def derive_investments_holdings(
+    conn: SAConnection, response: RawResponse, context: DerivationContext
+) -> None:
+    """`/investments/holdings/get` -> `securities`, `holdings`, and the investments domain.
+
+    The first deriver that records what is *inside* an account rather than what
+    the account is worth. AC-3.2: it runs for a connection whose recorded
+    capabilities include the investments product, and the gate is the caller's
+    because a capability is a fact in the datastore rather than one a response
+    carries.
+
+    🔴 **A position has no date of its own, so `as_of_date` is this system's
+    capture date** -- the same `received_at` the balance series is keyed on
+    *(measured: the only date on a holding is `institution_price_as_of`, the
+    price's, and in the sandbox it is four years old;
+    `api-notes-plaid.md` §22)*. Deriving the day from the price's date instead
+    would file today's observation under 2021 and leave the series with a hole
+    on every day the product actually ran.
+
+    🔴 **No balance is ever computed from positions, and the arithmetic says
+    why.** Summing this account's positions does not reproduce its balance --
+    the aggregator's own sandbox is off by 6% on one of its two investment
+    accounts *(§23)*. The two series are separate observations of the same
+    account and neither is derivable from the other. The body's own `accounts`
+    array is derived, because every endpoint that names an account derives it
+    (see `_derive_carried_accounts`) -- but what lands from it is the balance
+    the AGGREGATOR stated, through the one account deriver, and on any day
+    `/accounts/get` also ran its earlier capture is the one the day keeps.
+
+    **Securities before holdings**, because a holding references one and the
+    reference is by local id. A holding naming a security the body did not list
+    refuses rather than inventing a placeholder row for it.
+    """
+    if response.connection_id is None:
+        raise DerivationError(
+            f"raw response {response.raw_response_id} ({INVESTMENTS_HOLDINGS_GET}) was "
+            f"archived without a connection, so there are no accounts for its positions to "
+            f"hang from. A holdings reply belongs to exactly one connection and nothing "
+            f"else can say which"
+        )
+    payload = _payload(response)
+    _derive_carried_accounts(conn, response=response, context=context, payload=payload)
+    local_security: dict[str, int] = {}
+    for entry in _entries(payload, "securities", response):
+        source_security_id, security_id = _upsert_security(
+            conn, entry=entry, response=response, context=context
+        )
+        local_security[source_security_id] = security_id
+
+    known_accounts = _account_ids(conn, response.connection_id)
+    for entry in _entries(payload, "holdings", response):
+        try:
+            _write_holding(
+                conn,
+                response=response,
+                context=context,
+                entry=entry,
+                known_accounts=known_accounts,
+                local_security=local_security,
+            )
+        except UndenominableAmountError as exc:
+            # 🔴 One position's currency costs that position, never the account's
+            # other holdings. A portfolio holding one instrument in a unit this
+            # build has no exponent for would otherwise report nothing at all,
+            # and the rest of it is perfectly denominable.
+            _log.warning(
+                "raw response %s: a position is held in a unit this build cannot express in "
+                "minor units, so it is not recorded and the rest of the account's positions "
+                "are kept -- %s",
+                response.raw_response_id,
+                exc,
+            )
+
+    _record_domain_success(
+        conn,
+        connection_id=response.connection_id,
+        domain=INVESTMENTS_DOMAIN,
+        at=response.received_at,
+    )
+
+
+def _upsert_security(
+    conn: SAConnection, *, entry: dict[str, Any], response: RawResponse, context: DerivationContext
+) -> tuple[str, int]:
+    """One security row, converged on the aggregator's id for it.
+
+    Upserted rather than inserted for the same reason institutions and accounts
+    are: `holdings.security_id` references this row, so a rebuild that reassigned
+    the local id would detach every position from the instrument it is in.
+
+    🔴 **The columns take the LATEST observation, decided by comparing captures
+    rather than by replay order.** A security's name, ticker and close price
+    change under it, so an older archived response replaying last would otherwise
+    reinstate a stale name -- and the rebuild that did it would report content it
+    could not reproduce. `created_at` is a minimum and the values ride
+    `updated_at`'s maximum, which is what makes this a property of the arithmetic.
+
+    A close price this build cannot denominate costs the PRICE, not the security:
+    the row is what every holding of it references, and refusing it would take
+    the positions down with it.
+    """
+    source_security_id = _required(entry.get("security_id"), "a security_id", response)
+    currency = _stated_currency(entry)
+    close_price = entry.get("close_price")
+    close_price_minor: MinorUnits | None = None
+    if close_price is not None and currency is not None:
+        try:
+            close_price_minor = to_minor(close_price, currency, "a security close price", response)
+        except UndenominableAmountError as exc:
+            _log.warning(
+                "raw response %s: security %s has a close price this build cannot express in "
+                "minor units, so the security is recorded without one -- %s",
+                response.raw_response_id,
+                source_security_id,
+                exc,
+            )
+    close_price_as_of = entry.get("close_price_as_of")
+    values: dict[str, Any] = {
+        "name": _optional(entry.get("name")),
+        "ticker": _optional(entry.get("ticker_symbol")),
+        "cusip": _optional(entry.get("cusip")),
+        "isin": _optional(entry.get("isin")),
+        "security_type": _optional(entry.get("type")),
+        "currency": currency,
+        "close_price_minor": close_price_minor,
+        "close_price_as_of": (
+            None
+            if close_price_as_of is None
+            else _parse_calendar(close_price_as_of, "a close price date", response)
+        ),
+        "derivation_version_id": context.derivation_version_id,
+    }
+    existing = conn.execute(
+        select(securities.c.security_id, securities.c.created_at, securities.c.updated_at).where(
+            securities.c.source_security_id == source_security_id
         )
     ).one_or_none()
-    if existing is not None:
-        captured_at, raw_response_id = existing
-        incoming = (response.received_at, response.raw_response_id)
-        if (captured_at, raw_response_id or 0) <= incoming:
-            return
-        if raw_response_id is None:
-            # 🔴 A row this deriver did not write, and must not remove.
-            # `manual_import_id` rows come from FR-7's import path -- the
-            # operator's own statement -- and a rebuild deletes exactly the rows
-            # carrying a `raw_response_id`. Replacing one with an aggregator row
-            # would make it disappear a rebuild later, with nothing connecting
-            # the loss to the sync that caused it. The comparison above already
-            # covers ties and later captures; this covers the *earlier* archived
-            # response, which is the case the comparison would otherwise let
-            # through.
-            return
-        # The archive holds an earlier capture for this day than the row that is
-        # here. Replaying it must still land on the earliest, or a rebuild would
-        # depend on the order rows happened to be written in the first place.
-        conn.execute(
-            delete(balances_daily).where(
-                balances_daily.c.account_id == account_id,
-                balances_daily.c.as_of_date == as_of,
+    if existing is None:
+        result = conn.execute(
+            insert(securities).values(
+                source_security_id=source_security_id,
+                created_at=response.received_at,
+                updated_at=response.received_at,
+                **values,
             )
         )
-    conn.execute(insert(balances_daily).values(account_id=account_id, as_of_date=as_of, **values))
+        primary_key = result.inserted_primary_key
+        assert primary_key is not None  # an INTEGER PRIMARY KEY insert always yields one
+        return source_security_id, int(primary_key[0])
+
+    security_id, created_at, updated_at = existing
+    if response.received_at < updated_at:
+        # An older capture of a security already described by a newer one. The
+        # only thing it can still say is that this security was known earlier.
+        conn.execute(
+            update(securities)
+            .where(securities.c.security_id == security_id)
+            .values(created_at=min(created_at, response.received_at))
+        )
+        return source_security_id, int(security_id)
+    conn.execute(
+        update(securities)
+        .where(securities.c.security_id == security_id)
+        .values(
+            created_at=min(created_at, response.received_at),
+            updated_at=response.received_at,
+            **values,
+        )
+    )
+    return source_security_id, int(security_id)
+
+
+def _exact_quantity(value: object, response: RawResponse) -> str:
+    """A position size, kept as the exact text the aggregator sent.
+
+    🔴 **A quantity is not money, and that is why it is neither minor units nor a
+    float.** Fractional shares are routine -- a sandbox Bitcoin position is
+    `0.00293644` *(§22)* -- so a scaled integer would need a scale this product
+    would have to guess, and a float loses digits before anyone can look. The
+    column is TEXT and holds what arrived.
+
+    Validated by parsing it as a decimal and then storing the ORIGINAL text: a
+    `Decimal` round trip would rewrite `1E+2` and `100` into one spelling, and
+    the archive's own rendering is the one with a provenance.
+    """
+    if isinstance(value, bool) or value is None:
+        raise DerivationError(
+            f"raw response {response.raw_response_id} gives a position no quantity; "
+            f"`holdings.quantity` is NOT NULL and a placeholder would be this system "
+            f"inventing a position size and recording it as the aggregator's"
+        )
+    if isinstance(value, int):
+        return str(value)
+    if not isinstance(value, str):
+        raise DerivationError(
+            f"raw response {response.raw_response_id} gives a position quantity as a "
+            f"{type(value).__name__}; quantities must reach this point as the text the "
+            f"aggregator sent, because a float has already dropped digits by the time it "
+            f"is seen"
+        )
+    try:
+        Decimal(value)
+    except InvalidOperation as exc:
+        raise DerivationError(
+            f"raw response {response.raw_response_id} gives a position quantity of "
+            f"{value!r}, which is not a number"
+        ) from exc
+    return value
+
+
+def _write_holding(
+    conn: SAConnection,
+    *,
+    response: RawResponse,
+    context: DerivationContext,
+    entry: dict[str, Any],
+    known_accounts: dict[str, int],
+    local_security: dict[str, int],
+) -> None:
+    """One position, for one account, on the day it was captured.
+
+    🔴 **No sign is flipped here, and the omission is deliberate.** A liability's
+    balance is negated on the way in because the aggregator reports what is owed
+    as a positive number; a position has no such convention to undo -- a long
+    holding is value held and a short one arrives negative in both quantity and
+    value. Negating anything here would report a portfolio as a debt.
+
+    The market value is a VALUATION -- price times quantity, arriving with
+    whatever precision that arithmetic produced -- so it is rounded half-even to
+    the currency's minor unit and logged, never converted exactly or refused the
+    way a ledger amount is. Four of thirteen positions in the aggregator's own
+    sandbox carry sub-cent values *(§22)*, so this is the ordinary path rather
+    than an edge.
+    """
+    source_account_id = entry.get("account_id")
+    if not isinstance(source_account_id, str) or source_account_id not in known_accounts:
+        # Reachable only when the body names a position for an account its OWN
+        # `accounts` array left out -- everything that array does name has been
+        # derived by this point. A row pointing at nothing is worse than a
+        # refusal that says which account went missing.
+        raise DerivationError(
+            f"raw response {response.raw_response_id} ({response.endpoint}) has a position "
+            f"for account {source_account_id!r}, which this connection has no row for and "
+            f"which the body's own accounts list does not carry either"
+        )
+    source_security_id = _required(entry.get("security_id"), "a security_id", response)
+    if source_security_id not in local_security:
+        raise DerivationError(
+            f"raw response {response.raw_response_id} ({response.endpoint}) has a position "
+            f"in security {source_security_id!r}, which its own securities list does not "
+            f"carry. The instrument a position is in is not something this system can "
+            f"supply for it"
+        )
+    currency = _stated_currency(entry)
+    if currency is None:
+        # 🔴 `holdings.currency` is NOT NULL, and for the same reason
+        # `balances_daily.currency` is: one amount with no unit is unusable, and
+        # a unit borrowed from another response is how a total silently mixes
+        # two. The position is not recorded; the archive keeps it, so a later
+        # capture that states a currency derives it.
+        _log.warning(
+            "raw response %s: a position in security %s states no currency, so it is not recorded",
+            response.raw_response_id,
+            source_security_id,
+        )
+        return
+    market_value = entry.get("institution_value")
+    if market_value is None:
+        raise DerivationError(
+            f"raw response {response.raw_response_id} gives the position in security "
+            f"{source_security_id!r} no institution_value; `holdings.market_value_minor` "
+            f"is NOT NULL and a position of unstated value is not a zero"
+        )
+    cost_basis = entry.get("cost_basis")
+    values: dict[str, Any] = {
+        "quantity": _exact_quantity(entry.get("quantity"), response),
+        "market_value_minor": to_minor(market_value, currency, "a position value", response),
+        "cost_basis_minor": (
+            None
+            if cost_basis is None
+            else to_minor(cost_basis, currency, "a position cost basis", response)
+        ),
+        "currency": currency,
+        "captured_at": response.received_at,
+        "source": "aggregator",
+        "raw_response_id": response.raw_response_id,
+        "manual_import_id": None,
+        "derivation_version_id": context.derivation_version_id,
+    }
+    account_id = known_accounts[source_account_id]
+    security_id = local_security[source_security_id]
+    as_of = _as_of(response.received_at)
+    if not _claim_capture_day(
+        conn,
+        table=holdings,
+        where=(
+            holdings.c.account_id == account_id,
+            holdings.c.security_id == security_id,
+            holdings.c.as_of_date == as_of,
+        ),
+        response=response,
+    ):
+        return
+    conn.execute(
+        insert(holdings).values(
+            account_id=account_id, security_id=security_id, as_of_date=as_of, **values
+        )
+    )
 
 
 #: What `bankmachine.derivers` composes into this build's registry.
@@ -1650,5 +2035,6 @@ PLAID_DERIVERS: Final[Mapping[str, Deriver]] = {
     str(ITEM_REMOVE): derive_nothing,
     str(ITEM_GET): derive_item,
     str(ACCOUNTS_GET): derive_accounts,
+    str(INVESTMENTS_HOLDINGS_GET): derive_investments_holdings,
     str(TRANSACTIONS_SYNC): derive_transactions_sync,
 }
