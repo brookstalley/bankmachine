@@ -198,7 +198,8 @@ def test_every_red_check_is_reported_not_only_the_last(tmp_path: Path) -> None:
     assert "uv run ruff check" in result.stderr
     assert "uv run ruff format --check" in result.stderr
     assert "uv run mypy" in result.stderr
-    assert int(_suite(junit).get("failures", "0")) == 3, (
+    expected = sum(1 for tool in EXPECTED_ORDER if tool in {"ruff", "mypy"})
+    assert int(_suite(junit).get("failures", "0")) == expected, (
         "every red invocation must reach the report, or the evidence undercounts"
     )
 
@@ -227,3 +228,96 @@ def test_the_declared_gate_command_is_this_script() -> None:
         f"test_command: no longer launches the gate: {declared[0]}"
     )
     assert "{junit_xml}" in declared[0], "test_command: must pass the report path through"
+
+
+def test_a_red_pytest_is_not_counted_twice(tmp_path: Path) -> None:
+    """pytest's report already carries its own failures.
+
+    Appending a gate case for it as well would overstate the persisted count, which
+    matters because the record is what every later reader believes.
+    """
+    _, _, junit = _run_gate(tmp_path, "pytest")
+    gate_cases = [
+        case.get("name")
+        for case in _suite(junit).iter("testcase")
+        if case.get("classname") == "gate"
+    ]
+
+    assert "uv run pytest" not in gate_cases, (
+        f"pytest was appended on top of its own report: {gate_cases}"
+    )
+
+
+def test_a_pytest_that_wrote_no_report_is_still_recorded(tmp_path: Path) -> None:
+    """The exception to the rule above, and the reason it is conditional.
+
+    When pytest dies before writing anything there is no report to carry its failure,
+    so dropping its entry would turn a failed run into a clean record -- the defect
+    this whole mechanism exists to prevent.
+
+    pytest is the ONLY red command here, and it writes no report. If its entry were
+    dropped unconditionally the synthesised report would claim zero failures, which
+    is precisely what this asserts against.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "uv"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$2" = "pytest" ]; then exit 1; fi\n'  # red, and writes no report
+        "exit 0\n"
+    )
+    stub.chmod(0o755)
+    junit = tmp_path / "report.xml"
+
+    result = subprocess.run(
+        ["bash", str(GATE), str(junit)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(tmp_path)},
+    )
+
+    assert result.returncode == 1
+    assert junit.exists(), "no report was synthesised, so the run records as nothing at all"
+    assert int(_suite(junit).get("failures", "0")) == 1, (
+        "the only red command wrote no report of its own, so the gate had to carry it and did not"
+    )
+
+
+def test_a_failure_to_record_is_announced(tmp_path: Path) -> None:
+    """The recording step is the half nothing else can see.
+
+    If it fails quietly the exit code still goes red for whoever is watching, while
+    the evidence record reads clean -- the same shape as the defect the recording
+    exists to close, reached through a missing interpreter instead of a missing line.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "uv"
+    stub.write_text(_STUB_UV)
+    stub.chmod(0o755)
+    log = tmp_path / "invocations.log"
+    log.touch()
+    junit = tmp_path / "report.xml"
+
+    result = subprocess.run(
+        ["/bin/bash", str(GATE), str(junit)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        # No `python3` reachable: /bin has bash, /usr/bin is where python3 lives.
+        env={
+            "PATH": f"{bin_dir}:/bin",
+            "STUB_LOG": str(log),
+            "STUB_FAIL": "mypy",
+            "HOME": str(tmp_path),
+        },
+    )
+
+    assert result.returncode == 1
+    assert "could not write the red checks" in result.stderr, (
+        f"the gate failed to record and said nothing about it:\n{result.stderr}"
+    )

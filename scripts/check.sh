@@ -78,13 +78,14 @@ if [ -n "$failed" ]; then
     # Written into the report rather than left to the exit code: see the header.
     # Plain `python3`, not `uv run python` -- a red `uv` must not take the one
     # step that records the redness with it.
-    printf '%s' "$failed" | python3 -c '
+    if ! printf '%s' "$failed" | python3 -c '
 import sys
 import xml.etree.ElementTree as ET
 
 path = sys.argv[1]
 names = [line for line in sys.stdin.read().splitlines() if line]
 
+parsed = True
 try:
     tree = ET.parse(path)
     root = tree.getroot()
@@ -94,9 +95,17 @@ try:
 except (OSError, ET.ParseError):
     # pytest never got far enough to write a report. A fresh one still carries
     # the linters verdict, which is the thing that must not be lost here.
+    parsed = False
     root = ET.Element("testsuites")
     suite = ET.SubElement(root, "testsuite", name="gate", tests="0", failures="0")
     tree = ET.ElementTree(root)
+
+if parsed:
+    # A red pytest already has its own failing cases in this report; appending a
+    # second one for the same run would overstate the count. When the report did
+    # NOT parse there is nothing in it, so pytest keeps its entry -- dropping it
+    # there would record a failed run as clean.
+    names = [n for n in names if n != "uv run pytest"]
 
 for name in names:
     case = ET.SubElement(suite, "testcase", classname="gate", name=name)
@@ -107,7 +116,13 @@ for name in names:
 suite.set("tests", str(int(suite.get("tests", "0") or 0) + len(names)))
 suite.set("failures", str(int(suite.get("failures", "0") or 0) + len(names)))
 tree.write(path, encoding="utf-8", xml_declaration=True)
-' "$junit_xml"
+' "$junit_xml"; then
+        # Recording is the half nothing else can see. If it fails, the exit code
+        # below still goes red for a human, but the evidence record would read
+        # clean -- so say so on the one channel that is left.
+        printf '\n*** gate: could not write the red checks into %s\n' "$junit_xml" >&2
+        printf '*** the evidence record for this run will UNDERSTATE it\n' >&2
+    fi
 
     printf '\n%s\n' "gate failed; these commands were red:" >&2
     printf '%s' "$failed" | while IFS= read -r name; do

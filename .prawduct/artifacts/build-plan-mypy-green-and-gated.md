@@ -9,7 +9,7 @@ governed_by:
   - artifact: project-preferences
     dispositions:
       - "Type annotations: required — mypy strict → this plan is that norm's enforcement, not a departure from it. The rule selection and strict setting are untouched; only the annotations the checker was already asking for change"
-      - "Dev commands: `uv run pytest -q`, `uv run mypy`, `uv run ruff check` → conforms and is strengthened: the three stay the operator-facing commands and gain one launcher that runs all three, so the documented trio and the gated trio cannot diverge"
+      - "Dev commands: `uv run pytest -q`, `uv run mypy`, `uv run ruff check` / `ruff format` → conforms and is strengthened: they stay the operator-facing commands and gain one launcher that runs every one of them, so the documented set and the gated set cannot diverge. `ruff format --check` joined the gate mid-build on the strength of a dated learnings instance; the departure is recorded in this plan and in the script's header"
       - "Imports: absolute, grouped stdlib / third-party / local → conforms; the new `AnyParser` import follows the existing grouping and ruff's isort rules decide it"
   - artifact: api-contract
     dispositions:
@@ -113,7 +113,7 @@ Cause 4. Both sites keep what they are testing and stop returning `Any`.
 
 **Done when:** `uv run mypy` (no path argument, so both trees) is clean.
 
-### Chunk 03 — the gate runs all three
+### Chunk 03 — the gate runs every declared check
 
 `scripts/check.sh` running pytest, then ruff, then mypy; `test_command:` repointed at
 it; `project-preferences.md` updated to say the three are gated.
@@ -127,8 +127,9 @@ naming of each red tool, that a failure does not stop the remaining checks, and 
 JUnit report survives a red linter. It runs in ~2s rather than the ~6.5min a real
 invocation costs, which is what makes it affordable to keep.
 
-**Done when:** the gate passes on a green tree through `test-evidence record`; each of
-the three tools, failed in turn, fails the gate and is named in stderr.
+**Done when:** the gate passes on a green tree through `test-evidence record`; each
+declared tool, failed in turn, fails the gate, is named in stderr, and is counted in the
+JUnit report the evidence record is built from.
 
 ## Scope-out
 
@@ -144,7 +145,7 @@ the three tools, failed in turn, fails the gate and is named in stderr.
 
 - [x] Chunk 01 — `src` typechecks
 - [x] Chunk 02 — `tests` typechecks
-- [x] Chunk 03 — the gate runs all three
+- [x] Chunk 03 — the gate runs every declared check
 
 ## Context
 
