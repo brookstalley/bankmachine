@@ -1,7 +1,8 @@
 """The argument parser that does not echo credentials back.
 
-Its own module for the same reason `exit_codes` is: a command needs to name
-this class, and importing the package that imports the command is a cycle.
+Its own module for the same reason `exit_codes` is: a command needs to name what
+is defined here -- this class, and the type variable the subcommand modules are
+generic over -- and importing the package that imports the command is a cycle.
 """
 
 from __future__ import annotations

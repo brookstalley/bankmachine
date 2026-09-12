@@ -38,7 +38,7 @@ for arg in "$@"; do
     esac
 done
 if [ "$2" = "$STUB_FAIL" ]; then
-    echo "stub: pretending $2 failed" >&2
+    echo "stub: pretending the requested tool failed" >&2
     exit 1
 fi
 exit 0
@@ -105,7 +105,13 @@ def test_a_red_check_fails_the_gate_and_is_named(tmp_path: Path, tool: str) -> N
     result, _, _ = _run_gate(tmp_path, fail=tool)
 
     assert result.returncode == 1, f"a red {tool} must fail the gate"
-    assert tool in result.stderr, f"the gate did not name {tool} as the failing command"
+    # The stub is deliberately mute about WHICH tool it failed, so the name can
+    # only have reached stderr from the gate. Asserted at that level rather than
+    # against one of the gate's two naming sites, so rewording either is free and
+    # dropping both is not.
+    assert f"uv run {tool}" in result.stderr, (
+        f"the gate did not name {tool} as the failing command:\n{result.stderr}"
+    )
 
 
 def test_every_check_runs_even_after_an_earlier_one_fails(tmp_path: Path) -> None:
