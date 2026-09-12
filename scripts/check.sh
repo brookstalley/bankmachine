@@ -12,13 +12,19 @@
 # documentation names the way out ("point the command at a script for compound
 # runs"), which is this file.
 #
-# WHY PYTEST RUNS FIRST
+# WHY PYTEST RUNS FIRST, AND WHY A RED LINTER IS WRITTEN INTO ITS REPORT
 #
-# The evidence record is parsed from the JUnit report at $1. If a linter ran
-# first and failed the script, that report would never be written and the record
-# would fail as "unparseable" -- an error that says nothing about which tool was
-# unhappy. Running pytest first means the report always exists, so a red linter
-# fails the record with a message that names the linter.
+# The JUnit report at $1 is not a side effect -- it IS the durable evidence.
+# `prawduct-hook test-evidence record` writes `.test-evidence.json` from that
+# report and only afterwards consults the command's exit status, which it does
+# not store. So a script that merely EXITS non-zero on a red linter leaves a
+# session-fresh record reading `failed: 0`: the terminal shows red, `test-status`
+# says `current`, and the Stop gate passes. That is the very defect #92 was filed
+# about -- a declared check nothing notices -- moved one consumer along.
+#
+# So pytest runs first, its report always exists, and each red linter is then
+# appended to that report as a failing case. The evidence says what the terminal
+# says.
 #
 # WHY EVERY CHECK RUNS EVEN AFTER ONE FAILS
 #
@@ -26,13 +32,19 @@
 # should not have to fix it and re-run to discover the three lint findings
 # underneath; one invocation reports everything that is red.
 #
-# WHAT IS DELIBERATELY NOT HERE
+# WHY `ruff format --check` IS HERE, THOUGH #92 DID NOT NAME IT
 #
-# `ruff format --check`. `project-preferences.md` records ruff format as this
-# project's formatter, but brookstalley/bankmachine#92 gates the two commands it
-# names -- `uv run ruff check` and `uv run mypy`. Adding a third check this issue
-# did not ask for would make the gate's contract harder to argue about later.
-# Adding it is a decision, not a formality.
+# It was left out at first, on the reasoning that #92 names two commands and a
+# third would widen the contract. `learnings.md` settles it the other way, with an
+# instance: on 2026-09-08, merging `feature/sync-v1`, SEVEN files had drifted
+# across two build steps that both reported "ruff clean" at every close -- because
+# both ran `ruff check` and neither ran `--check` on the formatter. The two are
+# different halves and the lint rules never reach layout.
+#
+# A gate that exists because declared checks were going unrun, which then omits the
+# one declared check with a recorded instance of going unrun, is not scoped -- it
+# is the same defect with a smaller blast radius. So it runs here, and this note is
+# the record that the widening was deliberate.
 
 set -uo pipefail
 
@@ -59,9 +71,44 @@ check() {
 
 check "uv run pytest" uv run pytest --junit-xml="$junit_xml" -q
 check "uv run ruff check" uv run ruff check
+check "uv run ruff format --check" uv run ruff format --check
 check "uv run mypy" uv run mypy
 
 if [ -n "$failed" ]; then
+    # Written into the report rather than left to the exit code: see the header.
+    # Plain `python3`, not `uv run python` -- a red `uv` must not take the one
+    # step that records the redness with it.
+    printf '%s' "$failed" | python3 -c '
+import sys
+import xml.etree.ElementTree as ET
+
+path = sys.argv[1]
+names = [line for line in sys.stdin.read().splitlines() if line]
+
+try:
+    tree = ET.parse(path)
+    root = tree.getroot()
+    suite = root.find("testsuite") if root.tag == "testsuites" else root
+    if suite is None:
+        raise ET.ParseError("no testsuite element")
+except (OSError, ET.ParseError):
+    # pytest never got far enough to write a report. A fresh one still carries
+    # the linters verdict, which is the thing that must not be lost here.
+    root = ET.Element("testsuites")
+    suite = ET.SubElement(root, "testsuite", name="gate", tests="0", failures="0")
+    tree = ET.ElementTree(root)
+
+for name in names:
+    case = ET.SubElement(suite, "testcase", classname="gate", name=name)
+    ET.SubElement(case, "failure", message=f"{name} exited non-zero").text = (
+        f"{name} reported errors; see the gate output for its own report"
+    )
+
+suite.set("tests", str(int(suite.get("tests", "0") or 0) + len(names)))
+suite.set("failures", str(int(suite.get("failures", "0") or 0) + len(names)))
+tree.write(path, encoding="utf-8", xml_declaration=True)
+' "$junit_xml"
+
     printf '\n%s\n' "gate failed; these commands were red:" >&2
     printf '%s' "$failed" | while IFS= read -r name; do
         printf '  - %s\n' "$name" >&2
@@ -69,4 +116,4 @@ if [ -n "$failed" ]; then
     exit 1
 fi
 
-echo "gate passed: pytest, ruff check, mypy"
+echo "gate passed: pytest, ruff check, ruff format, mypy"

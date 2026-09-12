@@ -15,18 +15,25 @@ which is what lets the failure-reporting contract be tested at all.
 from __future__ import annotations
 
 import subprocess
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).parents[2]
 GATE = REPO_ROOT / "scripts" / "check.sh"
+PREFERENCES = REPO_ROOT / ".prawduct" / "artifacts" / "project-preferences.md"
 
-#: The tools the gate must run, in the order it must run them. The order is asserted,
-#: not incidental: pytest is first so its JUnit report exists even when a linter goes
-#: red, and the case below that fails a linter and checks for the report is what holds
-#: that reasoning to the code.
-EXPECTED_ORDER = ["pytest", "ruff", "mypy"]
+#: The distinct tools the gate must run. `ruff` appears once here and twice in
+#: EXPECTED_ORDER: `ruff check` and `ruff format --check` are different halves, and
+#: the lint rules never reach layout -- learnings.md records seven files drifting
+#: behind a clean `ruff check`.
+DECLARED_TOOLS = ["pytest", "ruff", "mypy"]
+
+#: The order of invocations. Asserted, not incidental: pytest is first so its JUnit
+#: report exists even when a linter goes red, which is what lets a red linter be
+#: written into that report rather than left in an exit code nothing stores.
+EXPECTED_ORDER = ["pytest", "ruff", "ruff", "mypy"]
 
 _STUB_UV = """#!/usr/bin/env bash
 # Stands in for `uv`. Records the invocation, honours --junit-xml so the real
@@ -34,13 +41,20 @@ _STUB_UV = """#!/usr/bin/env bash
 echo "$*" >> "$STUB_LOG"
 for arg in "$@"; do
     case "$arg" in
-        --junit-xml=*) printf '<testsuite/>' > "${arg#--junit-xml=}" ;;
+        --junit-xml=*)
+            printf '%s' \
+                '<?xml version="1.0" encoding="utf-8"?><testsuites>' \
+                '<testsuite name="pytest" errors="0" failures="0" skipped="0" tests="3">' \
+                '<testcase classname="t" name="a"/></testsuite></testsuites>' \
+                > "${arg#--junit-xml=}" ;;
     esac
 done
-if [ "$2" = "$STUB_FAIL" ]; then
-    echo "stub: pretending the requested tool failed" >&2
-    exit 1
-fi
+for bad in $STUB_FAIL; do
+    if [ "$2" = "$bad" ]; then
+        echo "stub: pretending the requested tool failed" >&2
+        exit 1
+    fi
+done
 exit 0
 """
 
@@ -48,8 +62,8 @@ exit 0
 GateRun = tuple[subprocess.CompletedProcess[str], Path, Path]
 
 
-def _run_gate(tmp_path: Path, fail: str = "") -> GateRun:
-    """Run the real gate with a stub `uv`, failing `fail` (empty = everything passes)."""
+def _run_gate(tmp_path: Path, *fail: str) -> GateRun:
+    """Run the real gate with a stub `uv`, failing each tool in `fail`."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     stub = bin_dir / "uv"
@@ -69,11 +83,36 @@ def _run_gate(tmp_path: Path, fail: str = "") -> GateRun:
         env={
             "PATH": f"{bin_dir}:/usr/bin:/bin",
             "STUB_LOG": str(log),
-            "STUB_FAIL": fail,
+            "STUB_FAIL": " ".join(fail),
             "HOME": str(tmp_path),
         },
     )
     return result, log, junit
+
+
+def _suite(junit: Path) -> ET.Element:
+    """The `<testsuite>` element, wherever the writer put it."""
+    root = ET.parse(junit).getroot()
+    suite = root.find("testsuite") if root.tag == "testsuites" else root
+    assert suite is not None, f"no testsuite element in {junit}"
+    return suite
+
+
+def test_the_expected_checks_are_the_ones_the_preferences_declare() -> None:
+    """Grounds this module's copy of the list.
+
+    `EXPECTED_ORDER` is a third statement of the same set, after
+    `project-preferences.md` and `scripts/check.sh`. Without this, the cases below
+    could agree with the script forever while both drifted away from the norm they
+    claim to enforce, and the failure messages would still cite the preferences.
+    """
+    declared = PREFERENCES.read_text()
+
+    for tool in DECLARED_TOOLS:
+        assert f"uv run {tool}" in declared, (
+            f"project-preferences.md no longer declares `uv run {tool}`; the gate and "
+            f"this test are enforcing a set the norm does not state"
+        )
 
 
 def test_the_gate_is_present_and_executable() -> None:
@@ -95,28 +134,27 @@ def test_it_runs_every_declared_check_in_order(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.parametrize("tool", EXPECTED_ORDER)
+@pytest.mark.parametrize("tool", DECLARED_TOOLS)
 def test_a_red_check_fails_the_gate_and_is_named(tmp_path: Path, tool: str) -> None:
     """The contract that distinguishes a deliberate red baseline from a regression.
 
     A gate that exits 1 without saying which command was unhappy sends the reader to
     re-run three commands by hand -- which is the state this gate exists to end.
     """
-    result, _, _ = _run_gate(tmp_path, fail=tool)
+    result, _, _ = _run_gate(tmp_path, tool)
 
     assert result.returncode == 1, f"a red {tool} must fail the gate"
     # The stub is deliberately mute about WHICH tool it failed, so the name can
     # only have reached stderr from the gate. Asserted at that level rather than
     # against one of the gate's two naming sites, so rewording either is free and
     # dropping both is not.
-    assert f"uv run {tool}" in result.stderr, (
-        f"the gate did not name {tool} as the failing command:\n{result.stderr}"
-    )
+    named = [line for line in result.stderr.splitlines() if f"uv run {tool}" in line]
+    assert named, f"the gate did not name {tool} as the failing command:\n{result.stderr}"
 
 
 def test_every_check_runs_even_after_an_earlier_one_fails(tmp_path: Path) -> None:
     """No `set -e`: one invocation reports everything red, not just the first thing."""
-    _, log, _ = _run_gate(tmp_path, fail="pytest")
+    _, log, _ = _run_gate(tmp_path, "pytest")
     invoked = [line.split()[1] for line in log.read_text().splitlines()]
 
     assert invoked == EXPECTED_ORDER, (
@@ -124,16 +162,45 @@ def test_every_check_runs_even_after_an_earlier_one_fails(tmp_path: Path) -> Non
     )
 
 
-def test_the_report_is_written_even_when_a_linter_fails(tmp_path: Path) -> None:
-    """Why pytest is ordered first.
+def test_a_red_linter_is_recorded_in_the_report_not_just_the_exit_code(
+    tmp_path: Path,
+) -> None:
+    """The durable half, and the reason this gate is more than an exit status.
 
-    The evidence record is parsed from the JUnit report. If a linter ran before pytest
-    and failed the script, that report would never be written and the record would fail
-    as "unparseable" -- an error naming no tool at all.
+    `test-evidence record` writes `.test-evidence.json` from the JUnit report and
+    only afterwards consults the command's exit status, which it does not store. A
+    gate that merely exits non-zero on a red linter therefore leaves a session-fresh
+    record reading `failed: 0` -- the terminal red, the evidence green, and the Stop
+    gate satisfied. That is the defect #92 is about, one consumer along.
     """
-    _, _, junit = _run_gate(tmp_path, fail="mypy")
+    _, _, junit = _run_gate(tmp_path, "mypy")
 
     assert junit.exists(), "a red linter left the JUnit report unwritten"
+    failed_cases = [c.get("name") for c in _suite(junit).iter("testcase") if list(c)]
+
+    assert failed_cases == ["uv run mypy"], (
+        f"the report does not record the red linter as a failure: {failed_cases}"
+    )
+    assert int(_suite(junit).get("failures", "0")) >= 1, (
+        "the report's failure count does not include the red linter, so the evidence "
+        "record will read failed: 0"
+    )
+
+
+def test_every_red_check_is_reported_not_only_the_last(tmp_path: Path) -> None:
+    """Guards the accumulator.
+
+    Collapsing it to a single value keeps every single-failure case green, so only a
+    run with two red tools can tell "reports everything red" from "reports one".
+    """
+    result, _, junit = _run_gate(tmp_path, "ruff", "mypy")
+
+    assert "uv run ruff check" in result.stderr
+    assert "uv run ruff format --check" in result.stderr
+    assert "uv run mypy" in result.stderr
+    assert int(_suite(junit).get("failures", "0")) == 3, (
+        "every red invocation must reach the report, or the evidence undercounts"
+    )
 
 
 def test_it_refuses_to_run_without_a_report_path(tmp_path: Path) -> None:

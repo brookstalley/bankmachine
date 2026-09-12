@@ -151,7 +151,9 @@ the three tools, failed in turn, fails the gate and is named in stderr.
 Branch `fix/mypy-green-and-gated` off `develop`. All three chunks done.
 
 `uv run mypy` went 12 errors / 5 files to clean over 108 files; ruff and `ruff format`
-were and remain clean; the suite is 1353 passed, run through the new gate end to end.
+were and remain clean; the suite is green through the new gate end to end (`prawduct-hook
+test-status` for the count -- it is not copied here, because a total in prose drifts the
+moment a test is added and nothing reads this one).
 
 **One thing the plan did not foresee.** Making `add_arguments` generic surfaced that
 `store.add_arguments` is not in fact agnostic to the parser class -- it swaps
@@ -164,3 +166,32 @@ driving the real script, plus a real green run through the true toolchain. A thi
 with a hand-planted type error would only re-establish that `uv run mypy` exits nonzero
 when mypy is unhappy and that `uv run` propagates it -- 6.5 minutes to confirm a
 property of the tools rather than of this change.
+
+## What the Critic found, and what it changed
+
+Review `rev-20260912T143955Z-afdc2426`, 0 blocking. Three reviewers independently
+reported the same defect from three different goals, and they were right:
+
+**The gate reported a red linter without recording one.** `test-evidence record` writes
+`.test-evidence.json` from the JUnit report (`prawduct-hook:3954`) and only afterwards
+consults the command's exit status, which it does not store (`:4034`). pytest runs first
+and green, so a red `mypy` or `ruff` left a session-fresh record reading `failed: 0` --
+terminal red, evidence green, Stop gate satisfied. This plan's verification covered only
+the green path, which is exactly the half the defect lives in. **This was #92's own shape
+-- a declared check nothing notices -- moved one consumer along rather than closed.**
+
+Fixed by writing each red check into the JUnit report as a failing case, so the durable
+evidence says what the terminal says. Two tests now hold that, both proven red with the
+injection disabled.
+
+**And a scope decision reversed.** `ruff format --check` was scoped out on the grounds
+that #92 names two commands. `learnings.md` disproves that reasoning with an instance: on
+2026-09-08 seven files had drifted across two build steps that both reported "ruff clean",
+because both ran `ruff check` and neither ran `--check` on the formatter. A gate built
+because declared checks went unrun, omitting the one declared check with a recorded
+instance of going unrun, is the same defect with a smaller blast radius. It now runs.
+
+Accepted without change: the two `governed-by-gap` record-lint findings (this plan
+disposes the norms its diff touches; enumerating the rest would be ceremony), and the
+note that #92's `affected:` list names two `tests/store/` paths this diff does not touch
+-- confirmed stale, they belong to the ruff `I001` findings that were already green.

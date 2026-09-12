@@ -17,8 +17,14 @@ from bankmachine.logging_setup import redact
 #: `add_subparsers(parser_class=...)` decides it at the call site, and
 #: `_SubParsersAction` is INVARIANT in it -- so a command module that named one
 #: concrete class would reject every caller that chose the other, and the CLI and
-#: the tests choose differently. The modules only ever call `add_parser`, so they
-#: are genuinely agnostic to which class comes back and this says exactly that.
+#: the tests choose differently.
+#:
+#: What the modules need of the parser is `add_parser`, which every candidate has,
+#: so the class itself is theirs to be handed rather than to pick. Where one needs
+#: more than that it says so locally and in the base type -- `store.add_arguments`
+#: swaps `__class__` on its `key` parser, and annotates that local accordingly --
+#: rather than by narrowing this variable and pushing the constraint onto callers
+#: that do not share it.
 AnyParser = TypeVar("AnyParser", bound=argparse.ArgumentParser)
 
 
