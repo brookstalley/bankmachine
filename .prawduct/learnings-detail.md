@@ -192,3 +192,36 @@ More generally, when a check's answer is reassuring, ask what it *enumerated* ra
 whether it ran: a guard whose scope is "tracked files", "changed files" or "files in this
 directory" has a blind spot shaped exactly like new work, and new work is what you are asking
 it about.
+
+## A fixture that cannot reach the subject passes forever: mutate the code, and check which branch the fixture actually took
+
+**Instances (2026-09-12, investments Chunk 03) — twice in one work cycle, the second while
+explicitly watching for the first:**
+
+- *The status string.* `test_an_investments_failure_reaches_a_column_on_a_first_sync` exists to
+  prove a failure is recorded even when the page loop returns early. Its fixture set
+  `transactions_update_status` to `"TRANSACTIONS_NOT_READY"`; the loop branches on
+  `NOT_READY`. So the early return never happened, the test exercised the ordinary path, and
+  it passed — including against the defect it was written for. Found only by reverting the fix
+  and watching for red, which stayed green.
+- *The failure that lands too early.* The first version of the run-summary roll-up test wanted
+  a connection that was BOTH degraded and investments-failing. It broke the connection with
+  `fail_for_token`, which fails `accounts_get` — before the investments block. So the
+  connection never got an investments failure recorded, both counts were 1 either way, and the
+  mutated code passed. The fixture that works fails the *page loop* instead, after the
+  investments pull has already run.
+
+**Why the two are one lesson:** in both, the assertion was right, the mutation was right, and
+the fixture never reached the code the test names. Green cannot tell that apart from working,
+and neither can a careful re-read of the assertion — which is what makes the second instance
+worse than the first: it happened during a deliberate mutation pass, on a finding the Critic
+had just raised about exactly this.
+
+**How to apply:** a mutation check answers *does anything notice if this line is wrong*. It
+does NOT answer *did the test reach that line*, and a fixture that misses the branch makes the
+mutation come back green rather than red. So run both halves: revert the change and require
+red, and separately assert something that is only true on the path you meant — the test above
+now asserts no transaction landed, which is only true if the loop really did return early.
+When a test's setup names a string, a token or a status the production code branches on, spell
+it from the constant (`sync_run.NOT_READY`) rather than by hand; a near-miss spelling is a
+fixture that silently covers a different path.

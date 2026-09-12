@@ -134,20 +134,22 @@ waves 2–3 that is **not** Medium: it was derived and argued in
 
 - [x] Chunk 01: One capable connection's holdings, end to end
 - [x] Chunk 02: Investment transactions, and the window that actually came back
-- [ ] Chunk 03: Investments fails on its own, and the health surface says so
+- [x] Chunk 03: Investments fails on its own, and the health surface says so
 - [ ] Chunk 04: Rebuild, idempotency, and the properties that hold across both
 - [ ] Chunk 05: `list_holdings` — positions, under one strict row shape
 - [ ] Chunk 06: What a holdings answer must disclose about itself
 - [ ] Chunk 07: `balance_history` — one series, read two ways
 - [ ] Chunk 08: Net worth, and the two ways it can be quietly wrong
 
-Context: Chunk 01 built and reviewed 2026-09-12 (0 blocking after one fix round). Its
-`verify-api` probe ran against the live sandbox first and moved three things the field
-mapping had assumed — `api-notes-plaid.md` §22-25 carries the measurements, and §23 is the
-one waves 2-3 lean on: holdings decompose an account's balance and need not sum to it. Next:
-Chunk 02, starting with its own `verify-api` step, which has a question waiting for it —
-the SDK's investment-transaction model carries no settlement date and no removal signal, so
-this chunk's soft-delete deliverable is written against a shape nobody has measured.
+Context: Chunks 01-03 built and reviewed 2026-09-12. Wave 1's two `verify-api` probes are
+done and both rewrote what they measured (`api-notes-plaid.md` §22-26); response shape is no
+longer the open question it was. Chunk 03 made an investments failure the DOMAIN's rather
+than the connection's, gave `sync_state` one writer (`store/sync_domains.py`), and put a
+`domains` array on `get_pipeline_health`. 🔴 It also moved the investments freshness stamp out
+of the derivers and into the sync command, because two feeds share one domain key and neither
+body alone says the domain got everything it asked for -- which is why a rebuild can no longer
+forge a freshness claim out of an archived body either. Next: Chunk 04, which is wave 1's
+`cumulative` review and its PR.
 
 ## The Program
 
