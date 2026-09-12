@@ -781,6 +781,25 @@ channel by construction.
   The build plan's verification had covered only the green path — the half where the defect
   cannot appear.
 
+- **2026-09-12, the same gate, the pytest lane.** The fix above excluded pytest from the
+  appended cases whenever the report *parsed*, reasoning that a red pytest carries its own
+  failures. True only when its redness became a `<failure>` leaf — and **pytest exits 5 on
+  "no tests collected"** (one bad `-k`/`-m` in `addopts`) while writing a parseable
+  `tests="0" failures="0"`. Then pytest is the only red command, the append list empties,
+  the recording step *succeeds* so nothing warns, and the record reads `failed: 0` again.
+  **The test could not have caught it**: the stub always wrote `failures="0"`, so the
+  "not counted twice" case was asserting the silent-green outcome, not the no-double-count
+  one. Two shapes, one fixture, and the assertion cannot tell them apart. Fixed by keying
+  the exclusion on a `<failure>`/`<error>` actually being present, and by making the stub's
+  report content a parameter so both shapes exist.
+
+**A corollary the second instance earns:** *when correct behaviour DIFFERS between two shapes
+of the same input, a fixture that can only produce one shape asserts nothing about the
+choice.* The tell is a conditional in the code with no corresponding parameter in the
+fixture — here, `if parsed:` in the recorder against a stub that had no way not to parse.
+Before trusting such a test, ask which branch the fixture reaches, and whether it can reach
+the other one at all.
+
 **How to apply:** after wiring a new check, ask *which file does the next reader open?* Then
 make the check red and go read that file — not the terminal. If the artifact is written by
 one tool and your check is a second tool, you must write into the artifact yourself, and a
