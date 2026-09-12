@@ -654,3 +654,70 @@ production.
 **Drain with:** `prawduct-hook verify-operator-verification VRF-013`
 
 **Accepted:** 2026-09-12 — rationale: Accepted to unblock the mypy-green-and-gated / ci-runs-the-gate PR, which none of the three bears on: this branch adds a CI workflow, a gate script and type annotations, and changes no derivation, no query and no MCP tool. VRF-011 (the MCP surface in a real client) is blocked mechanically on relaunching the sandbox server on the merged build (#25) and cannot be drained before this merge exists. VRF-012 (a real pending transaction across settlement, #22) and VRF-013 (the sign convention at two institutions, #23) both need production data the sandbox cannot produce. Each is re-raised immediately as a fresh pending entry, so this acceptance discharges the block and not the obligation.
+
+🔴 **VRF-014, VRF-015 and VRF-016 re-raise obligations that VRF-011, VRF-012 and VRF-013 were
+accepted out of on 2026-09-12 — the third raising of the first, and the fourth of the other two.**
+The acceptance discharged the block on the mypy/CI PR; it did not discharge the checks, none of
+which has been done. **`accept-operator-verification` takes no id and flips every pending entry**,
+so running the override again would erase these three exactly as it erased their predecessors. If a
+future PR has to be unblocked that way, restore them by hand afterwards — or verify them, which is
+the point.
+
+🔴 **Two of the three are now the oldest debt in this file, and the count is the signal.** VRF-012
+and VRF-013 have been raised four times each without ever being attempted, because neither can be:
+both need the production cutover. That is not a process failure — it is the queue correctly
+refusing to let a sandbox-only build claim a production check — but a fifth raising would mean the
+cutover has slipped again, and at that point the right response is to say so out loud rather than
+to re-raise a sixth time.
+
+## VRF-014 — the MCP surface answers usefully in a real client
+
+**Status:** pending
+
+**Chunk:** the MCP surface · **Raised:** 2026-09-12
+
+**Why a human:** unchanged from **VRF-004**, which carries the full procedure and is the entry to
+follow. Accepted as VRF-004, VRF-008 and VRF-011.
+
+🔴 **Its blocker is mechanical, not a missing decision, and has its own item: #25.** The check runs
+against sandbox, but only against a server on the build under test — measured 2026-09-11, the
+reachable sandbox MCP server was on `296b7a0`, an ancestor of no live branch, and still reported the
+pre-fix doubled state. **This one becomes drainable the moment the mypy/CI PR merges**: relaunch the
+sandbox MCP server on the merged `develop` and verify against VRF-004's steps. It is the only one of
+the three that a session can close without waiting on calendar.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-014`
+
+## VRF-015 — one real pending transaction watched across settlement
+
+**Status:** pending
+
+**Chunk:** production-data semantics (#22) · **Raised:** 2026-09-12
+
+**Why a human:** unchanged from **VRF-005**, which carries the full procedure and is the entry to
+follow. Accepted as VRF-005, VRF-009, VRF-012 and now again — every time for the same reason, which
+is that the sandbox has never held a pending row and no fixture can express one. It needs the
+production cutover and a card hold settling, which is days of calendar rather than work. The
+obligation is **#22**, and it blocks production.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-015`
+
+## VRF-016 — the sign convention on a real inflow, across two institutions
+
+**Status:** pending
+
+**Chunk:** production-data semantics (#23) · **Raised:** 2026-09-12
+
+**Why a human:** unchanged from **VRF-006**, which carries the full procedure and is the entry to
+follow. Accepted as VRF-006, VRF-010, VRF-013 and now again. The sandbox is single-connection, so
+the per-connection sign check that would catch an institution with a differing convention cannot run
+at all — one feed obeying the convention is not evidence about another.
+
+🔴 **Enrolling a second SANDBOX institution does not drain this, and the investment-sync plan is
+about to do exactly that.** `build-plan-investment-sync.md` Chunk 01 enrolls `ins_109511` as a
+second sandbox connection so the capability gate has a discriminating fixture; that is a different
+check, against canned data, and it says nothing about whether a real institution signs its feed the
+way this build assumes. This entry needs a second **real** institution and a real inflow, which is
+up to a pay cycle. The obligation is **#23**, and it blocks production.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-016`
