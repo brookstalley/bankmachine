@@ -34,6 +34,83 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-12: The gate runs somewhere that is not the author's machine
+
+<!-- prawduct: scope=ci-runs-the-gate -->
+
+**Why:** `scripts/check.sh` runs every declared check, and exactly one thing launched it —
+the governance gate on the machine of whoever was editing. `.githooks/pre-push` does not run
+it: that hook refuses leaked identity and enforces the gitflow rule for `main`, and nothing
+else. **No push, from any clone, had ever been checked against pytest, ruff or mypy by
+anything but the author remembering to look.** The checks were run by the honour system of
+one machine, which is the same shape as the defect the gate itself was built to close.
+
+**What changed:** `.github/workflows/check.yml` runs `bash scripts/check.sh` on a
+`macos-latest` runner, on `pull_request` into `develop` and `main` plus `workflow_dispatch`.
+It is a **caller**, not a second list: restating the four checks in YAML would create a
+second declaration of the gated set, free to drift from the first, which is
+brookstalley/bankmachine#92 rebuilt in another language.
+`tests/preferences/test_ci_runs_the_gate.py` fails if the workflow stops being a caller.
+
+macOS rather than the ~10× cheaper `ubuntu-latest`, because `project-preferences.md` records
+macOS as the only supported and tested platform and `tests/conftest.py` runs integration
+tests against the real OS keychain. A green tick on a platform nothing has ever verified is
+worth less than nothing. The cost that buys is real — macOS bills 10× on a private repo at
+~10 minutes a run — and it is what decided the triggers: the local gate covers the edit loop,
+so CI observes at the point the code tries to become someone else's problem, which is the
+pull request.
+
+Also here: ruff 0.16.6 → **0.16.7**. A non-event — nothing reformatted, no rule changed — and
+recorded only so the lock movement in this bundle has a stated reason.
+
+🔴 **Two gaps left open deliberately, stated rather than left to be discovered.** A merge
+commit landing on `develop` re-runs nothing, so the PR run vouches for the merge result only
+while the base has not moved under it. And **CI reports; it cannot block** — requiring a
+status check needs branch protection, which is paid on private repos, so `.githooks/pre-push`
+is still the only thing in this project that actually refuses a push, and it refuses on
+identity and gitflow, never on a red check.
+
+🔴 **Honest confidence: as this entry is written, this workflow has never run.** Everything
+about it is reasoned from documentation. `workflow_dispatch` is invisible until the file
+reaches `develop` — GitHub reads the dispatchable list from the default branch only — so the
+pull request that carries it is the first and only way to observe it, which makes that PR a
+verification step and not merely a delivery one. The keychain step is the likeliest to be
+red: `keyring` writes to the default keychain but reads through the search list, so the
+scratch keychain is **prepended to the search list** as well as made default, and that line
+was checked against real `security list-keychains` output locally and never on a runner.
+
+## 2026-09-12: mypy is green, and four declared checks now run under one exit code
+
+<!-- prawduct: scope=mypy-green-and-gated -->
+
+**Why:** `project-preferences.md` declared checks that nothing ran (brookstalley/bankmachine#92).
+mypy was declared and red; `ruff format --check` was declared and, on 2026-09-08 merging
+`feature/sync-v1`, **seven files had drifted across two build steps that both reported "ruff
+clean" at every close** — because both ran `ruff check` and neither ran the formatter's
+`--check`. The two are different halves and the lint rules never reach layout.
+
+**What changed:** `src` and `tests` typecheck under `mypy strict`, and `scripts/check.sh` runs
+all four declared checks — `pytest`, `ruff check`, `ruff format --check`, `mypy` — under one
+exit code, naming whichever failed. There is no `set -e`: an operator told about a type error
+should not have to fix it and re-run to find the three lint findings underneath.
+
+The JUnit report is not a side effect — **it is the durable evidence.** `test-evidence record`
+builds `.test-evidence.json` from that report and consults exit status only afterwards, which
+it does not store. So a script that merely exits non-zero on a red linter leaves a
+session-fresh record reading `failed: 0`: the terminal shows red, `test-status` says
+`current`, and the Stop gate passes — #92's defect moved one consumer along. Pytest therefore
+runs first, its report always exists, and each red linter is appended to it as a failing case.
+
+🔴 **One silent-evidence bug was found by review inside that recorder and fixed here.** A red
+pytest whose report carried **no `<failure>` element at all** — exit 5, "no tests collected",
+which is what one bad `-k` in `addopts` produces — recorded as `failed: 0`. The exclusion
+looked obviously correct ("pytest reports its own failures"), and the test that should have
+caught it asserted the buggy outcome, because its stub could only produce one of the two
+report shapes. The fix is mutation-proven. The recorder now lives in
+`scripts/record_red_checks.py` rather than in a `python3 -c` string invisible to every check
+this project gates on, and `scripts` is in `[tool.mypy] files` — so **anything added to that
+directory is type-checked from now on.**
+
 ## 2026-09-11: A re-issued roster is counted once, and the exclusion is disclosed
 
 <!-- prawduct: scope=duplicated-roster-double-count -->
