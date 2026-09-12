@@ -48,6 +48,7 @@ from bankmachine.connector import (
     ACCOUNTS_GET,
     INSTITUTIONS_GET,
     INVESTMENTS_HOLDINGS_GET,
+    INVESTMENTS_TRANSACTIONS_GET,
     ITEM_GET,
     ITEM_REMOVE,
     TRANSACTIONS_SYNC,
@@ -65,6 +66,7 @@ from bankmachine.store.schema import (
     connections,
     holdings,
     institutions,
+    investment_transactions,
     securities,
     sync_state,
     transactions,
@@ -2020,6 +2022,199 @@ def _write_holding(
     )
 
 
+def derive_investment_transactions(
+    conn: SAConnection, response: RawResponse, context: DerivationContext
+) -> None:
+    """`/investments/transactions/get` -> `securities`, `investment_transactions`.
+
+    One page of one window. 🔴 **Everything that spans the window lives outside
+    this function**, and that boundary is forced rather than chosen: a deriver
+    sees one archived body, and the removal signal here is a row's ABSENCE from
+    the whole window *(`api-notes-plaid.md` §26 -- the feed sends no `removed`
+    list, no tombstone, nothing)*. Absence is not observable from one page of
+    twelve, so `store.investments.record_investment_transaction_window` owns it
+    and is handed the window only once the pages have been exhausted.
+
+    **Securities before transactions**, as in the holdings deriver and for the
+    same reason: a transaction references one by local id. Unlike a holding, a
+    transaction may legitimately reference none -- a contribution of cash is not
+    a trade in an instrument -- so a null `security_id` is stored rather than
+    refused, while a stated one the body did not list still refuses the row.
+    """
+    if response.connection_id is None:
+        raise DerivationError(
+            f"raw response {response.raw_response_id} ({INVESTMENTS_TRANSACTIONS_GET}) was "
+            f"archived without a connection, so there are no accounts for its transactions "
+            f"to hang from. An investments reply belongs to exactly one connection and "
+            f"nothing else can say which"
+        )
+    payload = _payload(response)
+    _derive_carried_accounts(conn, response=response, context=context, payload=payload)
+    local_security: dict[str, int] = {}
+    for entry in _entries(payload, "securities", response):
+        source_security_id, security_id = _upsert_security(
+            conn, entry=entry, response=response, context=context
+        )
+        local_security[source_security_id] = security_id
+
+    known_accounts = _account_ids(conn, response.connection_id)
+    for entry in _entries(payload, "investment_transactions", response):
+        try:
+            _write_investment_transaction(
+                conn,
+                response=response,
+                context=context,
+                entry=entry,
+                known_accounts=known_accounts,
+                local_security=local_security,
+            )
+        except UndenominableAmountError as exc:
+            # One row's currency costs that row, never the rest of the page --
+            # the same scope `_write_one_change` refuses a transaction at, for
+            # the same reason. Here there is no cursor to strand, but there is a
+            # window: letting this escape would abandon the remaining pages and
+            # leave the reconciliation with a window it never saw whole, which
+            # by design then soft-deletes nothing at all.
+            _log.warning(
+                "raw response %s: one investment transaction is in a unit this build cannot "
+                "express in minor units, so it is not derived and the rest of the page is -- %s",
+                response.raw_response_id,
+                exc,
+            )
+
+    _record_domain_success(
+        conn,
+        connection_id=response.connection_id,
+        domain=INVESTMENTS_DOMAIN,
+        at=response.received_at,
+    )
+
+
+def _write_investment_transaction(
+    conn: SAConnection,
+    *,
+    response: RawResponse,
+    context: DerivationContext,
+    entry: dict[str, Any],
+    known_accounts: dict[str, int],
+    local_security: dict[str, int],
+) -> None:
+    """One investment transaction, converged on the aggregator's id for it.
+
+    🔴 **`settlement_date` is not written, and its absence here is the record of
+    a measurement.** The feed has no such field *(§26)*; the frozen column keeps
+    its meaning for the manual importer, which is now its only possible writer.
+    Writing `trade_date` into it "for completeness" would manufacture a
+    settlement the institution never stated, and every later reader would take
+    it for one.
+
+    Simpler than `_write_transaction` by the whole pending->posted machinery:
+    an investment transaction has no pending state and no id that supersedes
+    another, so identity is the aggregator's id alone.
+    """
+    account_id = _local_account(entry, known_accounts, response)
+    source_id = _required(
+        entry.get("investment_transaction_id"), "an investment transaction id", response
+    )
+    currency = _stated_currency(entry)
+    if currency is None:
+        raise DerivationError(
+            f"raw response {response.raw_response_id} ({response.endpoint}) has an investment "
+            f"transaction in no stated currency; storing an amount whose unit is unknown is "
+            f"how a total silently mixes two of them"
+        )
+
+    source_security_id = _optional(entry.get("security_id"))
+    if source_security_id is None:
+        # A cash movement rather than a trade in an instrument -- a contribution
+        # or an interest credit. The column is nullable for exactly this.
+        security_id: int | None = None
+    elif source_security_id in local_security:
+        security_id = local_security[source_security_id]
+    else:
+        raise DerivationError(
+            f"raw response {response.raw_response_id} ({response.endpoint}) has an investment "
+            f"transaction in security {source_security_id!r}, which its own securities list "
+            f"does not carry. The instrument a trade is in is not something this system can "
+            f"supply for it"
+        )
+
+    quantity = entry.get("quantity")
+    price = entry.get("price")
+    fees = entry.get("fees")
+    values: dict[str, Any] = {
+        "account_id": account_id,
+        "security_id": security_id,
+        "source_investment_transaction_id": source_id,
+        "trade_date": _parse_calendar(
+            entry.get("date"), "an investment transaction date", response
+        ),
+        "investment_type": _required(entry.get("type"), "an investment transaction type", response),
+        "investment_subtype": _optional(entry.get("subtype")),
+        # 🔴 No sign is flipped, for the reason `_write_holding` states: a
+        # quantity is not an amount. A sale arrives with a negative quantity
+        # because shares left the account, which is already the operator's point
+        # of view *(measured §26: -0.008902867462305952 on a sell)*.
+        "quantity": None if quantity is None else _exact_quantity(quantity, response),
+        # A unit price is a RATE, not a sum of money that moved, so it rounds
+        # like a valuation rather than refusing like a ledger amount -- and it
+        # does round: 12 of 100 live prices carry more precision than the cent
+        # *(§26, e.g. 40876.02675)*.
+        "price_minor": (
+            None
+            if price is None
+            else to_minor(price, currency, "an investment transaction price", response)
+        ),
+        # 🔴 A fee IS a sum of money that moved, so it converts exactly or the
+        # row is refused -- and it is operator-signed like every other stored
+        # amount, because the aggregator sends a fee as a positive magnitude and
+        # a fee is money leaving.
+        #
+        # 🔴 **How `fees` relates to `amount` is NOT measured, and nothing may
+        # assume it.** The captured page rules out the obvious reading: a buy
+        # arrives with `amount` 1.10 beside `fees` 7.99, so the fee is not a
+        # component of that amount. Whether it is additive, settled separately,
+        # or reported per-lot is unknown. Both columns are stored as sent and
+        # NEITHER summed nor netted here; a total that wants to combine them
+        # owes a measurement first.
+        "fees_minor": (None if fees is None else _operator_signed_amount(fees, currency, response)),
+        "amount_minor": _operator_signed_amount(entry.get("amount"), currency, response),
+        "currency": currency,
+        "description": _optional(entry.get("name")),
+        "source": "aggregator",
+        "raw_response_id": response.raw_response_id,
+        "manual_import_id": None,
+        "derivation_version_id": context.derivation_version_id,
+        "updated_at": response.received_at,
+    }
+
+    existing = conn.execute(
+        select(investment_transactions.c.investment_transaction_id).where(
+            investment_transactions.c.account_id == account_id,
+            investment_transactions.c.source_investment_transaction_id == source_id,
+        )
+    ).one_or_none()
+    if existing is None:
+        conn.execute(
+            insert(investment_transactions).values(first_seen_at=response.received_at, **values)
+        )
+        return
+    conn.execute(
+        update(investment_transactions)
+        .where(investment_transactions.c.investment_transaction_id == existing[0])
+        .values(
+            # 🔴 Cleared, as the transaction path clears it: a row the window
+            # returned is a row that is present at the source. A stale removal
+            # stamp would keep it out of every sum while its row said otherwise
+            # -- and here the stamp's only author is a reconciliation that
+            # concluded this row was gone, so the window disagreeing with that
+            # conclusion is exactly the evidence that retires it.
+            removed_at=None,
+            **values,
+        )
+    )
+
+
 #: What `bankmachine.derivers` composes into this build's registry.
 #:
 #: Keyed by the endpoint's own path, which is also what `store.raw` records, so a
@@ -2036,5 +2231,6 @@ PLAID_DERIVERS: Final[Mapping[str, Deriver]] = {
     str(ITEM_GET): derive_item,
     str(ACCOUNTS_GET): derive_accounts,
     str(INVESTMENTS_HOLDINGS_GET): derive_investments_holdings,
+    str(INVESTMENTS_TRANSACTIONS_GET): derive_investment_transactions,
     str(TRANSACTIONS_SYNC): derive_transactions_sync,
 }

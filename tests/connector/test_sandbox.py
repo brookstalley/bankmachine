@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import replace
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,12 @@ from plaid.api import plaid_api
 from plaid.model.country_code import CountryCode
 from plaid.model.institutions_get_request import InstitutionsGetRequest
 from plaid.model.investments_holdings_get_request import InvestmentsHoldingsGetRequest
+from plaid.model.investments_transactions_get_request import (
+    InvestmentsTransactionsGetRequest,
+)
+from plaid.model.investments_transactions_get_request_options import (
+    InvestmentsTransactionsGetRequestOptions,
+)
 from plaid.model.item_public_token_exchange_request import (  # noqa: F401
     ItemPublicTokenExchangeRequest,
 )
@@ -620,3 +627,110 @@ def test_the_investments_institution_reports_the_product_only_in_products(
         "capability discovery reads the UNION; reading `available_products` alone would "
         "record the connection that actually holds a 401k as unable to serve investments"
     )
+
+
+def test_investment_transactions_come_back_windowed_and_paginated(
+    sandbox_client: Any, investments_item: str
+) -> None:
+    """🔴 The measured shape the investment-transaction deriver is written FROM.
+
+    Called through the raw fetch because there is no client method yet, for the
+    same reason the holdings probe is: the field mapping has to be reasoned from
+    a payload the aggregator actually sent. Two things this endpoint decides that
+    holdings did not, because unlike holdings it is windowed and paged:
+
+    - how "more" is signalled, which decides the page loop's stop condition
+    - whether the returned range is stated or must be computed from the rows,
+      which decides what `sync_state.history_start_date` can be written from
+
+    The window asked for is the configured maximum, so the range that comes back
+    is the aggregator's own answer about how far this Item's history reaches
+    rather than an artifact of a narrow ask.
+    """
+    end = date.today()
+    start = end - timedelta(days=MAX_HISTORY_DAYS)
+    body = sandbox_client._fetch_bytes(
+        Endpoint("/investments/transactions/get"),
+        sandbox_client._api.investments_transactions_get,
+        InvestmentsTransactionsGetRequest(
+            access_token=investments_item, start_date=start, end_date=end
+        ),
+    )
+    payload = _record_or_compare("investments_transactions_get", body)
+
+    rows = payload["investment_transactions"]
+    assert rows, (
+        "a connection enrolled with investments answered with no investment transactions, "
+        "so this is not the fixture the deriver should be written from"
+    )
+
+    # The page loop's stop condition. `total_investment_transactions` is the
+    # count the window holds, against which a page's length says whether asking
+    # again would return anything.
+    assert isinstance(payload["total_investment_transactions"], int)
+
+    for row in rows:
+        # `trade_date`, `investment_type`, `amount_minor` and `currency` are
+        # NOT NULL; `source_investment_transaction_id` is the upsert identity.
+        for field in ("investment_transaction_id", "account_id", "date", "type", "amount"):
+            assert row.get(field) is not None, (
+                f"a live investment transaction carries no {field}, which the schema "
+                f"declares NOT NULL"
+            )
+        assert (
+            row.get("iso_currency_code") is not None
+            or row.get("unofficial_currency_code") is not None
+        ), "a live investment transaction states neither currency, so the row cannot be denominated"
+
+
+def test_investment_transactions_page_by_offset_against_a_stated_total(
+    sandbox_client: Any, investments_item: str
+) -> None:
+    """🔴 Pagination measured rather than reasoned: offset/count against a total.
+
+    This endpoint has no cursor, so the restart discipline `transactions_sync`
+    relies on is not available to it and the page loop has to be written against
+    whatever this measures. Asks for one row at a time to force a second page
+    from an Item whose whole window is small.
+    """
+    end = date.today()
+    start = end - timedelta(days=MAX_HISTORY_DAYS)
+
+    def page(offset: int, count: int) -> dict[str, Any]:
+        body = sandbox_client._fetch_bytes(
+            Endpoint("/investments/transactions/get"),
+            sandbox_client._api.investments_transactions_get,
+            InvestmentsTransactionsGetRequest(
+                access_token=investments_item,
+                start_date=start,
+                end_date=end,
+                options=InvestmentsTransactionsGetRequestOptions(offset=offset, count=count),
+            ),
+        )
+        parsed: dict[str, Any] = json.loads(body)
+        return parsed
+
+    first = page(0, 1)
+    total = first["total_investment_transactions"]
+    assert total > 1, (
+        "the sandbox Item's window holds one investment transaction or fewer, so paging "
+        "cannot be measured against it and the page loop would be written from nothing"
+    )
+    assert len(first["investment_transactions"]) == 1, (
+        "`count` did not bound the page, so the loop cannot page by offset"
+    )
+
+    second = page(1, 1)
+    assert len(second["investment_transactions"]) == 1
+    assert (
+        second["investment_transactions"][0]["investment_transaction_id"]
+        != first["investment_transactions"][0]["investment_transaction_id"]
+    ), "offset did not advance the window, so paging by it would re-fetch page one forever"
+    assert second["total_investment_transactions"] == total, (
+        "the stated total moved between pages, so it cannot be the loop's stop condition"
+    )
+
+    # Past the end: what an exhausted window answers with, which is the loop's
+    # exit rather than an error to catch.
+    past_end = page(total, 1)
+    assert past_end["investment_transactions"] == []

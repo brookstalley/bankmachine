@@ -34,6 +34,81 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-12: Investment transactions, and a removal signal that had to be derived
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** AC-3.3 was the second of FR-3's two unimplemented acceptance criteria. Holdings say
+what an account holds *today*; nothing said what moved it there. `investment_transactions`
+had been created, constrained and empty since build step 1.
+
+**What changed (Chunk 02):** `/investments/transactions/get` is pulled for the same
+capability-gated connections as holdings, over `config.history_days` — the one configured
+window — and paged to exhaustion by `options.offset` against the stated
+`total_investment_transactions`. `derive_investment_transactions` writes the rows with the
+identity and provenance `transactions` already carries, reusing `_exact_quantity` for
+quantities and `_operator_signed_amount` for amounts rather than writing a second
+normalization beside them.
+
+**The `verify-api` step rewrote three of this chunk's deliverables, which is the argument for
+running it first.** `api-notes-plaid.md` §26 carries the measurements; all three are absences,
+and none would have been found by more reasoning:
+
+- 🔴 **There is no settlement date.** `investment_transactions.settlement_date` gets nothing
+  from this feed and stays null; the manual importer is now its only possible writer. Filling
+  it with the trade date "for completeness" would manufacture a settlement no institution
+  stated, and every later reader would take it for one.
+- 🔴 **There is no removal signal of any kind** — no `removed` list, no tombstone, no flag.
+  This is a windowed read, not a delta like `/transactions/sync`, so the plan's "handled the
+  same way" had nothing to attach to. What makes the never-hard-delete norm satisfiable
+  anyway is that the window comes back **whole**: a stored row inside the requested window
+  whose id did not return has gone away, and that absence is the signal.
+- 🔴 **There is no cursor.** Paging is offset/count, so the far-end idempotence
+  `TRANSACTIONS_SYNC` relies on — and AC-2.5's crash-resume with it — is unavailable. A run
+  that stops early leaves no partial progress and re-reads the window from its start next
+  time, which converges only because every write is an upsert on the aggregator's own id.
+
+**The removal reconciliation refuses to run on a window it did not see whole, and that
+refusal is the whole safety argument.** A run stopped by its page ceiling, a transport
+failure or a kill has fetched a *prefix*: every row it never reached is absent from what it
+saw, and reconciling on that would soft-delete real history while leaving a store that looks
+exactly as it should. So exhaustion is **derived inside**
+`store.investments.record_investment_transaction_window` from the row count against the
+stated total, rather than passed in as a flag each caller asserts separately — and a window
+offered as complete with no archived pages raises instead of letting `NOT IN ()` match every
+row and retire the lot. The two tests that matter assert the invariant rather than its
+causes: a bounded run retires nothing and records no range.
+
+**What is deliberately NOT here, with the measurement as the reason.** No shortfall warning is
+derived from the returned range. Nothing states the granted window and the response does not
+echo what was asked, so the only observable range is the span of the rows — and that answers
+*when was this account last active*, not *how much history was granted*. An account granted
+two years with no trades in the first eighteen months returns the same narrow span as one
+granted six months, so a shortfall read off row dates would report every quiet brokerage as
+truncated history on every run. AC-3.3 asks to "record the actual date range returned", and
+that is what is recorded: computed from the rows, and only at exhaustion, because the rows
+arrive newest-first and the earliest date is on the last page.
+
+`cancel_transaction_id` is filed rather than guessed. It was null on all 100 recorded rows,
+and its ledger meaning is itself unsettled — in accounting a cancellation usually keeps both
+rows so they net to zero, so treating it as a tombstone would change the arithmetic.
+
+**A debt this chunk created and names rather than leaves:** because removal is a property of a
+whole window and a deriver sees one page, replaying archived pages re-upserts every row that
+ever appeared and **clears `removed_at` on each** — silently resurrecting every soft delete.
+Chunk 04 owes the reconciliation re-run at the end of a rebuild, and the assertion that a
+rebuild reproduces a soft delete rather than undoing it; the window's `request_context` is
+archived carrying its offset and bounds for exactly that. Until then AC-5.2 is false in the
+one direction no test here can see.
+
+**Also fixed, and it was not a new defect.** `check-no-personal-data.sh` greps *tracked* files
+in worktree mode, so Chunk 01's freshly recorded fixture was invisible to the gate that
+passed it and became visible the moment it was committed — the "gate green" in that chunk's
+handoff was blind rather than green. The aggregator's canned sandbox fund name carried a
+roster token; the display name is sanitized in both fixtures, no token moved and no path was
+exempted, so the guard keeps full strength. Nothing in code, tests or docs reads a security's
+display name, and the structural facts the fixtures are the oracle for are untouched.
+
 ## 2026-09-12: What is inside an investment account, recorded for the first time
 
 <!-- prawduct: scope=investments-v1 -->

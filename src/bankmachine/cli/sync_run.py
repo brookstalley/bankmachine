@@ -32,6 +32,7 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any, Final
 
 from sqlalchemy import func, select, update
@@ -60,6 +61,8 @@ from bankmachine.store.connection import (
 )
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, transaction, writer_connection
+from bankmachine.store.investments import record_investment_transaction_window
+from bankmachine.store.raw import RawResponse
 from bankmachine.store.schema import (
     TRANSACTIONS_DOMAIN,
     accounts,
@@ -69,7 +72,7 @@ from bankmachine.store.schema import (
     sync_state,
     transactions,
 )
-from bankmachine.store.types import UtcInstant, now_utc
+from bankmachine.store.types import UtcInstant, calendar_date, now_utc
 
 logger = get_logger("cli.sync_run")
 
@@ -142,6 +145,11 @@ class ConnectionOutcome:
     #: without a word in the report the two are indistinguishable from a run that
     #: pulled them and found nothing.
     investments_pulled: bool = False
+    #: How many investment transactions a complete window retired this run.
+    #: Reported because a soft delete is otherwise invisible -- the rows simply
+    #: stop appearing in every total, which is the shape of silent wrongness this
+    #: product exists to refuse.
+    investment_transactions_removed: int = 0
     granted_history_days: int | None = None
     history_shortfall_days: int | None = None
 
@@ -520,6 +528,13 @@ def _sync_one(
                     )
                     _persist(config, holdings_page, connection_id)
                     outcome.investments_pulled = True
+                    _pull_investment_transactions(
+                        config,
+                        client,
+                        access_token,
+                        connection_id=connection_id,
+                        outcome=outcome,
+                    )
                 except ReauthRequiredError:
                     # 🔴 Re-raised, because this one IS about the login. It
                     # degrades the connection through the path that prints the
@@ -746,10 +761,16 @@ def _record_granted_window(config: Config, connection_id: int, outcome: Connecti
         )
 
 
-def _persist(config: Config, fetched: FetchedResponse, connection_id: int) -> None:
-    """Archive and derive one page. The cursor rides the derivation's transaction."""
+def _persist(config: Config, fetched: FetchedResponse, connection_id: int) -> RawResponse:
+    """Archive and derive one page. The cursor rides the derivation's transaction.
+
+    Returns the archived response, because the investments window needs to name
+    the pages it was assembled from: a row carrying none of THIS window's
+    response ids is a row the window did not return, and that is the only
+    removal signal the endpoint offers (`store.investments`).
+    """
     with writer_connection(config) as conn:
-        apply_response(
+        return apply_response(
             conn,
             connection_id=connection_id,
             endpoint=fetched.endpoint.path,
@@ -758,6 +779,114 @@ def _persist(config: Config, fetched: FetchedResponse, connection_id: int) -> No
             derivers=ALL_DERIVERS,
             request_context=fetched.request_context,
         )
+
+
+def _investment_page(fetched: FetchedResponse) -> tuple[int, int | None]:
+    """How many rows this page carried, and the total the window claims to hold.
+
+    The two control fields the investments loop reads, through the same shared
+    parser `_page` uses and for the same reason: a parse failure becomes this
+    connection's refusal rather than the whole run's.
+
+    A total that is absent or not an integer comes back `None`, which
+    `record_investment_transaction_window` treats as an UNMEASURED window -- it
+    cannot be exhausted, so nothing is soft-deleted on the strength of it. That
+    is the safe direction, and it is why this returns the total rather than a
+    `has_more` boolean computed here: the decision belongs to the one place that
+    owns the removal rule.
+    """
+    payload = _page(fetched)
+    rows = payload.get("investment_transactions")
+    total = payload.get("total_investment_transactions")
+    return (
+        len(rows) if isinstance(rows, list) else 0,
+        total if isinstance(total, int) and not isinstance(total, bool) else None,
+    )
+
+
+def _pull_investment_transactions(
+    config: Config,
+    client: PlaidClient,
+    access_token: str,
+    *,
+    connection_id: int,
+    outcome: ConnectionOutcome,
+) -> None:
+    """The configured window of investment transactions, paged to exhaustion.
+
+    🔴 **Paged by offset against a stated total, with no cursor** *(§26)*. So
+    unlike the transactions loop, there is nothing to store between pages and
+    nothing to resume from: a run that stops early leaves no partial progress
+    behind, and the next run re-reads the window from its start. That converges
+    because every row is upserted on the aggregator's own id, and it is the
+    reason the page ceiling here costs a re-read rather than a gap.
+
+    AC-3.3: the window asked for is `config.history_days`, the one configured
+    window. What came back is recorded by
+    `record_investment_transaction_window`, which also owns the removal
+    reconciliation -- and refuses both if these pages did not exhaust the window.
+    """
+    end = now_utc().date()
+    start = end - timedelta(days=config.history_days)
+    page_response_ids: list[int] = []
+    rows_seen = 0
+    stated_total: int | None = None
+    # 🔴 The instant the removals are stamped with, taken from the ARCHIVE rather
+    # than the clock. A `removed_at` of `now_utc()` could never be reproduced by
+    # a replay of the same pages, so AC-5.2's "rebuildable from raw responses
+    # alone" would be false for every soft delete. The last page's `received_at`
+    # is a property of the window, so a rebuild that replays it concludes the
+    # same removal at the same instant.
+    concluded_at = now_utc()
+
+    while len(page_response_ids) < MAX_PAGES_PER_RUN:
+        fetched = client.investments_transactions_get(
+            access_token,
+            start_date=start,
+            end_date=end,
+            offset=rows_seen,
+            connection_id=connection_id,
+        )
+        response = _persist(config, fetched, connection_id)
+        page_response_ids.append(response.raw_response_id)
+        concluded_at = response.received_at
+        page_rows, stated_total = _investment_page(fetched)
+        rows_seen += page_rows
+        # 🔴 Both exits are measured *(§26)*: an offset at or past the total
+        # answers with an empty list and no error, and the total does not move
+        # between pages. The empty-page exit is what stops a total that is wrong
+        # in the high direction from looping to the ceiling.
+        if page_rows == 0 or stated_total is None or rows_seen >= stated_total:
+            break
+    else:
+        logger.info(
+            "connection %d stopped at the %d-page ceiling of its investment-transaction "
+            "window with more to fetch; run again to continue",
+            connection_id,
+            MAX_PAGES_PER_RUN,
+        )
+
+    with writer_connection(config) as conn, transaction(conn):
+        window = record_investment_transaction_window(
+            conn,
+            connection_id=connection_id,
+            window_start=calendar_date(start),
+            window_end=calendar_date(end),
+            page_response_ids=page_response_ids,
+            rows_seen=rows_seen,
+            stated_total=stated_total,
+            at=concluded_at,
+        )
+    outcome.investment_transactions_removed = window.removed
+    if not window.exhausted:
+        # 🔴 Taken from the window's OWN verdict rather than from the page
+        # ceiling, because the ceiling is only one way to see a prefix. A page
+        # that comes back empty while the stated total says there is more exits
+        # the loop without ever reaching the `else` above -- and reporting that
+        # run as finished would tell the operator there is nothing left to fetch
+        # while the range stayed unmeasured and nothing was reconciled. One
+        # source for "did we see it whole", and it is the one that decided.
+        outcome.stopped_short = True
 
 
 def _cursor_for(config: Config, connection_id: int) -> str | None:
@@ -896,9 +1025,18 @@ def _report(run: RunOutcome) -> None:
                 else ""
             )
             positions = ", positions recorded" if outcome.investments_pulled else ""
+            # A soft delete leaves no trace in a page count -- the rows simply
+            # stop appearing in every total. Named here so a run that retired
+            # history says so at the moment the operator could still ask why.
+            retired = (
+                f", {outcome.investment_transactions_removed} investment "
+                f"transaction(s) no longer reported"
+                if outcome.investment_transactions_removed
+                else ""
+            )
             print(
                 f"  {outcome.connection_id}  {outcome.institution_name}: "
-                f"{outcome.pages} {pages} applied{positions}{more}"
+                f"{outcome.pages} {pages} applied{positions}{retired}{more}"
             )
             if not outcome.historical_complete:
                 # 🔴 A bare "N pages applied" reads as finished, and at

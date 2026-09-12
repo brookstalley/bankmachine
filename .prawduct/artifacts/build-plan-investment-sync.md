@@ -19,7 +19,7 @@ governed_by:
       - "Every silver row carries exclusive provenance and its derivation version → conforms. Every row this plan writes is `source='aggregator'` with a `raw_response_id` and no `manual_import_id`, which the tables' own CHECK constraints already enforce. The derivation version is bumped when the derivation changes, per the norm"
       - "🔴 The daily balance and HOLDINGS series are append-only → this plan is the first code that writes the holdings half, so the norm stops being partly hypothetical here. The composite PK is the structural half; the behavioural half is the rule `_write_balance` already implements and holdings must reuse rather than reimplement — FIRST capture of the day wins, decided by COMPARING captures rather than by arrival order, and a row with no `raw_response_id` (a manual import) is never replaced. Copying that logic into a second deriver is how the two drift; the plan factors it (Chunk 01)"
       - "A source value is never overwritten in place → conforms; this plan adds no override column and writes no interpretation over a source field"
-      - "A transaction is never hard-deleted; removal is a soft delete → conforms. `investment_transactions.removed_at` carries the same shape as `transactions`, and the investments pull's removal signal is handled the same way"
+      - "A transaction is never hard-deleted; removal is a soft delete → conforms in SHAPE, and by a different mechanism than `transactions`. `investment_transactions.removed_at` carries the same column and the same never-a-DELETE rule, but 🔴 the feed sends **no removal signal of any kind** — measured, `api-notes-plaid.md` §26: `/investments/transactions/get` is a windowed read, not a delta, so there is no `removed` array to read and `cancel_transaction_id` is a cancellation reference rather than a tombstone. What makes the norm satisfiable anyway is that the window comes back WHOLE: a stored row inside the requested window whose id did not return has gone away, and that is the removal signal. It is only trustworthy when the run actually exhausted the window, so the reconciliation is guarded on exhaustion and a partial run marks nothing — an unguarded one would soft-delete every row it merely had not reached yet"
       - "A migration's DDL is frozen once written → conforms, and is the reason this plan adds NO migration. `securities`, `holdings` and `investment_transactions` were created in `core_schema.py` at build step 1 and are untouched here. If the real API shape turns out to need a column, that is a new migration and a recorded decision, never an edit to the frozen DDL"
   - artifact: architecture
     dispositions:
@@ -87,6 +87,12 @@ from the schema and from the SDK, not from a payload.
 costs one sandbox probe. It moves this to High or it rewrites Chunk 01's field mapping,
 and either outcome is worth more than more reasoning.
 
+**Both wave-1 probes are now done, and both rewrote what they measured** — §22-25 for
+holdings, §26 for investment transactions. Wave 1 is **High** on response shape: every field
+either of its derivers reads has been seen in a real payload. It stays Medium on one thing
+only, and §26 is why — the *granted window* is unobservable on this endpoint, so AC-3.3 is
+satisfied by recording what returned rather than by detecting a shortfall.
+
 🔴 **Waves 2 and 3 (chunks 05–08) are Medium for a second, independent reason**, and it is
 not the same unknown: their row shapes and warning sets are designed against a schema and two
 discovery artifacts rather than against holdings rows, because none exist yet. What raises
@@ -105,9 +111,12 @@ waves 2–3 that is **not** Medium: it was derived and argued in
   capabilities") is what this plan does; the refresh is a separate piece of work and is
   filed rather than folded in, because folding it in means calling `/item/get` per
   connection per run, which is a cost decision the owner should take on its own.
-- `[ASSUMPTION: investment transactions request the same `history_days` window as
-  transactions | LOW impact | user can override]` — AC-3.3 says "the full configured
-  window", and there is exactly one configured window.
+- ~~`[ASSUMPTION: investment transactions request the same `history_days` window as
+  transactions | LOW impact | user can override]`~~ — **measured 2026-09-12 (§26)**: asking
+  for the configured maximum returned rows spanning the whole 730 days, so the window is
+  requested and granted as one. What the probe also settled is that the grant is not
+  *stated* anywhere, and the returned rows cannot stand in for it — see §26 and Chunk 02's
+  descope of the shortfall warning.
 - `[ASSUMPTION: a holding is captured once per day and the first capture of that day is
   the one kept | MED impact | user can override]` — this is `_write_balance`'s rule
   applied to the series the same norm names. The alternative (last capture wins) makes the
@@ -124,7 +133,7 @@ waves 2–3 that is **not** Medium: it was derived and argued in
 ## Status
 
 - [x] Chunk 01: One capable connection's holdings, end to end
-- [ ] Chunk 02: Investment transactions, and the window that actually came back
+- [x] Chunk 02: Investment transactions, and the window that actually came back
 - [ ] Chunk 03: Investments fails on its own, and the health surface says so
 - [ ] Chunk 04: Rebuild, idempotency, and the properties that hold across both
 - [ ] Chunk 05: `list_holdings` — positions, under one strict row shape
@@ -260,36 +269,66 @@ Tests are the floor, and three things here are not testable from a fixture:
 
 - **Description:** The second endpoint, which unlike holdings is paginated and windowed —
   and therefore the chunk that owes AC-3.3. Requests the full configured window and
-  **records the range that actually returned**, so a shortfall is visible instead of silent.
+  **records the range that actually returned**, which is what AC-3.3 asks for in those words.
+  🔴 Amended after this chunk's `verify-api` (`api-notes-plaid.md` §26): the returned range
+  is recorded but **no shortfall is inferred from it**, because the endpoint cannot tell a
+  short window from a quiet account.
 - **Depends on:** Chunk 01
 - **Artifacts consumed:** `docs/system-requirements.md` AC-3.3, AC-2.4;
   `data-model.md` § `sync_state`
 - **Deliverables:**
-  - `INVESTMENTS_TRANSACTIONS_GET` and its client method, paged to exhaustion against the
-    same page ceiling and restart discipline `transactions_sync` already has
+  - `INVESTMENTS_TRANSACTIONS_GET` and its client method, paged to exhaustion by
+    `options.offset`/`options.count` against the stated `total_investment_transactions`,
+    under the same page ceiling. 🔴 **There is no cursor** (§26), so the far-end idempotence
+    `TRANSACTIONS_SYNC` documents is not available: restart discipline here is that a run
+    which stopped early re-reads the window from offset 0 next time, which converges because
+    the writes are upserts, and that the SHORTFALL of a cursor is recorded as the reason
+    rather than papered over
   - the request window derived from `config.history_days`, which is the one configured
     window
-  - `derive_investment_transactions` writing `investment_transactions` with the identity,
-    provenance and soft-delete shape `transactions` already carries — `removed_at`, never a
-    hard delete
+  - `derive_investment_transactions` writing `investment_transactions` with the identity and
+    provenance `transactions` already carries, reusing `_exact_quantity` for the 17-digit
+    quantities §26 measured. 🔴 `settlement_date` is written as **null and stays null** — the
+    feed has no such field (§26), so the frozen column keeps its meaning for the manual
+    importer, which is now its only possible writer
+  - `removed_at` driven by **reconciling the returned window against stored rows**, guarded
+    on exhaustion: a stored row whose `trade_date` lies inside the requested window and whose
+    `source_investment_transaction_id` did not come back is soft-deleted; a run that did NOT
+    exhaust the window (page ceiling, transport failure, crash) marks **nothing**.
+    `[DECISION: window reconciliation is the removal signal, guarded on exhaustion | taken
+    2026-09-12 after §26 measured that the feed sends none | user chose it over
+    `cancel_transaction_id`, over both, and over descoping removal]`. The guard failing OPEN
+    is silent data loss, so the partial-run case is a test before it is a branch
   - the returned range recorded on the investments `sync_state` row
-    (`history_start_date`), and a shortfall against the request reported rather than
-    swallowed, reusing the shape `_is_short` draws for the granted window (a null range is
-    an UNMEASURED window, not a shortfall of zero)
+    (`history_start_date`), computed from the rows because §26 measured that nothing states
+    it — and computable only at exhaustion, since rows arrive newest-first. A window that was
+    never exhausted **writes nothing**, leaving the column as it was: null there means nobody
+    has ever measured, which is UNMEASURED and not a shortfall of zero, and overwriting a
+    range an earlier run did measure would destroy a fact to record the absence of one
+  - 🔴 **descoped here, with the measurement as the reason:** no shortfall warning is derived
+    from the returned range. §26 measured that this endpoint cannot distinguish a window the
+    aggregator truncated from an account that simply had no trades, so `_is_short`'s shape is
+    deliberately NOT reused for it — doing so would report every quiet brokerage as a
+    truncated history on every run. A cancellation's effect on the ledger
+    (`cancel_transaction_id`, null on 100/100 sandbox rows) is filed rather than guessed
 - **Tests:** unit — an investment transaction's amount signed from the operator's point of
-  view; a removal soft-deletes; `trade_date` and `settlement_date` as calendar dates against
-  `captured_at` as an instant. Integration — pagination to exhaustion; AC-2.4, a second
-  consecutive run produces zero net changes; a short window recorded as short, and an
-  unmeasured one distinguished from a zero-length one.
+  view; a quantity kept as exact text through 17 digits; a price rounded half-even where §26
+  found sub-cent prices; `trade_date` as a calendar date against `captured_at` as an instant.
+  Integration — pagination to exhaustion by offset; AC-2.4, a second consecutive run produces
+  zero net changes; a vanished row soft-deleted once the window is exhausted, and 🔴 **the
+  partial-run case: a run stopped at the page ceiling soft-deletes NOTHING and records a null
+  range** — the two assertions that make the guard fail closed rather than open.
 - **Acceptance criteria:** a sandbox sync writes investment transactions for the capable
   connection; the recorded range matches what the responses actually carried; running twice
-  changes nothing.
+  changes nothing; a run that did not exhaust the window leaves every stored row live.
 - **Foreign API:** plaid-investments-transactions
 - **Done when:**
   <!-- prawduct:allow prawduct/chunk-ref-missing -- as in Chunk 01: the aggregator's endpoint path, named because probing it IS the step; not a file reference -->
-  0. verify-api — probe the live sandbox for `/investments/transactions/get`, capture the
-     real pagination shape (how "more" is signalled, and whether the returned range is
-     stated or must be computed from the rows) into `.prawduct/artifacts/api-notes-plaid.md`
+  0. ~~verify-api~~ **Done 2026-09-12 — `api-notes-plaid.md` §26.** Offset/count against a
+     stated total, no cursor; the range is not stated and must be computed from the rows,
+     which arrive newest-first so it is knowable only at exhaustion; and three things this
+     chunk was written against are absent from the body — `settlement_date`, any removal
+     signal, and a cursor. The deliverables above are amended accordingly
   1. Acceptance criteria met and tests pass
   2. `/prawduct:critic` run and blocking findings resolved
   3. Committed and chunk marked `[x]` in Status
@@ -351,6 +390,17 @@ Tests are the floor, and three things here are not testable from a fixture:
 - **Deliverables:**
   - `src/bankmachine/store/rebuild.py` replaying both new endpoints, with the holdings
     append rule landing on the same rows regardless of replay order
+  - 🔴 **the investment-transaction window reconciliation re-run at the end of the replay**,
+    which Chunk 02 created the need for and could not discharge. Its removal signal is a
+    row's ABSENCE from a complete window, and a deriver sees one page — so replaying pages
+    re-upserts every row that ever appeared and CLEARS `removed_at` on each, silently
+    resurrecting every soft delete. Without this, AC-5.2 is false in the one direction no
+    test in Chunk 02 can see: the rebuilt store holds rows the synced store had retired.
+    `store.investments.record_investment_transaction_window` is already factored for a
+    second caller; what this chunk owes is deciding which archived pages constituted one
+    complete window (the `request_context` Chunk 02 archives carries
+    `window=…..… offset=… count=…` for exactly this) and a test asserting a rebuild
+    reproduces a soft delete rather than undoing it
   - property tests: rebuild losslessness over generated holdings and investment
     transactions; money arithmetic over valuations at the rounding boundary
   - an entry in `.prawduct/operator-verification.md` for the real-connection run, which is
@@ -361,7 +411,9 @@ Tests are the floor, and three things here are not testable from a fixture:
 - **Tests:** property — rebuild from an emptied normalized store reproduces every holding
   and investment transaction exactly; a second sync after a rebuild is a no-op. Integration —
   a rebuild across a store holding both manual and aggregator rows leaves the manual ones
-  alone.
+  alone; 🔴 **a rebuild of a store holding a soft-deleted investment transaction reproduces
+  the `removed_at` rather than clearing it** — the assertion that catches the resurrection,
+  which every other rebuild test passes straight through.
 - **Acceptance criteria:** `bankmachine store rebuild` on a sandbox store with investments
   reproduces the tables byte-for-byte by content; the suite is green; the verification entry
   is queued.

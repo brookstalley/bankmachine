@@ -773,3 +773,53 @@ bankmachine sync run --no-wait
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-017`
 
+## VRF-018 — a real sandbox sync records investment transactions, and the window it got
+
+**Status:** pending
+
+**Chunk:** investments — investment transactions and the window · **Raised:** 2026-09-12
+
+**Why a human:** the chunk's acceptance criterion is that *a sandbox sync writes investment
+transactions for the capable connection*, and no test here makes that claim. The endpoint,
+its pagination and its window were probed live *(`api-notes-plaid.md` §26)* and the deriver
+is proven against the payload the aggregator actually sent — but the CLI path between them
+is exercised against a fake client, and the one thing a fake cannot tell you is whether the
+real `sync run` joins the parts. Drain alongside VRF-017: the same run answers both.
+
+**Prerequisite:** the same sandbox connection VRF-017 needs, at an institution that serves
+investments (`ins_109511`; `ins_109508` also answers, per §25).
+
+```
+export BANKMACHINE_PLAID_CLIENT_ID=<client id>   # or `source .env`
+bankmachine sync run --no-wait
+```
+
+**Verify:**
+
+1. `bankmachine sync shell`, then:
+   ```sql
+   SELECT investment_type, investment_subtype, trade_date, quantity,
+          amount_minor, fees_minor, currency, settlement_date, removed_at
+     FROM investment_transactions ORDER BY trade_date DESC LIMIT 20;
+   ```
+   Rows come back. 🔴 **Check the SIGNS against the type**: a `buy` stores a NEGATIVE
+   `amount_minor` (cash left the account) and a `cash`/`contribution` stores a positive one.
+   The aggregator sends both the other way round, so a column that agrees with the
+   aggregator's sign is the bug this reading exists to catch. `quantity` is exact decimal
+   text. `settlement_date` is **null on every row** — the feed has no such field (§26), and
+   a populated one would mean something invented it.
+2. The recorded window:
+   ```sql
+   SELECT domain, history_start_date, last_success_at FROM sync_state;
+   ```
+   The investments row carries a `history_start_date` at or after the oldest `trade_date`
+   above, and it is **not null** — a null there after a completed run would mean the window
+   was never seen whole.
+3. Run `bankmachine sync run --no-wait` a second time. 🔴 **`removed_at` stays null on every
+   row** (AC-2.4). A second identical window retiring rows is the reconciliation concluding
+   removal from a window it did not actually exhaust, which is the failure mode that costs
+   real history.
+4. The run's report. A run that retired nothing says nothing about removals; if it does name
+   a count, that count must be explainable by rows the aggregator genuinely stopped sending.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-018`

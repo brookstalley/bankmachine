@@ -809,3 +809,5 @@ reporting bug can live, so a plan whose "Done when" mentions only success has no
 verified, it has been demonstrated.
 
 ## Evidence recorded over a tree you were editing is evidence about no tree: start the gate when you have nothing left to change, and never let a narrower re-run stand in for the declared command
+
+## A guard that greps tracked files is blind to the file you just created: stage a new fixture before a green says anything about it

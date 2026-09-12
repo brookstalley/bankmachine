@@ -514,6 +514,27 @@ INVESTMENTS_HOLDINGS_GET = Endpoint(
     "/investments/holdings/get", retry_safe=True, issues_credential=False
 )
 
+#: One page of one connection's investment transactions, over an explicit date
+#: window. Archivable: the body carries transactions, securities and the account
+#: roster, and no credential.
+#:
+#: 🔴 **Paged by offset against a stated total, with NO cursor** *(measured,
+#: `api-notes-plaid.md` §26)*. That is the difference from `TRANSACTIONS_SYNC`
+#: that matters most to a caller: there, the cursor makes a page idempotent at
+#: the far end and is what AC-2.5's crash-resume rests on. Here a run that stops
+#: early has nothing to resume from and re-reads the window from its start, which
+#: converges only because every write it feeds is an upsert keyed on the
+#: aggregator's own transaction id.
+#:
+#: `retry_safe` all the same, and for the reason the property actually states: a
+#: windowed read consumes nothing at the far end, so asking again is free of
+#: side effects. It does **not** promise the same rows -- the window is a live
+#: query, not a snapshot -- which is why the removal reconciliation refuses to
+#: run on a window it did not see whole.
+INVESTMENTS_TRANSACTIONS_GET = Endpoint(
+    "/investments/transactions/get", retry_safe=True, issues_credential=False
+)
+
 
 #: The aggregator's own name for the investments product, as it appears in an
 #: Item's `products` and `available_products` -- and therefore in the

@@ -750,6 +750,83 @@ that never discovers anything.
 
 ---
 
+## What the investment-transactions verify-api established
+
+*(Measured 2026-09-12 against the live sandbox, `ins_109511`, an Item enrolled with
+`investments`. First page recorded verbatim as
+`tests/connector/fixtures/investments_transactions_get.json` by
+`test_investment_transactions_come_back_windowed_and_paginated`; the paging and window
+facts by `test_investment_transactions_page_by_offset_against_a_stated_total` and a
+throwaway exhaustion probe.)*
+
+### 26. `/investments/transactions/get` — paged by offset, and the three signals it does not send
+
+The body is six keys: `accounts`, `investment_transactions`, `securities`, `item`,
+`total_investment_transactions`, `request_id`. As in §22, the SDK response model's
+`is_investments_fallback_item` is **absent from the body**. `accounts` is again **every
+account on the Item** (14), not the investment ones alone, and `securities` (13) is the same
+roster the holdings reply carries.
+
+A row is fifteen fields: `investment_transaction_id`, `account_id`, `security_id`, `date`,
+`name`, `quantity`, `amount`, `price`, `fees`, `type`, `subtype`, `iso_currency_code`,
+`unofficial_currency_code`, `cancel_transaction_id`, `transaction_datetime`.
+
+🔴 **Three things the schema and the plan expected are not in it.** Measured against the
+raw body, which is what this system derives from — not against the SDK's model, which
+omits and invents fields independently (§22):
+
+| Expected | Reality |
+|---|---|
+| `settlement_date` | **No such field on any row.** The only date is `date` (the trade date) and a mostly-null `transaction_datetime`. `investment_transactions.settlement_date` gets **nothing** from this feed and stays null; the column keeps its meaning for a manual import, which is the only writer that can ever fill it |
+| a removal signal | **None.** No `removed`, no `is_removed`, no `pending` — this is a windowed read, not a delta like `/transactions/sync`, so nothing tells you a row went away. `cancel_transaction_id` exists (null 100/100 here) and is a *cancellation reference*, not a tombstone: a cancelling row points at the row it cancels |
+| a cursor | **None.** Paging is `options.offset` / `options.count` against the stated `total_investment_transactions`. There is no cursor, so the far-end idempotence `TRANSACTIONS_SYNC` documents — the same cursor returns the same page, and a killed process re-reads what it never committed — **is not available here** |
+
+**Paging, measured.** `count` defaults to 100 and 500 is honoured; 1169 rows came back in 3
+pages of 500. `offset` advances (page two's first id differs from page one's), the stated
+total does **not** move between pages, and an offset at or past the total answers with an
+empty `investment_transactions` and no error — so the loop's exit is the empty page or
+`offset >= total`, both measured rather than assumed.
+
+🔴 **Rows arrive newest-first**, descending by `date`. So the earliest date in the window is
+on the LAST page: nothing about the range's start is knowable until the paging is exhausted,
+which is a constraint on when `sync_state.history_start_date` can be written, not just on
+what it is written from.
+
+🔴 **The granted window is not stated anywhere, and the rows cannot stand in for it.** The
+response does not echo `start_date`/`end_date` and has no `days_requested` counterpart to
+§11's. Asking for the configured maximum (730 days, `2024-09-12 .. 2026-09-12`) returned rows
+spanning exactly `2024-09-12 .. 2026-09-12` — the full window, so **no shortfall is
+observable in the sandbox** and that path stays unexercised live, as `close_price`'s rounding
+does in §22.
+
+What follows is the part that bites: the span of the returned rows answers *"when was this
+account last active"*, which is **not** the question `history_start_date` asks. An Item that
+was granted two years and simply had no trades in the first eighteen months returns the same
+narrow span as an Item granted six months. **This endpoint cannot tell a short window from a
+quiet account**, so a "shortfall" derived from row dates would report an inactive brokerage
+as a truncated history on every run.
+
+**Precision, and which columns round.** Over the first page of 100:
+
+| Field | Finer than a cent | Note |
+|---|---|---|
+| `amount` | 0/100 | clean at the cent here, which is **not** a guarantee — §22 found a third of holdings valuations sub-cent |
+| `fees` | 0/100 | |
+| `price` | 12/100 | `40876.02675`, `94.808` — so `price_minor`'s half-even rounding does fire on real data |
+| `quantity` | — | 🔴 **17 significant digits**: `-0.008902867462305952`, `4211.152345617756`. Exact decimal TEXT, and the reason `parse_response_body`'s `parse_float=str` is not optional. `_exact_quantity` already carries this and is reused rather than reimplemented |
+
+Nulls over the same 100 rows: `unofficial_currency_code` and `cancel_transaction_id` 100/100;
+`transaction_datetime` 88/100; **every other field 0/100**, including `security_id` (which the
+aggregator documents nullable) and the `type`/`subtype` pair the NOT NULL columns need.
+`iso_currency_code` is `USD` throughout.
+
+`type` takes four values here — `buy`, `sell`, `cash`, `fee` — and `subtype` six: `buy`,
+`sell`, `contribution`, `interest`, `dividend`, `account fee`. Amounts are signed both ways
+(56 negative, 44 positive over the page), so the operator's-point-of-view normalization has
+both directions to exercise on live data.
+
+---
+
 ## Still to verify
 
 - ~~**The success path has not been probed.**~~ Done 2026-09-06 — see §7. The fixture is

@@ -164,3 +164,31 @@ declared command rather than a subset you chose.
   prints RED, rather than assuming the move was cosmetic. The reach test is what makes moving
   load-bearing code cheap — without it, both cases would have gone on SKIPping silently.
 
+## A guard that greps tracked files is blind to the file you just created
+
+**Instances:**
+
+- *2026-09-12, investments Chunk 01 → 02.* `tests/preferences/check-no-personal-data.sh` in
+  worktree mode runs `git grep` **without `--no-index`**, so it scans tracked files only. The
+  holdings fixture recorded during Chunk 01 carried a sandbox fund name containing a roster
+  token, and while the file was untracked the guard could not see it: the gate ran, reported
+  green, and **"gate green at 1400/0" was written into the handoff on that evidence.** The
+  `git add` in the same session then made the file visible, so the very next session's
+  baseline opened red on a test nobody had changed — and the failure pointed at a commit that
+  had already passed its own gate.
+  The workflow this repo actually uses is *record a fixture → run the gate → commit*, which
+  puts the untracked window exactly where the guard is asked the question. The push path was
+  never exposed: `--rev`/`--range` scan commits, and the pre-push hook always passes a range.
+  Only the gate's own mode has the hole, which is the mode a build cycle trusts.
+
+**Why it is not just a bug in one script:** the guard is careful everywhere else — a positive
+control, a fail-closed abort on every error path, two matching engines proved separately —
+and it still answered a question about a tree that did not include the new file. A control
+that proves the machinery works says nothing about the *scope* the machinery was pointed at.
+
+**How to apply:** after writing any new tracked file — a fixture most of all — run
+`git add -N <path>` before the gate, so what the guard scans is what the commit will publish.
+More generally, when a check's answer is reassuring, ask what it *enumerated* rather than
+whether it ran: a guard whose scope is "tracked files", "changed files" or "files in this
+directory" has a blind spot shaped exactly like new work, and new work is what you are asking
+it about.

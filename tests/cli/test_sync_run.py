@@ -13,7 +13,7 @@ import json
 import logging
 import re
 from collections.abc import Iterator
-from datetime import timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -25,6 +25,7 @@ from bankmachine.config import Config
 from bankmachine.connector import (
     ACCOUNTS_GET,
     INVESTMENTS_HOLDINGS_GET,
+    INVESTMENTS_TRANSACTIONS_GET,
     TRANSACTIONS_SYNC,
     FetchedResponse,
     ReauthRequiredError,
@@ -49,10 +50,11 @@ from bankmachine.store.schema import (
     connections,
     holdings,
     institutions,
+    investment_transactions,
     sync_state,
     transactions,
 )
-from bankmachine.store.types import now_utc
+from bankmachine.store.types import UtcInstant, calendar_date, now_utc, utc_instant
 from conftest import use_cli_env
 
 SOURCE_ACCOUNT = "acct-checking"
@@ -130,6 +132,71 @@ def _holdings_body(*, quantity: str = "10", value: str = "1855.875") -> bytes:
     ).encode()
 
 
+def _investment_transactions_body(
+    entries: list[dict[str, Any]] | None = None,
+    *,
+    total: int | None = None,
+    state_total: bool = True,
+) -> bytes:
+    """One page of investment transactions, in the shape §26 recorded.
+
+    `total` defaults to the number of entries, which is the EXHAUSTED case --
+    the window came back whole. A caller that wants the bounded case passes a
+    larger total, which is what the live capture looked like: 100 of 1169.
+
+    `state_total=False` omits `total_investment_transactions` altogether, which
+    is the UNMEASURED window: nothing says how many rows the window holds, so
+    nothing can be concluded about what is missing from it.
+    """
+    rows = [_investment_txn("inv-1")] if entries is None else entries
+    return json.dumps(
+        {
+            "accounts": [],
+            "securities": [
+                {
+                    "security_id": SECURITY_ID,
+                    "name": "Dreyfus Index Fund",
+                    "ticker_symbol": "DBLTX",
+                    "type": "mutual fund",
+                    "iso_currency_code": "USD",
+                    "unofficial_currency_code": None,
+                }
+            ],
+            "investment_transactions": rows,
+            "item": {"item_id": ITEM_ID},
+            "request_id": "req-investment-transactions",
+        }
+        | (
+            {"total_investment_transactions": len(rows) if total is None else total}
+            if state_total
+            else {}
+        )
+    ).encode()
+
+
+def _investment_txn(
+    transaction_id: str, *, amount: str = "1.10", date: str = "2026-09-07"
+) -> dict[str, Any]:
+    """One investment transaction. Positive `amount` = cash debited (§26)."""
+    return {
+        "account_id": SOURCE_ACCOUNT,
+        "investment_transaction_id": transaction_id,
+        "security_id": SECURITY_ID,
+        "date": date,
+        "name": "BUY DREYFUS INDEX",
+        "quantity": "0.520877874205698",
+        "amount": amount,
+        "price": "2.16",
+        "fees": "7.99",
+        "type": "buy",
+        "subtype": "buy",
+        "iso_currency_code": "USD",
+        "unofficial_currency_code": None,
+        "cancel_transaction_id": None,
+        "transaction_datetime": None,
+    }
+
+
 def _txn(transaction_id: str, amount: str = "12.00") -> dict[str, Any]:
     return {
         "account_id": SOURCE_ACCOUNT,
@@ -186,6 +253,24 @@ class FakeClient:
     #: takes the others down with it -- a fake that could only fail everywhere
     #: could not express the case.
     holdings_error: Exception | None = None
+    #: The offsets `/investments/transactions/get` was asked for, in order. The
+    #: sequence IS the behaviour under test: this endpoint has no cursor, so a
+    #: loop that failed to advance the offset would page forever against the
+    #: same rows and a count could not tell that apart from working.
+    investment_transaction_offsets: list[int] = []
+    #: The pages it answers with, scripted like `pages`. The last one repeats,
+    #: so a loop asking past the end gets a consistent answer rather than an
+    #: IndexError that would read as a crash instead of a bug.
+    investment_transaction_pages: list[bytes] = []
+    investment_transactions_error: Exception | None = None
+    #: The `(start_date, end_date)` pairs it was asked for, in order.
+    investment_transaction_windows: list[tuple[date, date]] = []
+    #: The instant each page is stamped with, parallel to the pages. Empty means
+    #: "use the clock", which is what every test that does not care does.
+    investment_transaction_received_ats: list[UtcInstant] = []
+    #: How far through the CURRENT window the fake has served, reset by an
+    #: `offset == 0` request. See `investments_transactions_get`.
+    investment_page_cursor: int = 0
 
     def __init__(self, config: Config, secret: str, **kwargs: Any) -> None:
         pass
@@ -215,6 +300,59 @@ class FakeClient:
             endpoint=INVESTMENTS_HOLDINGS_GET,
             body=_holdings_body(),
             received_at=now_utc(),
+            request_context=None,
+        )
+
+    def investments_transactions_get(
+        self,
+        access_token: str,
+        *,
+        start_date: date,
+        end_date: date,
+        offset: int,
+        **kwargs: Any,
+    ) -> FetchedResponse:
+        # 🔴 The window is NAMED rather than absorbed into `**kwargs`. AC-3.3 has
+        # two clauses and this is the only place the gate can see the first one:
+        # a fake that swallowed these dates would let "request the full
+        # configured window" go untested, and the same pair becomes the bound on
+        # which stored rows the reconciliation may retire.
+        FakeClient.investment_transaction_windows.append((start_date, end_date))
+        FakeClient.investment_transaction_offsets.append(offset)
+        if FakeClient.investment_transactions_error is not None:
+            raise FakeClient.investment_transactions_error
+        # 🔴 Which page to serve is keyed on THIS window's progress, not on how
+        # many times the fake has ever been called. `offset == 0` starts a
+        # window, which is the real protocol's own boundary (there is no cursor
+        # to mark one). Counting calls instead made a second sync inside one
+        # test resume at the previous run's index and serve page two twice --
+        # so a test that meant "two distinct pages, the last one closes the
+        # window" silently exercised one page served twice.
+        if offset == 0:
+            FakeClient.investment_page_cursor = 0
+        else:
+            FakeClient.investment_page_cursor += 1
+        page_index = min(
+            FakeClient.investment_page_cursor,
+            len(FakeClient.investment_transaction_pages) - 1,
+        )
+        page = FakeClient.investment_transaction_pages[page_index]
+        # 🔴 The page's own instant, scriptable. `removed_at` is taken from the
+        # ARCHIVE rather than the clock so a rebuild can reproduce it, and a
+        # fake that always stamped `now_utc()` would make the clock and the
+        # archive indistinguishable -- so nothing could tell the two sources
+        # apart and restoring the clock would stay green.
+        received = (
+            FakeClient.investment_transaction_received_ats[
+                min(page_index, len(FakeClient.investment_transaction_received_ats) - 1)
+            ]
+            if FakeClient.investment_transaction_received_ats
+            else now_utc()
+        )
+        return FetchedResponse(
+            endpoint=INVESTMENTS_TRANSACTIONS_GET,
+            body=page,
+            received_at=received,
             request_context=None,
         )
 
@@ -249,6 +387,12 @@ def _reset() -> None:
     FakeClient.accounts_calls = 0
     FakeClient.holdings_tokens = []
     FakeClient.holdings_error = None
+    FakeClient.investment_transaction_offsets = []
+    FakeClient.investment_transaction_pages = [_investment_transactions_body()]
+    FakeClient.investment_transactions_error = None
+    FakeClient.investment_transaction_windows = []
+    FakeClient.investment_transaction_received_ats = []
+    FakeClient.investment_page_cursor = 0
 
 
 @pytest.fixture
@@ -885,21 +1029,31 @@ def test_the_granted_window_is_not_computed_before_the_backfill_completes(
 
 
 def test_the_granted_window_is_recorded_once_history_is_complete(cli_env: Config) -> None:
-    """AC-1.3a: null stops meaning "not yet known" only at this point."""
-    old = "2025-09-08"
+    """AC-1.3a: null stops meaning "not yet known" only at this point.
+
+    🔴 The oldest transaction is dated RELATIVE to today and the granted window
+    asserted against that same offset. A fixed date against an absolute
+    day-count bound is a test with an expiry date: the previous form asserted
+    `360 <= granted <= 372` for a row dated `2025-09-08`, which would have gone
+    red of its own accord days after it was written and blocked every commit
+    until somebody widened the numbers.
+    """
+    oldest = now_utc().date() - timedelta(days=365)
     entry = _txn("t1")
-    entry["date"] = old
+    entry["date"] = oldest.isoformat()
     FakeClient.pages = [_page(added=[entry], next_cursor="c1", status="HISTORICAL_UPDATE_COMPLETE")]
 
     assert run(["sync", "run"]) == 0
 
     granted = _granted(cli_env)
     assert granted is not None
-    # A year of history, give or take the day the test runs on.
-    assert 360 <= granted <= 372, granted
+    # That offset exactly -- the window is not rounded and does not drift. 366
+    # is admitted for the one case that is not drift: a run straddling UTC
+    # midnight between this fixture's `now` and the code's.
+    assert granted in (365, 366), granted
     with reader_connection(cli_env) as conn:
         start = conn.execute(select(sync_state.c.history_start_date)).scalar_one()
-    assert str(start) == old
+    assert str(start) == oldest.isoformat()
 
 
 def test_a_shortfall_against_the_requested_window_is_reported(
@@ -1449,6 +1603,320 @@ def test_a_second_run_the_same_day_leaves_the_positions_alone(cli_env: Config) -
     assert run(["sync", "run", "--no-wait"]) == 0
 
     assert _holdings_rows(cli_env) == before
+
+
+def _investment_transaction_rows(config: Config) -> list[dict[str, Any]]:
+    with reader_connection(config) as conn:
+        return [dict(row) for row in conn.execute(select(investment_transactions)).mappings()]
+
+
+def test_an_investment_transaction_window_is_paged_to_exhaustion_by_offset(
+    cli_env: Config,
+) -> None:
+    """AC-3.3: the whole window, fetched by advancing the offset (§26).
+
+    The offsets are the assertion. This endpoint has no cursor, so a loop that
+    failed to advance would re-read page one forever -- and against a fake that
+    answers every call the same way, a row count alone would look identical to
+    a loop that worked.
+    """
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page()]
+    FakeClient.investment_transaction_pages = [
+        _investment_transactions_body([_investment_txn("inv-1")], total=3),
+        _investment_transactions_body([_investment_txn("inv-2")], total=3),
+        _investment_transactions_body([_investment_txn("inv-3")], total=3),
+    ]
+
+    assert run(["sync", "run", "--no-wait"]) == 0
+
+    assert FakeClient.investment_transaction_offsets == [0, 1, 2]
+    stored = {
+        row["source_investment_transaction_id"] for row in _investment_transaction_rows(cli_env)
+    }
+    assert stored == {"inv-1", "inv-2", "inv-3"}
+
+    # 🔴 AC-3.3's FIRST clause: the full configured window is what was asked
+    # for, on every page. Measured against the configuration rather than a
+    # literal, so the assertion follows `history_days` instead of restating it
+    # -- and relatively rather than against a fixed date, so it cannot go red on
+    # a calendar boundary.
+    assert FakeClient.investment_transaction_windows, "the endpoint was never called"
+    for asked_start, asked_end in FakeClient.investment_transaction_windows:
+        assert (asked_end - asked_start).days == cli_env.history_days
+        assert asked_end == now_utc().date()
+
+
+def test_a_second_consecutive_run_produces_zero_net_investment_changes(
+    cli_env: Config,
+) -> None:
+    """AC-2.4 for the investments window, across two whole runs."""
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page()]
+    assert run(["sync", "run", "--no-wait"]) == 0
+    before = _investment_transaction_rows(cli_env)
+    assert before, "the first run stored nothing, so the second proves nothing"
+
+    FakeClient.pages = [_page(next_cursor="cursor-2")]
+    assert run(["sync", "run", "--no-wait"]) == 0
+    after = _investment_transaction_rows(cli_env)
+
+    assert len(after) == len(before)
+    assert {row["source_investment_transaction_id"] for row in after} == {
+        row["source_investment_transaction_id"] for row in before
+    }
+    assert all(row["removed_at"] is None for row in after), (
+        "a second identical window must not retire the rows the first one stored"
+    )
+
+
+def test_a_row_missing_from_a_later_complete_window_is_retired_and_reported(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The soft delete, end to end, and the line that makes it visible."""
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page()]
+    FakeClient.investment_transaction_pages = [
+        _investment_transactions_body([_investment_txn("inv-1"), _investment_txn("inv-2")])
+    ]
+    assert run(["sync", "run", "--no-wait"]) == 0
+    assert len(_investment_transaction_rows(cli_env)) == 2
+
+    FakeClient.pages = [_page(next_cursor="cursor-2")]
+    FakeClient.investment_transaction_pages = [
+        _investment_transactions_body([_investment_txn("inv-1")])
+    ]
+    assert run(["sync", "run", "--no-wait"]) == 0
+
+    rows_by_id = {
+        row["source_investment_transaction_id"]: row
+        for row in _investment_transaction_rows(cli_env)
+    }
+    assert rows_by_id["inv-1"]["removed_at"] is None
+    assert rows_by_id["inv-2"]["removed_at"] is not None
+    assert "no longer reported" in capsys.readouterr().out, (
+        "a soft delete leaves no trace in a page count, so the run has to name it"
+    )
+
+
+def test_a_window_stopped_at_the_page_ceiling_retires_nothing(
+    cli_env: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 The invariant that stands between a bounded run and bulk data loss.
+
+    A run that saw a PREFIX of the window is missing every row it never reached,
+    and concluding removal from that would soft-delete real history while
+    looking exactly as it should. Asserted as the invariant rather than as one
+    of its causes: what reaches the reconciliation is a short row count,
+    whatever stopped the run.
+    """
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page()]
+    FakeClient.investment_transaction_pages = [
+        _investment_transactions_body([_investment_txn("inv-1"), _investment_txn("inv-2")])
+    ]
+    assert run(["sync", "run", "--no-wait"]) == 0
+    assert len(_investment_transaction_rows(cli_env)) == 2
+
+    # The window now claims far more than the bounded run can fetch, and the
+    # ceiling stops it after one page that carries neither stored row.
+    monkeypatch.setattr("bankmachine.cli.sync_run.MAX_PAGES_PER_RUN", 1)
+    FakeClient.pages = [_page(next_cursor="cursor-2")]
+    FakeClient.investment_transaction_pages = [
+        _investment_transactions_body([_investment_txn("inv-3")], total=99)
+    ]
+
+    # 75: the run found nothing wrong and still owes work.
+    assert run(["sync", "run", "--no-wait"]) == 75
+
+    assert all(row["removed_at"] is None for row in _investment_transaction_rows(cli_env)), (
+        "a window seen only in part must retire nothing"
+    )
+
+
+def test_a_window_stopped_short_records_no_range(
+    cli_env: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unmeasured range stays null rather than being invented from a prefix."""
+    _capable_connection(cli_env)
+    monkeypatch.setattr("bankmachine.cli.sync_run.MAX_PAGES_PER_RUN", 1)
+    FakeClient.pages = [_page()]
+    FakeClient.investment_transaction_pages = [
+        _investment_transactions_body([_investment_txn("inv-1")], total=99)
+    ]
+
+    assert run(["sync", "run", "--no-wait"]) == 75
+
+    with reader_connection(cli_env) as conn:
+        recorded = conn.execute(
+            select(sync_state.c.history_start_date).where(sync_state.c.domain == INVESTMENTS_DOMAIN)
+        ).scalar_one()
+    assert recorded is None
+
+
+def test_a_complete_window_records_the_range_that_came_back(cli_env: Config) -> None:
+    """AC-3.3: the range the rows actually carried, not the one asked for."""
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page()]
+    # Dated relative to today and INSIDE the configured window, so the rows stay
+    # eligible whatever day this runs. Literal dates would fall out of the
+    # 730-day bound on their own and take the assertion with them.
+    # Derived from the configured window rather than a literal, so the row is
+    # inside it by construction however `history_days` is set.
+    oldest = now_utc().date() - timedelta(days=cli_env.history_days // 2)
+    newest = now_utc().date() - timedelta(days=5)
+    FakeClient.investment_transaction_pages = [
+        _investment_transactions_body(
+            [
+                _investment_txn("inv-old", date=oldest.isoformat()),
+                _investment_txn("inv-new", date=newest.isoformat()),
+            ]
+        )
+    ]
+
+    assert run(["sync", "run", "--no-wait"]) == 0
+
+    with reader_connection(cli_env) as conn:
+        recorded = conn.execute(
+            select(sync_state.c.history_start_date).where(sync_state.c.domain == INVESTMENTS_DOMAIN)
+        ).scalar_one()
+    assert recorded == calendar_date(oldest)
+
+
+def test_an_empty_page_against_a_stated_total_reports_work_still_owed(
+    cli_env: Config,
+) -> None:
+    """🔴 A prefix that never reaches the page ceiling, and still owes the rest.
+
+    The loop exits on an empty page, so this run never touches the ceiling
+    branch — and reporting it as finished would tell the operator there is
+    nothing left to fetch while the range stayed unmeasured and nothing was
+    reconciled. 75 is "ran, found nothing wrong, still owes work", which is
+    exactly this.
+    """
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page()]
+    FakeClient.investment_transaction_pages = [
+        _investment_transactions_body([_investment_txn("inv-1")])
+    ]
+    assert run(["sync", "run", "--no-wait"]) == 0
+    assert len(_investment_transaction_rows(cli_env)) == 1
+
+    # The window now claims five rows and answers with none of them.
+    FakeClient.pages = [_page(next_cursor="cursor-2")]
+    FakeClient.investment_transaction_pages = [_investment_transactions_body([], total=5)]
+
+    assert run(["sync", "run", "--no-wait"]) == 75, (
+        "an empty page against a stated total of five is a window seen in part"
+    )
+    assert all(row["removed_at"] is None for row in _investment_transaction_rows(cli_env)), (
+        "a window that answered with nothing must not retire what it did not contradict"
+    )
+
+
+def test_a_window_that_states_no_total_reports_work_still_owed(cli_env: Config) -> None:
+    """An unmeasured window cannot be exhausted, so the run still owes it."""
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page()]
+    FakeClient.investment_transaction_pages = [
+        _investment_transactions_body([_investment_txn("inv-1")], state_total=False)
+    ]
+
+    assert run(["sync", "run", "--no-wait"]) == 75
+
+    # The rows still land — what is withheld is the CONCLUSION, not the data.
+    assert len(_investment_transaction_rows(cli_env)) == 1
+    with reader_connection(cli_env) as conn:
+        recorded = conn.execute(
+            select(sync_state.c.history_start_date).where(sync_state.c.domain == INVESTMENTS_DOMAIN)
+        ).scalar_one()
+    assert recorded is None, "a window with no stated total measured no range"
+
+
+def test_a_removal_is_stamped_from_the_archive_and_not_the_clock(cli_env: Config) -> None:
+    """🔴 AC-5.2: a soft delete a rebuild can reproduce.
+
+    `removed_at` comes from the LAST page of the complete window rather than
+    from `now_utc()`, so replaying the same archived pages concludes the same
+    removal at the same instant. Two pages carry two distinct instants, so this
+    pins which one is used as well as where it came from — and both are far
+    enough from today that the clock could not produce either.
+    """
+    first_capture = utc_instant(datetime(2026, 9, 3, 11, 0, tzinfo=UTC))
+    second_page_one = utc_instant(datetime(2026, 9, 5, 9, 0, tzinfo=UTC))
+    second_page_two = utc_instant(datetime(2026, 9, 6, 17, 30, tzinfo=UTC))
+
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page()]
+    FakeClient.investment_transaction_pages = [
+        _investment_transactions_body(
+            [_investment_txn(name) for name in ("inv-1", "inv-2", "inv-3")]
+        )
+    ]
+    FakeClient.investment_transaction_received_ats = [first_capture]
+    assert run(["sync", "run", "--no-wait"]) == 0
+    assert len(_investment_transaction_rows(cli_env)) == 3
+
+    # The window comes back complete over two pages and no longer carries
+    # `inv-3`, so that row is retired — at the instant of the page that closed
+    # the window, which is the second one.
+    FakeClient.pages = [_page(next_cursor="cursor-2")]
+    FakeClient.investment_transaction_pages = [
+        _investment_transactions_body([_investment_txn("inv-1")], total=2),
+        _investment_transactions_body([_investment_txn("inv-2")], total=2),
+    ]
+    FakeClient.investment_transaction_received_ats = [second_page_one, second_page_two]
+
+    assert run(["sync", "run", "--no-wait"]) == 0
+
+    rows_by_id = {
+        row["source_investment_transaction_id"]: row
+        for row in _investment_transaction_rows(cli_env)
+    }
+    assert rows_by_id["inv-1"]["removed_at"] is None, (
+        "page one's row came back, so nothing about it was contradicted"
+    )
+    assert rows_by_id["inv-2"]["removed_at"] is None, "page two's row came back"
+    retired = rows_by_id["inv-3"]
+    assert retired["removed_at"] == second_page_two, (
+        "the removal must carry the closing page's archived instant, so a rebuild "
+        "replaying the same pages reaches the same stamp"
+    )
+    assert retired["removed_at"] != second_page_one
+    assert retired["removed_at"].date() != now_utc().date(), (
+        "a stamp on today's date means the clock was read instead of the archive"
+    )
+
+
+def test_an_investments_transactions_failure_does_not_cost_the_transactions(
+    cli_env: Config,
+) -> None:
+    """The carried-failure rule, on the second investments endpoint.
+
+    The capability gate opens for products an Item has never initialized (§25),
+    so this call can fail for a connection whose transactions are healthy.
+    """
+    _capable_connection(cli_env)
+    # A page that actually carries a transaction, or "the transactions survived"
+    # would be asserted over a store that was always going to be empty.
+    FakeClient.pages = [_page(added=[_txn("txn-survives")])]
+    FakeClient.investment_transactions_error = TransportError(
+        "the aggregator is unreachable", endpoint=INVESTMENTS_TRANSACTIONS_GET
+    )
+
+    assert run(["sync", "run", "--no-wait"]) == 1
+
+    with reader_connection(cli_env) as conn:
+        stored = (
+            conn.execute(
+                select(transactions.c.source_transaction_id).where(
+                    transactions.c.source_transaction_id == "txn-survives"
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert stored, "the investments failure took the connection's transactions with it"
 
 
 def test_an_unreadable_capability_record_is_reported_rather_than_read_as_incapable(

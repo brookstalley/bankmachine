@@ -1398,6 +1398,14 @@ def test_every_endpoint_declares_both_of_its_risk_properties_deliberately() -> N
             "at the far end is spent, and the body carries holdings, securities and the "
             "account roster with no token among them",
         ),
+        "INVESTMENTS_TRANSACTIONS_GET": (
+            True,
+            False,
+            "a windowed read paged by offset -- nothing at the far end is spent by asking, "
+            "so a repeat is free of side effects, though it is NOT a snapshot and may "
+            "answer differently; the body carries transactions, securities and the account "
+            "roster with no token among them",
+        ),
     }
     found = {name: value for name, value in vars(boundary).items() if isinstance(value, Endpoint)}
 

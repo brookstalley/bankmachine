@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from datetime import date
 from typing import Any, Final
 
 import certifi
@@ -39,6 +40,12 @@ from plaid.model.accounts_get_request import AccountsGetRequest
 from plaid.model.country_code import CountryCode
 from plaid.model.institutions_get_request import InstitutionsGetRequest
 from plaid.model.investments_holdings_get_request import InvestmentsHoldingsGetRequest
+from plaid.model.investments_transactions_get_request import (
+    InvestmentsTransactionsGetRequest,
+)
+from plaid.model.investments_transactions_get_request_options import (
+    InvestmentsTransactionsGetRequestOptions,
+)
 from plaid.model.item_get_request import ItemGetRequest
 from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
 from plaid.model.item_remove_request import ItemRemoveRequest
@@ -57,6 +64,7 @@ from bankmachine.connector import (
     ACCOUNTS_GET,
     INSTITUTIONS_GET,
     INVESTMENTS_HOLDINGS_GET,
+    INVESTMENTS_TRANSACTIONS_GET,
     ITEM_GET,
     ITEM_PUBLIC_TOKEN_EXCHANGE,
     ITEM_REMOVE,
@@ -104,6 +112,16 @@ DEFAULT_HOSTED_URL_LIFETIME_SECONDS: Final = 900
 #: that a crash loses at most one uncommitted page, and a page is the unit of
 #: that loss.
 TRANSACTIONS_PAGE_SIZE: Final = 100
+
+#: How many investment transactions to ask for per page.
+#:
+#: 🔴 Larger than `TRANSACTIONS_PAGE_SIZE`, and the asymmetry is the point. That
+#: one is small because a cursor makes a page the unit of crash loss (AC-2.5).
+#: This endpoint has no cursor *(§26)*, so a run that dies re-reads the window
+#: from offset 0 whatever the page size -- the loss is the whole window either
+#: way, and smaller pages only buy more round trips to lose it over. 500 is the
+#: aggregator's maximum and is honoured *(measured §26: 1169 rows in 3 pages)*.
+INVESTMENT_TRANSACTIONS_PAGE_SIZE: Final = 500
 
 
 def _first_item_add_result(session: dict[str, Any]) -> dict[str, Any] | None:
@@ -894,5 +912,47 @@ class PlaidClient:
             INVESTMENTS_HOLDINGS_GET,
             self._api.investments_holdings_get,
             InvestmentsHoldingsGetRequest(access_token=access_token),
+            connection_id=connection_id,
+        )
+
+    def investments_transactions_get(
+        self,
+        access_token: str,
+        *,
+        start_date: date,
+        end_date: date,
+        offset: int,
+        count: int = INVESTMENT_TRANSACTIONS_PAGE_SIZE,
+        connection_id: int | None = None,
+    ) -> FetchedResponse:
+        """One page of this connection's investment transactions over a window.
+
+        Archivable: the body carries transactions, securities and the account
+        roster, and no credential.
+
+        `offset` is a required keyword rather than a defaulted one, for the same
+        reason `transactions_sync`'s `cursor` is: there is no cursor to carry the
+        caller's place *(§26)*, so a caller that forgot the offset would re-read
+        page one forever and page to exhaustion never.
+
+        The window is the caller's because `config.history_days` is the one
+        configured window (AC-3.3) and this layer does not read configuration.
+
+        🔴 **The reply does not echo the window back** *(§26)*, so what was asked
+        for survives only in the archived `request_context` below. Without it a
+        stored page would be a set of rows with no record of the question that
+        produced them -- and the removal reconciliation's window bound would have
+        no provenance a rebuild could recover.
+        """
+        return self._fetch(
+            INVESTMENTS_TRANSACTIONS_GET,
+            self._api.investments_transactions_get,
+            InvestmentsTransactionsGetRequest(
+                access_token=access_token,
+                start_date=start_date,
+                end_date=end_date,
+                options=InvestmentsTransactionsGetRequestOptions(offset=offset, count=count),
+            ),
+            request_context=f"window={start_date}..{end_date} offset={offset} count={count}",
             connection_id=connection_id,
         )
