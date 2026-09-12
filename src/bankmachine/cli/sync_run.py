@@ -38,6 +38,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.engine import Connection as SAConnection
 
 from bankmachine.cli.exit_codes import EXIT_OK, EXIT_RUN_AGAIN, EXIT_UNHEALTHY
+from bankmachine.cli.parser import AnyParser
 from bankmachine.config import Config
 from bankmachine.connector import (
     ConnectorError,
@@ -219,7 +220,7 @@ def _retry_delay(raw: str) -> float:
     return value
 
 
-def add_arguments(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+def add_arguments(commands: argparse._SubParsersAction[AnyParser]) -> None:
     """Registers `run` under the existing `sync` parser.
 
     Takes the subparser action rather than the top-level one, because `sync shell`

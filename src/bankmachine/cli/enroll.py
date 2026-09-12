@@ -37,6 +37,7 @@ from bankmachine.cli.hosted_link import (
     positive_seconds,
     print_invitation,
 )
+from bankmachine.cli.parser import AnyParser
 from bankmachine.config import Config, require_chosen_environment
 from bankmachine.connector import LinkSession, LinkToken, MalformedResponseError
 from bankmachine.connector.plaid.client import (
@@ -334,7 +335,7 @@ class EnrolledConnection:
     """
 
 
-def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+def add_arguments(subparsers: argparse._SubParsersAction[AnyParser]) -> None:
     enroll = subparsers.add_parser(
         "enroll",
         help="link one institution and record the connection",

@@ -14,6 +14,7 @@ import argparse
 import getpass
 import sys
 
+from bankmachine.cli.parser import AnyParser
 from bankmachine.config import Config
 from bankmachine.connector import (
     FetchedResponse,
@@ -34,7 +35,7 @@ logger = get_logger("cli.connector")
 CHECK_PAGE_SIZE = 1
 
 
-def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+def add_arguments(subparsers: argparse._SubParsersAction[AnyParser]) -> None:
     connector = subparsers.add_parser("connector", help="talk to the aggregator")
     commands = connector.add_subparsers(dest="connector_command", required=True)
 

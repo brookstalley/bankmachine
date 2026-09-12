@@ -70,6 +70,13 @@ Developer preferences for how code is written in this project. Captured during d
 - **Dev commands**: `uv sync` once, then `uv run pytest -q` (whole suite, including the shell
   leak guard), `uv run mypy` (strict, source and tests), `uv run ruff check` / `uv run ruff
   format`. `uv run bankmachine store init|status|rebuild` drives the product itself.
+- **The gate runs the first three, not just pytest**: `scripts/check.sh` is what
+  `test_command:` launches, and it runs `pytest`, `ruff check` and `mypy` in that order,
+  reporting every one that went red rather than stopping at the first. Run the three by hand
+  while editing; the script is what makes a red one fail the commit that caused it. Before
+  this existed only pytest was executed by anything, and mypy drifted to 12 errors across 15
+  commits with nothing to notice (brookstalley/bankmachine#92). `ruff format` is deliberately
+  not in the gate — adding it is a decision, not a formality.
   `uv run python tests/preferences/verify_norms_go_red.py` re-proves that the structural
   guarantees still fail when their mechanisms are broken — run it whenever the connection
   layer, the schema or the raw/rebuild layer changes, because a norm test that has never

@@ -7,9 +7,10 @@ import os
 import sys
 from getpass import getpass
 from pathlib import Path
+from typing import NoReturn
 
 from bankmachine.cli.exit_codes import EXIT_OK, EXIT_UNHEALTHY
-from bankmachine.cli.parser import RedactingParser
+from bankmachine.cli.parser import AnyParser, RedactingParser
 from bankmachine.config import Config
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.logging_setup import get_logger
@@ -30,7 +31,7 @@ from bankmachine.store.rebuild import RebuildReport, rebuild
 logger = get_logger("cli.store")
 
 
-def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+def add_arguments(subparsers: argparse._SubParsersAction[AnyParser]) -> None:
     store = subparsers.add_parser("store", help="create and inspect the encrypted datastore")
     commands = store.add_subparsers(dest="store_command", required=True)
 
@@ -91,7 +92,10 @@ def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser
     )
     backup.set_defaults(handler=cmd_backup)
 
-    key = commands.add_parser(
+    # Annotated to the base class on purpose: the `__class__` swap below needs a
+    # parser this module can name, and `add_arguments` is generic in the class its
+    # caller chose. Everything here relies on `ArgumentParser` and nothing narrower.
+    key: argparse.ArgumentParser = commands.add_parser(
         "key",
         help="export, check, and restore the datastore key",
         description=(
@@ -175,7 +179,7 @@ class _KeyParser(RedactingParser):
     next verb added to this group gets it without anyone remembering to ask.
     """
 
-    def error(self, message: str) -> None:
+    def error(self, message: str) -> NoReturn:
         # `from None` is load-bearing: argparse raises its own `ArgumentError`
         # first -- "invalid choice: '<the key>'" -- and chaining it would carry
         # the value into the `__context__` of anything that later renders a

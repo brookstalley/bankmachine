@@ -30,6 +30,7 @@ from bankmachine.cli.hosted_link import (
     positive_seconds,
     print_invitation,
 )
+from bankmachine.cli.parser import AnyParser
 from bankmachine.config import Config, ConfigError, require_chosen_environment
 from bankmachine.connector import (
     ConnectorError,
@@ -112,7 +113,7 @@ class ConnectionRow:
     """
 
 
-def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+def add_arguments(subparsers: argparse._SubParsersAction[AnyParser]) -> None:
     parser = subparsers.add_parser(
         "connections",
         help="list, repair and retire enrolled connections",

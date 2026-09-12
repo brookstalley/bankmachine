@@ -7,8 +7,18 @@ this class, and importing the package that imports the command is a cycle.
 from __future__ import annotations
 
 import argparse
+from typing import NoReturn, TypeVar
 
 from bankmachine.logging_setup import redact
+
+#: The parser class a `_SubParsersAction` hands back, left open.
+#:
+#: `add_subparsers(parser_class=...)` decides it at the call site, and
+#: `_SubParsersAction` is INVARIANT in it -- so a command module that named one
+#: concrete class would reject every caller that chose the other, and the CLI and
+#: the tests choose differently. The modules only ever call `add_parser`, so they
+#: are genuinely agnostic to which class comes back and this says exactly that.
+AnyParser = TypeVar("AnyParser", bound=argparse.ArgumentParser)
 
 
 class RedactingParser(argparse.ArgumentParser):
@@ -43,7 +53,7 @@ class RedactingParser(argparse.ArgumentParser):
         "that need it prompt for it."
     )
 
-    def error(self, message: str) -> None:
+    def error(self, message: str) -> NoReturn:
         scrubbed = redact(message)
         if scrubbed != message:
             # 🔴 Redaction alone leaves the operator worse off than a plain

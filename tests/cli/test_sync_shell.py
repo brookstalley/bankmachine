@@ -207,7 +207,19 @@ def _shell_parser_description() -> str:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers()
     sync_module.add_arguments(subparsers)
-    return subparsers.choices["sync"]._subparsers._group_actions[0].choices["shell"].description
+
+    # Walked rather than indexed through `choices`, which argparse types as a bare
+    # `Iterable[Any] | None`. `_name_parser_map` is the mapping that actually carries
+    # the parser type, so the walk is what lets this stay a typed read of a real
+    # parser instead of an `Any` that would assert against anything.
+    sync_parser = subparsers._name_parser_map["sync"]
+    nested = [a for a in sync_parser._actions if isinstance(a, argparse._SubParsersAction)]
+    assert len(nested) == 1, "`sync` grew a second subparsers action; this helper picks one"
+    shell: argparse.ArgumentParser = nested[0]._name_parser_map["shell"]
+
+    description = shell.description
+    assert description is not None, "`sync shell` lost its description"
+    return description
 
 
 def test_every_surface_states_the_read_only_guarantee_in_the_same_words(
