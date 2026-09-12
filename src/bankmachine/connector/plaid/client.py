@@ -92,6 +92,7 @@ from bankmachine.connector.plaid.errors import (
     parse_error_body,
     parse_retry_after,
 )
+from bankmachine.connector.plaid.window import investment_window_context
 from bankmachine.store.types import UtcInstant, now_utc
 
 #: How long a single aggregator call may take before it is abandoned. The
@@ -953,6 +954,8 @@ class PlaidClient:
                 end_date=end_date,
                 options=InvestmentsTransactionsGetRequestOptions(offset=offset, count=count),
             ),
-            request_context=f"window={start_date}..{end_date} offset={offset} count={count}",
+            request_context=investment_window_context(
+                start_date=start_date, end_date=end_date, offset=offset, count=count
+            ),
             connection_id=connection_id,
         )

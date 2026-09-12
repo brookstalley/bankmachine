@@ -2,8 +2,11 @@
 
 `sync_state` is keyed on `(connection_id, domain)` because the domains advance on
 their own schedules: a connection's transactions can be paging happily while its
-investments have not returned for three weeks. Every write to that key goes
-through this module.
+investments have not returned for three weeks. **Every write that records a
+domain's progress goes through this module.** Not every statement touching the
+table does: re-linking a connection deletes its rows outright (`cli/enroll.py`),
+which discards a whole connection's cursors rather than advancing one domain's,
+and belongs to the command that decided the connection starts over.
 
 🔴 **One home, because the row is written from two layers and read as one fact.**
 A deriver writes it inside its own transaction -- the row claims a body became

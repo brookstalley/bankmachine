@@ -21,9 +21,22 @@ from collections.abc import Mapping
 from types import MappingProxyType
 
 from bankmachine.connector.plaid.derivers import PLAID_DERIVERS
-from bankmachine.store.derivation import Deriver
+from bankmachine.connector.plaid.window import InvestmentWindowReplay
+from bankmachine.store.derivation import Deriver, ReplayPass
 
 #: Every endpoint this build can turn into rows, keyed by the aggregator's own
 #: path -- the same key `store.raw` records, so a rebuild years from now can
 #: still tell what a stored response was.
 ALL_DERIVERS: Mapping[str, Deriver] = MappingProxyType(dict(PLAID_DERIVERS))
+
+
+def all_replay_passes() -> tuple[ReplayPass, ...]:
+    """Everything a rebuild concludes from a SEQUENCE of responses (`ReplayPass`).
+
+    A function rather than a constant beside `ALL_DERIVERS`, because a pass
+    carries state across the replay it belongs to: a shared instance would
+    attribute one rebuild's pages to the next one's window. Composed here for
+    the same reason the derivers are -- this is the one level where both layers
+    are in scope.
+    """
+    return (InvestmentWindowReplay(),)

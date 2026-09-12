@@ -314,6 +314,17 @@ Every tool is safe and idempotent, trivially — nothing writes.
 > The `experimental` tier permits these changes without a version bump. It does not permit them
 > going unrecorded, which is what this amendment exists to prevent.
 
+> **Amendment (2026-09-12, investment sync, wave 1).** 🔴 **`list_holdings` no longer waits on
+> build step 5; it waits on wave 2 of the investment-sync plan.** Step 5's investments half is
+> built: holdings and investment transactions are pulled for every connection whose recorded
+> capabilities name the product, the window that came back is recorded, and a `store rebuild`
+> reproduces both -- soft deletes included. So the blocker named in the amendment above has moved
+> from "no data exists" to "no tool reads it", which is a different kind of gap and a shorter one.
+>
+> Still not built, unchanged: `balance_history`, `list_holdings`, `find_recurring`. The tool table
+> above is the specification and is not amended here -- what changed is which sentence explains the
+> distance between it and the code.
+
 🔴 **Two of these eight are the verification surface, not the analysis surface.** `get_pipeline_health`
 and `get_coverage_report` exist so the analyst agent can **establish completeness *before* answering**.
 The product's headline goal is not "answer the question" but "answer it, or say why you should not."

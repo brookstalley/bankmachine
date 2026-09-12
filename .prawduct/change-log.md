@@ -34,6 +34,73 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-12: A rebuild stops resurrecting the transactions the source dropped
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** AC-5.2 says the normalized tables are rebuildable from the raw responses alone, and
+with investments in the store that had become false in one direction no test could see. A
+removal on `/investments/transactions/get` is a row's ABSENCE from a window that came back
+whole — the feed sends no removal signal of any kind *(`api-notes-plaid.md` §26)* — and a
+deriver sees one page. So replaying the archive through the derivers re-upserted every row
+that had ever appeared and cleared `removed_at` on each. The rebuilt store held transactions
+the synced store had retired, every total silently grew, and `store rebuild` reported
+success. `operational-spec.md` has been telling the operator to rebuild once this build step
+landed; that instruction was a claim, and nothing asserted it.
+
+**What changed (Chunk 04):**
+
+- **A rebuild now runs each window's reconciliation again, from the archive.**
+  `connector/plaid/window.py` reassembles a window from the `request_context` its pages carry
+  — the only record of the question a page answered, since the reply does not echo the window
+  back — and calls the same `store.investments` reconciliation the sync calls, with the same
+  evidence. `store.rebuild` gained one seam for this: `ReplayPass`, for a fact that is a
+  property of a SEQUENCE of responses rather than of any one body.
+- 🔴 **Re-run at the page that CLOSED each window, not once over the finished tables.** Once
+  every page is replayed, each surviving row carries the id of the last page it appeared on —
+  so an early window's reconciliation run at the end would find the rows that only arrived
+  later absent from it and retire every one of them, a conclusion no run ever reached. The
+  replay reproduces the sequence of window conclusions, which is the only thing that
+  reproduces the store.
+- **A window whose opening page the archive no longer holds concludes nothing**, and says so.
+  Reconciling on the pages that survived would soft-delete every row that sat on the ones that
+  did not, on the code path that believes the window was whole. The rebuild's content digest
+  then reports the removal it could not reproduce, which is a refusal an operator can act on
+  rather than a deletion nobody sees.
+- **A page that does not record its window refuses the whole rebuild.** Skipping it would
+  leave that window's reconciliation unrun and every retired row back in the totals, under a
+  rebuild that reported success — the silent incompleteness that still adds up.
+- 🔴 **The measured history range moved out of the store function and into the sync.**
+  `record_investment_transaction_window` now returns the range it measured; the sync command
+  records it, in the same transaction as the removals it was measured after. A replay must not
+  stamp a domain's progress: the sync stamps `last_success_at` from the clock once both feeds
+  are in, so a rebuild that rewound `sync_state` to the archive's instant would make the
+  digest refuse a rebuild that had reproduced every row correctly. It is the same rule that
+  took `last_success_at` out of the derivers in Chunk 03, and it matches how the transactions
+  domain has always recorded its own range.
+- **One reader for what a page says about its window**, used by the sync loop and by the
+  replay. The offset a page was fetched at is the count of rows that came before it, so both
+  reach the same exhaustion verdict without either trusting the other's arithmetic. The
+  exhaustion predicate itself is one function in `store.investments`.
+- **The sync tests' fake client now archives the real `request_context`**, built by the
+  production formatter. A fake that archived `None` left the entire replay path exercised by
+  nothing while every sync test stayed green.
+
+**Verified:** new tests across the rebuild, the archived window and the sync path. Five
+mutations were run against them and each reddened only the
+tests that name it: dropping the replay pass, moving it to the end of the replay, dropping the
+unopened-window guard, making the window reader default instead of refuse, and putting the
+`sync_state` write back inside the store function. Property tests state rebuild losslessness
+over generated sequences of windows and the valuation rounding bound, the half-even boundary
+and sign symmetry across every minor-unit width this build knows. `VRF-019` is queued for the
+rebuild on the operator's own sandbox store, which is the claim no fake can make.
+
+**Found and filed, not fixed:** `_upsert_account` takes the last-REPLAYED observation where
+`_upsert_security` beside it takes the latest one, so an archive whose `received_at` order
+disagrees with its insertion order would make a rebuild unreproducible. Not reachable through
+today's sync path — `received_at` is monotonic — and the failure direction is a refusal rather
+than drift, so it is filed rather than folded in.
+
 ## 2026-09-12: A connection is no longer one stream, and the health surface says so
 
 <!-- prawduct: scope=investments-v1 -->

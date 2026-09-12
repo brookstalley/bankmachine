@@ -12,7 +12,7 @@ from typing import NoReturn
 from bankmachine.cli.exit_codes import EXIT_OK, EXIT_UNHEALTHY
 from bankmachine.cli.parser import AnyParser, RedactingParser
 from bankmachine.config import Config
-from bankmachine.derivers import ALL_DERIVERS
+from bankmachine.derivers import ALL_DERIVERS, all_replay_passes
 from bankmachine.logging_setup import get_logger
 from bankmachine.secrets import (
     DatastoreKeyMissingError,
@@ -318,6 +318,7 @@ def cmd_rebuild(config: Config, args: argparse.Namespace) -> int:
     report = rebuild(
         config,
         derivers=ALL_DERIVERS,
+        replay_passes=all_replay_passes,
         accept_content_change=args.accept_content_change,
     )
     _print_rebuild(report)

@@ -46,6 +46,7 @@ from bankmachine.store.schema import (
     securities,
     sync_state,
 )
+from bankmachine.store.sync_domains import record_domain_history_start
 from bankmachine.store.types import UtcInstant, calendar_date, utc_instant
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -459,7 +460,7 @@ def _reconcile(
     stated_total: int | None,
 ) -> Any:
     with writer_connection(config) as conn, transaction(conn):
-        return record_investment_transaction_window(
+        outcome = record_investment_transaction_window(
             conn,
             connection_id=CONNECTION_ID,
             window_start=WINDOW_START,
@@ -469,6 +470,20 @@ def _reconcile(
             stated_total=stated_total,
             at=LATER,
         )
+        # 🔴 Recording the measured range is the SYNC's half of the contract,
+        # not the store function's -- `store rebuild` re-runs the reconciliation
+        # from the archived pages and must not restate a domain's progress. So
+        # this helper stands in for the caller, and the `sync_state` assertions
+        # below are still about the pair of them.
+        if outcome.history_start_date is not None:
+            record_domain_history_start(
+                conn,
+                connection_id=CONNECTION_ID,
+                domain=INVESTMENTS_DOMAIN,
+                start=outcome.history_start_date,
+                at=LATER,
+            )
+        return outcome
 
 
 def test_a_row_absent_from_a_complete_window_is_soft_deleted(enrolled: Config) -> None:

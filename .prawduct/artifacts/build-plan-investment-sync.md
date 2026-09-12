@@ -122,6 +122,22 @@ waves 2–3 that is **not** Medium: it was derived and argued in
   applied to the series the same norm names. The alternative (last capture wins) makes the
   series depend on what time of day the operator happened to run a sync, which is the
   thing the norm exists to prevent.
+- `[DECISION: the replayed window reconciliation runs at each window's closing page, not once
+  over the finished tables | taken while building Chunk 04 | corrects this plan]` — the
+  deliverable said "at the end of the replay" and that is unbuildable. Once every page is
+  replayed, each surviving row carries the `raw_response_id` of the LAST page it appeared on, so
+  the first window's reconciliation run over the finished tables finds every row that only
+  arrived in a later window absent from it and retires all of them — a conclusion no run ever
+  reached, and a store no sync ever produced. A removal is evidence about the rows that existed
+  when its window closed, so the replay reproduces the SEQUENCE of window conclusions.
+- `[DECISION: only a sync records a domain's measured history range | taken while building
+  Chunk 04 | user can veto]` — `record_investment_transaction_window` now returns the range it
+  measured and the sync command writes it, in the same transaction as the removals. A rebuild
+  re-runs that reconciliation from the archive, and a replay that stamped `sync_state` would
+  rewind a freshness claim to the archive's instant — the sync stamps `last_success_at` from the
+  clock after the window concludes — so the content digest would refuse a rebuild that had
+  reproduced every row correctly. Same rule as Chunk 03's move of `last_success_at` out of the
+  derivers, and it matches how the transactions domain has always recorded its own range.
 - `[DECISION: an investments failure degrades the investments DOMAIN, not the connection |
   taken in this plan, Chunk 03 | user can veto]` — `connections.status` is one column and
   means credential health. A `PRODUCT_NOT_READY` on the investments pull is not a
@@ -141,15 +157,17 @@ waves 2–3 that is **not** Medium: it was derived and argued in
 - [ ] Chunk 07: `balance_history` — one series, read two ways
 - [ ] Chunk 08: Net worth, and the two ways it can be quietly wrong
 
-Context: Chunks 01-03 built and reviewed 2026-09-12. Wave 1's two `verify-api` probes are
-done and both rewrote what they measured (`api-notes-plaid.md` §22-26); response shape is no
-longer the open question it was. Chunk 03 made an investments failure the DOMAIN's rather
-than the connection's, gave `sync_state` one writer (`store/sync_domains.py`), and put a
-`domains` array on `get_pipeline_health`. 🔴 It also moved the investments freshness stamp out
-of the derivers and into the sync command, because two feeds share one domain key and neither
-body alone says the domain got everything it asked for -- which is why a rebuild can no longer
-forge a freshness claim out of an archived body either. Next: Chunk 04, which is wave 1's
-`cumulative` review and its PR.
+Context: Chunks 01-04 built 2026-09-12; wave 1 is code-complete and awaiting its `cumulative`
+review and PR. Chunk 04 closed the one direction of AC-5.2 that no Chunk 02 test could see: a
+rebuild replaying the archive through the derivers alone cleared every investment-transaction
+soft delete, so the rebuilt store held rows the synced store had retired and reported success.
+`connector/plaid/window.py` now reassembles each window from the `request_context` its pages
+carry and re-runs the reconciliation 🔴 at the page that CLOSED that window — not once over the
+finished tables, which would judge an early window against rows that only arrived in a later
+one. `store.rebuild` gained one seam for it (`ReplayPass`). The measured history range moved out
+of the store function and into the sync, because a replay must not restate a domain's progress.
+Next: `/prawduct:critic cumulative`, then wave 1's PR, then the mandatory re-read of chunks
+05-08 against what was built.
 
 ## The Program
 
@@ -392,8 +410,9 @@ Tests are the floor, and three things here are not testable from a fixture:
 - **Deliverables:**
   - `src/bankmachine/store/rebuild.py` replaying both new endpoints, with the holdings
     append rule landing on the same rows regardless of replay order
-  - 🔴 **the investment-transaction window reconciliation re-run at the end of the replay**,
-    which Chunk 02 created the need for and could not discharge. Its removal signal is a
+  - 🔴 **the investment-transaction window reconciliation re-run DURING the replay, at the
+    page that closed each window** (corrected from "at the end of the replay" while building;
+    see the decision below), which Chunk 02 created the need for and could not discharge. Its removal signal is a
     row's ABSENCE from a complete window, and a deriver sees one page — so replaying pages
     re-upserts every row that ever appeared and CLEARS `removed_at` on each, silently
     resurrecting every soft delete. Without this, AC-5.2 is false in the one direction no

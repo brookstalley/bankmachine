@@ -23,6 +23,13 @@ Reconciling on that prefix would soft-delete real transactions in bulk, and the
 store would look exactly as it should if the institution had genuinely dropped
 them. So exhaustion is not a caller's promise to keep -- it is derived here, from
 the evidence the caller passes, once, for every caller.
+
+There are two callers, and the second is why the first cannot be the only one.
+`store rebuild` replays the archive, and a replay through the derivers alone
+re-upserts every row that ever appeared and clears every soft delete with it --
+so `connector.plaid.window` reassembles each archived window and calls this with
+the same evidence the sync passed. A rebuilt store then retires exactly what the
+synced store retired (AC-5.2).
 """
 
 from __future__ import annotations
@@ -35,12 +42,7 @@ from sqlalchemy import func, select, update
 
 from bankmachine.logging_setup import get_logger
 from bankmachine.store.connection import StoreError
-from bankmachine.store.schema import (
-    INVESTMENTS_DOMAIN,
-    accounts,
-    investment_transactions,
-)
-from bankmachine.store.sync_domains import record_domain_history_start
+from bankmachine.store.schema import accounts, investment_transactions
 from bankmachine.store.types import CalendarDate, UtcInstant, calendar_date
 
 _log = get_logger(__name__)
@@ -63,9 +65,26 @@ class IncompleteWindowError(StoreError):
     """
 
 
+def window_is_exhausted(rows_seen: int, stated_total: int | None) -> bool:
+    """Whether a set of pages carried the whole window, on this feed's own terms.
+
+    🔴 **One predicate, because two callers reach it from opposite directions.**
+    The sync loop asks it to decide whether to stop fetching; a replay asks it of
+    an archived page to decide whether that page CLOSED the window it is
+    reassembling. If the two ever answered differently, a rebuild would conclude
+    a removal the sync never concluded, or miss one it did -- and the only signal
+    would be a rebuild that cannot reproduce its own content.
+
+    A null `stated_total` is an UNMEASURED window: the response did not say how
+    many rows it holds, so nothing can be concluded about what is missing from
+    it, and it is never exhausted.
+    """
+    return stated_total is not None and rows_seen >= stated_total
+
+
 @dataclass(frozen=True, slots=True)
 class WindowOutcome:
-    """What the completed window changed, for the caller's report.
+    """What the completed window concluded, for the caller to report and record.
 
     `exhausted` is False for every run that stopped short, and the other two
     fields are then meaningless by construction -- nothing was concluded, so
@@ -74,7 +93,22 @@ class WindowOutcome:
 
     exhausted: bool
     removed: int
+
     history_start_date: CalendarDate | None
+    """How far back this window's rows actually reach, measured (AC-3.3).
+
+    🔴 **Returned rather than written, because only a SYNC may record a domain's
+    progress.** `store rebuild` replays these same pages and re-runs this same
+    reconciliation, and a replay that stamped `sync_state` would restate a
+    measurement the run that took it has since moved past -- so the rebuild's
+    content digest would refuse a rebuild that had reproduced every row
+    correctly. It is the same rule that took `last_success_at` out of the
+    investments derivers: an archived body is evidence about rows, never about
+    how current a domain is.
+
+    None when the window came back complete and empty, which is the absence of a
+    measurement rather than a measurement of zero -- see the log line below.
+    """
 
 
 def record_investment_transaction_window(
@@ -88,12 +122,13 @@ def record_investment_transaction_window(
     stated_total: int | None,
     at: UtcInstant,
 ) -> WindowOutcome:
-    """Soft-delete what the window did not return, and record the range it did.
+    """Soft-delete what the window did not return, and measure the range it did.
 
-    Runs inside the caller's transaction, so the removals and the range they were
-    concluded from commit together or not at all. A store that had soft-deleted
-    rows while still reporting the previous window's range would be claiming a
-    measurement its own rows contradict.
+    Runs inside the caller's transaction, so the removals and the range measured
+    from them commit together or not at all with whatever the caller does with
+    that range. A store that had soft-deleted rows while still reporting the
+    previous window's range would be claiming a measurement its own rows
+    contradict.
 
     `stated_total` is the aggregator's `total_investment_transactions`, and
     `rows_seen` the number of rows the pages actually carried. Exhaustion is
@@ -105,7 +140,7 @@ def record_investment_transaction_window(
     total, so nothing can be concluded about what is missing from it -- and is
     treated exactly as a short run is.
     """
-    if stated_total is None or rows_seen < stated_total:
+    if not window_is_exhausted(rows_seen, stated_total):
         # Not a failure. The ordinary state of a run bounded by its page ceiling,
         # which AC's exit-code contract reports as work still owed rather than as
         # something wrong.
@@ -169,20 +204,13 @@ def record_investment_transaction_window(
         )
     ).scalar_one_or_none()
 
-    if start is not None:
-        record_domain_history_start(
-            conn,
-            connection_id=connection_id,
-            domain=INVESTMENTS_DOMAIN,
-            start=calendar_date(start),
-            at=at,
-        )
-    else:
-        # 🔴 An exhausted window that returned nothing. The column is left as it
-        # was rather than nulled: null means NOBODY HAS EVER MEASURED, and
-        # overwriting a range a previous run did measure would destroy a fact to
-        # record the absence of one. A connection whose investment accounts are
-        # simply quiet is not a connection whose history shrank.
+    if start is None:
+        # 🔴 An exhausted window that returned nothing, which is why the range
+        # comes back None rather than as an empty measurement. Null in
+        # `sync_state` means NOBODY HAS EVER MEASURED, and overwriting a range a
+        # previous run did measure would destroy a fact to record the absence of
+        # one. A connection whose investment accounts are simply quiet is not a
+        # connection whose history shrank.
         _log.info(
             "connection %d returned a complete investment-transaction window holding no "
             "rows, so the recorded range is left as it was",
@@ -198,4 +226,8 @@ def record_investment_transaction_window(
             window_start,
             window_end,
         )
-    return WindowOutcome(exhausted=True, removed=removed, history_start_date=start)
+    return WindowOutcome(
+        exhausted=True,
+        removed=removed,
+        history_start_date=None if start is None else calendar_date(start),
+    )

@@ -50,6 +50,7 @@ from bankmachine.connector import (
     parse_response_body,
 )
 from bankmachine.connector.plaid.client import PlaidClient
+from bankmachine.connector.plaid.window import read_investment_transaction_page
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.logging_setup import get_logger
 from bankmachine.secrets import SecretsError, get_access_token, get_plaid_secret
@@ -61,7 +62,11 @@ from bankmachine.store.connection import (
 )
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, transaction, writer_connection
-from bankmachine.store.investments import WindowOutcome, record_investment_transaction_window
+from bankmachine.store.investments import (
+    WindowOutcome,
+    record_investment_transaction_window,
+    window_is_exhausted,
+)
 from bankmachine.store.raw import RawResponse
 from bankmachine.store.schema import (
     INVESTMENTS_DOMAIN,
@@ -763,29 +768,6 @@ def _persist(config: Config, fetched: FetchedResponse, connection_id: int) -> Ra
         )
 
 
-def _investment_page(fetched: FetchedResponse) -> tuple[int, int | None]:
-    """How many rows this page carried, and the total the window claims to hold.
-
-    The two control fields the investments loop reads, through the same shared
-    parser `_page` uses and for the same reason: a parse failure becomes this
-    connection's refusal rather than the whole run's.
-
-    A total that is absent or not an integer comes back `None`, which
-    `record_investment_transaction_window` treats as an UNMEASURED window -- it
-    cannot be exhausted, so nothing is soft-deleted on the strength of it. That
-    is the safe direction, and it is why this returns the total rather than a
-    `has_more` boolean computed here: the decision belongs to the one place that
-    owns the removal rule.
-    """
-    payload = _page(fetched)
-    rows = payload.get("investment_transactions")
-    total = payload.get("total_investment_transactions")
-    return (
-        len(rows) if isinstance(rows, list) else 0,
-        total if isinstance(total, int) and not isinstance(total, bool) else None,
-    )
-
-
 def _record_attempt(config: Config, connection_id: int, domain: str) -> None:
     """This domain was tried on this run, whatever comes of it.
 
@@ -930,13 +912,19 @@ def _pull_investment_transactions(
         response = _persist(config, fetched, connection_id)
         page_response_ids.append(response.raw_response_id)
         concluded_at = response.received_at
-        page_rows, stated_total = _investment_page(fetched)
-        rows_seen += page_rows
+        # 🔴 Read back off the ARCHIVED page rather than off the reply in hand,
+        # through the reader a rebuild uses on the same row. The two paths then
+        # cannot disagree about how many rows a page carried or how many the
+        # window claims to hold -- and a disagreement would surface only as a
+        # rebuild that concluded a removal this run never did.
+        page = read_investment_transaction_page(response)
+        rows_seen = page.rows_through_this_page
+        stated_total = page.stated_total
         # 🔴 Both exits are measured *(§26)*: an offset at or past the total
         # answers with an empty list and no error, and the total does not move
         # between pages. The empty-page exit is what stops a total that is wrong
         # in the high direction from looping to the ceiling.
-        if page_rows == 0 or stated_total is None or rows_seen >= stated_total:
+        if page.rows == 0 or window_is_exhausted(rows_seen, stated_total):
             break
     else:
         logger.info(
@@ -957,6 +945,23 @@ def _pull_investment_transactions(
             stated_total=stated_total,
             at=concluded_at,
         )
+        if window.history_start_date is not None:
+            # 🔴 Recorded by the SYNC, in the same transaction as the removals
+            # the range was measured after -- a store reporting one window's
+            # range beside another's rows would claim a measurement its own rows
+            # contradict. It is the sync's to record because `store rebuild`
+            # re-runs the reconciliation above from the archived pages, and a
+            # replay that stamped a domain's progress would restate a
+            # measurement the run that took it has since moved past. The
+            # transactions domain records its own range the same way, a few
+            # functions up.
+            record_domain_history_start(
+                conn,
+                connection_id=connection_id,
+                domain=INVESTMENTS_DOMAIN,
+                start=window.history_start_date,
+                at=concluded_at,
+            )
     outcome.investment_transactions_removed = window.removed
     if not window.exhausted:
         # 🔴 Taken from the window's OWN verdict rather than from the page

@@ -33,7 +33,9 @@ from bankmachine.connector import (
     TransactionsPaginationRestartError,
     TransportError,
 )
-from bankmachine.derivers import ALL_DERIVERS
+from bankmachine.connector.plaid.client import INVESTMENT_TRANSACTIONS_PAGE_SIZE
+from bankmachine.connector.plaid.window import investment_window_context
+from bankmachine.derivers import ALL_DERIVERS, all_replay_passes
 from bankmachine.secrets import (
     SecretsError,
     delete_access_token,
@@ -44,6 +46,7 @@ from bankmachine.secrets import (
 from bankmachine.store.connection import AnotherWriterRunningError
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
+from bankmachine.store.rebuild import RebuildReport, content_digest, rebuild
 from bankmachine.store.schema import (
     INVESTMENTS_DOMAIN,
     TRANSACTIONS_DOMAIN,
@@ -311,6 +314,7 @@ class FakeClient:
         start_date: date,
         end_date: date,
         offset: int,
+        count: int = INVESTMENT_TRANSACTIONS_PAGE_SIZE,
         **kwargs: Any,
     ) -> FetchedResponse:
         # 🔴 The window is NAMED rather than absorbed into `**kwargs`. AC-3.3 has
@@ -354,7 +358,15 @@ class FakeClient:
             endpoint=INVESTMENTS_TRANSACTIONS_GET,
             body=page,
             received_at=received,
-            request_context=None,
+            # 🔴 Built by the production formatter, not spelled out here. The
+            # reply does not echo the window back (§26), so this string is the
+            # only record of the question a page answered -- and `store rebuild`
+            # reassembles every window from it. A fake that archived `None`, or
+            # its own wording, would leave the whole replay path exercised by
+            # nothing while every sync test stayed green.
+            request_context=investment_window_context(
+                start_date=start_date, end_date=end_date, offset=offset, count=count
+            ),
         )
 
     def transactions_sync(
@@ -2449,3 +2461,107 @@ def test_a_second_domain_does_not_double_any_count(cli_env: Config) -> None:
     coverage = query.coverage_report(cli_env).to_wire()["rows"]
     assert len(coverage) == len({row["account_id"] for row in coverage})
     assert sum(int(row["transaction_count"]) for row in coverage) == len(_txn_rows(cli_env))
+
+
+# --------------------------------------------------------------------------
+# The rebuild, over a store a real run produced (AC-5.2, AC-2.4)
+# --------------------------------------------------------------------------
+
+
+def _rebuild(config: Config) -> RebuildReport:
+    return rebuild(config, derivers=ALL_DERIVERS, replay_passes=all_replay_passes)
+
+
+def test_a_rebuild_reproduces_a_store_a_whole_run_produced(cli_env: Config) -> None:
+    """🔴 AC-5.2 against the state a SYNC leaves, not the state a fixture builds.
+
+    A run writes two kinds of thing the archive cannot: the rows a replay
+    reproduces, and the progress `sync_state` records about the run itself --
+    stamped from the clock, after the window concluded. A replay that recorded
+    either would rewind a freshness claim to the archive's instant, and the
+    digest would refuse a rebuild that had reproduced every row correctly.
+    """
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page()]
+    assert run(["sync", "run", "--no-wait"]) == 0
+    assert _investment_transaction_rows(cli_env), "the run stored nothing to reproduce"
+    with reader_connection(cli_env) as conn:
+        before = content_digest(conn)
+
+    report = _rebuild(cli_env)
+
+    assert not report.content_changed
+    with reader_connection(cli_env) as conn:
+        assert content_digest(conn) == before
+
+
+def test_a_rebuild_after_a_soft_delete_does_not_bring_the_row_back(cli_env: Config) -> None:
+    """🔴 End to end: the resurrection, through the command an operator runs.
+
+    `operational-spec.md` tells the operator to rebuild once this build step
+    lands. That instruction is a claim, and this is the test that asserts it:
+    the row the second window retired stays retired, at the instant the window
+    concluded.
+    """
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page()]
+    FakeClient.investment_transaction_pages = [
+        _investment_transactions_body([_investment_txn("inv-1"), _investment_txn("inv-2")])
+    ]
+    assert run(["sync", "run", "--no-wait"]) == 0
+
+    FakeClient.pages = [_page(next_cursor="cursor-2")]
+    FakeClient.investment_transaction_pages = [
+        _investment_transactions_body([_investment_txn("inv-1")])
+    ]
+    assert run(["sync", "run", "--no-wait"]) == 0
+    retired = {
+        row["source_investment_transaction_id"]: row["removed_at"]
+        for row in _investment_transaction_rows(cli_env)
+    }
+    assert retired["inv-2"] is not None, "the second window retired nothing, so nothing is at risk"
+
+    report = _rebuild(cli_env)
+
+    assert not report.content_changed
+    after = {
+        row["source_investment_transaction_id"]: row["removed_at"]
+        for row in _investment_transaction_rows(cli_env)
+    }
+    assert after == retired
+
+
+def test_a_sync_after_a_rebuild_changes_no_investment_row(cli_env: Config) -> None:
+    """AC-2.4 across the pair: rebuild, sync again, and nothing about the rows moves.
+
+    The provenance does move -- a second run archives new pages and every row
+    points at the page that last carried it -- so what is asserted is what the
+    rows mean: which transactions are there, what they are worth, and which of
+    them are retired.
+    """
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page()]
+    assert run(["sync", "run", "--no-wait"]) == 0
+    _rebuild(cli_env)
+    before = _investment_facts(cli_env)
+    assert before, "the run stored nothing, so a second one proves nothing"
+
+    FakeClient.pages = [_page(next_cursor="cursor-2")]
+    assert run(["sync", "run", "--no-wait"]) == 0
+
+    assert _investment_facts(cli_env) == before
+
+
+def _investment_facts(config: Config) -> dict[str, tuple[Any, ...]]:
+    """What a transaction says about the world, without the provenance of the page."""
+    return {
+        row["source_investment_transaction_id"]: (
+            row["account_id"],
+            row["trade_date"],
+            row["amount_minor"],
+            row["quantity"],
+            row["currency"],
+            row["removed_at"],
+        )
+        for row in _investment_transaction_rows(config)
+    }

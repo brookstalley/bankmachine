@@ -823,3 +823,45 @@ bankmachine sync run --no-wait
    a count, that count must be explainable by rows the aggregator genuinely stopped sending.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-018`
+
+## VRF-019 — a real sandbox store rebuilds byte-for-byte with investments in it
+
+**Status:** pending
+
+**Chunk:** investments — rebuild, idempotency, and the properties that hold across both ·
+**Raised:** 2026-09-12
+
+**Why a human:** AC-5.2's claim is about the *operator's own store*, and every test of it
+here builds its archive from a fake client. What a fake cannot produce is the shape the real
+endpoint returns — a window of over a thousand transactions across a dozen pages, securities
+shared between holdings and transactions, and page instants a real run assigned. The rebuild
+refuses rather than guesses when it cannot reproduce what it replaced, so the thing to
+observe is that it does **not** refuse.
+
+**Prerequisite:** the sandbox store VRF-017 and VRF-018 leave behind. Drain those first — this
+verifies the store they produced.
+
+```
+export BANKMACHINE_PLAID_CLIENT_ID=<client id>   # or `source .env`
+bankmachine store rebuild
+```
+
+**Verify:**
+
+1. The command exits 0 and prints `content: identical to what it replaced`. 🔴 **Anything
+   else is the finding**, including a success under `--accept-content-change` — which must
+   not be passed here. A content change at an unchanged derivation version means either a
+   deriver read the clock or the archive no longer holds every response those rows came from,
+   and both are conditions to investigate before the old rows are gone.
+2. `bankmachine sync shell`, then:
+   ```sql
+   SELECT COUNT(*), COUNT(removed_at) FROM investment_transactions;
+   SELECT COUNT(*) FROM holdings;
+   ```
+   Both counts match what VRF-017 and VRF-018 recorded. 🔴 **The second column is the one
+   that matters**: a rebuild that resurrects soft-deleted rows reports success and leaves
+   every other number looking right.
+3. Run `bankmachine sync run --no-wait` once more, then `bankmachine store rebuild` again.
+   Both exit 0 and the second rebuild again reports identical content (AC-2.4).
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-019`
