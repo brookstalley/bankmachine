@@ -1115,6 +1115,96 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             "inverted feed"
                         ),
                     },
+                    # 🔴 A connection is no longer one stream. Its domains
+                    # advance on their own schedules, so a connection can be
+                    # `active` with a fresh `last_success_at` while one of these
+                    # has not landed since August -- and the fields above cannot
+                    # express that at all. An empty array means nothing has ever
+                    # been attempted for this connection.
+                    "domains": {
+                        "type": "array",
+                        "description": (
+                            "each sync domain this connection has ever ATTEMPTED, and how "
+                            "that domain is doing on its own. 🔴 Read these rather than "
+                            "the connection's own `last_success_at` before trusting any "
+                            "figure that depends on one of them: a connection whose "
+                            "transactions are current can be weeks behind on its "
+                            "investments, and nothing above says so. A domain missing "
+                            "from this array has never been attempted — which is not the "
+                            "same as one that is present with a null `last_success_at`, "
+                            "and neither is the same as one that is fine"
+                        ),
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": [
+                                "domain",
+                                "last_attempt_at",
+                                "last_success_at",
+                                "last_error_code",
+                                "last_error_at",
+                                "history_starts",
+                            ],
+                            "properties": {
+                                "domain": {
+                                    "type": "string",
+                                    "description": (
+                                        "which class of data this entry is about — "
+                                        "`transactions` or `investments`. Treat an "
+                                        "unrecognised value as a domain this build gained "
+                                        "after you learned the list, not as a defect"
+                                    ),
+                                },
+                                "last_attempt_at": {
+                                    "type": ["string", "null"],
+                                    "description": (
+                                        "when this domain was last tried, ISO-8601 UTC, "
+                                        "whatever came of it"
+                                    ),
+                                },
+                                "last_success_at": {
+                                    "type": ["string", "null"],
+                                    "description": (
+                                        "when this domain last got everything it asked "
+                                        "for, ISO-8601 UTC. 🔴 null means it has been "
+                                        "tried and has NEVER landed in full, never 'fine' "
+                                        "— the hole is this domain's whole history. It "
+                                        "advances only on a complete pull, so a domain "
+                                        "whose positions arrived while its transaction "
+                                        "window came back short leaves this where it was"
+                                    ),
+                                },
+                                "last_error_code": {
+                                    "type": ["string", "null"],
+                                    "description": (
+                                        "what the last attempt at this domain failed with, "
+                                        "null when it succeeded. 🔴 Present here while the "
+                                        "connection's own `status` is `active` is the "
+                                        "expected shape, not a contradiction: one domain "
+                                        "failing is not a statement about the login, and "
+                                        "re-authenticating repairs nothing"
+                                    ),
+                                },
+                                "last_error_at": {
+                                    "type": ["string", "null"],
+                                    "description": (
+                                        "when that failure happened, ISO-8601 UTC. Read "
+                                        "against `last_success_at` beside it: the span "
+                                        "between them is how long this domain has been "
+                                        "stopped"
+                                    ),
+                                },
+                                "history_starts": {
+                                    "type": ["string", "null"],
+                                    "description": (
+                                        "the oldest date this domain's own history reaches "
+                                        "back to, `YYYY-MM-DD`; null before any complete "
+                                        "pull has measured one"
+                                    ),
+                                },
+                            },
+                        },
+                    },
                 },
                 windowed=False,
                 capped=False,

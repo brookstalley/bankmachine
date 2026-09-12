@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
+from bankmachine import query
 from bankmachine.cli import build_parser, run, sync_run
 from bankmachine.cli.sync_run import MAX_PAGINATION_RESTARTS
 from bankmachine.config import Config
@@ -1952,6 +1953,19 @@ def _account_of(config: Config, source_connection_id: str) -> int:
         )
 
 
+def _domain_row(config: Config, connection_id: int, domain: str) -> Any:
+    with reader_connection(config) as conn:
+        return (
+            conn.execute(
+                select(sync_state).where(
+                    sync_state.c.connection_id == connection_id, sync_state.c.domain == domain
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+
+
 def test_an_investments_failure_does_not_cost_the_connection_its_transactions(
     cli_env: Config,
 ) -> None:
@@ -1962,10 +1976,6 @@ def test_an_investments_failure_does_not_cost_the_connection_its_transactions(
     call can fail for a connection whose transactions are entirely healthy.
     Raising from the pull would abandon the page loop before it started, on this
     run and on every run after it.
-
-    The connection is still reported degraded: recording the failure against the
-    investments domain instead is the next chunk's work, and until it exists,
-    saying nothing would be the silent staleness this product refuses.
     """
     _capable_connection(cli_env)
     FakeClient.holdings_error = TransportError(
@@ -1977,20 +1987,204 @@ def test_an_investments_failure_does_not_cost_the_connection_its_transactions(
 
     assert FakeClient.holdings_tokens, "the gate still opened; the failure is the endpoint's"
     assert _holdings_rows(cli_env) == []
+    assert _domain_row(cli_env, 2, TRANSACTIONS_DOMAIN)["cursor"] == "cursor-1", (
+        "the transactions paged to the end despite the other failure"
+    )
+
+
+def test_a_product_failure_is_recorded_against_the_domain_not_the_connection(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """🔴 The recorded decision, made structural.
+
+    `connections.status` means credential health. A product the Item never
+    initialized failing is not a statement about the login, and marking the
+    connection degraded for it sends the operator to `connections reauth` —
+    which cannot fix it, and which mints a second Item if they reach for
+    `enroll` instead.
+    """
+    _capable_connection(cli_env)
+    FakeClient.holdings_error = TransportError(
+        "the aggregator is unreachable", endpoint=INVESTMENTS_HOLDINGS_GET
+    )
+    FakeClient.pages = [_page(added=[_txn("t-domain-scoped")], next_cursor="cursor-1")]
+
+    # 🔴 Still `1`. The connection ran and found a problem, which is what that
+    # code means — collapsing a domain failure into `0` would leave a scheduled
+    # runner's only machine-readable signal saying nothing is wrong.
+    assert run(["sync", "run", "--no-wait"]) == 1
+
     with reader_connection(cli_env) as conn:
-        synced = conn.execute(
-            select(sync_state.c.cursor).where(
-                sync_state.c.connection_id == 2, sync_state.c.domain == TRANSACTIONS_DOMAIN
-            )
-        ).scalar_one()
-        status = conn.execute(
+        status, code = conn.execute(
             select(connections.c.status, connections.c.last_error_code).where(
                 connections.c.connection_id == 2
             )
         ).one()
-    assert synced == "cursor-1", "the transactions paged to the end despite the other failure"
-    assert status[0] == "degraded"
-    assert status[1] == "TransportError"
+    assert status == "active", "a product error must not send the operator to reauth"
+    assert code is None
+
+    investments = _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)
+    assert investments["last_error_code"] == "TransportError"
+    assert investments["last_error_at"] is not None
+    assert investments["last_success_at"] is None
+
+    transactions_domain = _domain_row(cli_env, 2, TRANSACTIONS_DOMAIN)
+    assert transactions_domain["last_error_code"] is None
+    assert transactions_domain["last_success_at"] is not None, (
+        "the transactions domain's own success must survive the other domain failing"
+    )
+
+    out = capsys.readouterr().out
+    assert "investments:" in out
+    assert "no re-authentication" in out
+    assert "1 of 2 connections synced with their investments domain failing" in out, out
+    assert "could not be synced" not in out, out
+
+
+def test_an_investments_failure_reaches_a_column_on_a_first_sync(
+    cli_env: Config,
+) -> None:
+    """🔴 The residue the carried failure left, closed by recording at the catch.
+
+    A connection still materializing its history returns from inside the page
+    loop. A failure carried past that loop to be applied afterwards therefore
+    reached no column at all — on exactly the run an operator most needs to see
+    it, because a first sync is when an uninitialized product fails.
+    """
+    _capable_connection(cli_env)
+    FakeClient.holdings_error = TransportError(
+        "the aggregator is unreachable", endpoint=INVESTMENTS_HOLDINGS_GET
+    )
+    # 🔴 The status string the loop actually branches on. A near-miss spelling
+    # here reaches no early return at all, and the test then passes over the
+    # ordinary path while claiming to cover this one.
+    FakeClient.pages = [_page(status=sync_run.NOT_READY, next_cursor="")]
+
+    assert run(["sync", "run", "--no-wait"]) == 1
+
+    with reader_connection(cli_env) as conn:
+        assert (
+            conn.execute(
+                select(transactions.c.transaction_id).where(
+                    transactions.c.account_id.in_(
+                        select(accounts.c.account_id).where(accounts.c.connection_id == 2)
+                    )
+                )
+            ).first()
+            is None
+        ), "the page loop has to have returned early, or this covers the ordinary path"
+
+    investments = _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)
+    assert investments is not None, (
+        "the page loop returned before the failure was applied, so it reached nothing"
+    )
+    assert investments["last_error_code"] == "TransportError"
+
+
+def test_a_capable_connection_that_has_never_run_a_domain_has_no_row_for_it(
+    cli_env: Config,
+) -> None:
+    """AC-4.5's two absences, kept apart.
+
+    A domain with no row has never been TRIED; a row with a null
+    `last_success_at` has been tried and has never landed. Reading the first as
+    the second would report a hole where there is only a connection that cannot
+    serve the domain.
+    """
+    FakeClient.pages = [_page()]
+
+    assert run(["sync", "run", "--no-wait"]) == 0
+
+    assert _domain_row(cli_env, 1, INVESTMENTS_DOMAIN) is None
+    assert _domain_row(cli_env, 1, TRANSACTIONS_DOMAIN) is not None
+
+
+def test_a_window_seen_in_part_does_not_make_the_investments_domain_current(
+    cli_env: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 Two feeds, one domain key, one freshness claim — so both must be in.
+
+    Positions and the investment-transaction window share
+    `sync_state.domain = 'investments'`. Stamping the domain current when the
+    positions landed would report a portfolio as fresh while most of its
+    transaction history was still missing, which is the silent staleness this
+    product exists to refuse.
+    """
+    _capable_connection(cli_env)
+    monkeypatch.setattr("bankmachine.cli.sync_run.MAX_PAGES_PER_RUN", 1)
+    FakeClient.pages = [_page()]
+    FakeClient.investment_transaction_pages = [
+        _investment_transactions_body([_investment_txn("inv-1")], total=99)
+    ]
+
+    # 75: nothing is wrong, and work is still owed.
+    assert run(["sync", "run", "--no-wait"]) == 75
+
+    assert _holdings_rows(cli_env), "the positions did land; the window is what fell short"
+    investments = _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)
+    assert investments["last_success_at"] is None, (
+        "the positions arriving is half the pull, and half a pull is not a fresh domain"
+    )
+    assert investments["last_error_code"] is None, (
+        "a short window is work still owed, not a failure to record"
+    )
+
+
+def test_a_complete_investments_pull_stamps_the_domain_current(cli_env: Config) -> None:
+    """The other side of the same rule: both feeds in, so the domain is current."""
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page()]
+
+    assert run(["sync", "run", "--no-wait"]) == 0
+
+    investments = _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)
+    assert investments["last_success_at"] is not None
+    assert investments["last_error_code"] is None
+
+
+def test_an_investments_failure_clears_once_the_domain_succeeds_again(
+    cli_env: Config,
+) -> None:
+    """A repaired domain stops being reported as failing.
+
+    Multi-hop, because a failure recorded and never cleared is a health surface
+    that goes permanently red on a transient error — indistinguishable from one
+    that is right.
+    """
+    _capable_connection(cli_env)
+    FakeClient.holdings_error = TransportError(
+        "the aggregator is unreachable", endpoint=INVESTMENTS_HOLDINGS_GET
+    )
+    FakeClient.pages = [_page()]
+    assert run(["sync", "run", "--no-wait"]) == 1
+    assert _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)["last_error_code"] == "TransportError"
+
+    FakeClient.holdings_error = None
+    FakeClient.pages = [_page(next_cursor="cursor-2")]
+    assert run(["sync", "run", "--no-wait"]) == 0
+
+    investments = _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)
+    assert investments["last_error_code"] is None
+    assert investments["last_error_at"] is None
+    assert investments["last_success_at"] is not None
+
+
+def test_one_connection_s_investments_failure_does_not_stop_another_s_sync(
+    cli_env: Config,
+) -> None:
+    """AC-4.1, for a failure that is now the domain's rather than the connection's."""
+    _capable_connection(cli_env)
+    FakeClient.holdings_error = TransportError(
+        "the aggregator is unreachable", endpoint=INVESTMENTS_HOLDINGS_GET
+    )
+    FakeClient.pages = [_page(added=[_txn("t-both")], next_cursor="cursor-1")]
+
+    assert run(["sync", "run", "--no-wait"]) == 1
+
+    # Both connections paged; the failing domain belongs to the second alone.
+    assert _domain_row(cli_env, 1, TRANSACTIONS_DOMAIN)["cursor"] == "cursor-1"
+    assert _domain_row(cli_env, 2, TRANSACTIONS_DOMAIN)["cursor"] == "cursor-1"
+    assert _domain_row(cli_env, 1, INVESTMENTS_DOMAIN) is None
 
 
 def test_an_expired_login_found_through_the_investments_call_still_offers_the_repair(
@@ -2011,3 +2205,247 @@ def test_an_expired_login_found_through_the_investments_call_still_offers_the_re
     assert run(["sync", "run", "--no-wait"]) == 1
 
     assert "connections reauth 2" in capsys.readouterr().out
+
+
+# --- The health surface, once a connection is more than one stream ------------
+
+
+def _health_rows(config: Config) -> list[dict[str, Any]]:
+    return [dict(row) for row in query.pipeline_health(config).to_wire()["rows"]]
+
+
+def _domains_of(row: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {entry["domain"]: entry for entry in row["domains"]}
+
+
+def _age_domain(config: Config, connection_id: int, domain: str, *, hours: int) -> UtcInstant:
+    """Move one domain's last success into the past, leaving the connection alone.
+
+    The whole case under test is a connection whose own freshness is fine while
+    one domain's is not, and a fake clock would move both together.
+    """
+    aged = utc_instant(now_utc() - timedelta(hours=hours))
+    with writer_connection(config) as conn:
+        conn.execute(
+            sync_state.update()
+            .where(sync_state.c.connection_id == connection_id, sync_state.c.domain == domain)
+            .values(last_success_at=aged, updated_at=aged)
+        )
+    return aged
+
+
+def test_the_health_surface_reports_each_domain_a_connection_has(cli_env: Config) -> None:
+    """AC-4.4 for a pipeline with two domains in it.
+
+    Every field on a health row above `domains` reads the connection, and a
+    connection is no longer one stream: it can be `active` and current while one
+    of its domains has not landed in weeks.
+    """
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page(next_cursor="cursor-1")]
+
+    assert run(["sync", "run", "--no-wait"]) == 0
+
+    rows = {row["connection_id"]: row for row in _health_rows(cli_env)}
+    assert set(_domains_of(rows[2])) == {TRANSACTIONS_DOMAIN, INVESTMENTS_DOMAIN}
+    assert set(_domains_of(rows[1])) == {TRANSACTIONS_DOMAIN}, (
+        "a connection that cannot serve investments must not be reported as owing them"
+    )
+    for entry in rows[2]["domains"]:
+        assert entry["last_success_at"] is not None
+        assert entry["last_error_code"] is None
+
+
+def test_a_failing_domain_is_reported_beside_a_healthy_one(cli_env: Config) -> None:
+    """The chunk's acceptance criterion, on the surface that has to carry it."""
+    _capable_connection(cli_env)
+    FakeClient.holdings_error = TransportError(
+        "the aggregator is unreachable", endpoint=INVESTMENTS_HOLDINGS_GET
+    )
+    FakeClient.pages = [_page(next_cursor="cursor-1")]
+
+    assert run(["sync", "run", "--no-wait"]) == 1
+
+    row = next(r for r in _health_rows(cli_env) if r["connection_id"] == 2)
+    assert row["status"] == "active", "a product error is not a statement about the login"
+    domains = _domains_of(row)
+    assert domains[INVESTMENTS_DOMAIN]["last_error_code"] == "TransportError"
+    assert domains[INVESTMENTS_DOMAIN]["last_error_at"] is not None
+    assert domains[INVESTMENTS_DOMAIN]["last_success_at"] is None
+    assert domains[TRANSACTIONS_DOMAIN]["last_error_code"] is None
+    assert domains[TRANSACTIONS_DOMAIN]["last_success_at"] is not None, (
+        "the domain beside the failing one must be untouched"
+    )
+
+    # 🔴 ONE caveat for one condition. A domain whose first attempt failed is
+    # both failing and never-landed, and two warnings describing that single
+    # fact -- on every answer, since these kinds ride all of them -- is what
+    # teaches a reader to skip the pair.
+    about_the_domain = [
+        w
+        for w in query.pipeline_health(cli_env).to_wire()["warnings"]
+        if w.get("connection_id") == 2 and INVESTMENTS_DOMAIN in w["detail"]
+    ]
+    assert len(about_the_domain) == 1, about_the_domain
+    assert "TransportError" in about_the_domain[0]["detail"]
+    assert "never landed in full" in about_the_domain[0]["detail"], (
+        "the one caveat has to carry the size of the hole the other would have named"
+    )
+
+
+def test_a_domain_that_has_never_landed_is_told_apart_from_one_that_has_gone_stale(
+    cli_env: Config,
+) -> None:
+    """🔴 AC-4.5: the size of the hole must be computable rather than guessed.
+
+    A domain that has never landed and one that landed in July are both "not
+    current", and the operator's next move differs entirely — so the two must
+    not arrive as the same value. The never case is a null `last_success_at`
+    against a present `last_attempt_at`; the stale case is a date to subtract.
+    """
+    _capable_connection(cli_env)
+    FakeClient.holdings_error = TransportError(
+        "the aggregator is unreachable", endpoint=INVESTMENTS_HOLDINGS_GET
+    )
+    FakeClient.pages = [_page(next_cursor="cursor-1")]
+    assert run(["sync", "run", "--no-wait"]) == 1
+
+    never = _domains_of(next(r for r in _health_rows(cli_env) if r["connection_id"] == 2))
+    assert never[INVESTMENTS_DOMAIN]["last_success_at"] is None
+    assert never[INVESTMENTS_DOMAIN]["last_attempt_at"] is not None, (
+        "null on both would be indistinguishable from a domain nobody ever tried"
+    )
+
+    FakeClient.holdings_error = None
+    FakeClient.pages = [_page(next_cursor="cursor-2")]
+    assert run(["sync", "run", "--no-wait"]) == 0
+    _age_domain(cli_env, 2, INVESTMENTS_DOMAIN, hours=72)
+
+    stale = _domains_of(next(r for r in _health_rows(cli_env) if r["connection_id"] == 2))
+    landed = stale[INVESTMENTS_DOMAIN]["last_success_at"]
+    assert landed is not None
+    # The whole point of the distinction: this case yields a number of hours to
+    # act on, and the never case yields no arithmetic at all.
+    assert now_utc() - utc_instant(datetime.fromisoformat(landed)) >= timedelta(hours=71)
+
+
+def test_a_stale_domain_warns_while_the_connection_itself_reads_healthy(
+    cli_env: Config,
+) -> None:
+    """🔴 Silent staleness with a new cause, said out loud on the success path.
+
+    The connection syncs nightly, its login works, and its positions have not
+    returned since last week. Every connection-level field reads healthy, so the
+    warning has to come from the domain or it does not come at all (AC-4.4).
+    """
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page(next_cursor="cursor-1")]
+    assert run(["sync", "run", "--no-wait"]) == 0
+    _age_domain(cli_env, 2, INVESTMENTS_DOMAIN, hours=72)
+
+    answer = query.pipeline_health(cli_env).to_wire()
+    stale = [
+        w
+        for w in answer["warnings"]
+        if w["kind"] == "stale"
+        and w.get("connection_id") == 2
+        and INVESTMENTS_DOMAIN in w["detail"]
+    ]
+    assert stale, "a domain three days behind a healthy connection said nothing"
+
+
+def test_a_healthy_second_domain_adds_no_warning_of_its_own(cli_env: Config) -> None:
+    """The negative control. A kind that rides every answer teaches a reader to
+    skip it, so the absence of one has to be information."""
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page(next_cursor="cursor-1")]
+
+    assert run(["sync", "run", "--no-wait"]) == 0
+
+    warnings = query.pipeline_health(cli_env).to_wire()["warnings"]
+    assert not [w for w in warnings if INVESTMENTS_DOMAIN in w["detail"]]
+
+
+def test_a_transactions_failure_leaves_the_investments_domain_s_success_alone(
+    cli_env: Config,
+) -> None:
+    """The other direction of per-domain recording.
+
+    The positions are pulled before the page loop, so a connection whose
+    transactions then fail has a genuinely current investments domain — and
+    writing the failure across both domains would report a hole where there is
+    none.
+    """
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page(next_cursor="cursor-1")]
+    FakeClient.fail_with = TransportError(
+        "the aggregator is unreachable", endpoint=TRANSACTIONS_SYNC
+    )
+
+    assert run(["sync", "run", "--no-wait"]) == 1
+
+    investments = _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)
+    assert investments["last_success_at"] is not None
+    assert investments["last_error_code"] is None
+    with reader_connection(cli_env) as conn:
+        status = conn.execute(
+            select(connections.c.status).where(connections.c.connection_id == 2)
+        ).scalar_one()
+    assert status == "degraded", "the transactions failure IS the connection's"
+
+
+def test_a_connection_that_lost_both_is_not_also_reported_as_having_synced(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """🔴 The two roll-up lines must never describe the same connection.
+
+    "could not be synced" sends an operator to the login; "synced with their
+    investments domain failing" tells them it is not the login and needs no
+    reauth. A connection that lost its investments AND then its transactions
+    satisfies both counts on the raw fields, and counting it in both tells the
+    operator two contradictory things about one institution.
+    """
+    _capable_connection(cli_env)
+    FakeClient.holdings_error = TransportError(
+        "investments are unreachable", endpoint=INVESTMENTS_HOLDINGS_GET
+    )
+    # The page loop then fails for both connections, so the capable one carries a
+    # recorded domain failure AND a degraded connection.
+    FakeClient.fail_with = TransportError(
+        "the aggregator is unreachable", endpoint=TRANSACTIONS_SYNC
+    )
+
+    assert run(["sync", "run", "--no-wait"]) == 1
+
+    assert _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)["last_error_code"] == "TransportError", (
+        "the domain failure has to be recorded, or the roll-up has nothing to get wrong"
+    )
+    out = capsys.readouterr().out
+    assert "2 of 2 connections could not be synced" in out, out
+    assert "investments domain failing" not in out, out
+
+
+def test_a_second_domain_does_not_double_any_count(cli_env: Config) -> None:
+    """🔴 The regression the pinned domain filters were written against.
+
+    `sync_state` is keyed on `(connection, domain)`, so an unfiltered join
+    returns a row per domain — and every count over the result comes back
+    multiplied, silently and in the direction of looking like more coverage.
+    """
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page(added=[_txn("t-count")])]
+
+    assert run(["sync", "run", "--no-wait"]) == 0
+
+    with reader_connection(cli_env) as conn:
+        domain_rows = conn.execute(select(sync_state.c.connection_id)).all()
+    assert len(domain_rows) == 3, "two connections, three domains between them"
+
+    health = _health_rows(cli_env)
+    assert [row["connection_id"] for row in health] == [1, 2]
+
+    accounts_wire = query.list_accounts(cli_env).to_wire()["rows"]
+    assert len(accounts_wire) == len({row["account_id"] for row in accounts_wire})
+    coverage = query.coverage_report(cli_env).to_wire()["rows"]
+    assert len(coverage) == len({row["account_id"] for row in coverage})
+    assert sum(int(row["transaction_count"]) for row in coverage) == len(_txn_rows(cli_env))

@@ -61,9 +61,10 @@ from bankmachine.store.connection import (
 )
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, transaction, writer_connection
-from bankmachine.store.investments import record_investment_transaction_window
+from bankmachine.store.investments import WindowOutcome, record_investment_transaction_window
 from bankmachine.store.raw import RawResponse
 from bankmachine.store.schema import (
+    INVESTMENTS_DOMAIN,
     TRANSACTIONS_DOMAIN,
     accounts,
     connections,
@@ -71,6 +72,12 @@ from bankmachine.store.schema import (
     institutions,
     sync_state,
     transactions,
+)
+from bankmachine.store.sync_domains import (
+    record_domain_attempt,
+    record_domain_failure,
+    record_domain_history_start,
+    record_domain_success,
 )
 from bankmachine.store.types import UtcInstant, calendar_date, now_utc
 
@@ -150,6 +157,19 @@ class ConnectionOutcome:
     #: stop appearing in every total, which is the shape of silent wrongness this
     #: product exists to refuse.
     investment_transactions_removed: int = 0
+    #: 🔴 What went wrong with the investments pull, recorded against the DOMAIN
+    #: rather than the connection. `connections.status` means credential health,
+    #: and a product this Item never initialized failing is not a statement about
+    #: the login -- marking the connection degraded for it sends the operator to
+    #: `connections reauth`, which cannot fix it. A credential error reached
+    #: through an investments call is different in kind and still degrades the
+    #: connection, through the path that prints the repair.
+    #:
+    #: The code rather than a boolean, because the run's exit code and its report
+    #: both need to say WHICH failure, and a flag beside a separately-stored
+    #: string is two things that can disagree.
+    investments_error_code: str | None = None
+    investments_error_reason: str | None = None
     granted_history_days: int | None = None
     history_shortfall_days: int | None = None
 
@@ -191,7 +211,13 @@ class RunOutcome:
         `1` asks an operator to look at a connection that is stuck. A run that
         found both needs the operator, so the code that reaches one wins.
         """
-        if any(o.degraded for o in self.outcomes):
+        # 🔴 A domain failure counts, though it leaves the CONNECTION active.
+        # `api-contract.md`'s exit-code contract splits on what happened, not on
+        # which column recorded it: a connection that ran and found a problem is
+        # `1` whether the problem was its login or one of its domains. Collapsing
+        # an investments failure into `0` would make a scheduled runner's only
+        # machine-readable signal say nothing is wrong.
+        if any(o.degraded or o.investments_error_code is not None for o in self.outcomes):
             return EXIT_UNHEALTHY
         if any(o.unfinished for o in self.outcomes):
             return EXIT_RUN_AGAIN
@@ -485,7 +511,6 @@ def _sync_one(
     one per run.
     """
     outcome = ConnectionOutcome(connection_id=connection_id, institution_name=institution_name)
-    investments_failure: Exception | None = None
     try:
         access_token = get_access_token(config, credential_ref)
     except SecretsError as exc:
@@ -522,51 +547,15 @@ def _sync_one(
             # would leave an investments-capable connection with no holdings for
             # as long as its transactions took to build.
             if INVESTMENTS_PRODUCT in capabilities:
-                try:
-                    holdings_page = client.investments_holdings_get(
-                        access_token, connection_id=connection_id
-                    )
-                    _persist(config, holdings_page, connection_id)
-                    outcome.investments_pulled = True
-                    _pull_investment_transactions(
-                        config,
-                        client,
-                        access_token,
-                        connection_id=connection_id,
-                        outcome=outcome,
-                    )
-                except ReauthRequiredError:
-                    # 🔴 Re-raised, because this one IS about the login. It
-                    # degrades the connection through the path that prints the
-                    # repair, which is the whole difference between a failure an
-                    # operator can fix and one they can only stare at.
-                    raise
-                except (ConnectorError, StoreError) as exc:
-                    # 🔴 **Carried, not raised: the investments pull must not
-                    # cost this connection its transactions.** The capability
-                    # gate opens for any connection whose recorded capabilities
-                    # name the product, and those include products the Item has
-                    # never initialized -- so this call can fail for a connection
-                    # whose transactions are perfectly healthy. Raising here
-                    # would abandon the page loop before it started, and the
-                    # archived history would go unsynced on this run and every
-                    # run after it, for a reason that has nothing to do with
-                    # transactions.
-                    #
-                    # The connection is still degraded for it, below, once the
-                    # pages are in. Recording the failure against the investments
-                    # DOMAIN rather than the connection -- so a product error
-                    # stops sending the operator to `connections reauth` -- needs
-                    # the per-domain error columns, and is the next piece of work
-                    # rather than a half-built version of it here.
-                    investments_failure = exc
-                    logger.warning(
-                        "connection %d could not pull investments; its transactions are "
-                        "synced regardless and the connection is reported degraded: %s",
-                        connection_id,
-                        exc,
-                    )
+                _pull_investments(
+                    config,
+                    client,
+                    access_token,
+                    connection_id=connection_id,
+                    outcome=outcome,
+                )
 
+            _record_attempt(config, connection_id, TRANSACTIONS_DOMAIN)
             while outcome.pages < MAX_PAGES_PER_RUN:
                 cursor = _cursor_for(config, connection_id)
                 try:
@@ -650,12 +639,6 @@ def _sync_one(
 
     if outcome.historical_complete:
         _record_granted_window(config, connection_id, outcome)
-    if investments_failure is not None:
-        # After the transactions are in, so the run's work is not thrown away by
-        # the report of what else went wrong with the same connection.
-        return _degrade(
-            config, outcome, type(investments_failure).__name__, str(investments_failure)
-        )
     # 🔴 A run that still owes history has NOT finished, and stamping it `active`
     # with a fresh `last_success_at` would tell every later reader -- the
     # freshness warning in `query.py` and `get_pipeline_health` most of all --
@@ -736,13 +719,12 @@ def _record_granted_window(config: Config, connection_id: int, outcome: Connecti
             .where(connections.c.connection_id == connection_id)
             .values(granted_history_days=granted, updated_at=now)
         )
-        conn.execute(
-            update(sync_state)
-            .where(
-                sync_state.c.connection_id == connection_id,
-                sync_state.c.domain == TRANSACTIONS_DOMAIN,
-            )
-            .values(history_start_date=oldest, updated_at=now)
+        record_domain_history_start(
+            conn,
+            connection_id=connection_id,
+            domain=TRANSACTIONS_DOMAIN,
+            start=calendar_date(oldest),
+            at=now,
         )
 
     outcome.granted_history_days = granted
@@ -804,7 +786,21 @@ def _investment_page(fetched: FetchedResponse) -> tuple[int, int | None]:
     )
 
 
-def _pull_investment_transactions(
+def _record_attempt(config: Config, connection_id: int, domain: str) -> None:
+    """This domain was tried on this run, whatever comes of it.
+
+    🔴 **Before the calls, not after them.** The health surface reads a domain
+    with no `sync_state` row at all as one that has never been tried, and that
+    reading is what makes AC-4.5's distinction possible -- so a pull that fails
+    on its first ever run has to have left the row behind before it failed.
+    Without this, a connection that cannot serve investments and one whose every
+    attempt has failed are the same absence.
+    """
+    with writer_connection(config) as conn:
+        record_domain_attempt(conn, connection_id=connection_id, domain=domain, at=now_utc())
+
+
+def _pull_investments(
     config: Config,
     client: PlaidClient,
     access_token: str,
@@ -812,6 +808,90 @@ def _pull_investment_transactions(
     connection_id: int,
     outcome: ConnectionOutcome,
 ) -> None:
+    """One capable connection's positions and its investment-transaction window.
+
+    🔴 **A failure here costs the investments DOMAIN and nothing else.** The
+    capability gate opens for any connection whose recorded capabilities name the
+    product, and those include products the Item has never initialized -- so this
+    can fail for a connection whose transactions are perfectly healthy. Two
+    things follow, and they are separate:
+
+    * The exception does not escape, so the page loop still runs. Raising would
+      abandon the transactions backfill on this run and every run after it, for a
+      reason that has nothing to do with transactions.
+    * The failure is recorded against this connection's investments `sync_state`
+      row rather than against `connections.status`. That column means credential
+      health; a `PRODUCT_NOT_READY` recorded there sends the operator to
+      `connections reauth`, which cannot fix it.
+
+    🔴 **Recorded HERE, where it is caught, rather than carried to the end of the
+    connection's run.** The page loop returns early while a first sync is still
+    materializing its history, so a failure carried past it reached no column at
+    all on exactly the run an operator most needs to see it.
+
+    🔴 **`last_success_at` is stamped only once BOTH feeds are in.** Positions
+    and the transaction window share one domain key, so a run whose holdings
+    landed while its window came back short has not made the domain current --
+    stamping it there would report a portfolio as fresh while most of its history
+    was missing, which is the silent staleness this product exists to refuse.
+    """
+    _record_attempt(config, connection_id, INVESTMENTS_DOMAIN)
+    try:
+        holdings_page = client.investments_holdings_get(access_token, connection_id=connection_id)
+        _persist(config, holdings_page, connection_id)
+        outcome.investments_pulled = True
+        window = _pull_investment_transactions(
+            config,
+            client,
+            access_token,
+            connection_id=connection_id,
+            outcome=outcome,
+        )
+    except ReauthRequiredError:
+        # 🔴 Re-raised, because this one IS about the login. It degrades the
+        # connection through the path that prints the repair, which is the whole
+        # difference between a failure an operator can fix and one they can only
+        # stare at.
+        raise
+    except (ConnectorError, StoreError) as exc:
+        outcome.investments_error_code = type(exc).__name__
+        outcome.investments_error_reason = str(exc)
+        now = now_utc()
+        with writer_connection(config) as conn:
+            record_domain_failure(
+                conn,
+                connection_id=connection_id,
+                domain=INVESTMENTS_DOMAIN,
+                code=outcome.investments_error_code,
+                at=now,
+            )
+        logger.warning(
+            "connection %d could not pull investments; its transactions are synced "
+            "regardless and the failure is recorded against the investments domain: %s",
+            connection_id,
+            exc,
+        )
+        return
+
+    if not window.exhausted:
+        # Nothing is wrong: the window was simply seen in part, which the run
+        # reports as work still owed. The domain is not current either, so the
+        # stamp is withheld rather than the failure recorded.
+        return
+    with writer_connection(config) as conn:
+        record_domain_success(
+            conn, connection_id=connection_id, domain=INVESTMENTS_DOMAIN, at=now_utc()
+        )
+
+
+def _pull_investment_transactions(
+    config: Config,
+    client: PlaidClient,
+    access_token: str,
+    *,
+    connection_id: int,
+    outcome: ConnectionOutcome,
+) -> WindowOutcome:
     """The configured window of investment transactions, paged to exhaustion.
 
     🔴 **Paged by offset against a stated total, with no cursor** *(§26)*. So
@@ -887,6 +967,7 @@ def _pull_investment_transactions(
         # while the range stayed unmeasured and nothing was reconciled. One
         # source for "did we see it whole", and it is the one that decided.
         outcome.stopped_short = True
+    return window
 
 
 def _cursor_for(config: Config, connection_id: int) -> str | None:
@@ -1065,9 +1146,34 @@ def _report(run: RunOutcome) -> None:
                     f"{outcome.history_shortfall_days} days. It cannot be widened "
                     f"without re-linking (AC-1.2)"
                 )
+        if outcome.investments_error_reason is not None:
+            # 🔴 Printed under a connection the run is otherwise reporting as
+            # healthy, which is the whole shape of this failure: the login works,
+            # the transactions landed, and one domain stopped. It names the
+            # domain rather than the connection so the operator does not reach
+            # for `connections reauth`, which repairs a credential and cannot
+            # touch a product the Item never initialized.
+            print(
+                f"       🔴 investments: {outcome.investments_error_reason}. The "
+                f"connection's other data is unaffected and no re-authentication "
+                f"is needed"
+            )
     degraded = sum(1 for o in run.outcomes if o.degraded)
     if degraded:
         print(f"\n{degraded} of {len(run.outcomes)} connections could not be synced")
+    failed_domains = sum(
+        1 for o in run.outcomes if not o.degraded and o.investments_error_code is not None
+    )
+    if failed_domains:
+        # 🔴 Counted apart from the degraded connections rather than added to
+        # them, and `not o.degraded` is what makes the sentence true: these
+        # connections DID sync. A connection that lost its login AND its
+        # investments would otherwise be counted in both lines, which read
+        # together say it could not be synced and that it synced.
+        print(
+            f"\n{failed_domains} of {len(run.outcomes)} connections synced with their "
+            f"investments domain failing"
+        )
     owing = sum(1 for o in run.outcomes if not o.degraded and o.unfinished)
     if owing:
         # The summary an operator scanning ten institutions reads. Degraded

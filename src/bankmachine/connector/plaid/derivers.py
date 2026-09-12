@@ -59,7 +59,6 @@ from bankmachine.logging_setup import get_logger
 from bankmachine.store.derivation import DerivationContext, DerivationError, Deriver
 from bankmachine.store.raw import RawResponse
 from bankmachine.store.schema import (
-    INVESTMENTS_DOMAIN,
     TRANSACTIONS_DOMAIN,
     accounts,
     balances_daily,
@@ -68,9 +67,9 @@ from bankmachine.store.schema import (
     institutions,
     investment_transactions,
     securities,
-    sync_state,
     transactions,
 )
+from bankmachine.store.sync_domains import record_domain_success
 from bankmachine.store.types import (
     CalendarDate,
     MinorUnits,
@@ -474,57 +473,12 @@ def derive_transactions_sync(
             )
         return
 
-    _record_domain_success(
+    record_domain_success(
         conn,
         connection_id=response.connection_id,
         domain=TRANSACTIONS_DOMAIN,
         at=response.received_at,
         cursor=next_cursor,
-    )
-
-
-def _record_domain_success(
-    conn: SAConnection,
-    *,
-    connection_id: int,
-    domain: str,
-    at: UtcInstant,
-    cursor: str | None = None,
-) -> None:
-    """One domain of one connection got what it asked for, as of this response.
-
-    🔴 **Written by the deriver, inside the derivation's own transaction.** The
-    row says a body was successfully turned into rows, so it has to commit with
-    those rows or it is a claim about work that may have been rolled back.
-
-    `cursor` is passed only by a domain that has one. A domain without one still
-    owns a `sync_state` row: `last_success_at` is what every freshness reader
-    computes staleness from, and a domain with no row at all is a domain that has
-    never run -- a distinction the health surface has to keep.
-    """
-    values: dict[str, Any] = {
-        "last_success_at": at,
-        "last_error_code": None,
-        "last_error_at": None,
-        "updated_at": at,
-    }
-    if cursor is not None:
-        values["cursor"] = cursor
-    existing = conn.execute(
-        select(sync_state.c.connection_id).where(
-            sync_state.c.connection_id == connection_id,
-            sync_state.c.domain == domain,
-        )
-    ).one_or_none()
-    if existing is None:
-        conn.execute(
-            insert(sync_state).values(connection_id=connection_id, domain=domain, **values)
-        )
-        return
-    conn.execute(
-        update(sync_state)
-        .where(sync_state.c.connection_id == connection_id, sync_state.c.domain == domain)
-        .values(**values)
     )
 
 
@@ -1744,6 +1698,15 @@ def derive_investments_holdings(
     **Securities before holdings**, because a holding references one and the
     reference is by local id. A holding naming a security the body did not list
     refuses rather than inventing a placeholder row for it.
+
+    🔴 **This deriver does not stamp the investments domain as current, and the
+    transactions deriver beside it does.** The asymmetry is the pull's, not a
+    lapse: two feeds share one `sync_state` domain key -- positions and a
+    transaction window -- so one body arriving is half the answer. A connection
+    whose holdings landed while its window came back short would otherwise read
+    fresh on every freshness surface while most of its investment history was
+    missing. The sync command stamps it once both feeds are in
+    (`store/sync_domains.py`).
     """
     if response.connection_id is None:
         raise DerivationError(
@@ -1784,13 +1747,6 @@ def derive_investments_holdings(
                 response.raw_response_id,
                 exc,
             )
-
-    _record_domain_success(
-        conn,
-        connection_id=response.connection_id,
-        domain=INVESTMENTS_DOMAIN,
-        at=response.received_at,
-    )
 
 
 def _upsert_security(
@@ -2033,7 +1989,10 @@ def derive_investment_transactions(
     the whole window *(`api-notes-plaid.md` §26 -- the feed sends no `removed`
     list, no tombstone, nothing)*. Absence is not observable from one page of
     twelve, so `store.investments.record_investment_transaction_window` owns it
-    and is handed the window only once the pages have been exhausted.
+    and is handed the window only once the pages have been exhausted. The domain's
+    freshness stamp is outside for the same reason and one scope wider still:
+    positions and this window share one domain key, so neither body alone says
+    the domain is current (`store/sync_domains.py`).
 
     **Securities before transactions**, as in the holdings deriver and for the
     same reason: a transaction references one by local id. Unlike a holding, a
@@ -2081,13 +2040,6 @@ def derive_investment_transactions(
                 response.raw_response_id,
                 exc,
             )
-
-    _record_domain_success(
-        conn,
-        connection_id=response.connection_id,
-        domain=INVESTMENTS_DOMAIN,
-        at=response.received_at,
-    )
 
 
 def _write_investment_transaction(

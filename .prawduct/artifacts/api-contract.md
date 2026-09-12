@@ -982,6 +982,20 @@ fine** — "healthy" is an answer, and an empty result would be indistinguishabl
 | `sign_convention` | string | `consistent`, `inverted`, or `undetermined` — whether this connection's stored amounts point the way the rest of the store's do, measured over categories that are never plausibly money arriving. 🔴 `undetermined` means NOT CHECKED, never "fine". An `inverted` connection is reported and never corrected |
 | `sign_convention_rows_judged` | integer | rows the verdict was computed over: this connection's non-removed transactions in those categories with a non-zero amount. Under 8 the verdict is `undetermined` |
 | `sign_convention_rows_positive` | integer | how many of those are stored positive. `0` is the conforming reading; equal to `sign_convention_rows_judged` is a wholly inverted feed. The counts ride beside the verdict because a verdict with no evidence under it is a claim the reader must take on faith, and this check's subject is a claim that was taken on faith once already |
+| `domains` | array | 🔴 **A connection is not one stream.** One entry per sync domain this connection has ever ATTEMPTED, each reporting how that domain is doing on its own — because `sync_state` is keyed on `(connection, domain)` and the domains advance on their own schedules. A connection can be `active` with a fresh `last_success_at` while one domain has not landed in weeks, and every field above it would still read healthy (AC-4.4). An EMPTY array means nothing has ever been attempted for this connection; a domain missing from a non-empty one has never been attempted, which is not the same as one present with a null `last_success_at`. The array rides the connection's own row rather than becoming rows of its own, so a consumer counting connections still counts each one once |
+
+**Fields — `rows[].domains[]`** *(`get_pipeline_health`)*.
+
+One entry per sync domain the connection has ever attempted. 🔴 **Three of these names also appear on the connection row above and mean the same KIND of fact at a narrower scope** — `last_success_at`, `last_error_code` and `history_starts` are the connection's when read there and this domain's when read here. Read them from the level you asked about; a domain entry never speaks for the connection, and the connection row never speaks for a domain.
+
+| Field | Type | Means |
+|---|---|---|
+| `domain` | string | which class of data it is about — `transactions` or `investments`. Treat an unrecognised value as a domain this build gained after the reader learned the list, not as a defect |
+| `last_attempt_at` | string, nullable | when this domain was last tried, ISO-8601 UTC, whatever came of it |
+| `last_success_at` | string, nullable | when this domain last got **everything it asked for**, ISO-8601 UTC. 🔴 Null means it has been tried and has NEVER landed in full — the hole is this domain's whole history (AC-4.5) — never "fine". It advances only on a complete pull, so a connection whose positions arrived while its investment-transaction window came back short leaves this exactly where it was |
+| `last_error_code` | string, nullable | what the last attempt at this domain failed with, null when it succeeded. 🔴 Present here while the connection's own `status` is `active` is the **expected** shape rather than a contradiction: one domain failing is not a statement about the login, so it does not degrade the connection and `connections reauth` repairs nothing |
+| `last_error_at` | string, nullable | when that failure happened, ISO-8601 UTC. Read against `last_success_at` beside it — the span between them is how long this domain has been stopped, which is the figure AC-4.5 says must be computable rather than guessed |
+| `history_starts` | string, nullable | the oldest date this domain's own history reaches back to, `YYYY-MM-DD`; null before any complete pull has measured one |
 
 **Fields — `rows[]`** *(`get_coverage_report`)*.
 

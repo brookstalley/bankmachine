@@ -206,7 +206,14 @@ def test_the_recorded_capture_lands_as_securities_and_transactions(enrolled: Con
         assert row["settlement_date"] is None
 
 
-def test_the_domain_records_its_success_on_the_investments_row(enrolled: Config) -> None:
+def test_one_page_does_not_claim_the_investments_domain_is_current(enrolled: Config) -> None:
+    """The same rule from the other feed's side.
+
+    This deriver sees one page of one window. Everything that spans the window
+    lives outside it, and the domain's freshness spans wider still -- positions
+    and this window share the one domain key, so neither body alone can say the
+    domain got everything it asked for.
+    """
     _apply(enrolled, INVESTMENTS_TRANSACTIONS_GET.path, _body(recorded()))
 
     with reader_connection(enrolled) as conn:
@@ -218,10 +225,9 @@ def test_the_domain_records_its_success_on_the_investments_row(enrolled: Config)
                 )
             )
             .mappings()
-            .one()
+            .one_or_none()
         )
-    assert row["last_success_at"] == RECEIVED
-    assert row["last_error_code"] is None
+    assert row is None or row["last_success_at"] is None
 
 
 # --------------------------------------------------------------------------

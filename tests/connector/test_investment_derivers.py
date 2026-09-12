@@ -213,25 +213,29 @@ def test_a_position_records_the_value_the_capture_states(enrolled: Config) -> No
     assert row["currency"] == entry["iso_currency_code"]
 
 
-def test_a_derived_capture_records_the_investments_domain(enrolled: Config) -> None:
-    """The domain gets its own `sync_state` row, keyed apart from transactions.
+def test_a_derived_capture_does_not_claim_the_investments_domain_is_current(
+    enrolled: Config,
+) -> None:
+    """🔴 One body is half the pull, and half a pull is not a fresh domain.
 
-    🔴 A domain with no row has never run, and a domain with a stale
-    `last_success_at` has run and gone quiet. Both are reportable states and they
-    are not the same one, which is why the row is written on every success rather
-    than only when something changed.
+    Positions and the investment-transaction window share one
+    `sync_state.domain`, so a holdings capture landing says nothing about whether
+    the window did. Stamping `last_success_at` here would report a portfolio as
+    current while most of its transaction history was still missing -- which is
+    the silent staleness this product exists to refuse, produced by its own
+    bookkeeping. The sync command stamps it once both feeds are in
+    (`store/sync_domains.py`), and a rebuild replaying an archived body therefore
+    cannot forge a freshness claim out of a year-old capture either.
     """
     _apply(enrolled, INVESTMENTS_HOLDINGS_GET.path, _holdings_body(recorded()))
 
     with reader_connection(enrolled) as conn:
         row = (
             conn.execute(select(sync_state).where(sync_state.c.domain == INVESTMENTS_DOMAIN))
-            .one()
-            ._mapping
+            .mappings()
+            .one_or_none()
         )
-    assert row["connection_id"] == CONNECTION_ID
-    assert row["last_success_at"] == RECEIVED
-    assert row["cursor"] is None, "the holdings reply is unpaginated; it has no cursor to store"
+    assert row is None or row["last_success_at"] is None
 
 
 def test_a_second_capture_of_the_same_payload_changes_nothing(enrolled: Config) -> None:

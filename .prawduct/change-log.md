@@ -34,6 +34,62 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-12: A connection is no longer one stream, and the health surface says so
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** AC-4.4 names silent staleness as this system's primary failure mode, and a second
+sync domain that no surface reports is silent staleness with a new cause. Two domains now
+advance on their own schedules, but every read of `sync_state` pinned
+`domain == 'transactions'` — correct while there was one, and blind the moment there were
+two. A connection could sync nightly, report `active`, carry a fresh `last_success_at`, and
+not have returned a position since August, with nothing anywhere saying so.
+
+**What changed (Chunk 03):**
+
+- **An investments failure is recorded against the DOMAIN, not the connection.**
+  `connections.status` means credential health; a `PRODUCT_NOT_READY` on a product the Item
+  never initialized is not a statement about the login, and marking the connection degraded
+  for it sent the operator to `connections reauth`, which cannot fix it. A credential error
+  reached through an investments call still degrades the connection, because that one *is*
+  about the login. The run's exit code is still `1`: a connection that ran and found a
+  problem, whichever column recorded it.
+- **The failure is written where it is caught**, closing the residue Chunk 01 left. The page
+  loop returns early while a first sync is still materializing its history, so a failure
+  carried past it reached no column at all on exactly the run an operator most needs it.
+- **`sync_state` has one writer.** `store/sync_domains.py` owns the `(connection, domain)`
+  row for every caller — attempt, success, failure and measured range — each an insert-or-
+  update, because a bare `UPDATE` against an absent row reports success and writes nothing.
+- **The investments domain is stamped current only when BOTH its feeds are in.** Positions
+  and the investment-transaction window share one domain key, and both derivers were
+  stamping `last_success_at` per response — so a connection whose holdings landed while its
+  window came back short read fresh. The stamp moved to the sync command, which is the only
+  caller that knows the pull completed. A rebuild replaying an archived body therefore also
+  cannot forge a freshness claim out of a year-old capture.
+- **`get_pipeline_health` rows carry a `domains` array** — per domain: `last_attempt_at`,
+  `last_success_at`, `last_error_code`, `last_error_at`, `history_starts`. Still ONE row per
+  connection, which is the point: joining `sync_state` unfiltered would return a row per
+  domain and every consumer counting connections would count each one twice. AC-4.5's two
+  absences stay apart — no entry means the domain has never been attempted; an entry with a
+  null `last_success_at` means it has been attempted and has never landed in full.
+- **Warnings ride the success path per domain**, and only where the connection-level
+  warnings do not already say it. The test is a property rather than a list of domains to
+  exempt, so a third domain needs no new exemption and none can be forgotten.
+
+**Tests changed, and why they are not weakened:** two deriver tests asserted that the
+investments derivers stamp `last_success_at`, and one CLI test asserted that an investments
+failure degrades the connection. All three pinned behaviour this chunk's recorded decisions
+change, and the CLI test's own docstring said so ("recording the failure against the
+investments domain instead is the next chunk's work"). Each was rewritten to assert the new
+contract rather than deleted.
+
+**Deliberately not done:** an account whose activity is investment transactions still
+reports `transaction_count` 0 and `uncovered` on `list_accounts` and `get_coverage_report`.
+Reporting investment coverage per account changes the meaning of a published field on two
+row shapes, so it belongs with the tools that answer about positions (wave 2) rather than in
+the sync work that created the rows. Recorded in the code at the site and filed as
+brookstalley/bankmachine#107.
+
 ## 2026-09-12: Investment transactions, and a removal signal that had to be derived
 
 <!-- prawduct: scope=investments-v1 -->

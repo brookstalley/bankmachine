@@ -39,9 +39,9 @@ from bankmachine.store.schema import (
     INVESTMENTS_DOMAIN,
     accounts,
     investment_transactions,
-    sync_state,
 )
-from bankmachine.store.types import CalendarDate, UtcInstant
+from bankmachine.store.sync_domains import record_domain_history_start
+from bankmachine.store.types import CalendarDate, UtcInstant, calendar_date
 
 _log = get_logger(__name__)
 
@@ -170,13 +170,12 @@ def record_investment_transaction_window(
     ).scalar_one_or_none()
 
     if start is not None:
-        conn.execute(
-            update(sync_state)
-            .where(
-                sync_state.c.connection_id == connection_id,
-                sync_state.c.domain == INVESTMENTS_DOMAIN,
-            )
-            .values(history_start_date=start, updated_at=at)
+        record_domain_history_start(
+            conn,
+            connection_id=connection_id,
+            domain=INVESTMENTS_DOMAIN,
+            start=calendar_date(start),
+            at=at,
         )
     else:
         # 🔴 An exhausted window that returned nothing. The column is left as it
