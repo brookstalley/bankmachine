@@ -116,10 +116,12 @@ Cause 4. Both sites keep what they are testing and stop returning `Any`.
 ### Chunk 03 — the gate runs every declared check
 
 `scripts/check.sh` running pytest, then ruff, then mypy; `test_command:` repointed at
-it; `project-preferences.md` updated to say the three are gated.
+it; `project-preferences.md` updated to say they are gated. (`ruff format --check`
+joined the set mid-build — see § What the Critic found — so the gate runs four
+invocations, not three.)
 
 **Grew a test the plan did not anticipate.** The gate is a contract -- "a red check is
-named" is the whole reason it beats three commands run by hand -- and a one-off
+named" is the whole reason it beats running the commands by hand -- and a one-off
 demonstration proves that once, for the person watching. `tests/preferences/
 test_the_gate_runs_the_declared_checks.py` drives the real script with a stub `uv` on
 `PATH`, in the same shape as the existing leak-guard tests, and asserts the order, the

@@ -74,7 +74,10 @@ known-first-party = ["bankmachine"]
 
 [tool.mypy]
 strict = true
-files = ["src", "tests"]
+# `scripts` is in here because `scripts/record_red_checks.py` is the component
+# whose failure mode is SILENT under-recording of a red run. It spent its first
+# life as a `python3 -c` string, invisible to every check this project gates on.
+files = ["src", "tests", "scripts"]
 
 # `plaid-python` 44.0.0 ships no `py.typed`, so mypy cannot see into it. Strictness
 # is not relaxed anywhere else: the untyped surface is confined to

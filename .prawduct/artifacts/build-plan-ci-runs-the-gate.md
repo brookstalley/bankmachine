@@ -26,14 +26,17 @@ last_validated: 2026-09-12
 
 ## Problem
 
-`scripts/check.sh` runs every declared check, and two things launch it: the governance
-gate on the machine of whoever is editing, and `.githooks/pre-push`. Both are **per-clone
-opt-in** — `core.hooksPath` is not committed, so a fresh clone pushes with no guard at
-all — and both are bypassable by `git push --no-verify`, which the hook documents as its
-own escape hatch.
+`scripts/check.sh` runs every declared check, and **exactly one thing launches it**: the
+governance gate on the machine of whoever is editing.
 
-So the checks are run by the honour system of one machine. Nothing on the server side
-observes a branch. That is the same shape as brookstalley/bankmachine#92 — *a declared
+`.githooks/pre-push` does not, and an earlier draft of this plan said it did. Reading the
+hook settles it: it runs `tests/preferences/check-no-personal-data.sh` and the gitflow ref
+checks for `main`, and contains no reference to `check.sh`, pytest, ruff or mypy. It is
+also per-clone opt-in (`core.hooksPath` is not committed) and `--no-verify` bypasses it —
+but those are properties of the *leak* guard, not of the checks.
+
+So the checks are run by the honour system of one machine, and a push has never been
+checked by anything. Nothing on the server side observes a branch. That is the same shape as brookstalley/bankmachine#92 — *a declared
 check that nothing independent runs* — one hop out: #92 closed the gap between "declared"
 and "run locally", and this closes the gap between "run locally" and "run where the code
 actually arrives".
@@ -117,8 +120,10 @@ of a suggestion.
 
 Artifacts updated in the same chunk, because each currently describes a repo with no CI:
 
-- `docs/README.md` § Working on the code and `README.md` — a clone's checks are no longer
-  only as good as its `core.hooksPath`.
+- `docs/README.md` § Working on the code and `README.md` — a push is now checked by
+  something other than the author remembering to look. (Not "no longer only as good as a
+  clone's `core.hooksPath`": that phrasing is the false premise § Problem corrects, since
+  the hook never ran these checks under any configuration.)
 - `project-preferences.md` — the gate's entry names its second launcher.
 - **A defect found while reading, fixed here rather than left.**
   `tests/preferences/test_python_floor_is_exercised.py` says the honest check becomes
@@ -191,3 +196,57 @@ The workflow was restored byte-identical after each and re-verified green.
 GitHub macOS runner. The keychain step is written from what `keyring` requires (it writes
 to the default keychain and reads through the search list, so a keychain that is only the
 default takes writes and fails every read back) rather than from an observed run.
+
+## What the Critic found, and what it changed
+
+Review `rev-20260912T154632Z-f5fc5a6d`, cumulative over `efd64ad..9e8dab6`. One blocking
+finding, and it was the good kind: **two reviewers reached it independently from different
+goals** (R-1 from Nothing Is Broken, R-9 from Goal 6).
+
+**The gate recorded a red pytest as clean.** `scripts/check.sh` dropped `uv run pytest`
+from the appended failure cases whenever the JUnit report merely *parsed*. The stated
+reason — pytest's failures are already in there — holds only when its redness became a
+`<failure>` leaf, and pytest has reachable non-zero exits that write a parseable report
+with none. **Exit 5, "no tests collected", is one bad `-k` or `-m` in `addopts` away**, and
+it writes `tests="0" failures="0"`. Measured, not reasoned: a pytest run over an empty
+directory exits 5 and produces exactly that. In such a run pytest is the only red command,
+`names` empties, nothing is appended, the recording step *succeeds* so no warning fires,
+and `test-evidence record` writes `failed: 0`.
+
+That is the same terminal-red / evidence-green defect the previous review closed for the
+linters, still open in the pytest lane — **and the shipped test encoded it.** The stub
+always wrote `failures="0"`, so `test_a_red_pytest_is_not_counted_twice` was asserting the
+silent-green outcome rather than the no-double-count one. The two are indistinguishable
+from outside unless the stub can produce both shapes, so now it can (`STUB_REPORT_FAILURES`),
+and there are two cases where there was one. The fix was mutation-proven: reverting the
+condition to `if parsed:` reddens the new case and nothing else.
+
+**The recorder became a real module.** `scripts/record_red_checks.py`, with `scripts` added
+to `[tool.mypy] files`. It had been a ~40-line program inside a `python3 -c` string — the
+one component whose failure mode is *silent under-recording*, and the only code in the repo
+that ruff and mypy could not see. Extracting it is what let the blocking fix be checked by
+the toolchain rather than only by its own test.
+
+**A factual error this plan introduced and propagated.** An earlier draft said
+`.githooks/pre-push` launches the gate. It does not — it runs the leak guard and the
+gitflow ref checks, and references neither `check.sh` nor any of the four tools. The claim
+had reached the workflow header and `docs/README.md` from here. Corrected in all three; the
+true statement is stronger, not weaker: *no push, from any clone, has ever been checked.*
+
+**The anti-restatement guard was itself a restatement.** `test_ci_runs_the_gate.py` kept a
+hand-written copy of the gated set inside the module whose entire purpose is that there be
+one, and matched it over raw text including comments. It now derives the list from the
+`check "..."` calls in `scripts/check.sh` and strips comment lines first. Proven by adding
+a fifth check to the gate and a direct invocation to the workflow: the derived guard fails,
+where a hardcoded one would have passed.
+
+Also swept: four sites still describing a three-command gate after `ruff format --check`
+joined it (`learnings.md` § "Reversing a ratified decision is a sweep, not an edit" — the
+learning this had reintroduced), the gate's success line rebuilt from what actually ran
+rather than typed out again, `report.xml` gitignored, and `active_build_plan` set — two
+plans now claim this branch, which is precisely the tie that scalar exists to break.
+
+**Accepted without change:** #92 stays open until the branch merges (closing an issue on an
+unmerged commit is the claim this project's evidence model refuses), and the 30 new
+`learnings-entry-shape` instances belong to #26's file-wide sweep rather than a thirtieth
+of it here.

@@ -27,11 +27,15 @@ evidence record is built from that report, so a check that only failed the exit 
 would not be recorded anywhere.
 
 `.github/workflows/check.yml` runs that same script on every pull request into `develop`
-or `main`, on a macOS runner, so the checks no longer depend on whether a given clone ever
-ran the `core.hooksPath` line above. It **calls** the script rather than listing the four
-commands, because a second copy of the gated set is free to drift from the first;
+or `main`, on a macOS runner. It is the first thing other than the author's own governance
+gate ever to run these checks — the pre-push hook does not, and never did: that hook checks
+for leaked identity and enforces the gitflow rule for `main`, and touches none of the four.
+
+CI **calls** the script rather than listing the four commands, because a second copy of the
+gated set is free to drift from the first — and drifts in the direction that hides, since
+adding a check to the script would leave CI running the old set while staying green.
 `tests/preferences/test_ci_runs_the_gate.py` fails if a workflow starts invoking the tools
-directly. CI reports but cannot block — branch protection is a paid feature on private
+directly. CI reports but cannot block: branch protection is a paid feature on private
 repositories, which is also why the pre-push guards exist.
 
 `tests/` mirrors `src/bankmachine/`. `tests/preferences/` is different in kind: those are the norm

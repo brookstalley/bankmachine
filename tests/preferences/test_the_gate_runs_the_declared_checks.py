@@ -1,9 +1,11 @@
 """The gate runs every check `project-preferences.md` declares, and names the red one.
 
-`project-preferences.md` § Dev commands declares three: `uv run pytest`, `uv run ruff
-check` and `uv run mypy`. For most of this project's life the gate ran only the first,
-so the other two were a claim rather than a check -- and mypy drifted from clean to 12
-errors across 15 commits with nothing to notice (brookstalley/bankmachine#92).
+`project-preferences.md` § Dev commands declares `uv run pytest`, `uv run ruff check`,
+`uv run ruff format --check` and `uv run mypy`. For most of this project's life the gate
+ran only the first, so the rest were a claim rather than a check -- and mypy drifted from
+clean to 12 errors across 15 commits with nothing to notice
+(brookstalley/bankmachine#92). `EXPECTED_ORDER` below is the list; no count is written
+out anywhere here, because a count is the copy that rots first.
 
 These cases drive the REAL `scripts/check.sh` with a stub `uv` on `PATH`, the same
 shape as the leak guard's tests: a reimplementation in Python would test a copy, and a
@@ -38,14 +40,32 @@ EXPECTED_ORDER = ["pytest", "ruff", "ruff", "mypy"]
 _STUB_UV = """#!/usr/bin/env bash
 # Stands in for `uv`. Records the invocation, honours --junit-xml so the real
 # script's report-ordering can be observed, and fails only the named tool.
+#
+# 🔴 The report's CONTENT is a parameter, because the gate's correct behaviour
+# DIFFERS between two shapes a red pytest can leave behind, and a stub that only
+# ever produced one of them could not tell them apart:
+#
+#   STUB_REPORT_FAILURES=1  pytest failed and said so in its own report. The gate
+#                           must NOT append a second case; that would double-count.
+#   STUB_REPORT_FAILURES=0  pytest exited non-zero having written a clean report.
+#                           Real, not hypothetical: exit 5, "no tests collected",
+#                           which one bad -k or -m in addopts produces. The gate
+#                           MUST record it, or the only trace of the run is an exit
+#                           code that `test-evidence record` does not store.
 echo "$*" >> "$STUB_LOG"
+failures="${STUB_REPORT_FAILURES:-0}"
+if [ "$failures" -gt 0 ]; then
+    body='<testcase classname="t" name="a"><failure message="stub">red</failure></testcase>'
+else
+    body='<testcase classname="t" name="a"/>'
+fi
 for arg in "$@"; do
     case "$arg" in
         --junit-xml=*)
             printf '%s' \
                 '<?xml version="1.0" encoding="utf-8"?><testsuites>' \
-                '<testsuite name="pytest" errors="0" failures="0" skipped="0" tests="3">' \
-                '<testcase classname="t" name="a"/></testsuite></testsuites>' \
+                '<testsuite name="pytest" errors="0" skipped="0" tests="3" failures="' \
+                "$failures" '">' "$body" '</testsuite></testsuites>' \
                 > "${arg#--junit-xml=}" ;;
     esac
 done
@@ -62,8 +82,12 @@ exit 0
 GateRun = tuple[subprocess.CompletedProcess[str], Path, Path]
 
 
-def _run_gate(tmp_path: Path, *fail: str) -> GateRun:
-    """Run the real gate with a stub `uv`, failing each tool in `fail`."""
+def _run_gate(tmp_path: Path, *fail: str, report_failures: int = 0) -> GateRun:
+    """Run the real gate with a stub `uv`, failing each tool in `fail`.
+
+    `report_failures` is how many failures the stubbed pytest writes into its own
+    JUnit report, which is independent of whether it exits non-zero. See `_STUB_UV`.
+    """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     stub = bin_dir / "uv"
@@ -84,6 +108,7 @@ def _run_gate(tmp_path: Path, *fail: str) -> GateRun:
             "PATH": f"{bin_dir}:/usr/bin:/bin",
             "STUB_LOG": str(log),
             "STUB_FAIL": " ".join(fail),
+            "STUB_REPORT_FAILURES": str(report_failures),
             "HOME": str(tmp_path),
         },
     )
@@ -139,7 +164,7 @@ def test_a_red_check_fails_the_gate_and_is_named(tmp_path: Path, tool: str) -> N
     """The contract that distinguishes a deliberate red baseline from a regression.
 
     A gate that exits 1 without saying which command was unhappy sends the reader to
-    re-run three commands by hand -- which is the state this gate exists to end.
+    re-run every check by hand -- which is the state this gate exists to end.
     """
     result, _, _ = _run_gate(tmp_path, tool)
 
@@ -230,13 +255,20 @@ def test_the_declared_gate_command_is_this_script() -> None:
     assert "{junit_xml}" in declared[0], "test_command: must pass the report path through"
 
 
-def test_a_red_pytest_is_not_counted_twice(tmp_path: Path) -> None:
-    """pytest's report already carries its own failures.
+def test_a_red_pytest_that_reported_its_own_failure_is_not_counted_twice(
+    tmp_path: Path,
+) -> None:
+    """When pytest's report already carries the failure, the gate must not add one.
 
-    Appending a gate case for it as well would overstate the persisted count, which
-    matters because the record is what every later reader believes.
+    Appending a gate case as well would overstate the persisted count, which matters
+    because the record is what every later reader believes.
+
+    🔴 The stub writes a real `<failure>` here, and that is the whole point of the
+    case. Asserting this against a report with `failures="0"` would assert the
+    silent-green outcome instead of the no-double-count one -- the two are
+    indistinguishable from the outside, and only one of them is correct.
     """
-    _, _, junit = _run_gate(tmp_path, "pytest")
+    _, _, junit = _run_gate(tmp_path, "pytest", report_failures=1)
     gate_cases = [
         case.get("name")
         for case in _suite(junit).iter("testcase")
@@ -245,6 +277,43 @@ def test_a_red_pytest_is_not_counted_twice(tmp_path: Path) -> None:
 
     assert "uv run pytest" not in gate_cases, (
         f"pytest was appended on top of its own report: {gate_cases}"
+    )
+    assert int(_suite(junit).get("failures", "0")) == 1, (
+        "the failure count moved, so the run is double-counted in the evidence"
+    )
+
+
+def test_a_red_pytest_that_wrote_a_clean_report_is_still_recorded(tmp_path: Path) -> None:
+    """The case that separates "the report parsed" from "the report says it failed".
+
+    🔴 These come apart in the wild and the gap is silent. **pytest exits 5 when it
+    collects no tests** -- one bad `-k` or `-m` in `addopts` does it -- and writes a
+    perfectly parseable report saying `tests="0" failures="0"`. An interrupted run,
+    or a plugin that dies in `sessionfinish` after a green session, does the same.
+
+    In every one of those, pytest is the only red command. If its entry is dropped
+    because the report merely PARSED, nothing is appended, the recording step
+    SUCCEEDS so no warning fires, and `test-evidence record` -- which builds
+    `.test-evidence.json` from this report and never stores the exit status --
+    writes `failed: 0`. Terminal red, evidence green, Stop gate satisfied: the exact
+    defect this whole mechanism exists to close, surviving in the pytest lane.
+    """
+    result, _, junit = _run_gate(tmp_path, "pytest", report_failures=0)
+
+    assert result.returncode == 1, "a red pytest must fail the gate"
+    gate_cases = [
+        case.get("name")
+        for case in _suite(junit).iter("testcase")
+        if case.get("classname") == "gate"
+    ]
+
+    assert "uv run pytest" in gate_cases, (
+        f"pytest exited non-zero and its report carried no failure, so the gate was "
+        f"the only thing that could record the run -- and did not: {gate_cases}"
+    )
+    assert int(_suite(junit).get("failures", "0")) >= 1, (
+        "the report claims zero failures after a red run, so the evidence record "
+        "will read failed: 0 while the terminal shows red"
     )
 
 

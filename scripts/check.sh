@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 #
-# The whole gate: the three commands `project-preferences.md` § Dev commands
-# names, run under one exit code, each named when it is the one that failed.
+# The whole gate: every check `project-preferences.md` § Dev commands names, run
+# under one exit code, each named when it is the one that failed. The list lives
+# in the `check` calls below and nowhere else in this file -- a count in this
+# header would be a second copy, and the last one said three while four ran.
 #
 # WHY A SCRIPT AND NOT `test_commands:`
 #
@@ -56,12 +58,19 @@ fi
 
 junit_xml="$1"
 failed=""
+ran=""
+
+# Resolved rather than assumed: the gate is launched as `bash scripts/check.sh`
+# by `test_command:`, by absolute path from the tests, and from inside `scripts/`
+# by hand. `${0%/*}` is wrong for the last of those.
+gate_dir="$(cd "$(dirname "$0")" && pwd)"
 
 # Newline-delimited rather than a bash array: macOS ships bash 3.2, where
 # expanding an empty array under `set -u` is itself an error.
 check() {
     name="$1"
     shift
+    ran="${ran:+$ran, }${name#uv run }"
     if "$@"; then
         return 0
     fi
@@ -78,45 +87,7 @@ if [ -n "$failed" ]; then
     # Written into the report rather than left to the exit code: see the header.
     # Plain `python3`, not `uv run python` -- a red `uv` must not take the one
     # step that records the redness with it.
-    if ! printf '%s' "$failed" | python3 -c '
-import sys
-import xml.etree.ElementTree as ET
-
-path = sys.argv[1]
-names = [line for line in sys.stdin.read().splitlines() if line]
-
-parsed = True
-try:
-    tree = ET.parse(path)
-    root = tree.getroot()
-    suite = root.find("testsuite") if root.tag == "testsuites" else root
-    if suite is None:
-        raise ET.ParseError("no testsuite element")
-except (OSError, ET.ParseError):
-    # pytest never got far enough to write a report. A fresh one still carries
-    # the linters verdict, which is the thing that must not be lost here.
-    parsed = False
-    root = ET.Element("testsuites")
-    suite = ET.SubElement(root, "testsuite", name="gate", tests="0", failures="0")
-    tree = ET.ElementTree(root)
-
-if parsed:
-    # A red pytest already has its own failing cases in this report; appending a
-    # second one for the same run would overstate the count. When the report did
-    # NOT parse there is nothing in it, so pytest keeps its entry -- dropping it
-    # there would record a failed run as clean.
-    names = [n for n in names if n != "uv run pytest"]
-
-for name in names:
-    case = ET.SubElement(suite, "testcase", classname="gate", name=name)
-    ET.SubElement(case, "failure", message=f"{name} exited non-zero").text = (
-        f"{name} reported errors; see the gate output for its own report"
-    )
-
-suite.set("tests", str(int(suite.get("tests", "0") or 0) + len(names)))
-suite.set("failures", str(int(suite.get("failures", "0") or 0) + len(names)))
-tree.write(path, encoding="utf-8", xml_declaration=True)
-' "$junit_xml"; then
+    if ! printf '%s' "$failed" | python3 "$gate_dir/record_red_checks.py" "$junit_xml"; then
         # Recording is the half nothing else can see. If it fails, the exit code
         # below still goes red for a human, but the evidence record would read
         # clean -- so say so on the one channel that is left.
@@ -131,4 +102,7 @@ tree.write(path, encoding="utf-8", xml_declaration=True)
     exit 1
 fi
 
-echo "gate passed: pytest, ruff check, ruff format, mypy"
+# Built from what actually ran, not typed out again. A hand-written list here
+# would be one more copy of the set, and the one place nobody looks when they
+# add a check -- it reports success, so it is never the line that fails.
+echo "gate passed: $ran"

@@ -2,11 +2,13 @@
 #
 # WHY THIS EXISTS
 #
-# `scripts/check.sh` already runs every declared check, and two things launch it:
-# the governance gate, and `.githooks/pre-push`. Both are per-clone opt-in --
-# `core.hooksPath` cannot be committed, so a fresh clone pushes with no guard --
-# and `git push --no-verify` bypasses both by design. Until this file, the checks
-# were run by the honour system of one machine.
+# `scripts/check.sh` already runs every declared check, and exactly one thing
+# launched it: the governance gate on the machine of whoever was editing.
+# `.githooks/pre-push` does NOT run it -- that hook checks for leaked identity and
+# enforces the gitflow rule for `main`, and nothing else. So no push, from any
+# clone, was ever checked against pytest, ruff or mypy by anything but the author
+# remembering to look. Until this file, the checks were run by the honour system
+# of one machine.
 #
 # WHY IT CALLS THE SCRIPT INSTEAD OF LISTING THE CHECKS
 #

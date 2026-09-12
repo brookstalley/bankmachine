@@ -26,6 +26,12 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
+# Gate output. `docs/README.md` tells you to run `bash scripts/check.sh report.xml`
+# from the repo root, so the documented command leaves this behind on every run.
+# An untracked JUnit report sitting in a private finance repo is a file someone
+# eventually `git add -A`s by accident; it is also pure derived output.
+report.xml
+
 # Prawduct plugin version marker (per-repo last-seen)
 .prawduct/.prawduct-version
 
