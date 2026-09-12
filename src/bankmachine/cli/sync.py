@@ -45,6 +45,7 @@ import sys
 from typing import Final, Protocol
 
 from bankmachine.cli import sync_run
+from bankmachine.cli.parser import AnyParser
 from bankmachine.config import Config
 from bankmachine.logging_setup import redact, redact_free_text
 from bankmachine.store import connection
@@ -104,7 +105,7 @@ out (AC-10.3); account masks are left intact, since they are what the redaction
 exists to preserve."""
 
 
-def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+def add_arguments(subparsers: argparse._SubParsersAction[AnyParser]) -> None:
     sync = subparsers.add_parser("sync", help="talk to the datastore's contents")
     commands = sync.add_subparsers(dest="sync_command", required=True)
 

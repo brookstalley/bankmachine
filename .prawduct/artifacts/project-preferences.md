@@ -70,6 +70,27 @@ Developer preferences for how code is written in this project. Captured during d
 - **Dev commands**: `uv sync` once, then `uv run pytest -q` (whole suite, including the shell
   leak guard), `uv run mypy` (strict, source and tests), `uv run ruff check` / `uv run ruff
   format`. `uv run bankmachine store init|status|rebuild` drives the product itself.
+- **The gate runs every declared check, not just pytest**: `scripts/check.sh` is what
+  `test_command:` launches, and it runs `pytest`, `ruff check`, `ruff format --check` and
+  `mypy` — in that order, reporting every one that went red rather than stopping at the
+  first. Run them by hand while editing; the script is what makes a red one fail the commit
+  that caused it. Before it existed only pytest was executed by anything, and mypy drifted
+  to 12 errors across 15 commits with nothing to notice (brookstalley/bankmachine#92).
+- **CI is a second caller of that script, never a second copy of it.**
+  `.github/workflows/check.yml` runs the gate on every pull request into `develop` or
+  `main` (macOS runner, `pull_request` and `workflow_dispatch` only — macOS bills at 10×
+  on a private repo, so per-push runs were declined deliberately). A workflow that spelled
+  the four commands out in YAML would be a second declaration of the gated set, free to
+  drift from the first; `tests/preferences/test_ci_runs_the_gate.py` holds it to being a
+  caller. **Anything added to the gate is picked up by CI for free — that is the point of
+  the shape, and it is worth not breaking.** CI reports and cannot block: branch protection
+  is paid on private repositories, so `.githooks/pre-push` is still the only refusal.
+- **A red check is recorded, not just printed.** `test-evidence record` builds
+  `.test-evidence.json` from the JUnit report and does not store the command's exit status,
+  so the gate appends each red check to that report as a failing case. Without this a red
+  linter left a session-fresh record reading `failed: 0` — terminal red, evidence green,
+  Stop gate satisfied. Anything added to the gate later must reach the report the same way
+  or it is decorative.
   `uv run python tests/preferences/verify_norms_go_red.py` re-proves that the structural
   guarantees still fail when their mechanisms are broken — run it whenever the connection
   layer, the schema or the raw/rebuild layer changes, because a norm test that has never

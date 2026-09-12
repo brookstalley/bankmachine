@@ -266,6 +266,10 @@ def test_no_invocation_echoes_a_key_back(
     # argparse's own usage failures exit rather than return, and always have in
     # this CLI. Both routes are "could not run" and both are exit 2; what this
     # test is about is what reaches stderr on the way out.
+    # Widened to `SystemExit.code`'s own type rather than `run`'s: the two routes
+    # this test deliberately treats alike do not return the same type, and narrowing
+    # to `int` here would be the test asserting something argparse never promised.
+    exit_code: int | str | None
     try:
         exit_code = run(invocation)
     except SystemExit as raised:

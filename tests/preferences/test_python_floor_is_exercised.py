@@ -5,10 +5,16 @@ version at or above it. Nothing here runs on more than one interpreter, so the
 only floor this repo can honestly declare is the one it actually tests on.
 
 🔴 **This test is written to be replaced, not kept forever.** When a CI matrix
-lands (build step 8) and genuinely exercises a range, the honest check becomes
-"the matrix covers the floor" and this file should become that. Until then the
-floor and the pinned interpreter are the same fact written in two places, and
-two copies of one fact drift unless something compares them.
+genuinely exercises a range, the honest check becomes "the matrix covers the
+floor" and this file should become that. Until then the floor and the pinned
+interpreter are the same fact written in two places, and two copies of one fact
+drift unless something compares them.
+
+🔴 **CI existing is not the trigger; a matrix is.** `.github/workflows/check.yml`
+runs the gate on every pull request, and it installs the ONE interpreter
+`.python-version` pins -- so it exercises the floor rather than a range, and
+nothing about it licenses widening `requires-python`. A `.github/` directory is
+not the condition above being met.
 """
 
 from __future__ import annotations

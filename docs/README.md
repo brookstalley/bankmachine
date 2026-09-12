@@ -17,7 +17,26 @@ uv sync
 uv run pytest                          # the whole suite
 uv run mypy                            # strict, project-wide
 uv run ruff check && uv run ruff format --check
+bash scripts/check.sh report.xml       # all four at once, the way the gate runs them
 ```
+
+The individual commands are for while you are editing. `scripts/check.sh` is the one the
+governance gate launches: it runs all four, reports every one that went red rather than
+stopping at the first, and writes each failure into the JUnit report it is handed — the
+evidence record is built from that report, so a check that only failed the exit code
+would not be recorded anywhere.
+
+`.github/workflows/check.yml` runs that same script on every pull request into `develop`
+or `main`, on a macOS runner. It is the first thing other than the author's own governance
+gate ever to run these checks — the pre-push hook does not, and never did: that hook checks
+for leaked identity and enforces the gitflow rule for `main`, and touches none of the four.
+
+CI **calls** the script rather than listing the four commands, because a second copy of the
+gated set is free to drift from the first — and drifts in the direction that hides, since
+adding a check to the script would leave CI running the old set while staying green.
+`tests/preferences/test_ci_runs_the_gate.py` fails if a workflow starts invoking the tools
+directly. CI reports but cannot block: branch protection is a paid feature on private
+repositories, which is also why the pre-push guards exist.
 
 `tests/` mirrors `src/bankmachine/`. `tests/preferences/` is different in kind: those are the norm
 tests — the rules this project holds itself to, each written so that violating the norm turns the

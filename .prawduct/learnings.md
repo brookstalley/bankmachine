@@ -748,3 +748,62 @@ nothing about it looks like your work.
 config or dotfile directory, and when you do use `git add -A`, print `git status --short` and read
 every line as a question — *did I change this, and does the commit message account for it?* A line
 you cannot explain is the finding, not the noise.
+
+---
+
+## A gate's contract is what its evidence records, not what its terminal prints
+
+**When you add a check to something that produces a durable record — a test-evidence store, a
+CI summary, a status file — make the check reach THAT RECORD, because every consumer
+downstream reads the record and not your exit code, and a check that only fails the exit
+status is decorative the moment anything but a human is watching.**
+
+The trap is that the terminal tells you it works. You run the gate, a check goes red, the
+screen fills with the failure and the shell reports non-zero — every signal a person uses to
+confirm the wiring is present and correct. The record written seconds earlier says the run
+was clean, and nothing on screen mentions it.
+
+It follows a predictable shape: the record is built from an *artifact* (a JUnit report, a
+coverage file) rather than from the process outcome, so only the tool that writes that
+artifact can put a failure into it. Any check bolted on beside that tool is outside the
+channel by construction.
+
+**Instances:**
+
+- **2026-09-12, `scripts/check.sh` for #92.** The gate ran pytest, `ruff check` and `mypy`,
+  printed the red one by name, and exited 1. `prawduct-hook test-evidence record` builds
+  `.test-evidence.json` from the JUnit report and consults the command's exit status only
+  afterwards, without storing it — so a red mypy left a session-fresh record reading
+  `failed: 0`, `test-status` printed `current`, and the Stop gate passed. The issue being
+  closed was *"a declared check that nothing runs"*; the first fix reproduced it one consumer
+  along. Three Critic reviewers found it independently, from correctness, design and
+  sustainability. Fixed by appending each red check to the JUnit report as a failing case.
+  The build plan's verification had covered only the green path — the half where the defect
+  cannot appear.
+
+- **2026-09-12, the same gate, the pytest lane.** The fix above excluded pytest from the
+  appended cases whenever the report *parsed*, reasoning that a red pytest carries its own
+  failures. True only when its redness became a `<failure>` leaf — and **pytest exits 5 on
+  "no tests collected"** (one bad `-k`/`-m` in `addopts`) while writing a parseable
+  `tests="0" failures="0"`. Then pytest is the only red command, the append list empties,
+  the recording step *succeeds* so nothing warns, and the record reads `failed: 0` again.
+  **The test could not have caught it**: the stub always wrote `failures="0"`, so the
+  "not counted twice" case was asserting the silent-green outcome, not the no-double-count
+  one. Two shapes, one fixture, and the assertion cannot tell them apart. Fixed by keying
+  the exclusion on a `<failure>`/`<error>` actually being present, and by making the stub's
+  report content a parameter so both shapes exist.
+
+**A corollary the second instance earns:** *when correct behaviour DIFFERS between two shapes
+of the same input, a fixture that can only produce one shape asserts nothing about the
+choice.* The tell is a conditional in the code with no corresponding parameter in the
+fixture — here, `if parsed:` in the recorder against a stub that had no way not to parse.
+Before trusting such a test, ask which branch the fixture reaches, and whether it can reach
+the other one at all.
+
+**How to apply:** after wiring a new check, ask *which file does the next reader open?* Then
+make the check red and go read that file — not the terminal. If the artifact is written by
+one tool and your check is a second tool, you must write into the artifact yourself, and a
+test should pin that (drive the real script, fail the check, assert the recorded failure
+count moved). Verifying only the green path is the tell: the failure path is where a
+reporting bug can live, so a plan whose "Done when" mentions only success has not been
+verified, it has been demonstrated.

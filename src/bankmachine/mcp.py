@@ -34,6 +34,7 @@ from typing import IO, Any
 from bankmachine import envelope, mcp_resources, query, signs
 from bankmachine.build_id import build_identity
 from bankmachine.cli.exit_codes import EXIT_ERROR, EXIT_OK
+from bankmachine.cli.parser import AnyParser
 from bankmachine.config import Config
 from bankmachine.logging_setup import get_logger
 from bankmachine.store.connection import DatastoreProblem, inspect
@@ -2084,7 +2085,7 @@ def _write(stdout: IO[str], payload: dict[str, Any] | list[dict[str, Any]]) -> N
         raise _PipeClosedError() from exc
 
 
-def add_arguments(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+def add_arguments(subparsers: argparse._SubParsersAction[AnyParser]) -> None:
     parser = subparsers.add_parser(
         "mcp",
         help="run the read-only MCP server on stdio",

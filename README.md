@@ -68,6 +68,11 @@ The suite above proves the guards run; on a fresh clone it does not prove anythi
 matched, because the leak guard reads its match tokens from a gitignored `deployment/` directory
 that a new clone does not have, and says so rather than passing silently.
 
+On a pull request into `develop` or `main`, `.github/workflows/check.yml` runs the full gate —
+pytest, `ruff check`, `ruff format --check`, mypy — on a macOS runner. That is a report, not a
+barrier: requiring a status check needs branch protection, which is paid on private repositories,
+so the pre-push guards above remain the only thing that actually refuses a push.
+
 The gitflow guard is this repository's own release policy, not a safety property: it rejects a
 push to `main` that is not a merge of a `release/*` or `hotfix/*` branch. If you fork and work
 differently, `git push --no-verify` bypasses both guards for one push — that is the documented
