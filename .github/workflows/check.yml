@@ -1,0 +1,113 @@
+# The gate, run by something that is not the author's machine.
+#
+# WHY THIS EXISTS
+#
+# `scripts/check.sh` already runs every declared check, and two things launch it:
+# the governance gate, and `.githooks/pre-push`. Both are per-clone opt-in --
+# `core.hooksPath` cannot be committed, so a fresh clone pushes with no guard --
+# and `git push --no-verify` bypasses both by design. Until this file, the checks
+# were run by the honour system of one machine.
+#
+# WHY IT CALLS THE SCRIPT INSTEAD OF LISTING THE CHECKS
+#
+# Restating `pytest`, `ruff check`, `ruff format --check` and `mypy` here would
+# create a second declaration of the gated set, free to drift from the first.
+# That is brookstalley/bankmachine#92 exactly -- a declared check nothing runs --
+# rebuilt in YAML. This workflow is a CALLER, and
+# `tests/preferences/test_ci_runs_the_gate.py` fails if it stops being one.
+#
+# WHY macOS, AND WHY THAT COSTS WHAT IT COSTS
+#
+# `project-preferences.md` records macOS as the only supported and tested
+# platform, and `tests/conftest.py` runs integration tests against the real OS
+# keychain rather than a mock, on purpose. An `ubuntu-latest` job would be ~10x
+# cheaper on a private repo and would put a green tick on a platform nothing has
+# ever verified. The tick is the problem, not the price.
+#
+# WHY ONLY ON PULL REQUESTS
+#
+# macOS runners bill at 10x on a private repo and a full run is ~10 minutes, so
+# every push would spend ~100 billable minutes against a monthly allowance of a
+# few thousand. The local gate already covers the edit loop. What CI adds is an
+# observer at the point the code tries to become someone else's problem, and that
+# point is the pull request.
+#
+# Two gaps this leaves, stated rather than left to be discovered:
+#   - a merge commit landing on `develop` re-runs nothing;
+#   - `workflow_dispatch` stays invisible until this file reaches `develop`,
+#     because GitHub reads the dispatchable list from the default branch only.
+
+name: check
+
+on:
+  pull_request:
+    branches: [develop, main]
+  workflow_dispatch:
+
+# A re-push supersedes the run it interrupted; paying for both is paying twice
+# for one answer.
+concurrency:
+  group: check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# This job reads the tree and reports. It needs nothing else, and the repository
+# is private, so the narrowest token is the whole point.
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: macos-latest
+    # Not a guess at the runtime -- a cost ceiling. A hung run on a 10x-billed
+    # runner is the expensive failure mode, not a slow one.
+    timeout-minutes: 25
+
+    steps:
+      # Actions are pinned by commit, not by tag: a tag is mutable, and this job
+      # has the source of a private finance repository in its working directory.
+      # There is no dependency-update automation here, so these are bumped by
+      # hand -- the version each SHA belongs to is on the line for that reason.
+      - name: Check out the branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: true
+
+      # No version argument: `.python-version` is the single answer to which
+      # interpreter this project runs on, and a number repeated here could
+      # disagree with it. Its own step so the log names the interpreter.
+      - name: Install the pinned interpreter
+        run: uv python install
+
+      # `--locked` rather than a plain sync: it fails when `uv.lock` and
+      # `pyproject.toml` have drifted apart, which is what makes the lockfile the
+      # answer to "which ruff ran" instead of a suggestion.
+      - name: Install dependencies from the lockfile
+        run: uv sync --locked
+
+      # `tests/conftest.py`: "Integration tests run against real SQLCipher and the
+      # real OS keychain, under a test-scoped service name." A runner is a
+      # non-interactive session, so rather than assume the login keychain is
+      # reachable, make one this job owns.
+      #
+      # The search list matters as much as the default. `keyring` writes to the
+      # DEFAULT keychain but reads through the SEARCH LIST, so a keychain that is
+      # only the default would take writes and then fail every read back.
+      - name: Give the integration tests a keychain
+        run: |
+          security create-keychain -p "" ci.keychain
+          security set-keychain-settings ci.keychain          # no auto-lock timeout
+          security unlock-keychain -p "" ci.keychain
+          security default-keychain -s ci.keychain
+          existing=$(security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"$//')
+          # shellcheck disable=SC2086 -- keychain paths on a runner contain no spaces
+          security list-keychains -d user -s ci.keychain $existing
+
+      # The whole gate, under one exit code. The script names every check that
+      # went red rather than stopping at the first, so the log says what failed
+      # without a second run. The JUnit path is required by the script; nothing
+      # in CI reads the file, because here the job's conclusion IS the record.
+      - name: Run the gate
+        run: bash scripts/check.sh "${RUNNER_TEMP}/report.xml"

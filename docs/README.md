@@ -26,6 +26,14 @@ stopping at the first, and writes each failure into the JUnit report it is hande
 evidence record is built from that report, so a check that only failed the exit code
 would not be recorded anywhere.
 
+`.github/workflows/check.yml` runs that same script on every pull request into `develop`
+or `main`, on a macOS runner, so the checks no longer depend on whether a given clone ever
+ran the `core.hooksPath` line above. It **calls** the script rather than listing the four
+commands, because a second copy of the gated set is free to drift from the first;
+`tests/preferences/test_ci_runs_the_gate.py` fails if a workflow starts invoking the tools
+directly. CI reports but cannot block — branch protection is a paid feature on private
+repositories, which is also why the pre-push guards exist.
+
 `tests/` mirrors `src/bankmachine/`. `tests/preferences/` is different in kind: those are the norm
 tests — the rules this project holds itself to, each written so that violating the norm turns the
 test red. The leak guard (`tests/preferences/check-no-personal-data.sh`) also runs pre-push, and on
