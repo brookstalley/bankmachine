@@ -807,3 +807,5 @@ test should pin that (drive the real script, fail the check, assert the recorded
 count moved). Verifying only the green path is the tell: the failure path is where a
 reporting bug can live, so a plan whose "Done when" mentions only success has not been
 verified, it has been demonstrated.
+
+## Evidence recorded over a tree you were editing is evidence about no tree: start the gate when you have nothing left to change, and never let a narrower re-run stand in for the declared command

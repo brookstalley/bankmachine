@@ -120,3 +120,47 @@ both directions, and one remedy answered both — telling an operator whose stor
 build to run forward-only migrations that apply nothing. Caught by the Critic, not by me, in the
 commit that existed to fix exactly this shape. Fixing a class of bug does not confer immunity to it
 while you work.
+
+## Evidence recorded over a tree you were editing is evidence about no tree
+
+A gate run and a source edit that overlap in time produce a result describing neither the tree
+before nor the tree after — and it is then RECORDED as that tree's evidence. The failure is quiet
+because the output looks ordinary: a count comes back, some of it is real, and the mix cannot be
+separated afterwards. The remedy is not diagnosis, it is another full run, so the interleaving
+costs more than the wait it was trying to save.
+
+The narrow half is worse, because it produces a confident green. A signature change is the
+canonical case: it breaks callers in files a targeted run never opens, and those callers are as
+likely to live in `tests/` as in `src/`. Anything reporting on a subtree — `mypy src`, one `pytest`
+module, `ruff check` over the files you touched — answers a question you did not ask.
+
+**Instances:**
+
+- *2026-09-12, investments Chunk 01.* The full gate was launched, and then a test file was added
+  and live sandbox probes run while it worked. It came back red, and the failing set was not
+  reproducible: some failures were real (a required keyword added to `_sync_one`, whose direct
+  caller is in a test module), and the rest belonged to a tree that existed only mid-run. Two
+  further gate runs went to establishing what one undisturbed run would have said.
+- *2026-09-12, the same chunk, the narrow half.* `mypy src/bankmachine` was clean while `mypy src
+  tests` was red; per-module `pytest` runs were green while the suite was red by two norm tests —
+  an endpoint resting on default risk properties, and two go-red anchors the refactor had moved.
+  **"Gate green" was reported to the user on that evidence and was wrong.** `prawduct-hook
+  test-status` exists so the last full run can be asked rather than re-derived from a narrower one.
+
+**How to apply:** launch the gate when you have nothing left to change, and treat the wait as a
+read-only window — reading files, drafting prose, and probes that touch no tracked file are all
+fine. Before saying "green", confirm the evidence reads `current` and that what produced it was the
+declared command rather than a subset you chose.
+
+## `ruff check` clean says nothing about `ruff format`
+
+**Instances:**
+
+- *2026-09-12, investments Chunk 01.* A **relocation** moves go-red anchors exactly as a reformat
+  does: factoring the first-capture-of-the-day rule out of `_write_balance` into a shared
+  `_claim_capture_day` changed the indentation of both anchored lines and dissolved the local
+  variable one of them named. `test_the_go_red_harness_still_reaches_its_targets` caught both; the
+  anchors were rewritten against the relocated lines and each case re-run to confirm it still
+  prints RED, rather than assuming the move was cosmetic. The reach test is what makes moving
+  load-bearing code cheap — without it, both cases would have gone on SKIPping silently.
+
