@@ -604,7 +604,7 @@ and VRF-013 below.
 
 ## VRF-011 — the MCP surface answers usefully in a real client
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** the MCP surface · **Raised:** 2026-09-11
 
@@ -620,9 +620,11 @@ server on the merged build first; until then this cannot be drained from inside 
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-011`
 
+**Accepted:** 2026-09-12 — rationale: Accepted to unblock the mypy-green-and-gated / ci-runs-the-gate PR, which none of the three bears on: this branch adds a CI workflow, a gate script and type annotations, and changes no derivation, no query and no MCP tool. VRF-011 (the MCP surface in a real client) is blocked mechanically on relaunching the sandbox server on the merged build (#25) and cannot be drained before this merge exists. VRF-012 (a real pending transaction across settlement, #22) and VRF-013 (the sign convention at two institutions, #23) both need production data the sandbox cannot produce. Each is re-raised immediately as a fresh pending entry, so this acceptance discharges the block and not the obligation.
+
 ## VRF-012 — one real pending transaction watched across settlement
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#22) · **Raised:** 2026-09-11
 
@@ -634,9 +636,11 @@ cutover and a card hold settling, which is days of calendar rather than work. Th
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-012`
 
+**Accepted:** 2026-09-12 — rationale: Accepted to unblock the mypy-green-and-gated / ci-runs-the-gate PR, which none of the three bears on: this branch adds a CI workflow, a gate script and type annotations, and changes no derivation, no query and no MCP tool. VRF-011 (the MCP surface in a real client) is blocked mechanically on relaunching the sandbox server on the merged build (#25) and cannot be drained before this merge exists. VRF-012 (a real pending transaction across settlement, #22) and VRF-013 (the sign convention at two institutions, #23) both need production data the sandbox cannot produce. Each is re-raised immediately as a fresh pending entry, so this acceptance discharges the block and not the obligation.
+
 ## VRF-013 — the sign convention on a real inflow, across two institutions
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#23) · **Raised:** 2026-09-11
 
@@ -648,3 +652,5 @@ enrolled and a real inflow, which is up to a pay cycle. The obligation is **#23*
 production.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-013`
+
+**Accepted:** 2026-09-12 — rationale: Accepted to unblock the mypy-green-and-gated / ci-runs-the-gate PR, which none of the three bears on: this branch adds a CI workflow, a gate script and type annotations, and changes no derivation, no query and no MCP tool. VRF-011 (the MCP surface in a real client) is blocked mechanically on relaunching the sandbox server on the merged build (#25) and cannot be drained before this merge exists. VRF-012 (a real pending transaction across settlement, #22) and VRF-013 (the sign convention at two institutions, #23) both need production data the sandbox cannot produce. Each is re-raised immediately as a fresh pending entry, so this acceptance discharges the block and not the obligation.
