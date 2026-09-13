@@ -176,33 +176,19 @@ waves 2–3 that is **not** Medium: it was derived and argued in
 - [ ] Chunk 07: `balance_history` — one series, read two ways
 - [ ] Chunk 08: Net worth, and the two ways it can be quietly wrong
 
-Context: Chunks 01-04 built 2026-09-12; wave 1 is code-complete and awaiting its `cumulative`
-review and PR. Chunk 04 closed the one direction of AC-5.2 that no Chunk 02 test could see: a
-rebuild replaying the archive through the derivers alone cleared every investment-transaction
-soft delete, so the rebuilt store held rows the synced store had retired and reported success.
-`connector/plaid/window.py` now reassembles each window from the `request_context` its pages
-carry and re-runs the reconciliation 🔴 at the page that CLOSED that window — not once over the
-finished tables, which would judge an early window against rows that only arrived in a later
-one. `store.rebuild` gained one seam for it (`ReplayPass`). The measured history range moved out
-of the store function and into the sync, because a replay must not restate a domain's progress.
-Wave 1 was then verified against the real sandbox: VRF-017, VRF-018 and VRF-019 all drained on
-2026-09-12 from one enrolled connection — positions, the investment-transaction window and its
-recorded range, idempotency on a same-day re-run, and two clean `store rebuild`s reporting
-identical content over 1167 replayed transactions. 🔴 **That pass found the one defect no test
-here could see**: `quantity` is exact decimal TEXT, and `sync shell`'s account-number rule blanks
-any run of eight digits, so every high-precision position rendered `0.****3644`. The cell renderer
-now spares a value that is wholly digits-point-digits; `boundary-patterns.md` carries it as a
-fourth boundary, and the premise it corrects — that every arithmetic quantity in this schema is an
-integer — is the one investments invalidated. VRF-014 is NOT drainable from a session: the MCP
-server outlives `/clear`, so the reachable one answers on whatever build the client launched
-(measured `efd64ad` against HEAD `7985a3b`), and only relaunching the client moves it.
-Wave 1's `cumulative` review is done (`rev-20260913T021056Z-81d120ad`): 0 blocking, 5 warning,
-8 note — four warnings fixed, R-1 filed as #113 (a window archived but never reconciled leaves
-`store rebuild` refusing permanently; the refusal now names that cause even though the divergence
-is unfixed), R-9 accepted to #93. Three `verify-resolutions` rounds returned clean.
-Next: wave 1's PR — blocked only by the operator-verification queue, where VRF-014 needs the
-client relaunched and VRF-015/016 need production — then the mandatory re-read of chunks 05-08
-against what was built.
+Context: Wave 1 (chunks 01-04) is built, reviewed and verified, and its PR is open. Chunk 04
+closed the one direction of AC-5.2 no Chunk 02 test could see: a rebuild replaying the archive
+through the derivers alone cleared every investment-transaction soft delete. `connector/plaid/window.py`
+now re-runs each window's reconciliation 🔴 at the page that CLOSED that window, through one seam
+in `store.rebuild` (`ReplayPass`). The sandbox pass (VRF-017/018/019) found that `sync shell`
+masked high-precision quantities as account numbers; fixed. VRF-014 was verified in a real client
+on the build under test; VRF-015/016 were accepted to open the PR (they need production) and are
+re-raised as VRF-020/021. Wave 1's `cumulative` review (`rev-20260913T021056Z-81d120ad`) closed
+with #113 filed and R-9 accepted to #93.
+🔴 **The trajectory checkpoint ran 2026-09-13 and moved chunks 05 and 06** (see Governance
+Checkpoints): the aggregator's only date on a position, `institution_price_as_of`, was being
+dropped, so Chunk 05 now stores it and Chunk 06's staleness warning reads it.
+Next: Chunk 05, built on this branch and pushed only after the wave 1 PR merges.
 
 ## The Program
 
@@ -501,8 +487,17 @@ Tests are the floor, and three things here are not testable from a fixture:
   in review.
 - **Depends on:** Chunk 04
 - **Artifacts consumed:** `api-contract.md` § Direction (tool boundary; read-only surface),
-  `discovery-mcp-tool-surface.md` (position row, admitted alone)
+  `discovery-mcp-tool-surface.md` (position row, admitted alone), `api-notes-plaid.md` §22-23
 - **Deliverables:**
+  - 🔴 **the price's own date, stored.** *(Added at the trajectory checkpoint, owner's decision
+    2026-09-13.)* `institution_price_as_of` is the only date the aggregator puts on a position
+    — `2021-05-25` on every sandbox position — and wave 1 drops it, while `as_of_date` is always
+    the sync day. A new migration adds nullable `holdings.price_as_of` (a calendar date); the
+    DDL goes in its own module, never into `core_schema`. `DERIVATION_VERSION` moves so
+    `store rebuild` fills it from the archived bodies, and its guard pins the historical version
+    as a literal. **Null means "this row predates the column and has not been rebuilt", or that
+    the aggregator sent no price date** — never "priced today", so the read path does not coalesce
+    it. The append rule is unchanged: the first capture of the day keeps its row
   - a holdings query in `src/bankmachine/query.py`, reading the **latest captured
     `as_of_date` per account** rather than today's — a position is what it was on the day it
     was captured, and asking for today's row returns nothing on any day the sync has not run
@@ -514,6 +509,8 @@ Tests are the floor, and three things here are not testable from a fixture:
     refuses, and it would also make the absence unreadable to a consumer
   - the row carries its security's identity from `securities` rather than restating it, so a
     position and an investment transaction in the same instrument agree about what it is
+  - the row carries `price_as_of` present-and-nullable, beside `as_of_date`, so a consumer can
+    see a position captured today at a price years old
   - 🔴 **what the server says it cannot answer moves with the tool, and only half of that is
     forced.** Registering `list_holdings` fails `tests/test_mcp_resources.py` until the name
     leaves `mcp_resources.UNBUILT_TOOLS`; nothing forces the rest. The primer in
@@ -524,8 +521,11 @@ Tests are the floor, and three things here are not testable from a fixture:
 - **Tests:** unit — the strict-row guard sees the new definition (a deliberately optional
   field is a startup failure); a position whose cost basis is unknown comes back null rather
   than missing; quantity round-trips as exact decimal text with no float anywhere on the
-  path. Integration — the tool answers against a store built by wave 1's own sync, with
-  fixtures taken from Chunk 01's real captures rather than hand-written.
+  path; a rebuilt store fills `price_as_of` from the recorded capture and a row stamped at the
+  old derivation version serves null. Integration — the tool answers against a store built by
+  wave 1's own sync, with fixtures taken from Chunk 01's real captures rather than hand-written.
+  Schema and rebuild both change, so the norm tests are re-proven red
+  (`tests/preferences/verify_norms_go_red.py`).
 - **Acceptance criteria:** `list_holdings` returns every position in the sandbox
   investments account with quantity, market value and currency; a store with no holdings
   answers empty rather than erroring.
@@ -543,14 +543,19 @@ Tests are the floor, and three things here are not testable from a fixture:
 - **Description:** 🔴 The chunk that keeps `list_holdings` from being confidently wrong. A
   position carries three ways of being stale or partial that a well-formed answer hides, and
   each needs to ride the **success path as a warning** rather than be smoothed away: the
-  capture is older than today, a security could not be denominated, or the account is closed.
+  price is older than the capture, a security could not be denominated, or the account is closed.
 - **Depends on:** Chunk 05
 - **Artifacts consumed:** `api-contract.md` § Direction (freshness stamp and warnings;
   balance lifecycle), `.prawduct/artifacts/api-contract.md` § warning vocabulary
 - **Deliverables:**
-  - a request-scoped warning kind for **a holdings capture older than the answer's own
-    freshness stamp** — a 401k priced eleven days ago is not a fact about today, and nothing
-    in the row says so
+  - a request-scoped warning kind for **a stale position**, raised on two triggers kept distinct
+    in its detail. *(Amended at the trajectory checkpoint, 2026-09-13.)* First and commonest:
+    `price_as_of` more than 4 calendar days before the row's `as_of_date` — the sandbox serves a
+    2021 price on a 2026 capture, and a capture date alone can never show it
+    `[ASSUMPTION: 4 calendar days, enough to clear a long weekend | MED impact | owner can
+    override]`. Second: the latest holdings capture is older than the connection's transactions
+    freshness, which Chunk 03's independent domain failure can produce. A null `price_as_of`
+    is named as unknown, not treated as fresh
   - `rule-applied` carrying any security excluded from a minor-units figure because its
     currency has no known exponent — the per-row refusal wave 1 built, made visible here
   - `account_no_longer_active` reaching holdings, not only balances: the existing kind
@@ -703,6 +708,17 @@ supports and which squash would break.
   balance capture of the same day (Chunk 08's double-count argument leans on it); and whether
   the real response carried a field the row shape should expose. Amending here is the plan
   working.
+  **Ran 2026-09-13, against the sandbox store and `api-notes-plaid.md` §22-23.** Cost basis:
+  populated 13/13 but documented nullable, so Chunk 05's present-and-null field stands. Capture
+  dates: holdings and balances land on the same day by construction, so Chunk 08's argument holds.
+  Its property must not assume Σ holdings = balance: the IRA reconciles exactly and the 401k is
+  6% over. A field the row should expose: `institution_price_as_of`, dropped by wave 1, which
+  moved chunks 05 and 06.
+- 🔴 **Release blocker: `develop` does not release until wave 2 merges.** The wave 1 PR ships the
+  envelope reference's investments bullet, written for the finished surface at the owner's
+  direction, which says positions are served by `list_holdings`. That is untrue until Chunk 05
+  registers the tool, and `develop` is this repo's default branch. A release cut from `develop`
+  between the two merges would tell every agent to call a tool that does not exist.
 - **After Chunk 06** — the warning surfaces: is every kind covered in the guidance map, and
   did the primer stay under budget without losing the sentence that made a kind actionable?
 - **Chunk 08 (cumulative)** — full-bundle review across all three waves, with particular
