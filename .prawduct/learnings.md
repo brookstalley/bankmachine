@@ -817,3 +817,5 @@ verified, it has been demonstrated.
 ## A refactor is judged by what the old code stopped doing, not by what the new code does: enumerate the branches the replaced expression had, and name where each one went
 
 ## A fixture built from the mechanism you are reasoning about cannot tell apart the worlds your reasoning separates: reproduce the state the real producer leaves, not the state your helper leaves
+
+## A conformance note clears a rule on the surface it was checked against, and a rule with two entry points is cleared on neither by checking one: name the surface, and re-check a shape rule whenever a new column stores a value whose type contradicts its meaning

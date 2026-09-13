@@ -290,3 +290,34 @@ to the branch, here it gets there and carries inputs that make the two branches 
 **How to apply:** when the reasoning names a producer ("the sync stamps this", "the scheduler
 writes that"), the guard runs the producer. A helper that stands in for it is fine for the
 *neighbouring* assertions and is worthless for the one the reasoning is about.
+
+## A conformance note clears a rule on the surface it was checked against, and a rule with two entry points is cleared on neither by checking one: name the surface, and re-check a shape rule whenever a new column stores a value whose type contradicts its meaning
+
+**Instance:**
+
+- *2026-09-12, `holdings.quantity` read through `sync shell`.* The investments build plan
+  dispositioned the redaction norm explicitly and got the right answer for the surface it looked
+  at: "Log redaction happens at the formatter … No redaction rule is added and none is relaxed —
+  which also means a long opaque `security_id` may well come back `[REDACTED]` in a log line, and
+  that is the over-redaction working." Every word of that is true of the log formatter. The rule
+  has a second entry point — the shell's row-cell renderer calls the same `redact()` — and the
+  note never reached it. There the account-number rule (`\b\d{8,}\b`) met a column the same plan
+  had introduced, and a Bitcoin position of `0.00293644` came back `0.****3644`. Three chunks and
+  a review round went by; what found it was draining VRF-017, whose step 2 says in as many words
+  that a fractional position must not read as a rounded one.
+
+  The mechanism underneath is worth naming separately, because it is what made the analysis stop
+  one step short. `_render`'s docstring stated the premise that made redacting TEXT safe as a
+  property of the schema — "money is an INTEGER of minor units here, and an account number is not
+  an arithmetic quantity, so it is TEXT" — and it was true when written. `quantity` is an
+  arithmetic quantity stored as TEXT, because a fractional share carries more precision than a
+  scaled integer could hold. The chunk that retired the premise is the chunk that wrote the
+  conformance note, and neither noticed the other.
+
+**How to apply:** when a disposition says a cross-cutting rule is unaffected, write down *which
+surfaces you ran it over*, and grep for the rule's other callers before you believe the sentence —
+"the formatter over-redacts anything credential-shaped" is a claim about one caller of a function
+with several. And when a chunk adds a column whose storage type contradicts what the value IS — a
+number as TEXT, a date as an integer, an identifier as a blob — treat every shape-based rule that
+keys on type as newly unproven, because the premise those rules rest on is a fact about the
+schema, and the schema just changed.
