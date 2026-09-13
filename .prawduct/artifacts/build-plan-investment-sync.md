@@ -172,21 +172,26 @@ waves 2–3 that is **not** Medium: it was derived and argued in
 - [x] Chunk 03: Investments fails on its own, and the health surface says so
 - [x] Chunk 04: Rebuild, idempotency, and the properties that hold across both
 - [x] Chunk 05: `list_holdings` — positions, under one strict row shape
-- [ ] Chunk 06: What a holdings answer must disclose about itself
+- [x] Chunk 06: What a holdings answer must disclose about itself
 - [ ] Chunk 07: `balance_history` — one series, read two ways
 - [ ] Chunk 08: Net worth, and the two ways it can be quietly wrong
 
 Context: Wave 1 (chunks 01-04) merged to `develop` as PR #114 on 2026-09-13; the branch
-continues. VRF-020/021 (production-only) are re-raised and pending, and will block the wave 2 PR.
-Chunk 05 is built and committed (`fd47661`): migration 010 stores `holdings.price_as_of`
-(`DERIVATION_VERSION` 9), and `list_holdings` serves each account's latest capture under one strict
-row, with the price date present-and-nullable and never coalesced. Verified on the real sandbox store
-after migrate, rebuild and sync: 13 positions, price date 2021-05-25 beside a 2026-09-13 capture.
-Re-proving the norms red found ten go-red anchors that occurred twice. AC-4.1's broke the wrong
-handler and read as unguarded. Every anchor now names one place, and the harness and its reach test
-refuse ambiguity; all 176 cases go red.
-Next: Chunk 06 — the stale-price warning reads `price_as_of`, plus the per-row rule-applied and
-lifecycle emitters, then wave 2's `cumulative` review and PR.
+continues. VRF-020/021 (production-only) are re-raised and pending, and with VRF-022 (the holdings
+warnings read in a real client) they block the wave 2 PR. Chunk 05 is committed (`fd47661`).
+Chunk 06 is committed as `eec7af8` plus `f59ec2c`, which settles its cumulative review. Changes:
+- `positions_not_current`, a new request-scoped kind: an old or unknown price, an account a newer
+  capture of its connection listed nothing for, or a stopped investments feed.
+- `rule-applied` naming each position refused for its unit. The refusal is recorded by migration
+  011's `refused_holdings` (`DERIVATION_VERSION` 10), and a day's first capture decides a key both
+  tables hold.
+- `account_no_longer_active` extended to positions.
+- The coverage surface now names the transactions feed. #107 stays open as a design question.
+
+The review raised 0 blocking and 4 warnings, all fixed, and the verify-resolutions pass
+found nothing further. Verified on the sandbox store at schema 11
+after rebuild. Suite green; all 187 norm breaks are caught.
+Next: the wave 2 PR, which is the owner's call and blocked as above. Then Chunk 07.
 
 ## The Program
 
@@ -635,6 +640,11 @@ Tests are the floor, and three things here are not testable from a fixture:
 - **Artifacts consumed:** `discovery-mcp-tool-surface.md` (the unifying row shape and why the
   merge was admitted), `api-contract.md` § Direction (tool boundary)
 - **Deliverables:**
+  - 🔴 **carried from Chunk 06's verify-resolutions** (an observation, not a finding): in
+    `query.list_holdings`, an account left out of a newer capture, on a connection whose newest
+    capture is itself behind its transactions, gets only the "the feed is working" wording, which
+    is false there. Name both facts for that account, with a test for the combination and a go-red
+    case. It rides this chunk's commit rather than buying a review round of its own
   - the series query over `balances_daily` in `src/bankmachine/query.py`, keyed
     `(account_id, as_of_date)` so both readings come from one series rather than two queries
     that can disagree
