@@ -20,13 +20,13 @@ governed_by:
       - "🔴 The daily balance and HOLDINGS series are append-only → this plan is the first code that writes the holdings half, so the norm stops being partly hypothetical here. The composite PK is the structural half; the behavioural half is the rule `_write_balance` already implements and holdings must reuse rather than reimplement — FIRST capture of the day wins, decided by COMPARING captures rather than by arrival order, and a row with no `raw_response_id` (a manual import) is never replaced. Copying that logic into a second deriver is how the two drift; the plan factors it (Chunk 01)"
       - "A source value is never overwritten in place → conforms; this plan adds no override column and writes no interpretation over a source field"
       - "A transaction is never hard-deleted; removal is a soft delete → conforms in SHAPE, and by a different mechanism than `transactions`. `investment_transactions.removed_at` carries the same column and the same never-a-DELETE rule, but 🔴 the feed sends **no removal signal of any kind** — measured, `api-notes-plaid.md` §26: `/investments/transactions/get` is a windowed read, not a delta, so there is no `removed` array to read and `cancel_transaction_id` is a cancellation reference rather than a tombstone. What makes the norm satisfiable anyway is that the window comes back WHOLE: a stored row inside the requested window whose id did not return has gone away, and that is the removal signal. It is only trustworthy when the run actually exhausted the window, so the reconciliation is guarded on exhaustion and a partial run marks nothing — an unguarded one would soft-delete every row it merely had not reached yet"
-      - "A migration's DDL is frozen once written → conforms, and is the reason this plan adds NO migration. `securities`, `holdings` and `investment_transactions` were created in `core_schema.py` at build step 1 and are untouched here. If the real API shape turns out to need a column, that is a new migration and a recorded decision, never an edit to the frozen DDL"
+      - "A migration's DDL is frozen once written → conforms. Wave 1 added no migration: `securities`, `holdings` and `investment_transactions` were created in `core_schema.py` at build step 1 and are untouched. The one column the real API shape turned out to need, `holdings.price_as_of`, is migration 010 in its own module -- a new migration and a recorded decision (the trajectory checkpoint's, built in Chunk 05), never an edit to the frozen DDL"
   - artifact: architecture
     dispositions:
       - "Every writable handle comes from the one writer factory, which takes the exclusive lock before it returns → conforms; the investments pull persists through the same `_persist` path every other endpoint uses and opens no handle of its own"
       - "Read-role handles are `mode=ro`, hold no snapshot beyond the statement, never fall back → conforms. The health-surface work in Chunk 03 is read-only and goes through the existing reader"
       - "No component creates the datastore implicitly → conforms; nothing here opens a datastore path"
-      - "A process that does not recognize the schema version refuses to serve → conforms; no schema version moves"
+      - "A process that does not recognize the schema version refuses to serve → conforms; migration 010 moves the served schema version to 10, and a store still at 9 is refused until `bankmachine store init` migrates it"
   - artifact: api-contract
     dispositions:
       - "The MCP surface is read-only, and the one permitted write class is agent-authored rows in a declared sidecar table → conforms. Both new tools are reads. No handle in the server process becomes writable, and neither tool reaches a table carrying `raw_response_id` or `derivation_version_id` — `holdings` and `balances_daily` carry both and are read-only to this surface whatever the column"
@@ -171,24 +171,22 @@ waves 2–3 that is **not** Medium: it was derived and argued in
 - [x] Chunk 02: Investment transactions, and the window that actually came back
 - [x] Chunk 03: Investments fails on its own, and the health surface says so
 - [x] Chunk 04: Rebuild, idempotency, and the properties that hold across both
-- [ ] Chunk 05: `list_holdings` — positions, under one strict row shape
+- [x] Chunk 05: `list_holdings` — positions, under one strict row shape
 - [ ] Chunk 06: What a holdings answer must disclose about itself
 - [ ] Chunk 07: `balance_history` — one series, read two ways
 - [ ] Chunk 08: Net worth, and the two ways it can be quietly wrong
 
-Context: Wave 1 (chunks 01-04) is built, reviewed and verified, and its PR is open. Chunk 04
-closed the one direction of AC-5.2 no Chunk 02 test could see: a rebuild replaying the archive
-through the derivers alone cleared every investment-transaction soft delete. `connector/plaid/window.py`
-now re-runs each window's reconciliation 🔴 at the page that CLOSED that window, through one seam
-in `store.rebuild` (`ReplayPass`). The sandbox pass (VRF-017/018/019) found that `sync shell`
-masked high-precision quantities as account numbers; fixed. VRF-014 was verified in a real client
-on the build under test; VRF-015/016 were accepted to open the PR (they need production) and are
-re-raised as VRF-020/021. Wave 1's `cumulative` review (`rev-20260913T021056Z-81d120ad`) closed
-with #113 filed and R-9 accepted to #93.
-🔴 **The trajectory checkpoint ran 2026-09-13 and moved chunks 05 and 06** (see Governance
-Checkpoints): the aggregator's only date on a position, `institution_price_as_of`, was being
-dropped, so Chunk 05 now stores it and Chunk 06's staleness warning reads it.
-Next: Chunk 05, built on this branch and pushed only after the wave 1 PR merges.
+Context: Wave 1 (chunks 01-04) merged to `develop` as PR #114 on 2026-09-13; the branch
+continues. VRF-020/021 (production-only) are re-raised and pending, and will block the wave 2 PR.
+Chunk 05 is built and committed (`fd47661`): migration 010 stores `holdings.price_as_of`
+(`DERIVATION_VERSION` 9), and `list_holdings` serves each account's latest capture under one strict
+row, with the price date present-and-nullable and never coalesced. Verified on the real sandbox store
+after migrate, rebuild and sync: 13 positions, price date 2021-05-25 beside a 2026-09-13 capture.
+Re-proving the norms red found ten go-red anchors that occurred twice. AC-4.1's broke the wrong
+handler and read as unguarded. Every anchor now names one place, and the harness and its reach test
+refuse ambiguity; all 176 cases go red.
+Next: Chunk 06 — the stale-price warning reads `price_as_of`, plus the per-row rule-applied and
+lifecycle emitters, then wave 2's `cumulative` review and PR.
 
 ## The Program
 
