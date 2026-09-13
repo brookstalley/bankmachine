@@ -175,7 +175,7 @@ waves 2–3 that is **not** Medium: it was derived and argued in
 - [x] Chunk 06: What a holdings answer must disclose about itself
 - [x] Chunk 07: `balance_history` — one series, read two ways
 - [x] Chunk 08: Net worth, and the two ways it can be quietly wrong
-- [ ] Chunk 09: Holdings and the balance series leave `query.py` (a pure move, #115)
+- [x] Chunk 09: Holdings and the balance series leave `query.py` (a pure move, #115)
 - [ ] Chunk 10: An investment account's activity counts as coverage (#107)
 
 Context: Wave 1 (chunks 01-04) merged to `develop` as PR #114 on 2026-09-13; the branch
@@ -1004,6 +1004,17 @@ Tests are the floor, and three things here are not testable from a fixture:
     `[DECISION: re-aim rather than delete | surfaced while reading the guard before building this
     chunk, 2026-09-13 | user can veto]`. The guard's purpose, which is that the cannot-answer list
     matches what the tools do, survives. The old sentence it held does not.
+  - 🔴 **Carried from Chunk 09's review (`rev-20260913T234353Z-a12c5cf0`), riding this chunk's commit
+    rather than buying a round of its own.** Record each as accepted, citing this commit, once it
+    lands:
+    - **R-2 (warning):** `docs/connecting-an-mcp-client.md` and `envelope.py` still describe a
+      stopped investments feed as "investments stopped while transactions did not". Since
+      `d1d9a96` the rule is that the last investments attempt archived no holdings reply. Correct
+      both to that rule.
+    - **R-1/R-4:** `_POSITIONS_FROZE` is used only by `list_holdings`, so by Chunk 09's own
+      boundary rule it moves to `query_holdings.py`.
+    - **R-3:** the `mcp.py` and `envelope.py` docstrings still say every tool runs through
+      `query.py`. `_holdings_totals` refers to `_flow_class_totals` as if the two shared a file.
 - **Tests** (`tests/test_account_coverage.py`, beside the cases they refine):
   - an investment-only account reports its trade count and holdings day. Neither listing names it,
     and `query_transactions(account_id=N)` still warns about it
