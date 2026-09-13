@@ -814,6 +814,8 @@ verified, it has been demonstrated.
 
 ## A fixture that cannot reach the subject passes forever: mutate the code, and check which branch the fixture actually took
 
+**Instances:**
+
 - *2026-09-13, the derivation-version go-red case.* It reverted `DERIVATION_VERSION` by one and
   pointed at an upgrade test whose fixture stamps rows at a fixed literal version, which was correct
   when written. Two bumps later the fixture sat two versions back, so a single reverted bump still

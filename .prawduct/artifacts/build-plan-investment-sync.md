@@ -174,7 +174,7 @@ waves 2–3 that is **not** Medium: it was derived and argued in
 - [x] Chunk 05: `list_holdings` — positions, under one strict row shape
 - [x] Chunk 06: What a holdings answer must disclose about itself
 - [x] Chunk 07: `balance_history` — one series, read two ways
-- [ ] Chunk 08: Net worth, and the two ways it can be quietly wrong
+- [x] Chunk 08: Net worth, and the two ways it can be quietly wrong
 
 Context: Wave 1 (chunks 01-04) merged to `develop` as PR #114 on 2026-09-13; the branch
 continues. VRF-020/021 (production-only) are re-raised and pending, and with VRF-022 (the holdings
@@ -207,7 +207,20 @@ It also carries R-1 to R-5, the double-count guard and the magnitude go-red case
 -7716415 on four complete days, the 14 relinked accounts are named with that sum, and holdings
 total 2544640 over 13 positions. The go-red harness caught 210 of 211. The survivor was the
 version-bump case, which went blind because its fixture sat two versions back; it is retargeted at a
-rebuild test for this bump. Its cumulative review, the wave 3 PR gate, follows the commit.
+rebuild test for this bump.
+
+Chunk 08 is committed as `30a28cf` plus `d1d9a96`. Its cumulative review
+(`rev-20260913T213037Z-b39388c0`, waves 2 and 3 together) raised 1 blocking, 3 warnings and 5 notes:
+
+- **R-6 (blocking):** a record-lint false positive.
+- **R-1:** a midnight-UTC false warning in `positions_not_current`. Its fix changed R-3's rule to
+  "the last attempt archived no holdings reply", recorded as a decision above.
+- **R-3, R-4, R-5/R-7:** fixed in `d1d9a96`.
+- **R-2 and R-8:** filed as #115 and #116.
+
+The `verify-resolutions` pass (`rev-20260913T215727Z-da2ca441`) found nothing further. The gate passed
+at 1583, and the PR coverage gate is satisfied. All eight chunks are done. The PR (one for waves 2
+and 3, or two) is the owner's call. It blocks on VRF-020/021 (production-only), VRF-022 and VRF-023.
 🔴 A wave 2 PR opened before wave 3 lands is cut from `1320344`.
 
 ## The Program
