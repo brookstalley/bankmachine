@@ -22,7 +22,7 @@ artifact; §0 and §5 of `docs/system-requirements.md` carry that content.
 
 **Build status** *(2026-09-08)*. The **CLI exists** through build step 4 — `store`, `connector`,
 `sync shell`, `enroll`, `connections`, `sync run`, `mcp`. The **MCP surface exists in first slice**:
-six of the eight tools below are implemented and two are specification only, recorded as a dated
+seven of the eight tools below are implemented and one is specification only, recorded as a dated
 descope under the tool table. This contract is therefore *description* for most of the CLI, *both*
 for the shipped tools, and *specification* for the rest — and each operation below
 says which.
@@ -264,7 +264,7 @@ codes are a machine contract**, not just operator ergonomics.
 
 ## Operations
 
-### MCP tool surface — the eight tools (§5) · *six built, two specified*
+### MCP tool surface — the eight tools (§5) · *seven built, one specified*
 
 🔴 **Read-only over everything the aggregator produced; no mutation tool reaches a derived row.**
 (Vetting a comparable server surfaced 19 mutation tools including `delete_transaction` with no undo.
@@ -289,10 +289,10 @@ Raw-row access exists but is paginated and hard-capped.
 
 Every tool is safe and idempotent, trivially — nothing writes.
 
-> **Amendment (2026-09-08, build step 7's first slice; revised 2026-09-09 and 2026-09-13).** 🔴 **Six
-> of these eight ship; two do not yet.** Built: `get_pipeline_health`, `list_accounts`,
-> `list_holdings`, `query_transactions`, `money_summary`, `get_coverage_report`.
-> Not built: `balance_history`, `find_recurring`.
+> **Amendment (2026-09-08, build step 7's first slice; revised 2026-09-09 and 2026-09-13).** 🔴 **Seven
+> of these eight ship; one does not yet.** Built: `get_pipeline_health`, `list_accounts`,
+> `list_holdings`, `balance_history`, `query_transactions`, `money_summary`, `get_coverage_report`.
+> Not built: `find_recurring`.
 >
 > Recorded as a descope rather than left to be noticed, because the same commit updated the README
 > and `architecture.md` to say the MCP surface was "built and serving" — which is true of a surface
@@ -337,6 +337,23 @@ Every tool is safe and idempotent, trivially — nothing writes.
 > 011's `refused_holdings`), and `account_no_longer_active` for a position on an account that has
 > stopped being reported. The coverage surface's counts are the TRANSACTIONS feed's and now say so;
 > an investment-only account reading uncovered there remains open as #107.
+
+> **Amendment (2026-09-13, investment sync, wave 3).** 🔴 **`balance_history` is BUILT; seven of
+> these eight ship.** It keeps its name, and the net-worth question's selection cost is accepted
+> and bought back by a description that opens with it. One series, read two ways under one strict
+> row shape (§ *The published field shapes*): a row per account per day a balance was captured,
+> and a NET-WORTH row per day per currency marked by a null `account_id`. Assets and liabilities
+> split by `balance_class`; `net = assets - liabilities` at both levels.
+> **A net-worth row exists only for a complete day** -- every account it counts was captured on it
+> -- and a withheld one is named under `rule-applied`. An active account counts from its first
+> capture onward; an account no longer active counts only through its last capture, which
+> `account_no_longer_active` names. A day with no capture is absent at both levels.
+> It is windowed, capped and paged like `query_transactions`, but its window is reconciled against
+> the days BALANCES were captured, its cursor is a keyset over its own order and refuses a
+> transactions cursor, and it carries no `transactions_in_effective_window`. The lifecycle
+> treatment the fifth norm requires of a total over balances -- include and flag, with the
+> magnitude -- is the plan's Chunk 08; until then a non-active account's exclusion is stated rather
+> than quantified.
 
 🔴 **Two of these eight are the verification surface, not the analysis surface.** `get_pipeline_health`
 and `get_coverage_report` exist so the analyst agent can **establish completeness *before* answering**.
@@ -427,7 +444,10 @@ overlap", which is a different statement and needs to stay distinguishable from 
 
 **The window is clamped, and the clamp is reportorial rather than selective.** `effective` is the
 requested window intersected with `[earliest covered date, covered end]`, where the covered end is
-today *or the last transaction date when that is later*. Nothing narrows a SQL predicate, and the
+today *or the last transaction date when that is later*. 🔴 **Covered by the series the tool reads:**
+`balance_history` is clamped to its first and last CAPTURED day, never to the transactions' span —
+balances begin at enrollment and transactions years earlier, so a transactions clamp would claim
+coverage over days no balance exists for. Nothing narrows a SQL predicate, and the
 guarantee a consumer gets is the one that matters: **every returned row lies inside
 `effective_window`** — see the snapshot qualifier below for the one interleaving that can move the
 reported bound.
@@ -499,8 +519,9 @@ revisit trigger. What `build` answers is "which code answered me", which belongs
 
 🔴 **Every capped tool carries `truncation`** — `{returned, matching, truncated}` — and a tool that
 returns everything it finds carries no such key at all. Absence means "this tool is not capped", so a
-consumer branching on the key gets a true answer either way. `query_transactions` is the only capped
-tool today; aggregates carry no block, because the row cap does not apply to them.
+consumer branching on the key gets a true answer either way. `query_transactions` and
+`balance_history` are the capped, paged tools; `money_summary` caps its group list and issues no
+cursor, and `rows_truncated` names what each one counts — transactions, series rows or groups.
 
 **`returned` is the count of rows actually in the payload**, derived from the rows themselves rather
 than from the caller's `limit` — a `limit` above the hard cap is clamped, so the two are not the same
@@ -550,7 +571,7 @@ the whole request; at the 200k figure above that is one further ~89ms on a call 
 ### A truncated answer carries the route to the rest (#17)
 
 🔴 **A truncated answer carries `truncation.next_cursor`, when and only when `truncated` is true.**
-The caller passes it straight back as `query_transactions`'s optional `cursor` argument, with the
+The caller passes it straight back as the optional `cursor` argument of the tool that issued it, with the
 same window and account, and repeats until `truncated` is false — at which point no `next_cursor` is
 present. **The key's presence is the loop condition**: a consumer pages while it is there and stops
 when it is gone, without comparing two counts to decide. Visibility without a route past the cap
@@ -568,7 +589,8 @@ itself and an agent quoting the final page answered "90 transactions" to a quest
 question, so `remaining` and `matching` are one statement and one query.
 
 🔴 **A keyset, never an offset.** The cursor is opaque state over `(posted_date, transaction_id)`,
-the total order rows already come back in. An offset shifts under a concurrent sync — one insert
+the total order rows already come back in — on `balance_history`, over `(day, net-worth row first,
+account, currency)`, with its own scheme tag so each tool refuses the other's cursor. An offset shifts under a concurrent sync — one insert
 between two pages and the caller sees a row twice and never sees another — which would reintroduce
 this cycle's own defect through a new door: a paged answer that reads as complete and is not.
 
@@ -599,9 +621,10 @@ call, which the Direction above forbids.
 `account_id` — per-account coverage is its own change (#19), and shipping half of it here would leave
 that work amending a field this one just added. Narrowing `coverage.transactions` in place would be
 the repurpose the evolution rules forbid: a consumer still reading it would get a wrong answer rather
-than an error. The sibling is present on exactly the answers that carry `effective_window`, including
+than an error. The sibling is present on exactly the answers windowed over TRANSACTIONS, including
 when the datastore cannot be read, so the key set a consumer branches on never depends on the store's
-health.
+health. `balance_history` is windowed and does not carry it: a count of transactions beside a
+balance series would read as a count of its rows.
 
 ### An aggregate says which money actually left, and it classifies rather than filters (#18)
 
@@ -953,6 +976,18 @@ here.
 | `closed_date` | string, nullable | as on `list_accounts` |
 | `last_seen_in_roster` | string, nullable | as on `list_accounts` |
 | `roster_last_observed` | string, nullable | as on `list_accounts` |
+
+**Fields — `rows[]`** *(`balance_history`)*. One strict shape at both levels, every field present on
+every row.
+
+| Field | Type | Means |
+|---|---|---|
+| `date` | string | the day the balance was CAPTURED, `YYYY-MM-DD`. A day with no capture has no row at either level |
+| `account_id` | integer, nullable | the account, as `list_accounts` publishes it. 🔴 **Null marks a NET-WORTH row**: every account counted in `currency` that day, given only when every one of them was captured on it |
+| `assets_minor_units` | integer | in MINOR UNITS, the balance of asset-class accounts (`balance_class`). An overdrawn asset account reads negative here |
+| `liabilities_minor_units` | integer | in MINOR UNITS, what liability-class accounts owe, as a positive amount. An account in credit reads negative here |
+| `net_minor_units` | integer | in MINOR UNITS and signed: `assets_minor_units - liabilities_minor_units`, and on an account row the account's own signed balance |
+| `currency` | string | the currency all three are in. Net worth is per currency, never summed across them |
 
 **Fields — `rows[]`** *(`query_transactions`)*.
 
@@ -1354,9 +1389,10 @@ Retention: additive-first; removal of a `stable` member defers to a major versio
 The public contract, declared rather than inferred. Members not listed are internal and carry no
 promise. `experimental` means *this may break* — removing one is the policy working, not a violation.
 
-**MCP tools** — all `experimental` until the §7 verification gate passes. As of 2026-09-13 six of
+**MCP tools** — all `experimental` until the §7 verification gate passes. As of 2026-09-13 seven of
 the eight are implemented (`get_pipeline_health`, `list_accounts`, `list_holdings`,
-`query_transactions`, `money_summary`, `get_coverage_report`) and two are still specification only;
+`balance_history`, `query_transactions`, `money_summary`, `get_coverage_report`) and one is still
+specification only;
 see the amendment under the tool table above for what is descoped and why. `experimental` therefore
 means two different things in this list, and the distinction is worth keeping in view: for the
 shipped tools it means *this may break*, and for the rest it means *this does not exist yet*:

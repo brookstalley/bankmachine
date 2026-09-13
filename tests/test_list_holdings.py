@@ -603,12 +603,14 @@ def test_a_days_first_capture_recording_a_position_is_not_named_absent(enrolled:
     )
 
 
-def _left_behind_by_a_newer_capture(config: Config) -> set[int]:
+def _left_behind_by_a_newer_capture(
+    config: Config, *, transactions_landed: UtcInstant = CAPTURED_LATER
+) -> set[int]:
     """Two captures of one connection, the newer listing only one account's positions.
 
-    Prices are fresh on both days and the transactions land with the newer
-    capture, so the only thing old about the other account is that the newer
-    capture listed nothing for it. Returns that account's ids.
+    Prices are fresh on both days and, by default, the transactions land with the
+    newer capture, so the only thing old about the other account is that the
+    newer capture listed nothing for it. Returns that account's ids.
     """
     earlier = _priced(recorded(), CAPTURED.date())
     _seed(config, earlier)
@@ -616,7 +618,7 @@ def _left_behind_by_a_newer_capture(config: Config) -> set[int]:
     later = _priced(copy.deepcopy(earlier), CAPTURED_LATER.date())
     later["holdings"] = [h for h in later["holdings"] if h["account_id"] == moved]
     _seed(config, later, CAPTURED_LATER)
-    _transactions_landed(config, CAPTURED_LATER)
+    _transactions_landed(config, transactions_landed)
     left = {
         row["account_id"]
         for row in query.list_holdings(config).rows
@@ -645,6 +647,34 @@ def test_an_account_left_out_of_a_newer_capture_is_not_blamed_on_the_feed(
             f"capture, {CAPTURED_LATER.date().isoformat()}, listed none for it)"
         ) in details[0]
     assert "stopped arriving" not in details[0], "a working feed was named as a stopped one"
+
+
+def test_an_account_left_out_of_a_newer_capture_that_is_itself_behind_is_named_for_both(
+    enrolled: Config,
+) -> None:
+    """🔴 Left out of a newer capture, on a connection whose newest capture is ITSELF behind.
+
+    Both facts hold. Saying only that a newer capture listed nothing for it --
+    "the feed is working" -- is false here: the transactions landed after every
+    capture, so the investments feed has stopped as well, and the account's
+    positions may be gone OR merely unseen.
+    """
+    landed = utc_instant(CAPTURED_LATER + timedelta(days=2))
+    left = _left_behind_by_a_newer_capture(enrolled, transactions_landed=landed)
+
+    details = _warnings(enrolled, "positions_not_current")
+
+    assert len(details) == 1
+    for account_id in left:
+        assert (
+            f"{account_id} (positions from {CAPTURED.date().isoformat()}; its connection's newest "
+            f"capture, {CAPTURED_LATER.date().isoformat()}, listed none for it)"
+        ) in details[0]
+        assert (
+            f"{account_id} (captured {CAPTURED.date().isoformat()}, its connection's transactions "
+            f"landed {landed.date().isoformat()})"
+        ) in details[0], "the stopped feed went unsaid for an account a newer capture left out"
+    assert "The feed is working" not in details[0], "a stopped feed was called a working one"
 
 
 def test_a_closed_account_left_out_of_a_newer_capture_is_named_only_as_inactive(

@@ -140,6 +140,11 @@ either an asset or a liability, so its split is degenerate rather than absent, a
 tool answering *"what is my net worth over time"* would be reached as `balance_history`, which is
 worse at selection than `net_worth` is. The shape rule fixes where the split goes and says nothing
 about the name. Left to the build with the constraint recorded.
+**Resolved 2026-09-13 (owner, investment-sync Chunk 07): the name stays `balance_history`.** The
+selection cost is accepted, and the tool description buys it back by opening with "net worth over
+time". The wire spells the amount fields `assets_minor_units`, `liabilities_minor_units` and
+`net_minor_units`, per the surface's convention that a field in minor units says so; the shape above
+used the store's column spelling.
 
 ### The one split the rule was expected to merge, and did not
 

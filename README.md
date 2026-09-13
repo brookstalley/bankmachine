@@ -38,8 +38,8 @@ rather than a formality.
 multi-user, not distributed.
 
 **Status:** enrollment, sync and the MCP server work end to end — build steps 1–4 of
-`docs/system-requirements.md` §8 are complete. Six of the eight specified MCP tools are serving
-(§5); the other two are recorded as descoped in `.prawduct/artifacts/api-contract.md`.
+`docs/system-requirements.md` §8 are complete. Seven of the eight specified MCP tools are serving
+(§5); the other one is recorded as descoped in `.prawduct/artifacts/api-contract.md`.
 Step 5 is built (balances, holdings and investment transactions land on every sync). Step 6's repair
 has landed — `connections reauth <id>` renews an expired login through an update-mode session
 without losing the connection's history or cursor — alongside the connection health and

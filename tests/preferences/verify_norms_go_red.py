@@ -91,6 +91,7 @@ AGGREGATE_TESTS = "tests/test_money_summary.py"
 COVERAGE_TESTS = "tests/test_account_coverage.py"
 LIFECYCLE_TESTS = "tests/test_account_lifecycle.py"
 HOLDINGS_TESTS = "tests/test_list_holdings.py"
+BALANCE_TESTS = "tests/test_balance_history.py"
 INVESTMENT_DERIVER_TESTS = "tests/connector/test_investment_derivers.py"
 PENDING_TESTS = "tests/test_pending_semantics.py"
 BACKUP = pathlib.Path("src/bankmachine/store/backup.py")
@@ -1706,9 +1707,94 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "positions_not_current: a capture behind its connection's transactions is named",
         QUERY,
-        "            elif captured < landed.get(entry.connection_id, captured):",
-        "            elif False:",
+        "            if newest_capture < landed.get(entry.connection_id, newest_capture):",
+        "            if False:",
         f"{HOLDINGS_TESTS}::test_a_capture_older_than_its_connections_transactions_is_named",
+    ),
+    (
+        # Whether the feed stopped is the connection's fact, so an account a newer
+        # capture left out still carries it; as an `elif` it was silently dropped.
+        "positions_not_current: a left-out account on a stopped feed is named for both",
+        QUERY,
+        "            if newest_capture < landed.get(entry.connection_id, newest_capture):",
+        "            elif newest_capture < landed.get(entry.connection_id, newest_capture):",
+        f"{HOLDINGS_TESTS}::"
+        "test_an_account_left_out_of_a_newer_capture_that_is_itself_behind_is_named_for_both",
+    ),
+    (
+        # A net worth summed over a partial day is a wrong figure with no signal.
+        "balance_history: a day an account it counts was not captured has no net-worth row",
+        QUERY,
+        "            if missing:\n                withheld.append(",
+        "            if False:\n                withheld.append(",
+        f"{BALANCE_TESTS}::test_a_day_one_connection_missed_has_account_rows_and_no_net_worth_row",
+    ),
+    (
+        "balance_history: assets and liabilities split by the account's class, never its sign",
+        QUERY,
+        '    if balance_class == "liability":\n        return 0, -current_minor',
+        "    if current_minor < 0:\n        return 0, -current_minor",
+        f"{BALANCE_TESTS}::test_a_balance_is_split_by_its_accounts_class_never_by_its_sign",
+    ),
+    (
+        # Ending an active account's span at its last capture drops a stopped
+        # connection out of every later net worth, silently.
+        "balance_history: an active account counts in net worth with no end to its span",
+        QUERY,
+        "counted[key] = (calendar_date(first_day), None if active else calendar_date(last_day))",
+        "counted[key] = (calendar_date(first_day), calendar_date(last_day))",
+        f"{BALANCE_TESTS}::test_a_connection_that_stopped_syncing_withholds_every_net_worth_since",
+    ),
+    (
+        "balance_history: an account no longer active counts only through its last capture",
+        QUERY,
+        "counted[key] = (calendar_date(first_day), None if active else calendar_date(last_day))",
+        "counted[key] = (calendar_date(first_day), None)",
+        f"{BALANCE_TESTS}::"
+        "test_an_account_no_longer_listed_counts_only_through_its_last_capture_and_is_named",
+    ),
+    (
+        "balance_history: the window is clamped to the days balances were captured",
+        QUERY,
+        '    if requested_window is not None and window_series == "balances":',
+        "    if False:",
+        f"{BALANCE_TESTS}::test_the_window_is_clamped_to_the_days_balances_were_captured",
+    ),
+    (
+        "balance_history: a balance window carries no count of transactions",
+        QUERY,
+        '    if window is not None and window_series == "transactions":',
+        "    if window is not None:",
+        f"{BALANCE_TESTS}::test_the_window_is_clamped_to_the_days_balances_were_captured",
+    ),
+    (
+        "balance_history: an unreadable store's balance window carries no count of transactions",
+        QUERY,
+        'if requested_window is not None and window_series == "transactions"\n',
+        "if requested_window is not None\n",
+        f"{BALANCE_TESTS}::test_an_unreadable_store_answers_empty_with_the_windowed_capped_shape",
+    ),
+    (
+        "balance_history: narrowed to one account, the answer carries no net-worth row",
+        QUERY,
+        "captures, counted=counted, aggregate=account_id is None",
+        "captures, counted=counted, aggregate=True",
+        f"{BALANCE_TESTS}::"
+        "test_narrowed_to_one_account_the_answer_is_its_series_and_no_net_worth_row",
+    ),
+    (
+        "rows_truncated names what the capped tool counts",
+        ENVELOPE,
+        "{self.matching} {self.counting} match this request",
+        "{self.matching} transactions match this request",
+        f"{BALANCE_TESTS}::test_a_long_series_pages_to_every_row_exactly_once",
+    ),
+    (
+        "the primer no longer calls a balance history unanswerable",
+        MCP,
+        "THIS SERVER CANNOT ANSWER: recurring-charge detection",
+        "THIS SERVER CANNOT ANSWER: balance history; recurring-charge detection",
+        f"{BALANCE_TESTS}::test_the_primer_no_longer_calls_a_balance_history_unanswerable",
     ),
     (
         "lifecycle norm: a position on a non-active account says so",

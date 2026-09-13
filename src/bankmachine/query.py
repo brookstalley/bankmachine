@@ -41,10 +41,13 @@ from bankmachine.envelope import (
     Answer,
     Caveat,
     Cursor,
+    SeriesCursor,
     Truncation,
     Window,
+    WindowSeries,
     iso_or_none,
     resolve_window,
+    series_position,
 )
 from bankmachine.logging_setup import get_logger
 from bankmachine.store import lineage, transfers
@@ -1680,8 +1683,15 @@ def _answer(
     totals: list[dict[str, Any]] | None = None,
     extra_caveats: list[Caveat] | None = None,
     lifecycle: dict[int, AccountLifecycle] | None = None,
+    window_series: WindowSeries = "transactions",
 ) -> Answer:
     """One answer, and the one place a window is reconciled against coverage.
+
+    `window_series` says which series a windowed answer read. 🔴 A balance window
+    is clamped to the days balances were captured, never to the transactions'
+    span, and carries no `transactions_in_effective_window`: that sibling counts
+    transactions, and beside a balance series it would read as a count of the
+    rows this answer is about.
 
     `requested_window` is a required keyword with no default: `None` means this
     tool is not windowed, and it has to be written. Resolution lives here rather
@@ -1703,6 +1713,15 @@ def _answer(
     """
     now = now_utc()
     coverage = _coverage(conn, lifecycle=lifecycle)
+    span: tuple[date | None, date | None] | None = None
+    if requested_window is not None and window_series == "balances":
+        first, last = conn.execute(
+            select(func.min(balances_daily.c.as_of_date), func.max(balances_daily.c.as_of_date))
+        ).one()
+        span = (
+            None if first is None else calendar_date(first),
+            None if last is None else calendar_date(last),
+        )
     window = (
         None
         if requested_window is None
@@ -1711,10 +1730,11 @@ def _answer(
             until=requested_window[1],
             coverage=coverage,
             as_of=now,
+            span=span,
         )
     )
     covered = None if window is None else window.covered_bounds()
-    if window is not None:
+    if window is not None and window_series == "transactions":
         # 🔴 A SIBLING, never a narrowing of `coverage["transactions"]`, which
         # keeps its store-wide meaning. `api-contract.md` forbids repurposing a
         # field in red for the reason that bites here: a consumer still reading
@@ -1758,6 +1778,7 @@ def _unusable(
     requested_window: tuple[date | None, date | None] | None,
     truncation: Truncation | None,
     totals: list[dict[str, Any]] | None = None,
+    window_series: WindowSeries = "transactions",
 ) -> Answer:
     """🔴 An answer about a datastore that cannot be read. AC-ARCH.3.
 
@@ -1834,7 +1855,12 @@ def _unusable(
             # dropped this sibling would move the wire shape precisely when the
             # store is unreadable, and a consumer branching on the key would
             # take the "unwindowed tool" branch for a tool that has a window.
-            **({} if requested_window is None else {"transactions_in_effective_window": 0}),
+            # Only on a window over transactions, which is what the count counts.
+            **(
+                {"transactions_in_effective_window": 0}
+                if requested_window is not None and window_series == "transactions"
+                else {}
+            ),
         },
     )
 
@@ -2140,10 +2166,29 @@ def _positions_not_current_caveat(
             f"capture, {newest.isoformat()}, listed none for it)"
             for account_id, (captured, newest) in sorted(left_behind.items())
         )
+        # 🔴 "The feed is working" only for the accounts it is true of. One whose
+        # connection's newest capture is itself behind the transactions is named
+        # again below, and for it the positions may be gone OR merely unseen.
+        stalled = sorted(left_behind.keys() & captured_behind.keys())
+        working = sorted(left_behind.keys() - captured_behind.keys())
+        if not stalled:
+            feed = "The feed is working; the positions may be gone"
+        elif not working:
+            feed = (
+                "That newer capture is itself older than the connection's transactions, as "
+                "named below, so the feed has stopped as well"
+            )
+        else:
+            feed = (
+                f"For account(s) {', '.join(map(str, working))} the feed is working and the "
+                f"positions may be gone; for account(s) {', '.join(map(str, stalled))} that "
+                f"newer capture is itself older than the connection's transactions, as named "
+                f"below, so the feed has stopped as well"
+            )
         parts.append(
             f"account(s) {named} were left out of a newer capture of their own connection, so "
             f"these rows are what each held on that earlier day and it may hold none of them "
-            f"now. The feed is working; the positions may be gone"
+            f"now. {feed}"
         )
     if captured_behind:
         named = ", ".join(
@@ -2402,7 +2447,11 @@ def list_holdings(config: Config) -> Answer:
             newest_capture = connection_newest[entry.connection_id]
             if captured < newest_capture:
                 left_behind[account_id] = (captured, newest_capture)
-            elif captured < landed.get(entry.connection_id, captured):
+            # 🔴 Not an `elif`. Whether the feed stopped is a fact about the
+            # CONNECTION's newest capture, so it holds for an account a newer
+            # capture left out as much as for one it listed -- and for that
+            # account "the feed is working" alone would be false.
+            if newest_capture < landed.get(entry.connection_id, newest_capture):
                 captured_behind[account_id] = (captured, landed[entry.connection_id])
         not_active = [lifecycle[a] for a in sorted(latest) if not lifecycle[a].active]
         return _answer(
@@ -2423,6 +2472,335 @@ def list_holdings(config: Config) -> Answer:
                 + _roster_observed_empty_caveat(not_active)
             ),
             lifecycle=lifecycle,
+        )
+
+
+#: What a `balance_history` row is, where a sentence counts them.
+_BALANCE_ROWS = "balance series rows"
+
+#: What the lifecycle freeze means on an answer over the balance SERIES.
+_SERIES_ENDS = (
+    "Each one's balance series ends on the last day it was captured, and a net-worth row "
+    "(`account_id` null) counts it only through that day -- so a net worth read across that "
+    "day moves by the account's last balance with no activity behind it. Name those accounts "
+    "beside any net worth you quote from a later day"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class BalanceCapture:
+    """One recorded balance, as the series reads it."""
+
+    account_id: int
+    day: CalendarDate
+    current_minor: int
+    currency: str
+    balance_class: str
+
+
+@dataclass(frozen=True, slots=True)
+class WithheldNetWorth:
+    """A day in one currency whose net-worth row was withheld, and the accounts it lacked."""
+
+    day: CalendarDate
+    currency: str
+    missing: tuple[int, ...]
+
+
+def _split(balance_class: str, current_minor: int) -> tuple[int, int]:
+    """`(assets, liabilities)` for one balance, partitioned by its account's CLASS.
+
+    🔴 By `balance_class`, never by the sign of the balance. `data-model.md`
+    records that column as existing because net worth is its consumer, and an
+    operator's reclassification of an account has to reach the report. So an
+    overdrawn asset account is negative ASSETS, and a card in credit is negative
+    LIABILITIES -- the sign stays where the money is, and `net` is unchanged by
+    which of the two it lands in.
+    """
+    if balance_class == "liability":
+        return 0, -current_minor
+    return current_minor, 0
+
+
+def compose_balance_series(
+    captures: Sequence[BalanceCapture],
+    *,
+    counted: dict[tuple[int, str], tuple[CalendarDate, CalendarDate | None]],
+    aggregate: bool,
+) -> tuple[list[tuple[tuple[int, int, str], dict[str, Any]]], list[WithheldNetWorth]]:
+    """Both readings of one series -- per account and net worth -- from one set of captures.
+
+    Pure, so the arithmetic is checkable over generated series without a store.
+    Returns every row keyed by `series_position` and in that order, beside the
+    days whose net-worth row was withheld.
+
+    `counted` is each (account, currency)'s span in net worth: its first capture
+    anywhere in the store, and the last day it counts -- `None` for an account
+    still active, whose span is open-ended.
+
+    🔴 **A net-worth row exists only for a COMPLETE day.** Every account counted
+    in that currency on that day must have been captured on it, or the row is
+    withheld and named. A net worth summed without an account it counts is the
+    most believable wrong number this tool could emit, and a partial day is
+    ordinary -- one connection's sync fails and the others' succeed.
+
+    🔴 **An active account's span has no end.** Ending every span at its last
+    capture would let a connection whose sync stopped three days ago drop out of
+    the last three days' totals, silently -- the failure the rule above exists
+    to refuse, re-entering through the span. Only an account no longer active
+    stops counting after its last capture, and the caller names it.
+
+    🔴 **`net` is summed from the signed balances, not derived from the split.**
+    `net = assets - liabilities` then holds as a fact two sums agree on, which a
+    test can check, rather than as a subtraction that agrees with itself.
+    """
+    rows: list[tuple[tuple[int, int, str], dict[str, Any]]] = []
+    by_day: dict[tuple[CalendarDate, str], dict[int, BalanceCapture]] = {}
+    for capture in captures:
+        assets, liabilities = _split(capture.balance_class, capture.current_minor)
+        rows.append(
+            (
+                series_position(capture.day, capture.account_id, capture.currency),
+                _series_row(
+                    capture.day,
+                    capture.account_id,
+                    capture.currency,
+                    assets=assets,
+                    liabilities=liabilities,
+                    net=capture.current_minor,
+                ),
+            )
+        )
+        by_day.setdefault((capture.day, capture.currency), {})[capture.account_id] = capture
+    withheld: list[WithheldNetWorth] = []
+    if aggregate:
+        for (day, currency), held in by_day.items():
+            required = {
+                account_id
+                for (account_id, counted_in), (first, last) in counted.items()
+                if counted_in == currency and first <= day and (last is None or day <= last)
+            }
+            missing = tuple(sorted(required - held.keys()))
+            if missing:
+                withheld.append(WithheldNetWorth(day=day, currency=currency, missing=missing))
+                continue
+            splits = [_split(c.balance_class, c.current_minor) for c in held.values()]
+            rows.append(
+                (
+                    series_position(day, None, currency),
+                    _series_row(
+                        day,
+                        None,
+                        currency,
+                        assets=sum(assets for assets, _ in splits),
+                        liabilities=sum(liabilities for _, liabilities in splits),
+                        net=sum(c.current_minor for c in held.values()),
+                    ),
+                )
+            )
+    rows.sort(key=lambda keyed: keyed[0])
+    withheld.sort(key=lambda w: (w.day, w.currency))
+    return rows, withheld
+
+
+def _series_row(
+    day: CalendarDate,
+    account_id: int | None,
+    currency: str,
+    *,
+    assets: int,
+    liabilities: int,
+    net: int,
+) -> dict[str, Any]:
+    """One row of the series, at either level, under the ONE strict shape both share."""
+    return {
+        "date": day.isoformat(),
+        # 🔴 Null marks the NET-WORTH row. Present at both levels, never dropped.
+        "account_id": account_id,
+        "assets_minor_units": assets,
+        "liabilities_minor_units": liabilities,
+        "net_minor_units": net,
+        "currency": currency,
+    }
+
+
+def _withheld_net_worth_caveat(withheld: list[WithheldNetWorth]) -> list[Caveat]:
+    """🔴 The disclosure that a net-worth row is missing ON PURPOSE, and for which accounts.
+
+    `rule-applied`, because the row was left out by a rule rather than lost: the
+    day is incomplete, and a net worth summed over what was captured would be a
+    plausible figure with nothing in it saying so. Names each missing account
+    with how many days and which span, so a long outage is one line rather than
+    a list nobody reads, and says the account rows for those days are still
+    here -- the reader's temptation is to add them up, which is the figure the
+    rule refused.
+    """
+    if not withheld:
+        return []
+    days_by_account: dict[int, list[CalendarDate]] = {}
+    for entry in withheld:
+        for account_id in entry.missing:
+            days_by_account.setdefault(account_id, []).append(entry.day)
+    named = "; ".join(
+        f"account {account_id} on {len(days)} day(s) between {min(days).isoformat()} and "
+        f"{max(days).isoformat()}"
+        for account_id, days in sorted(days_by_account.items())
+    )
+    days = sorted({entry.day for entry in withheld})
+    return [
+        Caveat(
+            kind="rule-applied",
+            detail=(
+                f"no net-worth row (`account_id` null) is given for {len(days)} day(s) between "
+                f"{days[0].isoformat()} and {days[-1].isoformat()}, because an account that net "
+                f"worth counts was not captured on them: {named}. Each is WITHHELD ON PURPOSE "
+                f"-- a net worth summed without an account it counts would be a wrong figure "
+                f"with nothing in it saying so. The account rows for those days are still "
+                f"here; do not add them up into a net worth for those days"
+            ),
+        )
+    ]
+
+
+def balance_history(
+    config: Config,
+    *,
+    since: date | None = None,
+    until: date | None = None,
+    account_id: int | None = None,
+    limit: int = 100,
+    after: SeriesCursor | None = None,
+) -> Answer:
+    """Each account's balance series, and net worth over time, from ONE read.
+
+    🔴 **One statement, both readings.** It reads each (account, currency)'s
+    first and last capture across the WHOLE store, left-joined to its captures
+    inside the window. So the rule deciding whether a day's net worth is complete
+    and the rows it judges come from one snapshot, and an account captured
+    before the window but never inside it still counts on the days it should.
+
+    🔴 **A day with no capture is absent, never smoothed.** Nothing carries a
+    balance across a day nobody looked; the series has no row for it at either
+    level, and a partial day has account rows and a withheld net-worth row.
+
+    With `account_id` the answer is that account's series and no net-worth row:
+    a net worth of one account is its balance, and a second row per day saying
+    so is a row a caller would add in twice.
+
+    Investment accounts are in these balances already -- the institution reports
+    a brokerage account's value like any other -- so nothing here reads holdings.
+    """
+    problem = _readable(config)
+    if problem is not None:
+        return _unusable(
+            config,
+            problem,
+            requested_window=(since, until),
+            truncation=Truncation.over(
+                returned=0, remaining=0, matching=0, resume_from=None, counting=_BALANCE_ROWS
+            ),
+            window_series="balances",
+        )
+    with reader_connection(config) as conn:
+        if account_id is not None and not _account_exists(conn, account_id):
+            raise UnknownAccountError(
+                f"account_id {account_id} does not exist. list_accounts reports the ids that do."
+            )
+        spans = select(
+            balances_daily.c.account_id,
+            balances_daily.c.currency,
+            func.min(balances_daily.c.as_of_date).label("first_day"),
+            func.max(balances_daily.c.as_of_date).label("last_day"),
+        ).group_by(balances_daily.c.account_id, balances_daily.c.currency)
+        if account_id is not None:
+            spans = spans.where(balances_daily.c.account_id == account_id)
+        span = spans.subquery()
+        captured = balances_daily.alias("captured")
+        inside = [
+            captured.c.account_id == span.c.account_id,
+            captured.c.currency == span.c.currency,
+        ]
+        if since is not None:
+            inside.append(captured.c.as_of_date >= calendar_date(since))
+        if until is not None:
+            inside.append(captured.c.as_of_date <= calendar_date(until))
+        result = conn.execute(
+            select(
+                span.c.account_id,
+                span.c.currency,
+                span.c.first_day,
+                span.c.last_day,
+                accounts.c.balance_class,
+                captured.c.as_of_date,
+                captured.c.current_minor,
+            ).select_from(
+                span.join(accounts, accounts.c.account_id == span.c.account_id).outerjoin(
+                    captured, and_(*inside)
+                )
+            )
+        ).all()
+        lifecycle = _account_lifecycle(conn)
+        counted: dict[tuple[int, str], tuple[CalendarDate, CalendarDate | None]] = {}
+        captures: list[BalanceCapture] = []
+        for held, currency, first_day, last_day, balance_class, day, current in result:
+            key = (int(held), str(currency))
+            active = lifecycle[key[0]].active
+            counted[key] = (calendar_date(first_day), None if active else calendar_date(last_day))
+            if day is not None:
+                captures.append(
+                    BalanceCapture(
+                        account_id=key[0],
+                        day=calendar_date(day),
+                        current_minor=int(current),
+                        currency=key[1],
+                        balance_class=str(balance_class),
+                    )
+                )
+        ordered, withheld = compose_balance_series(
+            captures, counted=counted, aggregate=account_id is None
+        )
+        unread = ordered if after is None else [k for k in ordered if k[0] > after.position()]
+        page = unread[: max(1, min(limit, MAX_ROWS))]
+        last = None if not page else page[-1]
+        resume_from = (
+            None
+            if last is None
+            else SeriesCursor.issued_for(
+                day=date.fromordinal(-last[0][0]),
+                row_account_id=last[1]["account_id"],
+                currency=last[1]["currency"],
+                since=since,
+                until=until,
+                account_id=account_id,
+            )
+        )
+        in_scope = sorted({held for held, _ in counted})
+        not_active = [lifecycle[held] for held in in_scope if not lifecycle[held].active]
+        undenominable = [
+            entry
+            for entry in _undenominable_accounts(conn)
+            if account_id is None or entry.account_id == account_id
+        ]
+        return _answer(
+            config,
+            conn,
+            [row for _, row in page],
+            requested_window=(since, until),
+            truncation=Truncation.over(
+                returned=len(page),
+                remaining=len(unread),
+                matching=len(ordered),
+                resume_from=resume_from,
+                counting=_BALANCE_ROWS,
+            ),
+            extra_caveats=(
+                _withheld_net_worth_caveat(withheld)
+                + _undenominable_caveat(undenominable)
+                + _not_active_caveat(not_active, consequence=_SERIES_ENDS)
+                + _roster_observed_empty_caveat(not_active)
+            ),
+            lifecycle=lifecycle,
+            window_series="balances",
         )
 
 
@@ -2845,7 +3223,9 @@ def list_transactions(
             # matched and nothing was dropped. The key stays present because its
             # absence would say this tool returns everything it finds, and there
             # is no page to resume from because there was no page.
-            truncation=Truncation.over(returned=0, remaining=0, matching=0, resume_from=None),
+            truncation=Truncation.over(
+                counting="transactions", returned=0, remaining=0, matching=0, resume_from=None
+            ),
         )
     with reader_connection(config) as conn:
         # 🔴 Ordered AFTER the readability check on purpose: an unreadable store
@@ -3025,6 +3405,7 @@ def list_transactions(
             # `returned` is derived from the rows themselves rather than from
             # `limit`, so it cannot claim a count the payload does not contain.
             truncation=Truncation.over(
+                counting="transactions",
                 returned=len(rows),
                 remaining=remaining,
                 matching=matching,
@@ -3689,7 +4070,9 @@ def money_summary(
             config,
             problem,
             requested_window=(since, until),
-            truncation=Truncation.over(returned=0, remaining=0, matching=0, resume_from=None),
+            truncation=Truncation.over(
+                counting="groups", returned=0, remaining=0, matching=0, resume_from=None
+            ),
             totals=[],
         )
     with reader_connection(config) as conn:
@@ -3920,6 +4303,7 @@ def money_summary(
             # the group count approaches the TRANSACTION count, and the answer
             # grows without limit while `capped` reads false.
             truncation=Truncation.over(
+                counting="groups",
                 returned=len(rows),
                 remaining=len(every_group),
                 matching=len(every_group),

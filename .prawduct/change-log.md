@@ -34,6 +34,46 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-13: Net worth over time, and each account's balance history, from one series
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** the server had no answer to "what was my net worth last month". Only the latest balance per
+account was served, and the primer told an agent the question was unanswerable, although every
+day's capture has been kept in `balances_daily` since build step 3.
+
+**What changed (Chunk 07):** `balance_history` is built and keeps its name. The owner accepted the
+cost of a name that is harder to find for the net-worth question; the tool description opens with
+that question to compensate. One read returns the series two ways under one strict row shape: a row
+per account per day a balance was captured, and a net-worth row per day per currency, marked by a
+null `account_id`. Assets and liabilities split by `balance_class` rather than by the sign of the
+balance, so an overdraft is negative assets. `net = assets - liabilities` holds at both levels.
+
+- **A net-worth row is given only for a complete day.** Every account it counts must have been
+  captured that day. Otherwise the row is withheld and named under `rule-applied`, and the account
+  rows for that day remain.
+- **Which accounts a day counts.** An active account counts from its first capture onward, so a
+  connection that stopped syncing withholds every later net worth instead of dropping out of it.
+  An account no longer active counts only through its last capture, and `account_no_longer_active`
+  says so. Both refine the owner's option ("between its first and last capture") and are recorded
+  in the plan as vetoable.
+- **A day with no capture is absent at both levels.**
+
+The tool is windowed, capped and paged like `query_transactions`, which meant the envelope had to
+learn which series it describes:
+
+- `resolve_window` clamps against the days balances were captured, not the transactions' span.
+- `SeriesCursor` is a keyset over the series order, with its own scheme tag, so each tool refuses
+  the other's cursor.
+- `Truncation` names what it counts. That also corrects `money_summary`, whose `rows_truncated`
+  sentence called its groups "transactions".
+- `transactions_in_effective_window` rides only a window over transactions.
+
+`find_recurring` is now the one unbuilt tool on the wire, in the primer and in every document. The
+tool-surface guard's build-status regex accepts "one is specification only". Carried from Chunk 06:
+`list_holdings` now also names a stopped investments feed for an account left out of a newer
+capture, rather than calling that feed working.
+
 ## 2026-09-13: A holdings answer says what it cannot vouch for, and names the positions it refused
 
 <!-- prawduct: scope=investments-v1 -->

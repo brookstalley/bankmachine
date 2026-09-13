@@ -36,7 +36,7 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from bankmachine.build_id import build_identity
 from bankmachine.store.types import UtcInstant, calendar_date
@@ -53,6 +53,13 @@ STALE_AFTER = timedelta(hours=36)
 #: unrestricted resource consumption (OWASP API4). Raising it is an amendment to
 #: all three, not an edit here.
 MAX_ROWS = 500
+
+#: Which series a windowed answer reads, and so what its window is reconciled
+#: against. 🔴 Not interchangeable: balances begin the day a connection enrolled,
+#: while transactions reach back through the history the institution granted, so
+#: a balance window clamped to the transactions' span would claim coverage over
+#: days no balance was ever captured on.
+WindowSeries = Literal["transactions", "balances"]
 
 #: Warnings about the standing state of the pipeline. These ride EVERY response
 #: equally, because they describe the connection rather than the question: an
@@ -304,6 +311,7 @@ def resolve_window(
     until: date | None,
     coverage: dict[str, Any],
     as_of: UtcInstant,
+    span: tuple[date | None, date | None] | None = None,
 ) -> Window:
     """Reconcile a requested window against what the store actually holds.
 
@@ -311,6 +319,10 @@ def resolve_window(
     `[earliest transaction, today]`. An unbounded request reports that span,
     which is the case where a caller most needs the answer: "all of it" means
     nothing until you know what "all" covers.
+
+    `span` is the first and last day of the series the answer reads when that
+    series is NOT transactions; the clamp is then taken against it rather than
+    against the transaction bounds in `coverage`.
     """
     # 🔴 A transposed window is a CALLER error, not a data condition, and it is
     # the one empty window this function cannot explain: there is no boundary
@@ -335,8 +347,14 @@ def resolve_window(
     # than an implicit coercion. Today is UTC today, matching the `as_of` the
     # same answer is stamped with -- a caller comparing the two reads one clock.
     today = calendar_date(as_of.date())
-    earliest = _parse_coverage_date(coverage.get("earliest_transaction"))
-    latest = _parse_coverage_date(coverage.get("latest_transaction"))
+    earliest, latest = (
+        (
+            _parse_coverage_date(coverage.get("earliest_transaction")),
+            _parse_coverage_date(coverage.get("latest_transaction")),
+        )
+        if span is None
+        else span
+    )
 
     # 🔴 The covered span ends at TODAY, or at the last transaction when that is
     # later. `today` alone is wrong the moment a row is dated ahead of it, and
@@ -595,24 +613,7 @@ class Cursor:
     @classmethod
     def decode(cls, text: str) -> Cursor:
         """A cursor off the wire, or a refusal — never a silent fall back to page one."""
-        try:
-            payload = json.loads(base64.urlsafe_b64decode(text + "=" * (-len(text) % 4)))
-        except (ValueError, RecursionError):
-            # Base64, UTF-8 and JSON *syntax* failures all derive from
-            # `ValueError`. 🔴 One does not: `json.loads` on a deeply nested
-            # document exhausts the stack and raises `RecursionError`, which is
-            # a `RuntimeError`. Caught only as `ValueError`, that cursor escapes
-            # this refusal, escapes the boundary's narrowing, and lands in its
-            # broad catch — so a caller who mistyped an argument is answered
-            # "internal error" and told to check whether their datastore is
-            # readable. A false statement about a caller mistake is the exact
-            # outcome `InvertedWindowError` exists to prevent.
-            #
-            # `from None` because the cause is a decoder's internals, which
-            # `api-contract.md` § Error Model keeps off the wire.
-            raise MalformedCursorError(_CURSOR_REFUSAL) from None
-        if not isinstance(payload, dict) or payload.get("v") != _CURSOR_SCHEME:
-            raise MalformedCursorError(_CURSOR_REFUSAL)
+        payload = _cursor_payload(text, scheme=_CURSOR_SCHEME)
         ledger, transaction_id, request = payload.get("d"), payload.get("t"), payload.get("q")
         # 🔴 `bool` is an `int` in Python and JSON `true` decodes to one, so the
         # bool check is not defensive noise: without it a payload carrying
@@ -649,6 +650,150 @@ def parse_cursor(
     if text is None:
         return None
     cursor = Cursor.decode(text)
+    if cursor.request != _request_fingerprint(since=since, until=until, account_id=account_id):
+        raise MalformedCursorError(_CURSOR_REFUSAL)
+    return cursor
+
+
+def _cursor_payload(text: str, *, scheme: int) -> dict[str, Any]:
+    """A cursor's decoded payload under ONE scheme, or the refusal every bad cursor gets.
+
+    Shared by both cursor types so the two cannot disagree about what a
+    well-formed cursor is, and so each refuses the other's scheme tag.
+    """
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(text + "=" * (-len(text) % 4)))
+    except (ValueError, RecursionError):
+        # Base64, UTF-8 and JSON *syntax* failures all derive from
+        # `ValueError`. 🔴 One does not: `json.loads` on a deeply nested
+        # document exhausts the stack and raises `RecursionError`, which is
+        # a `RuntimeError`. Caught only as `ValueError`, that cursor escapes
+        # this refusal, escapes the boundary's narrowing, and lands in its
+        # broad catch — so a caller who mistyped an argument is answered
+        # "internal error" and told to check whether their datastore is
+        # readable. A false statement about a caller mistake is the exact
+        # outcome `InvertedWindowError` exists to prevent.
+        #
+        # `from None` because the cause is a decoder's internals, which
+        # `api-contract.md` § Error Model keeps off the wire.
+        raise MalformedCursorError(_CURSOR_REFUSAL) from None
+    if not isinstance(payload, dict) or payload.get("v") != scheme:
+        raise MalformedCursorError(_CURSOR_REFUSAL)
+    return payload
+
+
+#: The balance-series cursor's shape tag, deliberately not `_CURSOR_SCHEME`. Each
+#: decoder refuses the other's tag, so a cursor `query_transactions` issued and a
+#: caller handed to `balance_history` -- or the reverse -- is refused by name
+#: rather than resuming at a position that means something else in that series.
+_SERIES_CURSOR_SCHEME = 3
+
+
+def series_position(day: date, account_id: int | None, currency: str) -> tuple[int, int, str]:
+    """Where one balance-series row sorts: newest day first, then the day's net-worth rows.
+
+    🔴 The ONE description of the order `balance_history` returns rows in, read by
+    the query that sorts them and by the cursor that resumes them. Two spellings
+    of an order are the drift a keyset cannot survive. A net-worth row
+    (`account_id` None) keys as 0, ahead of every account, whose ids start at 1.
+    It is a total order: a day holds at most one row per account and one
+    net-worth row per currency.
+    """
+    return (-day.toordinal(), 0 if account_id is None else account_id, currency)
+
+
+@dataclass(frozen=True, slots=True)
+class SeriesCursor:
+    """Where a page of a balance series stopped.
+
+    🔴 A keyset, for `Cursor`'s reason: a sync landing between two pages adds a
+    day's rows at the NEWEST end, and an offset would shift every later page
+    under a walking caller, who would see a row twice and never see another.
+    Fingerprinted against the request it was issued for, exactly as `Cursor` is.
+    """
+
+    day: date
+    #: 0 for a net-worth row, as `series_position` keys it.
+    account_key: int
+    currency: str
+    request: str
+
+    @classmethod
+    def issued_for(
+        cls,
+        *,
+        day: date,
+        row_account_id: int | None,
+        currency: str,
+        since: date | None,
+        until: date | None,
+        account_id: int | None,
+    ) -> SeriesCursor:
+        """The only route that should build one, so the fingerprint cannot be forgotten."""
+        return cls(
+            day=day,
+            account_key=series_position(day, row_account_id, currency)[1],
+            currency=currency,
+            request=_request_fingerprint(since=since, until=until, account_id=account_id),
+        )
+
+    def position(self) -> tuple[int, int, str]:
+        """The sort key of the row this cursor names; the next page sorts strictly after it."""
+        return (-self.day.toordinal(), self.account_key, self.currency)
+
+    def encode(self) -> str:
+        """The wire form, URL-safe and unpadded for `Cursor.encode`'s reason."""
+        payload = json.dumps(
+            {
+                "v": _SERIES_CURSOR_SCHEME,
+                "d": self.day.isoformat(),
+                "a": self.account_key,
+                "c": self.currency,
+                "q": self.request,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+    @classmethod
+    def decode(cls, text: str) -> SeriesCursor:
+        """A series cursor off the wire, or a refusal — never page one under page two's name."""
+        payload = _cursor_payload(text, scheme=_SERIES_CURSOR_SCHEME)
+        day, key, currency, request = (
+            payload.get("d"),
+            payload.get("a"),
+            payload.get("c"),
+            payload.get("q"),
+        )
+        # `bool` is an `int`, and JSON `true` decodes to one; see `Cursor.decode`.
+        if (
+            not isinstance(day, str)
+            or isinstance(key, bool)
+            or not isinstance(key, int)
+            or key < 0
+            or not isinstance(currency, str)
+            or not isinstance(request, str)
+        ):
+            raise MalformedCursorError(_CURSOR_REFUSAL)
+        try:
+            parsed = date.fromisoformat(day)
+        except ValueError:
+            raise MalformedCursorError(_CURSOR_REFUSAL) from None
+        return cls(day=parsed, account_key=key, currency=currency, request=request)
+
+
+def parse_series_cursor(
+    text: str | None,
+    *,
+    since: date | None,
+    until: date | None,
+    account_id: int | None,
+) -> SeriesCursor | None:
+    """A `balance_history` cursor argument, decoded and checked against its request."""
+    if text is None:
+        return None
+    cursor = SeriesCursor.decode(text)
     if cursor.request != _request_fingerprint(since=since, until=until, account_id=account_id):
         raise MalformedCursorError(_CURSOR_REFUSAL)
     return cursor
@@ -699,11 +844,21 @@ class Truncation:
     #: truncation staying inescapable — silently, on the success path, which is
     #: the failure mode this whole surface is being corrected for. `None` means
     #: there is no page to resume from, and it has to be written.
-    resume_from: Cursor | None
+    resume_from: Cursor | SeriesCursor | None
+    #: What the rows ARE, as the `rows_truncated` sentence names them. 🔴 No
+    #: default: a series tool that inherited "transactions" would tell a caller
+    #: that transactions match a question about balances.
+    counting: str
 
     @classmethod
     def over(
-        cls, *, returned: int, remaining: int, matching: int, resume_from: Cursor | None
+        cls,
+        *,
+        returned: int,
+        remaining: int,
+        matching: int,
+        resume_from: Cursor | SeriesCursor | None,
+        counting: str,
     ) -> Truncation:
         """The only route that should build one, because a count can lag `returned`.
 
@@ -746,6 +901,7 @@ class Truncation:
             matching=max(matching, left),
             counted_during_change=remaining < returned,
             resume_from=resume_from,
+            counting=counting,
         )
 
     @property
@@ -851,7 +1007,7 @@ class Truncation:
             Caveat(
                 kind="rows_truncated",
                 detail=(
-                    f"{self.matching} transactions match this request. This answer returns "
+                    f"{self.matching} {self.counting} match this request. This answer returns "
                     f"the newest {self.returned} of the {self.remaining} still unread, so "
                     f"{self.remaining - self.returned} of them are still missing. Summing or "
                     f"counting these rows describes only what came back, not the window you "

@@ -178,14 +178,16 @@ _GUIDANCE: dict[str, _Guidance] = {
             "🔴 `detail` names which rows and why, and the reasons are NOT a closed list -- read "
             "it rather than matching on one you know. Today they include a currency this store "
             "was never told, an amount it cannot represent exactly, history from a "
-            "connection that was linked again and superseded by a newer one, and -- on "
+            "connection that was linked again and superseded by a newer one, a net-worth row "
+            "on `balance_history` for a day an account it counts was not captured on, and -- on "
             "`list_holdings`, which computes no total -- a position the store could not record"
         ),
         for_this_answer=(
             "the figure is smaller than the raw sum over the same window, and deliberately so; "
             "it will not reconcile against a total computed without the rule. On "
             "`list_holdings` the named positions are ABSENT from `rows`, so each named account "
-            "holds more than its rows show"
+            "holds more than its rows show. On `balance_history` a named day has account rows "
+            "and NO net-worth row, and adding those rows up is the figure the rule refused"
         ),
         act=(
             "🔴 say the exclusion out loud when you report the total. An exclusion silently "
@@ -194,8 +196,10 @@ _GUIDANCE: dict[str, _Guidance] = {
     ),
     "window_starts_before_coverage": _Guidance(
         means=(
-            "the window you asked for reaches back past the first date the store covers; "
-            "`detail` names where coverage begins and what this answer covered instead"
+            "the window you asked for reaches back past the first date the store covers -- on "
+            "`balance_history`, the first day a balance was captured, which is usually far "
+            "later than the first transaction; `detail` names where coverage begins and what "
+            "this answer covered instead"
         ),
         for_this_answer=(
             "the figure is computed over the covered part of your window only. "
@@ -210,8 +214,8 @@ _GUIDANCE: dict[str, _Guidance] = {
     ),
     "window_extends_past_coverage": _Guidance(
         means=(
-            "the window reaches past the covered end -- today, or the last transaction when "
-            "that is later; `detail` names it"
+            "the window reaches past the covered end -- today, or the last transaction (on "
+            "`balance_history`, the last captured day) when that is later; `detail` names it"
         ),
         for_this_answer=(
             "the same clamp from the other end: the tail of your window contributed nothing "
@@ -286,7 +290,8 @@ _GUIDANCE: dict[str, _Guidance] = {
             "emptied into another enrolled account still reads as money held, and is counted "
             "twice. Any total over balances carrying this warning states how much of itself "
             "came from such accounts. On `list_holdings`, that account's positions froze on the "
-            "day they were captured in the same way"
+            "day they were captured in the same way. On `balance_history`, it counts in a "
+            "net-worth row only through its last capture, so a later net worth leaves it out"
         ),
         act=(
             "quote the total as given AND quote the flagged magnitude beside it -- the total "
@@ -315,9 +320,10 @@ _GUIDANCE: dict[str, _Guidance] = {
         act=(
             "report each such value with its `as_of_date` and `price_as_of` beside it, and never "
             "call it today's value. Where a newer capture listed nothing for an account, say it "
-            "may hold none of those positions now -- its feed is working. Only where the "
-            "investments have stopped arriving, read that connection's `rows[].domains[]` in "
-            "`get_pipeline_health` for why."
+            "may hold none of those positions now -- its feed is working unless `detail` also "
+            "names that account's investments as stopped. Where the investments have stopped "
+            "arriving, read that connection's `rows[].domains[]` in `get_pipeline_health` for "
+            "why."
         ),
     ),
     "roster_observed_empty": _Guidance(
@@ -683,11 +689,11 @@ _ENVELOPE_SOMETIMES = (
 #: The tools `api-contract.md` specifies and this server does not serve. 🔴 They
 #: are named ON THE WIRE, not only in the documents a person reads: the human
 #: surfaces all say which tools are missing, and an agent receives none of
-#: them. Asked "what was my net worth a year ago", an agent with no notice that
-#: the tool is absent improvises from today's balances and answers with a number
-#: that has no basis -- which is the failure this whole surface exists to refuse,
-#: arriving through the one door nothing was watching.
-UNBUILT_TOOLS: tuple[str, ...] = ("balance_history", "find_recurring")
+#: them. Asked "which subscriptions am I paying for", an agent with no notice that
+#: the tool is absent improvises from a page of transactions and answers with a
+#: list that has no basis -- which is the failure this whole surface exists to
+#: refuse, arriving through the one door nothing was watching.
+UNBUILT_TOOLS: tuple[str, ...] = ("find_recurring",)
 
 _CANNOT_ANSWER = (
     "## What this server cannot answer\n\n"
@@ -704,10 +710,13 @@ _CANNOT_ANSWER = (
     "response archive keeps them, so anything asked per lot has no data path. Its buys, "
     "sells, dividends and fees are stored and read by no tool; `query_transactions` does "
     "not return them, so an investment account with no rows there may still have traded.\n"
-    "- **Balance history, or net worth over time.** Only the LATEST recorded balance per "
-    "account is served. Summing transactions backwards from it is not a balance series: it "
-    "misses everything outside the granted history window, and the store says so with "
-    "`gapped`.\n"
+    # 🔴 The series IS served, so this bullet is about the days it does not hold --
+    # the gap a model would otherwise fill by arithmetic.
+    "- **A balance on a day nothing captured it, or before its first capture.** "
+    "`balance_history` serves the balances recorded on the days a sync ran, and a day with "
+    "no capture is ABSENT from it rather than filled in. Carrying a balance across that day, "
+    "or summing transactions backwards from a later one, is not a balance: the second misses "
+    "everything outside the granted history window, and the store says so with `gapped`.\n"
     "- **Recurring-charge or subscription detection.** Nothing groups repeated charges. A "
     "hand-rolled guess over `query_transactions` is a guess, and presenting it as a "
     "subscription list is presenting an inference as a record.\n"
@@ -746,12 +755,13 @@ _ENVELOPE_NOTES = (
     "rather than re-read per call. A null `commit` means the build could not be identified, "
     "and `dirty` is then null too rather than a false claim that the tree was clean.\n"
     "- **`coverage.transactions` is always store-wide** and never narrows with the question "
-    "asked. A windowed answer adds `transactions_in_effective_window`, which is the count to "
+    "asked. A windowed answer over transactions adds `transactions_in_effective_window`, which "
+    "is the count to "
     "read against a windowed question — it is not narrowed by `account_id` either, so it is a "
     "fact about the window rather than about your filters. `truncation.matching` is the one "
     "that reflects your filters, so compare the two rather than either alone.\n"
     "- **`truncation.matching` counts the WHOLE request and does not move as you page**, so it "
-    "is the figure to quote for 'how many transactions match'. `truncation.remaining` is what "
+    "is the figure to quote for 'how many rows match'. `truncation.remaining` is what "
     "was still ahead of this page and falls page by page; `truncated` is "
     "`returned < remaining`. 🔴 Never page on `returned < matching` — that stays true on the "
     "last page of every walk, and a caller looping on it asks forever for a page that does not "

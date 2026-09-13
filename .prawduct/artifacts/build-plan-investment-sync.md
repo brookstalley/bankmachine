@@ -658,6 +658,47 @@ Tests are the floor, and three things here are not testable from a fixture:
     selection cost was accepted and what buys it back (the tool description is the lever)
   - a gap in the series reported rather than interpolated — a day with no capture is a day
     nobody looked, and drawing a line through it invents a balance
+  - 🔴 **Decisions taken at this chunk's start (owner, 2026-09-13), all four on the recommendation
+    offered:**
+    - `[DECISION: the name stays `balance_history` | owner | chosen over `net_worth_history`]` —
+      the contract table, §5, the surface inventory and the wire's unbuilt roster all name it, so a
+      rename is a same-commit sweep that buys selection for one reading and costs it for the other.
+      The selection cost for "net worth over time" is ACCEPTED, and the tool description is what buys
+      it back: it opens with that question
+    - `[DECISION: an aggregate row is emitted only for a COMPLETE day | owner | chosen over summing
+      what was captured with a warning, and over carrying a balance forward]` — the net-worth row for
+      `(date, currency)` exists only when every account holding a balance in that currency, whose
+      first capture is on or before that date, was captured that day. Otherwise it is withheld and the
+      withholding is named under `rule-applied` (accounts and days): a partial net worth is the most
+      believable wrong number this tool could emit. 🔴 **Corrected while building, from the option's
+      own wording** ("between its own first and LAST capture"): ending an account's span at its last
+      capture makes a connection whose sync stopped three days ago drop out of the last three days'
+      totals silently — the exact failure the option was chosen to prevent. So an ACTIVE account's span
+      is open-ended from its first capture, and only an account NO LONGER ACTIVE (closed, or no longer
+      listed) keeps the option's "through its last capture" — refined again while building, because the
+      sandbox store holds fourteen accounts replaced by relinked ones, and an open-ended span for them
+      would withhold every net worth since. Their exclusion is STATED under `account_no_longer_active`;
+      Chunk 08 turns it into include-and-flag with the magnitude. `[user can veto]`
+    - `[DECISION: windowed, capped and paged like `query_transactions` | owner | chosen over interval
+      sampling and over deferring the cap]` — `since`, `until`, `account_id`, `limit`, `cursor`; at
+      most `MAX_ROWS` rows, newest day first, the day's net-worth rows before its account rows. The
+      window is reconciled against the BALANCE series' own span, never the transactions' (balances
+      begin at enrollment, transactions two years earlier, so a transactions clamp would claim coverage
+      no balance has). So the window, the cursor and the `rows_truncated` wording each learn which
+      series they describe; `transactions_in_effective_window` is not carried. (`gapped` is phrased
+      against the requested window as on every windowed answer — corrected while building from "keeps
+      its unwindowed phrasing", whose "this request named no window" would be false.) With
+      `account_id`, the answer is that account's rows and no aggregate row. The wire spells the amounts
+      `*_minor_units`, the surface's convention, where discovery's shape used the column spelling
+    - `[DECISION: assets and liabilities split by `balance_class` | owner | chosen over the sign of the
+      balance]` — `data-model.md` records `balance_class` as existing because net worth is its
+      consumer, and an operator's reclassification then reaches the report. An asset-class account's
+      balance is `assets_minor` (an overdraft reads negative there); a liability-class account's is
+      `liabilities_minor` as the magnitude owed (a credit balance reads negative there). `net_minor` is
+      the signed balance, so `net = assets - liabilities` at both levels by construction
+  - both readings from ONE statement: each (account, currency)'s first capture across the whole
+    store, left-joined to its captures inside the window, so the completeness test and the rows it
+    judges come from one snapshot
   - the same unforced half as for `list_holdings`: drop "balance history or net worth over
     time" from the primer in `mcp._instructions()` and the balance-history bullet from
     `mcp_resources._CANNOT_ANSWER` — the test only moves `UNBUILT_TOOLS`

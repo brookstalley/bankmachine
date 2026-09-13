@@ -889,6 +889,7 @@ def test_no_tool_mutates_anything(initialized_config: Config) -> None:
     assert {t["name"] for t in tools} == {
         "list_accounts",
         "list_holdings",
+        "balance_history",
         "query_transactions",
         "money_summary",
         "get_pipeline_health",
@@ -2802,13 +2803,16 @@ def test_the_window_scoped_count_rides_beside_the_store_wide_one(
 def test_the_capped_tool_describes_its_cap_and_the_aggregate_does_not() -> None:
     """AC-9.4: a tool description states its conventions.
 
-    The note belongs to `query_transactions` alone — saying it on the aggregate
-    would describe a cap that tool does not have.
+    The note belongs to the two PAGED tools alone — `query_transactions` and
+    `balance_history` — and saying it on the aggregate would describe a cursor
+    that tool does not issue.
     """
     described = {d["name"]: d["description"] for d in mcp._tool_definitions()}
+    paged = ("query_transactions", "balance_history")
 
-    assert mcp._TRUNCATION_NOTE in described["query_transactions"]
-    for name in _every_tool_except("query_transactions"):
+    for name in paged:
+        assert mcp._TRUNCATION_NOTE in described[name], name
+    for name in _every_tool_except(*paged):
         assert mcp._TRUNCATION_NOTE not in described[name], name
 
 
@@ -3014,8 +3018,10 @@ def test_the_cursor_is_advertised_on_the_capped_tool_and_nowhere_else() -> None:
     make the escape route unreachable to a caller reading the tool definition,
     which is the only thing an agent reads.
     """
-    assert "cursor" in mcp._permitted_arguments("query_transactions")
-    for name in _every_tool_except("query_transactions"):
+    paged = ("query_transactions", "balance_history")
+    for name in paged:
+        assert "cursor" in mcp._permitted_arguments(name), name
+    for name in _every_tool_except(*paged):
         assert "cursor" not in mcp._permitted_arguments(name), name
 
 
@@ -3136,6 +3142,7 @@ def _keywords(schema: dict[str, Any]) -> set[str]:
 _LIVE_CALLS: tuple[tuple[str, dict[str, Any]], ...] = (
     ("list_accounts", {}),
     ("list_holdings", {}),
+    ("balance_history", {"since": "2020-01-01", "until": "2030-12-31"}),
     ("query_transactions", {"since": "2020-01-01", "until": "2030-12-31"}),
     ("money_summary", {"since": "2020-01-01", "until": "2030-12-31"}),
     ("get_pipeline_health", {}),
