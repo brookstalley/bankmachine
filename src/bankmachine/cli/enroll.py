@@ -17,7 +17,6 @@ a human reading it stops a caller sending the wrong one.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from dataclasses import dataclass
 
@@ -52,7 +51,12 @@ from bankmachine.secrets import get_plaid_secret, set_access_token
 from bankmachine.store.connection import DatastoreMissingError, inspect, remedy_for
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, transaction, writer_connection
-from bankmachine.store.schema import connections, institutions, sync_state
+from bankmachine.store.schema import (
+    connections,
+    encode_capabilities,
+    institutions,
+    sync_state,
+)
 from bankmachine.store.types import UtcInstant, now_utc
 
 logger = get_logger("cli.enroll")
@@ -758,7 +762,7 @@ def _record_connection(
         )
     ).one_or_none()
 
-    capability_json = json.dumps(sorted(capabilities))
+    capability_json = encode_capabilities(capabilities)
     if existing is not None:
         connection_id = int(existing[0])
         previous_credential_ref = str(existing[2])
@@ -783,6 +787,16 @@ def _record_connection(
         }
         if replaced_the_item:
             rewritten["granted_history_days"] = None
+            # 🔴 The connection's own success stamp goes with the domain rows
+            # below, because the health surface reads the two together and each
+            # alone would then say something the other denies. An empty
+            # `domains` array is published as NOTHING EVER ATTEMPTED, which is
+            # true of the new item -- and beside a `last_success_at` inherited
+            # from the item that was replaced, a client told to prefer the
+            # domain stamps finds none, falls back to the connection's, and
+            # reports figures as current for a history that is being refetched
+            # from zero.
+            rewritten["last_success_at"] = None
         conn.execute(
             update(connections)
             .where(connections.c.connection_id == connection_id)

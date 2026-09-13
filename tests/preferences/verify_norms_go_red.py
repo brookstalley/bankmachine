@@ -307,7 +307,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-10.3: the shell redacts a token on its way to the operator's terminal",
         SHELL,
-        "        return redact(value)",
+        "        return value if _EXACT_DECIMAL.fullmatch(value) else redact(value)",
         "        return value",
         f"{SHELL_TESTS}::test_output_redacts_tokens_and_account_numbers_but_keeps_masks",
     ),
@@ -456,10 +456,16 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         f"{DERIVER_TESTS}::test_no_deriver_reads_the_clock",
     ),
     (
+        # The rule moved from `_write_balance` into `_claim_capture_day` when the
+        # holdings series had to obey it too, so this anchor follows it. The
+        # mutation now breaks BOTH series at once, which is the point of their
+        # sharing one implementation: there is no longer a version of this rule
+        # that can be broken for one table while the other's test stays green.
         "AC-3.1: a day already recorded is not overwritten by a later capture",
         CONNECTOR_DERIVERS,
-        "        if (captured_at, raw_response_id or 0) <= incoming:",
-        "        if False:",
+        "    if (captured_at, raw_response_id or 0) <= (response.received_at, "
+        "response.raw_response_id):",
+        "    if False:",
         f"{DERIVER_TESTS}::test_a_second_capture_on_a_recorded_day_is_rejected_not_merged",
     ),
     (
@@ -470,10 +476,11 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         f"{DERIVER_TESTS}::test_a_catalogue_page_derives_no_rows_at_all",
     ),
     (
+        # Moved with the rule above, and shared by both series for the same reason.
         "FR-7: a row this deriver did not write is never replaced by one it did",
         CONNECTOR_DERIVERS,
-        "        if raw_response_id is None:",
-        "        if False:",
+        "    if raw_response_id is None:",
+        "    if False:",
         f"{DERIVER_TESTS}::test_a_manual_row_survives_an_older_response_replayed_over_it",
     ),
     (
@@ -876,7 +883,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-1.3a: an unmeasured window is not reported as no shortfall",
         QUERY,
-        "        if granted is None and last_success is not None:",
+        "        if granted is None and not said.never_succeeded:",
         "        if False:",
         f"{MCP_TESTS}::test_an_unmeasured_window_is_reported_differently_from_no_shortfall",
     ),
@@ -1200,12 +1207,12 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "                    institution=name,\n"
         "                )\n"
         "            )\n"
-        "        if last_success is None:",
+        "        if said.never_succeeded:",
         "                    connection_id=connection_id,\n"
         '                    institution="First Platypus Bank",\n'
         "                )\n"
         "            )\n"
-        "        if last_success is None:",
+        "        if said.never_succeeded:",
         f"{MCP_TESTS}::test_two_connections_in_the_same_state_are_still_told_apart",
     ),
     (

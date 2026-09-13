@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 
 from bankmachine import envelope, mcp, mcp_resources
+from bankmachine.store import schema
 
 #: A kind heading as `_kind_section` writes it.
 _KIND_HEADING = re.compile(r"^### `([^`]+)`$")
@@ -415,6 +416,37 @@ def test_the_envelope_reference_names_every_tool_the_contract_specifies_and_this
     )
     assert set(mcp_resources.UNBUILT_TOOLS) == unbuilt, (
         "the wire's roster of absent tools disagrees with the contract's own table"
+    )
+
+
+def _cannot_answer_section() -> str:
+    text = _envelope_text()
+    start = text.index("## What this server cannot answer")
+    end = text.find("\n## ", start + 1)
+    return text[start:] if end == -1 else text[start:end]
+
+
+def test_the_tax_lot_claim_holds_against_the_schema() -> None:
+    """🔴 A claim about what the store EXTRACTS is checked against the schema, never trusted.
+
+    The aggregator sends tax lots with every holdings response and only the
+    verbatim archive keeps them, so the list tells an agent a per-lot question has
+    no data path. The archive is deliberately not what this reads: it holds every
+    field the feed sends, and the sentence says lots are not extracted, not that no
+    byte of one exists. The day a table or column holds a lot the sentence is
+    false, and this fails in either direction rather than letting the prose ride.
+    """
+    tables = schema.metadata.tables.values()
+    names = [table.name for table in tables] + [
+        column.name for table in tables for column in table.columns
+    ]
+    stores_lots = any({"lot", "lots"} & set(name.split("_")) for name in names)
+    says_unextracted = "tax lots are not extracted" in _cannot_answer_section()
+
+    assert says_unextracted != stores_lots, (
+        "the cannot-answer list says tax lots are not extracted, and the schema now holds one"
+        if says_unextracted
+        else "tax lots are not extracted, and the list an agent is sent to no longer says so"
     )
 
 

@@ -106,7 +106,7 @@ These are decided, not open. Recorded on the issues as comments.
 and build `get_coverage_report` (#19's own named fix) and `cashflow_summary` (#20's). Do **not**
 build `balance_history`, `net_worth`, `find_recurring`, `list_holdings` — they are, in
 `api-contract.md`'s words, "analysis conveniences whose data is already in the datastore" and add no
-correctness, and `list_holdings` is blocked on build step 5 regardless.
+correctness, and `list_holdings` waits on the investments read tools regardless.
 
 **#20 — reachability only, no netting.** Make inflows visible and searchable; build no
 refund-matching heuristic. *Why:* every answer to "matched on what, within what window, at what

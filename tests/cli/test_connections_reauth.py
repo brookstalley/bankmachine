@@ -28,7 +28,7 @@ from sqlalchemy import insert, select, update
 from bankmachine.cli import run
 from bankmachine.config import Config
 from bankmachine.connector import ITEM_GET, FetchedResponse, RepairSession
-from bankmachine.derivers import ALL_DERIVERS
+from bankmachine.derivers import ALL_DERIVERS, all_replay_passes
 from bankmachine.secrets import (
     SecretsError,
     delete_access_token,
@@ -486,7 +486,7 @@ def test_a_repaired_connection_can_still_be_rebuilt(
     """
     assert run(["connections", "reauth", "1"]) == 0
 
-    report = rebuild(degraded_connection, derivers=ALL_DERIVERS)
+    report = rebuild(degraded_connection, derivers=ALL_DERIVERS, replay_passes=all_replay_passes)
 
     assert not report.content_changed
 

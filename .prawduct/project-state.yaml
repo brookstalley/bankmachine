@@ -929,12 +929,13 @@ test_command: bash scripts/check.sh {junit_xml}
 #
 # active_build_plan: artifacts/build-plan-my-scope.md
 
-# Set, because the tiebreak case is the live one: build-plan-mypy-green-and-gated.md and
-# build-plan-ci-runs-the-gate.md BOTH declare `branch: fix/mypy-green-and-gated`, so the
-# branch claim alone no longer resolves. The CI plan is the one still being built against;
-# the mypy plan is complete and waiting on the same branch to merge. Both stay live until
-# it does — archiving the finished one to dodge the tie would orphan unshipped work.
-active_build_plan: artifacts/build-plan-ci-runs-the-gate.md
+# Unset, because the tie it broke is gone: build-plan-mypy-green-and-gated.md and
+# build-plan-ci-runs-the-gate.md both declare a branch that is now merged and deleted, so
+# their claim resolves for nobody. They stay LIVE (gitflow — the work is not released until
+# `develop` reaches `main`, and the release archives them by scope), but leaving the scalar
+# aimed at one of them would put a finished plan back in force on every branch that has no
+# plan of its own. Every live plan here declares its own `branch:`.
+# active_build_plan: artifacts/build-plan-ci-runs-the-gate.md
 
 # =============================================================================
 # BASE BRANCH (opt-in, unset by default)

@@ -113,11 +113,24 @@ adds nothing of its own to the refusal — `mode=ro` at the file is what makes
 `PRAGMA query_only = OFF` typed at this prompt harmless. Everything it writes,
 including the statement it echoes back in a piped session, goes through
 `logging_setup`'s redaction, so AC-10.3 has one rule for values rather than one
-per surface. Three boundaries make that rule precise:
+per surface. Four boundaries make that rule precise:
 
 - **Values, not numbers.** Money here is an INTEGER of minor units while an
   account number is TEXT (`accounts.mask`), so redacting integers would blank a
   six-figure balance and protect nothing.
+- **A measurement is not an identifier.** That first line held while every
+  arithmetic quantity in the schema was an integer, and a position size is not:
+  `holdings.quantity` and `investment_transactions.quantity` are exact decimal
+  TEXT, because a fractional share carries more precision than a scaled integer
+  could hold. The account-number rule blanks any run of eight digits, and the
+  fractional part of an ordinary position is one — a sandbox Bitcoin holding of
+  `0.00293644` rendered `0.****3644`, so the operator could not read the number
+  the position exists to state. A cell that is wholly digits-point-digits is
+  rendered verbatim. **The decimal point is the entire exemption**: an account
+  number, a digest and a token are each one unbroken run, so none can match it,
+  and a quantity spelled without a fractional part is masked along with them —
+  `****5678` for 12,345,678 shares is over-redaction in the direction this
+  surface stays wrong in, and it is visible rather than quietly wrong.
 - **Values, not structure.** Schema text is not a redaction surface at all.
   Everything in `sqlite_master` was authored by this repo's migrations, and
   AC-6.6 — enforced by `tests/preferences/test_no_provider_identity.py` — is
@@ -266,17 +279,25 @@ surface included, which must never load the network layer at all. An import grap
 is a better guarantee of that than a rule about who calls what.
 
 **`derivers` is a required argument** on `deriver_for`, `derive`, `apply_response`
-and `rebuild`. It briefly had a default; once the composition moved up a layer
-that default had exactly one reachable outcome, so a caller could omit it, pass
-mypy strict and the whole suite, and fail on the first response of an unattended
-nightly sync.
+and `rebuild`, and so is **`replay_passes`** on `rebuild`. `derivers` briefly had
+a default; once the composition moved up a layer that default had exactly one
+reachable outcome, so a caller could omit it, pass mypy strict and the whole
+suite, and fail on the first response of an unattended nightly sync.
+`replay_passes` arrived with a default and lost it in the same work cycle, for
+the sharper version of that reason: omitting `derivers` fails loudly, while
+omitting the passes fails *silently* — the rebuild runs, clears every
+investment-transaction soft delete, and reports success over a store holding rows
+the source had dropped. `store.rebuild.no_replay_passes` is the value a caller
+passes to say "this archive holds no such fact", so the absence is a decision in
+the call rather than an argument somebody left off.
 
 **Contract**, and every clause is load-bearing:
 
 1. **One normalization, two callers.** The live sync path and `store rebuild`
    run the same derivers over the same responses. Rebuild is the first
    implementation replayed, not a second one kept in step with it — which is
-   what makes AC-11.5 checkable rather than aspirational.
+   what makes AC-11.5 checkable rather than aspirational. 🔴 **Replaying the
+   derivers is not the whole replay**; see clause 8.
 2. 🔴 **A deriver is a pure function of `(RawResponse, DerivationContext)`.**
    Same inputs, same rows, every time, on any machine. The rule with teeth is
    *never call the clock*: stamp rows from `response.received_at`, which is when
@@ -317,6 +338,35 @@ nightly sync.
    endpoint vocabulary that could enforce it is the aggregator client's, so this
    is the clause step 2 meets. It is also what keeps `sync shell`'s AC-10.3
    redaction (Chunk 04) from needing to cover a table nobody planned to redact.
+
+8. 🔴 **A fact that is a property of a SEQUENCE of responses is a `ReplayPass`,
+   never a deriver.** Clause 2 makes a deriver a pure function of one body, so a
+   conclusion no single body carries has nowhere to live inside one — and the
+   conclusion that forced this is a removal on `/investments/transactions/get`,
+   which sends no removal signal and answers with the whole window, so a row's
+   ABSENCE from a window that came back complete is the only evidence it went
+   away. Written into a deriver, such a conclusion is simply lost on every
+   rebuild: the replay re-upserts each row and clears its soft delete, and the
+   rebuilt store reports success holding rows the source had dropped.
+
+   A `ReplayPass` (declared beside `Deriver` in `store/derivation.py`) is shown
+   every archived response in order and writes at the one that completes what it
+   was accumulating. **It is built fresh per replay**, because it is stateful —
+   `rebuild` takes a factory rather than instances so a pass cannot carry one
+   replay's pages into the next one's window. On the LIVE path the same
+   conclusion is drawn by whoever owns the loop (`cli/sync_run.py` for the
+   investments window), against the same predicate and the same store function,
+   so the two paths cannot reach different verdicts: `connector/plaid/window.py`
+   holds the one reader of an archived page and `store/investments.py` the one
+   exhaustion predicate. The pass reassembles from the archive what the loop
+   knew by having made the calls, and nothing else differs.
+
+   🔴 **Run at the response that closes the accumulation, never once at the end
+   of the replay.** After a full replay each surviving row carries the id of the
+   last page it appeared on, so an early window reconciled against the finished
+   tables retires every row that only arrived later — a conclusion no run ever
+   reached. A replay reproduces the SEQUENCE of conclusions, which is the only
+   thing that reproduces the store.
 
 **Crossing it:** registering a deriver, or changing one, changes what a rebuild
 of every existing datastore produces. `tests/store/test_rebuild.py` carries

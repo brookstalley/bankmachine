@@ -17,6 +17,7 @@ import logging
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -27,12 +28,19 @@ from sqlalchemy import Connection as SAConnection
 from sqlalchemy import delete, insert, select, update
 
 from bankmachine.config import Config
-from bankmachine.connector import ACCOUNTS_GET, INSTITUTIONS_GET, ITEM_GET, Endpoint
+from bankmachine.connector import (
+    ACCOUNTS_GET,
+    INSTITUTIONS_GET,
+    INVESTMENTS_HOLDINGS_GET,
+    ITEM_GET,
+    Endpoint,
+)
 from bankmachine.connector.plaid.derivers import (
     PLAID_DERIVERS,
     balance_class_of,
     to_minor,
 )
+from bankmachine.derivers import all_replay_passes
 from bankmachine.store import types as store_types
 from bankmachine.store.derivation import (
     DerivationContext,
@@ -1320,7 +1328,7 @@ def test_a_rebuild_over_a_real_archive_reproduces_the_tables(store: Config) -> N
         before = content_digest(conn)
     assert rows(store, balances_daily), "nothing was derived, so the rebuild proves nothing"
 
-    report = rebuild(store, derivers=PLAID_DERIVERS)
+    report = rebuild(store, derivers=PLAID_DERIVERS, replay_passes=all_replay_passes)
 
     assert not report.content_changed, (
         "the rebuild did not reproduce what it replaced; a deriver is reading a clock, "
@@ -1694,7 +1702,7 @@ def test_a_rebuild_over_a_relinked_archive_converges_the_same_way_twice(store: C
     with writing(store) as conn:
         before = content_digest(conn)
 
-    report = rebuild(store, derivers=PLAID_DERIVERS)
+    report = rebuild(store, derivers=PLAID_DERIVERS, replay_passes=all_replay_passes)
 
     assert not report.content_changed, (
         "replaying a re-linked archive landed somewhere else, so the account this store "
@@ -1703,3 +1711,99 @@ def test_a_rebuild_over_a_relinked_archive_converges_the_same_way_twice(store: C
     with writing(store) as conn:
         assert content_digest(conn) == before
     assert rows(store, accounts) == converged
+
+
+# --------------------------------------------------------------------------
+# Valuation rounding, as an invariant (project preferences: property-based)
+# --------------------------------------------------------------------------
+
+
+def _valuation_response() -> RawResponse:
+    return RawResponse(
+        raw_response_id=1,
+        connection_id=1,
+        endpoint=str(INVESTMENTS_HOLDINGS_GET),
+        received_at=RECEIVED,
+        body=b"{}",
+        body_sha256="",
+        request_context=None,
+    )
+
+
+#: One currency per minor-unit width this build knows, so the properties below
+#: are about the arithmetic rather than about hundredths.
+_WIDTHS = ("JPY", "USD", "KWD", "CLF")
+
+
+@given(
+    currency=st.sampled_from(_WIDTHS),
+    units=st.integers(min_value=-(10**9), max_value=10**9),
+    extra=st.integers(min_value=0, max_value=999),
+)
+@settings(max_examples=200, deadline=None)
+def test_a_valuation_is_stored_within_half_a_minor_unit_of_what_arrived(
+    currency: str, units: int, extra: int
+) -> None:
+    """🔴 The bound that makes rounding an approximation rather than a loss.
+
+    A valuation is price times quantity and arrives at whatever precision that
+    arithmetic produced (§22), so it is rounded rather than refused -- and the
+    only thing that makes that defensible is that the error is bounded by half
+    the smallest unit the currency has. Stated over every width this build
+    knows, because a rule that held for hundredths and not for the others would
+    be arithmetic that had quietly assumed a scale.
+    """
+    exponent = minor_digits(currency)
+    exact = Decimal(units).scaleb(-exponent) + Decimal(extra).scaleb(-exponent - 3)
+
+    stored = to_minor(str(exact), currency, "a position value", _valuation_response())
+
+    assert abs(Decimal(stored) - exact.scaleb(exponent)) <= Decimal("0.5")
+
+
+@given(
+    currency=st.sampled_from(_WIDTHS),
+    units=st.integers(min_value=-(10**9), max_value=10**9),
+)
+@settings(max_examples=200, deadline=None)
+def test_a_valuation_exactly_on_the_boundary_rounds_to_the_even_unit(
+    currency: str, units: int
+) -> None:
+    """🔴 Half-EVEN, over the case that separates it from half-up.
+
+    Applied to every valuation on every sync, half-up would bias a portfolio's
+    recorded value a fraction of a cent at a time, in one direction, forever.
+    The exact half is the only input that can tell the two rules apart, and it
+    is the one a generated corpus of ordinary values almost never produces.
+    """
+    exponent = minor_digits(currency)
+    halfway = Decimal(units).scaleb(-exponent) + Decimal(5).scaleb(-exponent - 1)
+
+    stored = to_minor(str(halfway), currency, "a position value", _valuation_response())
+
+    assert stored % 2 == 0
+    assert abs(Decimal(stored) - halfway.scaleb(exponent)) == Decimal("0.5")
+
+
+@given(
+    currency=st.sampled_from(_WIDTHS),
+    units=st.integers(min_value=0, max_value=10**9),
+    extra=st.integers(min_value=0, max_value=999),
+)
+@settings(max_examples=200, deadline=None)
+def test_a_valuation_and_its_negation_round_to_opposite_integers(
+    currency: str, units: int, extra: int
+) -> None:
+    """A liability's valuation is the same arithmetic with the sign flipped.
+
+    Signs are applied around this conversion rather than inside it, so a
+    rounding rule that was asymmetric would move a held position and an owed one
+    by different amounts and net worth would drift by the difference.
+    """
+    exponent = minor_digits(currency)
+    exact = Decimal(units).scaleb(-exponent) + Decimal(extra).scaleb(-exponent - 3)
+    response = _valuation_response()
+
+    assert to_minor(str(-exact), currency, "a position value", response) == -to_minor(
+        str(exact), currency, "a position value", response
+    )

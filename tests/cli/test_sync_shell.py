@@ -340,6 +340,51 @@ def test_output_redacts_tokens_and_account_numbers_but_keeps_masks(
     assert "1234" in out
 
 
+def test_an_exact_decimal_quantity_reads_whole(initialized_config: Config) -> None:
+    """A position size is a number to read, not an account number to blank.
+
+    `holdings.quantity` and `investment_transactions.quantity` are TEXT because
+    a fractional share carries more precision than a scaled integer could hold
+    -- so the account-number rule, which blanks any run of eight digits, meets
+    the fractional part of an ordinary position. These are values the sandbox
+    institution actually returns; every digit of each has to survive, because
+    the whole reason the column is text is that no digit may be lost.
+    """
+    quantities = ("0.00293644", "-430.80867509953123", "4211.152345617756")
+    with writer(initialized_config) as w:
+        w.execute("CREATE TABLE probe (quantity TEXT)")
+        w.executemany("INSERT INTO probe VALUES (?)", [(q,) for q in quantities])
+
+    out = _run(initialized_config, ["SELECT quantity FROM probe;"])
+
+    assert "****" not in out
+    for quantity in quantities:
+        assert quantity in out
+
+
+def test_a_bare_digit_run_is_still_masked_however_it_is_labelled(
+    initialized_config: Config,
+) -> None:
+    """The decimal point is the whole exemption, so nothing without one is spared.
+
+    Sparing measurements must not become sparing anything numeric: an account
+    number is an unbroken run of digits, and it stays one whatever column it
+    arrives in. This pins the cost of drawing the line there -- a quantity
+    written without a fractional part is masked too, which is visible rather
+    than wrong.
+    """
+    with writer(initialized_config) as w:
+        w.execute("CREATE TABLE probe (quantity TEXT, number TEXT)")
+        w.execute("INSERT INTO probe VALUES (?, ?)", ("12345678", "999999999999"))
+
+    out = _run(initialized_config, ["SELECT quantity, number FROM probe;"])
+
+    assert "12345678" not in out
+    assert "****5678" in out
+    assert "999999999999" not in out
+    assert "****9999" in out
+
+
 def test_an_error_message_quoting_a_token_is_redacted_too(initialized_config: Config) -> None:
     """SQLite quotes the offending value back; a mistyped token is still a token."""
     token = "sbx-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"  # credential-shape: test vector

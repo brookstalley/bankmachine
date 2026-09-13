@@ -20,6 +20,16 @@ account rules, sync cursors, and the rows imported from operator files (FR-7),
 which name a `manual_import_id` and no raw response. Nothing in the archive could
 recreate those, and deleting a row you cannot recreate is not a rebuild.
 
+**Replaying the derivers is not the whole replay.** Almost every row here is a
+pure function of one archived body, and for those the replay is exactly the
+derivers run again. One class of fact is not: a removal on the
+investment-transaction feed is a row's ABSENCE from a window that came back
+whole, and no single page carries it. A rebuild that ran only the derivers would
+re-upsert every row that ever appeared and clear every soft delete with it, then
+report success over a store holding transactions the source had dropped. So a
+rebuild is also given `ReplayPass`es -- one per such fact, each fed the archive
+in order and writing at the response that completes what it was accumulating.
+
 **What "byte-identically" means here.** AC-11.5 asks that a rebuild reproduce
 the normalized tables byte-identically. The digest covers every column of every
 table in the schema except one class: a table's own single-column integer
@@ -33,7 +43,7 @@ renumbered or orphaned anything fails the check.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Final
@@ -45,7 +55,7 @@ from bankmachine.config import Config
 from bankmachine.logging_setup import get_logger
 from bankmachine.store import derivation, transfers
 from bankmachine.store.connection import StoreError
-from bankmachine.store.derivation import DerivationContext, Deriver
+from bankmachine.store.derivation import DerivationContext, Deriver, ReplayPass
 from bankmachine.store.engine import transaction, writer_connection
 from bankmachine.store.raw import iter_responses
 from bankmachine.store.schema import derivation_versions, metadata, raw_responses
@@ -113,10 +123,17 @@ class UnhashableValueError(StoreError):
 class RebuildNotReproducibleError(StoreError):
     """The rebuild produced different content at an unchanged derivation version.
 
-    Rolled back rather than committed. Either a deriver is not a pure function
-    of its response -- a clock call is the usual one -- or the archive no longer
-    holds every response the rows were built from. Both are conditions to
-    investigate before the old rows are gone.
+    Rolled back rather than committed. Three causes reach this, and the third is
+    the one that looks like neither: a deriver is not a pure function of its
+    response (a clock call is the usual one); the archive no longer holds every
+    response the rows were built from; or an investments run archived a complete
+    window and stopped before concluding the removals from it, so the replay
+    retires rows at the closing page's instant while the live store retired them
+    at a later run's -- or not at all. All three are conditions to investigate
+    before the old rows are gone, and the third is not fixed by accepting the
+    change: accepting it writes the replay's instant over the store's, which is
+    the reproducible answer, but it also accepts whatever else moved in the same
+    digest.
     """
 
 
@@ -283,10 +300,21 @@ def content_digest(conn: SAConnection) -> str:
     return overall.hexdigest()
 
 
+def no_replay_passes() -> tuple[ReplayPass, ...]:
+    """A replay that concludes nothing beyond what each response says on its own.
+
+    Passed explicitly by a caller whose archive holds no such fact, so that
+    "nothing to reassemble here" is a decision in the call rather than an
+    argument somebody left off.
+    """
+    return ()
+
+
 def rebuild(
     config: Config,
     *,
     derivers: Mapping[str, Deriver],
+    replay_passes: Callable[[], Sequence[ReplayPass]],
     accept_content_change: bool = False,
 ) -> RebuildReport:
     """Reconstruct every raw-derived row from the archive, or change nothing at all.
@@ -294,6 +322,20 @@ def rebuild(
     The whole rebuild is one transaction under the exclusive writer lock, so a
     process killed partway leaves the previous content intact rather than a
     datastore holding half of one derivation and half of another.
+
+    `replay_passes` is a FACTORY rather than a sequence: a pass accumulates
+    across the responses it is shown (`store.derivation.ReplayPass`), so
+    instances shared between two rebuilds would carry the first one's pages into
+    the second one's window. Building them here makes that impossible rather
+    than merely discouraged.
+
+    🔴 **Required, for the reason `derivers` is** -- and more sharply. That
+    argument briefly had a default, and once the composition moved up a layer the
+    default had exactly one reachable outcome, so a caller could omit it, pass
+    mypy strict and the whole suite, and fail at runtime. Omitting the passes
+    fails *silently* instead: the rebuild runs, clears every investment-transaction
+    soft delete, and reports success over a store holding rows the source had
+    dropped. `no_replay_passes` is the value that says so out loud.
     """
     with writer_connection(config) as conn:
         tables = rebuildable_tables()
@@ -318,12 +360,22 @@ def rebuild(
             # datastore, and only one decompressed body needs to exist at a time.
             derivation_version_id: int | None = None
             context: DerivationContext | None = None
+            passes = replay_passes()
             replayed = 0
             for response in iter_responses(conn):
                 if context is None:
                     derivation_version_id = derivation.ensure_derivation_version(conn)
                     context = DerivationContext(derivation_version_id=derivation_version_id)
                 derivation.derive(conn, response, context, derivers=derivers)
+                # 🔴 Inside the loop, at the response that completes whatever the
+                # pass was accumulating -- never once over the finished tables.
+                # A conclusion drawn from a SET of responses is evidence about
+                # the rows that existed when that set closed, and running it at
+                # the end would judge an early window against rows that only
+                # arrived in a later one. The replay reproduces the sequence of
+                # conclusions, which is the only thing that reproduces the store.
+                for replay_pass in passes:
+                    replay_pass.observe(conn, response)
                 replayed += 1
 
             # 🔴 After every response is replayed and BEFORE the digest is
@@ -357,10 +409,15 @@ def rebuild(
                     raise RebuildNotReproducibleError(
                         f"the rebuild produced different content at an unchanged derivation "
                         f"version ({version}): {digest_before} became {digest_after}. "
-                        f"Rolled back. Either a deriver is not a pure function of its response -- "
-                        f"a call to the clock is the usual cause -- or the archive no longer holds "
-                        f"every response those rows came from. If responses were deliberately "
-                        f"pruned, re-run with --accept-content-change"
+                        f"Rolled back. A deriver may not be a pure function of its response -- "
+                        f"a call to the clock is the usual cause -- or the archive may no longer "
+                        f"hold every response those rows came from. Third cause, easy to mistake "
+                        f"for either: an investments run that archived a complete window and "
+                        f"stopped before concluding its removals leaves the replay retiring rows "
+                        f"the live store retired later or not at all. Compare `removed_at` on "
+                        f"`investment_transactions` against the page instants in `raw_responses` "
+                        f"before deciding. If responses were deliberately pruned, re-run with "
+                        f"--accept-content-change"
                     )
                 logger.warning(
                     "committing a rebuild whose content changed at derivation version %d, "

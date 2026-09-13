@@ -49,6 +49,7 @@ from bankmachine.store.rebuild import (
     content_digest,
     derived_dimension_tables,
     derived_tables,
+    no_replay_passes,
     rebuild,
     rebuildable_tables,
 )
@@ -438,7 +439,7 @@ def test_rebuild_reproduces_the_normalized_tables_from_the_archive_alone(
         transactions_before = dump(conn, "transactions")
     assert len(transactions_before) == 3
 
-    report = rebuild(initialized_config, derivers=DERIVERS)
+    report = rebuild(initialized_config, derivers=DERIVERS, replay_passes=no_replay_passes)
 
     assert report.responses_replayed == len(A_CORPUS)
     assert report.rows_deleted["transactions"] == 3
@@ -455,7 +456,7 @@ def test_rebuild_replays_in_received_order_so_a_correction_still_wins(
     # `t-1` is corrected by a later response. If a rebuild replayed in any other
     # order the older reading would win and the datastore would silently revert.
     apply_corpus(initialized_config, A_CORPUS)
-    rebuild(initialized_config, derivers=DERIVERS)
+    rebuild(initialized_config, derivers=DERIVERS, replay_passes=no_replay_passes)
 
     with reading(initialized_config) as conn:
         amount = conn.execute(
@@ -471,7 +472,7 @@ def test_a_rebuild_that_cannot_reproduce_its_input_is_rolled_back(
     before = digest_of(initialized_config)
 
     with pytest.raises(RebuildNotReproducibleError) as caught:
-        rebuild(initialized_config, derivers=RECATEGORIZED)
+        rebuild(initialized_config, derivers=RECATEGORIZED, replay_passes=no_replay_passes)
 
     assert "unchanged derivation version" in str(caught.value)
     assert digest_of(initialized_config) == before
@@ -486,7 +487,12 @@ def test_an_unreproducible_rebuild_can_be_accepted_deliberately(
     apply_corpus(initialized_config, A_CORPUS)
     before = digest_of(initialized_config)
 
-    report = rebuild(initialized_config, derivers=RECATEGORIZED, accept_content_change=True)
+    report = rebuild(
+        initialized_config,
+        derivers=RECATEGORIZED,
+        replay_passes=no_replay_passes,
+        accept_content_change=True,
+    )
 
     assert report.content_changed
     assert not report.change_was_expected
@@ -506,7 +512,7 @@ def test_a_changed_derivation_version_makes_the_difference_a_recorded_one(
     before = digest_of(initialized_config)
     monkeypatch.setattr(derivation, "DERIVATION_VERSION", shipped + 1)
 
-    report = rebuild(initialized_config, derivers=RECATEGORIZED)
+    report = rebuild(initialized_config, derivers=RECATEGORIZED, replay_passes=no_replay_passes)
 
     assert report.content_changed
     assert report.change_was_expected
@@ -544,7 +550,7 @@ def test_a_rebuild_preserves_an_operator_override_the_archive_cannot_recreate(
         )
     monkeypatch.setattr(derivation, "DERIVATION_VERSION", derivation.DERIVATION_VERSION + 1)
 
-    report = rebuild(initialized_config, derivers=RECATEGORIZED)
+    report = rebuild(initialized_config, derivers=RECATEGORIZED, replay_passes=no_replay_passes)
 
     assert report.change_was_expected
     with reading(initialized_config) as conn:
@@ -578,7 +584,12 @@ def test_an_override_whose_row_the_replay_cannot_recreate_is_reported_not_droppe
         )
 
     with caplog.at_level(logging.WARNING, logger="bankmachine"):
-        rebuild(initialized_config, derivers=REIDENTIFIED, accept_content_change=True)
+        rebuild(
+            initialized_config,
+            derivers=REIDENTIFIED,
+            replay_passes=no_replay_passes,
+            accept_content_change=True,
+        )
 
     assert any("category_override" in record.getMessage() for record in caplog.records), (
         "an operator correction was dropped with nothing recording that it happened"
@@ -604,7 +615,7 @@ def test_a_response_no_deriver_understands_stops_the_whole_rebuild(
     before = digest_of(initialized_config)
 
     with pytest.raises(UnknownEndpointError) as caught:
-        rebuild(initialized_config, derivers=DERIVERS)
+        rebuild(initialized_config, derivers=DERIVERS, replay_passes=no_replay_passes)
 
     assert "/test/holdings" in str(caught.value)
     with reading(initialized_config) as conn:
@@ -660,7 +671,7 @@ def test_a_rebuild_does_not_delete_rows_the_archive_could_not_recreate(
         imported_before = [row for row in dump(conn, "transactions") if "fp-1" in row]
     assert len(imported_before) == 1
 
-    report = rebuild(initialized_config, derivers=DERIVERS)
+    report = rebuild(initialized_config, derivers=DERIVERS, replay_passes=no_replay_passes)
 
     assert not report.content_changed
     with reading(initialized_config) as conn:
@@ -674,7 +685,7 @@ def test_local_account_ids_survive_a_rebuild(initialized_config: Config) -> None
     with reading(initialized_config) as conn:
         ids_before = dump(conn, "accounts")
 
-    rebuild(initialized_config, derivers=DERIVERS)
+    rebuild(initialized_config, derivers=DERIVERS, replay_passes=no_replay_passes)
 
     with reading(initialized_config) as conn:
         assert dump(conn, "accounts") == ids_before
@@ -683,7 +694,7 @@ def test_local_account_ids_survive_a_rebuild(initialized_config: Config) -> None
 def test_rebuilding_an_untouched_datastore_changes_nothing(initialized_config: Config) -> None:
     # The shipped path today: no derivers are registered, and an empty archive
     # gives them nothing to do.
-    report = rebuild(initialized_config, derivers=DERIVERS)
+    report = rebuild(initialized_config, derivers=DERIVERS, replay_passes=no_replay_passes)
 
     assert report.responses_replayed == 0
     assert not report.content_changed
@@ -753,7 +764,7 @@ def test_rebuild_is_lossless_for_any_corpus(
         with reading(config) as conn:
             rows_before = {name: dump(conn, name) for name in ("transactions", "balances_daily")}
 
-        report = rebuild(config, derivers=DERIVERS)
+        report = rebuild(config, derivers=DERIVERS, replay_passes=no_replay_passes)
 
         assert not report.content_changed
         assert report.responses_replayed == len(corpus)

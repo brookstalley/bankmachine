@@ -34,6 +34,402 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-13: Stop telling every agent that holdings are not stored
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** the envelope reference's "what this server cannot answer" said "No security, quantity or
+cost basis is stored" — true before wave 1, false after it, and served to every agent that reads
+the reference. Found while running VRF-014 against the build under test.
+
+**What changed:** the bullet is rewritten for the finished investments surface, at the owner's
+direction, since nothing ships to an operator before `list_holdings` does. It names what stays
+unanswerable once positions are served: tax lots, which the aggregator sends and only the verbatim
+response archive keeps, and the buys, sells, dividends and fees behind a position, which are stored
+and read by no tool — so an investment account empty in `query_transactions` may still have traded. Until the tool
+registers, the bullet names `list_holdings` while `UNBUILT_TOOLS` still lists it; a comment at the
+site says so. Two tests hold the claims to the code in both directions: the tax-lot sentence against
+every table and column name, the unserved-trades sentence against the SQL every registered tool
+actually executes over a seeded store.
+
+**Plan:** chunks 05 and 07 each gained the half of the wire text no test forces — the primer's
+hand-typed "cannot answer" phrases, and the matching `_CANNOT_ANSWER` bullets.
+
+**Also:** VRF-014 verified on 2026-09-13 across all six steps, with the grader caveat on steps 2-4
+and the corrected step 5 and 6 procedures recorded in the entry.
+
+## 2026-09-12: Wave 1 verified against the real sandbox, and what that found
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** three operator-verification entries (VRF-017, VRF-018, VRF-019) stood between wave 1
+and its PR, and each names a claim no test in this repo can make: that the whole path works
+when the parts are joined by the real command, against the payload the aggregator actually
+sends. They were drained end to end. The pass found one defect, and it was in the surface the
+entries exist to read through rather than in anything the tests cover.
+
+**What changed:**
+
+- 🔴 **`sync shell` was masking every high-precision position, and now is not.**
+  `holdings.quantity` and `investment_transactions.quantity` are exact decimal TEXT — a
+  fractional share carries more precision than a scaled integer could hold — and the shell's
+  account-number rule blanks any run of eight digits, so a sandbox Bitcoin holding of
+  `0.00293644` rendered `0.****3644` and a sale of `-430.80867509953123` rendered
+  `-430.****3123`. Nothing was wrong with the stored value; the operator simply could not read
+  the number the column exists to state, which is the one reading VRF-017 asks for. A cell
+  that is wholly digits-point-digits is now rendered verbatim. **The decimal point is the
+  entire exemption**: an account number, a digest and a token are each one unbroken run, so
+  none can match it, and a quantity spelled without a fractional part is still masked. The
+  premise this corrects — that every arithmetic quantity here is an INTEGER, so redacting text
+  protects account numbers and costs nothing — was true until investments added a column that
+  is both. `boundary-patterns.md` carries it as a fourth boundary.
+- **Both investments report lines moved out of the healthy branch.** `_pull_investments` runs
+  before the page loop, so a completed window sits behind a connection the pager then reports
+  as degraded or as still materializing — and appended to the pages sentence, `positions
+  recorded` and the retired-transaction count said nothing at all in exactly those runs. For
+  the retired count that is the invisibility it exists to end: a soft delete leaves no trace
+  in a page count.
+- **A re-link no longer leaves a success stamp beside the domain rows it cleared.**
+  `cli/enroll.py` deletes every `sync_state` row when an item is replaced; the health surface
+  publishes an empty domain list as *nothing has ever been attempted* and published
+  `connections.last_success_at` beside it, so a client told to prefer the domain stamps found
+  none, fell back to the connection's, and read a history being refetched from zero as
+  current. The stamp goes with the rows.
+- **One statement of the three conditions the connection caveats fire on.** `_domain_caveats`
+  says a thing only where the connection has not already said it, and both passes now read a
+  `_ConnectionFreshness` record built once. Matching on the caveats actually emitted would not
+  have been faithful — `partial` carries three unrelated connection-level meanings, so a
+  connection whose granted window is merely unmeasured would have suppressed a domain that has
+  genuinely never landed.
+- **`store rebuild`'s refusal names its third cause.** It named an impure deriver and a pruned
+  archive, and neither fits an investments run that archived a complete window and stopped
+  before concluding its removals — which leaves the replay retiring rows at an instant the
+  live store never recorded. That failure is permanent and its only escape was
+  `--accept-content-change`, a flag documented for something else. The message now names the
+  case and says which columns to compare. **The divergence itself is filed, not fixed** (#113):
+  closing it is a choice between three shapes with different lock-in, and the cheap one is
+  blocked by `apply_response`'s deliberate archive-then-derive split.
+
+**Filed rather than answered:** #113 (the reconciliation's atomicity, above), #111 (a sync
+prints 157 log lines to 2 of report, 150 of them two rounding notices repeated per row — a
+documented decision whose volume against a cursorless feed was never measured), #112 (an
+all-digit CUSIP will render masked; unmeasured, the sandbox sends null). #93 was updated
+rather than answered: the same `type(exc).__name__` now reaches a newly published contract
+field, and which vocabulary that field carries is the owner's call.
+
+**Not drainable, and the recorded blocker was wrong:** VRF-014 needs an MCP server on the
+build under test, and an MCP server outlives `/clear` — the reachable one answers
+`build.commit: efd64ad` where this checkout answers `41b58af`. The merge it was said to wait
+on never bore on it. Only relaunching the client moves it.
+
+**Verified:** VRF-017/018/019 recorded verbatim with their readings, including the step that
+failed and its re-read after the fix. Reviewed by `rev-20260913T021056Z-81d120ad` (0 blocking,
+5 warning, 8 note — four fixed, one filed, the rest accepted), verified clean across three
+`verify-resolutions` rounds, the last of which caught a new test that was passing off the
+run-level summary rather than the connection line it named.
+
+## 2026-09-12: A rebuild stops resurrecting the transactions the source dropped
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** AC-5.2 says the normalized tables are rebuildable from the raw responses alone, and
+with investments in the store that had become false in one direction no test could see. A
+removal on `/investments/transactions/get` is a row's ABSENCE from a window that came back
+whole — the feed sends no removal signal of any kind *(`api-notes-plaid.md` §26)* — and a
+deriver sees one page. So replaying the archive through the derivers re-upserted every row
+that had ever appeared and cleared `removed_at` on each. The rebuilt store held transactions
+the synced store had retired, every total silently grew, and `store rebuild` reported
+success. `operational-spec.md` has been telling the operator to rebuild once this build step
+landed; that instruction was a claim, and nothing asserted it.
+
+**What changed (Chunk 04):**
+
+- **A rebuild now runs each window's reconciliation again, from the archive.**
+  `connector/plaid/window.py` reassembles a window from the `request_context` its pages carry
+  — the only record of the question a page answered, since the reply does not echo the window
+  back — and calls the same `store.investments` reconciliation the sync calls, with the same
+  evidence. `store.rebuild` gained one seam for this: `ReplayPass`, for a fact that is a
+  property of a SEQUENCE of responses rather than of any one body.
+- 🔴 **Re-run at the page that CLOSED each window, not once over the finished tables.** Once
+  every page is replayed, each surviving row carries the id of the last page it appeared on —
+  so an early window's reconciliation run at the end would find the rows that only arrived
+  later absent from it and retire every one of them, a conclusion no run ever reached. The
+  replay reproduces the sequence of window conclusions, which is the only thing that
+  reproduces the store.
+- **A window whose opening page the archive no longer holds concludes nothing**, and says so.
+  Reconciling on the pages that survived would soft-delete every row that sat on the ones that
+  did not, on the code path that believes the window was whole. The rebuild's content digest
+  then reports the removal it could not reproduce, which is a refusal an operator can act on
+  rather than a deletion nobody sees.
+- **A page that does not record its window refuses the whole rebuild.** Skipping it would
+  leave that window's reconciliation unrun and every retired row back in the totals, under a
+  rebuild that reported success — the silent incompleteness that still adds up.
+- 🔴 **The measured history range moved out of the store function and into the sync.**
+  `record_investment_transaction_window` now returns the range it measured; the sync command
+  records it, in the same transaction as the removals it was measured after. A replay must not
+  stamp a domain's progress: the sync stamps `last_success_at` from the clock once both feeds
+  are in, so a rebuild that rewound `sync_state` to the archive's instant would make the
+  digest refuse a rebuild that had reproduced every row correctly. It is the same rule that
+  took `last_success_at` out of the derivers in Chunk 03, and it matches how the transactions
+  domain has always recorded its own range.
+- **One reader for what a page says about its window**, used by the sync loop and by the
+  replay. The offset a page was fetched at is the count of rows that came before it, so both
+  reach the same exhaustion verdict without either trusting the other's arithmetic. The
+  exhaustion predicate itself is one function in `store.investments`.
+- **The sync tests' fake client now archives the real `request_context`**, built by the
+  production formatter. A fake that archived `None` left the entire replay path exercised by
+  nothing while every sync test stayed green.
+
+**Verified:** new tests across the rebuild, the archived window and the sync path. Five
+mutations were run against them and each reddened only the
+tests that name it: dropping the replay pass, moving it to the end of the replay, dropping the
+unopened-window guard, making the window reader default instead of refuse, and putting the
+`sync_state` write back inside the store function. Property tests state rebuild losslessness
+over generated sequences of windows and the valuation rounding bound, the half-even boundary
+and sign symmetry across every minor-unit width this build knows. `VRF-019` is queued for the
+rebuild on the operator's own sandbox store, which is the claim no fake can make.
+
+**What the review round changed.** Zero blocking findings; these are warnings taken as
+defects rather than accepted.
+
+- 🔴 **An investments shortfall no longer withholds the CONNECTION's freshness stamp.** It was
+  reported through `stopped_short`, the transactions pager's flag, which `unfinished` reads to
+  decide `history_complete` -- the only thing that stamps `connections.last_success_at`. So a
+  short window made the whole connection read stale, the per-domain caveat was then suppressed
+  *because* the connection read stale, and the operator was pointed at the connection for a
+  condition belonging to one domain. Exactly the mis-attribution Chunk 03's decision exists to
+  prevent, reintroduced through the exit-code plumbing. The window has its own flag, its own
+  report line, and its own path to exit 75.
+- 🔴 **A window that states no total is asked for once, not five hundred times.** Routing the
+  loop's exits through the shared exhaustion predicate dropped the unstated-total exit: a
+  predicate that answers "no" for its own good reason is not the same as an exit. Measured at
+  4.4 seconds of fake aggregator calls for one page of one row.
+- **An attempt that came back short now records that it did not fail.** `last_error_code` is
+  published as "what the last attempt failed with", and with nothing written for an attempt
+  that neither failed nor finished, a previous run's code stood on a row whose last attempt had
+  come back clean.
+- **The investments-failure line no longer prints under a connection reported as degraded**,
+  where "no re-authentication is needed" sat two lines under the instruction to
+  re-authenticate. Both failures in one run is an ordinary shape, and no test covered it.
+- **`replay_passes` is required, not defaulted.** `boundary-patterns.md` records `derivers`
+  losing its default because one reachable outcome made omission a runtime failure; omitting
+  the passes is worse, because it fails silently. `no_replay_passes` is the value that says so.
+- **The warning vocabulary's guidance follows the caveats that widened.** `stale`, `degraded`
+  and `partial` are emitted at two scopes since Chunk 03, and their published guidance still
+  described the connection -- a domain-stale caveat fires precisely when the connection's stamp
+  is fresh, so an agent following the old text reported the figure as of today, which is the
+  conclusion the caveat exists to prevent.
+- **`boundary-patterns.md` § Derivation Seam gains the clause `ReplayPass` needs**, so the next
+  windowed feed's reconciliation is not written into a deriver and lost on every rebuild.
+- **A window that came back complete and empty retires everything in it** -- the widest removal
+  this feed can express, and it had no test on either the sync path or the replay.
+
+**Found and filed, not fixed:** `_upsert_account` takes the last-REPLAYED observation where
+`_upsert_security` beside it takes the latest one (**#108**), so an archive whose `received_at`
+order disagrees with its insertion order would make a rebuild unreproducible. Not reachable
+through today's sync path — `received_at` is monotonic — and the failure direction is a refusal
+rather than drift, so it is filed rather than folded in.
+
+**Two older deferrals these records called "filed" were in no queue at all**, and the review
+round is what found them: capabilities are never refreshed after enrollment, so a connection
+enrolled before its institution gained the product never starts pulling it (**#109**), and
+`cancel_transaction_id` has no settled ledger meaning (**#110**). Every "filed" claim in this
+log and in the build plan now carries its id, which is what makes the word checkable rather
+than asserted. The round also closed **#43**, whose revisit trigger was "build step 5 —
+investment sync scoping": the investments write path is upsert-shaped rather than
+graph-shaped, so it stays on SQLAlchemy Core — and the relational case the item named is not
+modelled at all, since the feed sends tax lots and this build drops every one.
+
+## 2026-09-12: A connection is no longer one stream, and the health surface says so
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** AC-4.4 names silent staleness as this system's primary failure mode, and a second
+sync domain that no surface reports is silent staleness with a new cause. Two domains now
+advance on their own schedules, but every read of `sync_state` pinned
+`domain == 'transactions'` — correct while there was one, and blind the moment there were
+two. A connection could sync nightly, report `active`, carry a fresh `last_success_at`, and
+not have returned a position since August, with nothing anywhere saying so.
+
+**What changed (Chunk 03):**
+
+- **An investments failure is recorded against the DOMAIN, not the connection.**
+  `connections.status` means credential health; a `PRODUCT_NOT_READY` on a product the Item
+  never initialized is not a statement about the login, and marking the connection degraded
+  for it sent the operator to `connections reauth`, which cannot fix it. A credential error
+  reached through an investments call still degrades the connection, because that one *is*
+  about the login. The run's exit code is still `1`: a connection that ran and found a
+  problem, whichever column recorded it.
+- **The failure is written where it is caught**, closing the residue Chunk 01 left. The page
+  loop returns early while a first sync is still materializing its history, so a failure
+  carried past it reached no column at all on exactly the run an operator most needs it.
+- **`sync_state` has one writer.** `store/sync_domains.py` owns the `(connection, domain)`
+  row for every caller — attempt, success, failure and measured range — each an insert-or-
+  update, because a bare `UPDATE` against an absent row reports success and writes nothing.
+- **The investments domain is stamped current only when BOTH its feeds are in.** Positions
+  and the investment-transaction window share one domain key, and both derivers were
+  stamping `last_success_at` per response — so a connection whose holdings landed while its
+  window came back short read fresh. The stamp moved to the sync command, which is the only
+  caller that knows the pull completed. A rebuild replaying an archived body therefore also
+  cannot forge a freshness claim out of a year-old capture.
+- **`get_pipeline_health` rows carry a `domains` array** — per domain: `last_attempt_at`,
+  `last_success_at`, `last_error_code`, `last_error_at`, `history_starts`. Still ONE row per
+  connection, which is the point: joining `sync_state` unfiltered would return a row per
+  domain and every consumer counting connections would count each one twice. AC-4.5's two
+  absences stay apart — no entry means the domain has never been attempted; an entry with a
+  null `last_success_at` means it has been attempted and has never landed in full.
+- **Warnings ride the success path per domain**, and only where the connection-level
+  warnings do not already say it. The test is a property rather than a list of domains to
+  exempt, so a third domain needs no new exemption and none can be forgotten.
+
+**Tests changed, and why they are not weakened:** two deriver tests asserted that the
+investments derivers stamp `last_success_at`, and one CLI test asserted that an investments
+failure degrades the connection. All three pinned behaviour this chunk's recorded decisions
+change, and the CLI test's own docstring said so ("recording the failure against the
+investments domain instead is the next chunk's work"). Each was rewritten to assert the new
+contract rather than deleted.
+
+**Deliberately not done:** an account whose activity is investment transactions still
+reports `transaction_count` 0 and `uncovered` on `list_accounts` and `get_coverage_report`.
+Reporting investment coverage per account changes the meaning of a published field on two
+row shapes, so it belongs with the tools that answer about positions (wave 2) rather than in
+the sync work that created the rows. Recorded in the code at the site and filed as
+brookstalley/bankmachine#107.
+
+## 2026-09-12: Investment transactions, and a removal signal that had to be derived
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** AC-3.3 was the second of FR-3's two unimplemented acceptance criteria. Holdings say
+what an account holds *today*; nothing said what moved it there. `investment_transactions`
+had been created, constrained and empty since build step 1.
+
+**What changed (Chunk 02):** `/investments/transactions/get` is pulled for the same
+capability-gated connections as holdings, over `config.history_days` — the one configured
+window — and paged to exhaustion by `options.offset` against the stated
+`total_investment_transactions`. `derive_investment_transactions` writes the rows with the
+identity and provenance `transactions` already carries, reusing `_exact_quantity` for
+quantities and `_operator_signed_amount` for amounts rather than writing a second
+normalization beside them.
+
+**The `verify-api` step rewrote three of this chunk's deliverables, which is the argument for
+running it first.** `api-notes-plaid.md` §26 carries the measurements; all three are absences,
+and none would have been found by more reasoning:
+
+- 🔴 **There is no settlement date.** `investment_transactions.settlement_date` gets nothing
+  from this feed and stays null; the manual importer is now its only possible writer. Filling
+  it with the trade date "for completeness" would manufacture a settlement no institution
+  stated, and every later reader would take it for one.
+- 🔴 **There is no removal signal of any kind** — no `removed` list, no tombstone, no flag.
+  This is a windowed read, not a delta like `/transactions/sync`, so the plan's "handled the
+  same way" had nothing to attach to. What makes the never-hard-delete norm satisfiable
+  anyway is that the window comes back **whole**: a stored row inside the requested window
+  whose id did not return has gone away, and that absence is the signal.
+- 🔴 **There is no cursor.** Paging is offset/count, so the far-end idempotence
+  `TRANSACTIONS_SYNC` relies on — and AC-2.5's crash-resume with it — is unavailable. A run
+  that stops early leaves no partial progress and re-reads the window from its start next
+  time, which converges only because every write is an upsert on the aggregator's own id.
+
+**The removal reconciliation refuses to run on a window it did not see whole, and that
+refusal is the whole safety argument.** A run stopped by its page ceiling, a transport
+failure or a kill has fetched a *prefix*: every row it never reached is absent from what it
+saw, and reconciling on that would soft-delete real history while leaving a store that looks
+exactly as it should. So exhaustion is **derived inside**
+`store.investments.record_investment_transaction_window` from the row count against the
+stated total, rather than passed in as a flag each caller asserts separately — and a window
+offered as complete with no archived pages raises instead of letting `NOT IN ()` match every
+row and retire the lot. The two tests that matter assert the invariant rather than its
+causes: a bounded run retires nothing and records no range.
+
+**What is deliberately NOT here, with the measurement as the reason.** No shortfall warning is
+derived from the returned range. Nothing states the granted window and the response does not
+echo what was asked, so the only observable range is the span of the rows — and that answers
+*when was this account last active*, not *how much history was granted*. An account granted
+two years with no trades in the first eighteen months returns the same narrow span as one
+granted six months, so a shortfall read off row dates would report every quiet brokerage as
+truncated history on every run. AC-3.3 asks to "record the actual date range returned", and
+that is what is recorded: computed from the rows, and only at exhaustion, because the rows
+arrive newest-first and the earliest date is on the last page.
+
+`cancel_transaction_id` is filed as **#110** rather than guessed. It was null on all 100 recorded rows,
+and its ledger meaning is itself unsettled — in accounting a cancellation usually keeps both
+rows so they net to zero, so treating it as a tombstone would change the arithmetic.
+
+**A debt this chunk created and names rather than leaves:** because removal is a property of a
+whole window and a deriver sees one page, replaying archived pages re-upserts every row that
+ever appeared and **clears `removed_at` on each** — silently resurrecting every soft delete.
+Chunk 04 owes the reconciliation re-run at the end of a rebuild, and the assertion that a
+rebuild reproduces a soft delete rather than undoing it; the window's `request_context` is
+archived carrying its offset and bounds for exactly that. Until then AC-5.2 is false in the
+one direction no test here can see.
+
+**Also fixed, and it was not a new defect.** `check-no-personal-data.sh` greps *tracked* files
+in worktree mode, so Chunk 01's freshly recorded fixture was invisible to the gate that
+passed it and became visible the moment it was committed — the "gate green" in that chunk's
+handoff was blind rather than green. The aggregator's canned sandbox fund name carried a
+roster token; the display name is sanitized in both fixtures, no token moved and no path was
+exempted, so the guard keeps full strength. Nothing in code, tests or docs reads a security's
+display name, and the structural facts the fixtures are the oracle for are untouched.
+
+## 2026-09-12: What is inside an investment account, recorded for the first time
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** the schema for investments has existed since build step 1 and every one of its
+tables was empty. `securities`, `holdings` and `investment_transactions` were created,
+constrained and never written to; `connections.capabilities` has recorded which connections
+could serve investments since build step 3 and **nothing read that column.** An operator
+holding a 401k saw a brokerage account with a balance and nothing whatsoever about what was
+inside it, and AC-3.2 was one of two acceptance criteria in FR-3 with no implementation.
+
+**What changed (Chunk 01 — holdings, end to end):** `/investments/holdings/get` is pulled
+for a connection whose recorded capabilities name the investments product — **capability,
+never institution** — and derived into `securities` and `holdings`, with a `sync_state` row
+at `domain = 'investments'` written inside the derivation's own transaction. The pull is
+made before the transactions page loop, because that loop returns early while a backfill is
+still materializing and positions share neither its cursor nor its window.
+
+The first-capture-of-the-day rule is now **one implementation shared** by the balance series
+and the holdings series rather than two written from the same paragraph: same comparison of
+`(captured_at, raw_response_id)`, same refusal to replace a row the operator imported. Two
+series disagreeing about what "first" means would have surfaced as a rebuild that could not
+reproduce its own content.
+
+**Measured before it was written.** The plan's `verify-api` step ran against the live sandbox
+first, and the capture (`api-notes-plaid.md` §22-24, fixture committed) moved three things
+the field mapping had reasoned about:
+
+- **A position carries no date of its own.** The only date on a holding is the *price's*, and
+  in the sandbox it is four years old. So `holdings.as_of_date` is this system's capture date,
+  the same one the balance series is keyed on — deriving it from the price would have filed
+  today's observation under 2021.
+- **Sub-cent valuations are ordinary**, not an edge: four of thirteen positions carry more
+  precision than the cent, so the half-even rounding runs on a third of a real payload.
+- 🔴 **Holdings decompose an account's balance and do not have to add up to it.** The
+  aggregator's own sandbox has one investment account reconciling exactly and another off by
+  6%, with no margin loan to explain it. Net worth must therefore read one series or the
+  other and never sum them — the guard wave 3 owes — and no reconciliation between the two is
+  a test this product can write.
+
+**What is NOT here, stated rather than left to be found:** an investments failure still
+degrades the whole **connection**, because recording it against the investments *domain* —
+so that a product error stops sending the operator to `connections reauth` — needs the
+per-domain error columns and the health surface that reports them, which is the next chunk.
+What it no longer does is cost that connection its transactions: the pull is carried rather
+than raised, the page loop runs, and the degrade lands after the history is in. A credential
+error is re-raised on the spot instead, because that one IS about the login and the operator
+needs the repair printed.
+
+The gate itself is silent by design — a connection that cannot serve investments simply does
+not call — so the run's report names the connections that did, and an unreadable
+`capabilities` record is logged rather than read as "cannot".
+
+**The holdings reply's own account roster is derived**, through the one account deriver every
+other endpoint's roster goes through. An account that has closed or been de-selected drops
+out of `/accounts/get` while its positions keep arriving, and refusing the reply for it would
+roll back every other position — permanently, since the archived body replays the same
+refusal on every rebuild.
+
 ## 2026-09-12: The gate runs somewhere that is not the author's machine
 
 <!-- prawduct: scope=ci-runs-the-gate -->

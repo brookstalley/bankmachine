@@ -32,6 +32,7 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any, Final
 
 from sqlalchemy import func, select, update
@@ -41,6 +42,7 @@ from bankmachine.cli.exit_codes import EXIT_OK, EXIT_RUN_AGAIN, EXIT_UNHEALTHY
 from bankmachine.cli.parser import AnyParser
 from bankmachine.config import Config
 from bankmachine.connector import (
+    INVESTMENTS_PRODUCT,
     ConnectorError,
     FetchedResponse,
     ReauthRequiredError,
@@ -48,6 +50,7 @@ from bankmachine.connector import (
     parse_response_body,
 )
 from bankmachine.connector.plaid.client import PlaidClient
+from bankmachine.connector.plaid.window import read_investment_transaction_page
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.logging_setup import get_logger
 from bankmachine.secrets import SecretsError, get_access_token, get_plaid_secret
@@ -59,15 +62,30 @@ from bankmachine.store.connection import (
 )
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, transaction, writer_connection
+from bankmachine.store.investments import (
+    WindowOutcome,
+    record_investment_transaction_window,
+    window_is_exhausted,
+)
+from bankmachine.store.raw import RawResponse
 from bankmachine.store.schema import (
+    INVESTMENTS_DOMAIN,
     TRANSACTIONS_DOMAIN,
     accounts,
     connections,
+    decode_capabilities,
     institutions,
     sync_state,
     transactions,
 )
-from bankmachine.store.types import UtcInstant, now_utc
+from bankmachine.store.sync_domains import (
+    record_domain_attempt,
+    record_domain_failure,
+    record_domain_history_start,
+    record_domain_incomplete,
+    record_domain_success,
+)
+from bankmachine.store.types import UtcInstant, calendar_date, now_utc
 
 logger = get_logger("cli.sync_run")
 
@@ -125,6 +143,16 @@ class ConnectionOutcome:
     institution_name: str
     pages: int = 0
     stopped_short: bool = False
+    #: 🔴 The investments window's own shortfall, kept apart from `stopped_short`.
+    #: That flag is the transactions pager's, and `unfinished` reads it to decide
+    #: `history_complete`, which is the only thing that stamps
+    #: `connections.last_success_at`. Routing an investments shortfall through it
+    #: withheld the CONNECTION's freshness stamp for a condition belonging to one
+    #: domain -- so the connection then read stale, `_domain_caveats` suppressed
+    #: the per-domain caveat exactly because it did, and the operator was pointed
+    #: at the connection for something no connection-level repair touches. Both
+    #: flags mean "come back", and only one of them means the history is not in.
+    investments_window_short: bool = False
     degraded: bool = False
     reason: str | None = None
     #: Whether the failure is an expired login, which `connections reauth` repairs
@@ -134,6 +162,30 @@ class ConnectionOutcome:
     login_expired: bool = False
     still_materializing: bool = False
     historical_complete: bool = False
+    #: Whether this run pulled the connection's positions. Reported because the
+    #: gate is silent by design -- a connection that cannot serve investments and
+    #: one whose capabilities could not be read both simply do not call, and
+    #: without a word in the report the two are indistinguishable from a run that
+    #: pulled them and found nothing.
+    investments_pulled: bool = False
+    #: How many investment transactions a complete window retired this run.
+    #: Reported because a soft delete is otherwise invisible -- the rows simply
+    #: stop appearing in every total, which is the shape of silent wrongness this
+    #: product exists to refuse.
+    investment_transactions_removed: int = 0
+    #: 🔴 What went wrong with the investments pull, recorded against the DOMAIN
+    #: rather than the connection. `connections.status` means credential health,
+    #: and a product this Item never initialized failing is not a statement about
+    #: the login -- marking the connection degraded for it sends the operator to
+    #: `connections reauth`, which cannot fix it. A credential error reached
+    #: through an investments call is different in kind and still degrades the
+    #: connection, through the path that prints the repair.
+    #:
+    #: The code rather than a boolean, because the run's exit code and its report
+    #: both need to say WHICH failure, and a flag beside a separately-stored
+    #: string is two things that can disagree.
+    investments_error_code: str | None = None
+    investments_error_reason: str | None = None
     granted_history_days: int | None = None
     history_shortfall_days: int | None = None
 
@@ -152,6 +204,13 @@ class ConnectionOutcome:
         `stopped_short` is a second, independent way to owe more: a run can page
         through history the aggregator calls complete and still hit its ceiling
         with `has_more` true.
+
+        🔴 **An investments window that came back short is NOT one of them.**
+        This property answers "is this connection's HISTORY in", and that is the
+        transactions backfill -- it is what `_record_success` stamps
+        `last_success_at` from. A domain that owes more makes the RUN worth
+        repeating (`RunOutcome.exit_code` reads it separately) without making the
+        connection's freshness a lie.
         """
         return not self.historical_complete or self.stopped_short
 
@@ -175,9 +234,20 @@ class RunOutcome:
         `1` asks an operator to look at a connection that is stuck. A run that
         found both needs the operator, so the code that reaches one wins.
         """
-        if any(o.degraded for o in self.outcomes):
+        # 🔴 A domain failure counts, though it leaves the CONNECTION active.
+        # `api-contract.md`'s exit-code contract splits on what happened, not on
+        # which column recorded it: a connection that ran and found a problem is
+        # `1` whether the problem was its login or one of its domains. Collapsing
+        # an investments failure into `0` would make a scheduled runner's only
+        # machine-readable signal say nothing is wrong.
+        if any(o.degraded or o.investments_error_code is not None for o in self.outcomes):
             return EXIT_UNHEALTHY
-        if any(o.unfinished for o in self.outcomes):
+        # 🔴 A domain that owes more counts here and nowhere else. It asks the
+        # caller to come back, which is what `75` means -- and it deliberately
+        # does not travel through `unfinished`, which answers a different
+        # question (is the connection's history in) whose answer stamps
+        # `connections.last_success_at`.
+        if any(o.unfinished or o.investments_window_short for o in self.outcomes):
             return EXIT_RUN_AGAIN
         return EXIT_OK
 
@@ -388,7 +458,7 @@ def _run_once(config: Config, args: argparse.Namespace) -> int:
     # and discovering it once per connection would report N problems for one cause.
     secret = get_plaid_secret(config)
     run = RunOutcome()
-    for connection_id, institution_name, credential_ref in targets:
+    for connection_id, institution_name, credential_ref, capabilities in targets:
         run.outcomes.append(
             _sync_one(
                 config,
@@ -396,6 +466,7 @@ def _run_once(config: Config, args: argparse.Namespace) -> int:
                 connection_id=connection_id,
                 institution_name=institution_name,
                 credential_ref=credential_ref,
+                capabilities=capabilities,
                 wait=not args.no_wait,
             )
         )
@@ -404,12 +475,22 @@ def _run_once(config: Config, args: argparse.Namespace) -> int:
     return run.exit_code
 
 
-def _live_connections(conn: SAConnection, *, only: int | None) -> list[tuple[int, str, str]]:
+def _live_connections(
+    conn: SAConnection, *, only: int | None
+) -> list[tuple[int, str, str, frozenset[str]]]:
+    """Every connection to sync, and what each of them reports it can serve.
+
+    The capabilities ride along because AC-3.2 decides per connection whether the
+    investments endpoints are called at all, and the alternative -- re-reading the
+    column inside the per-connection loop -- would open a second handle per
+    connection to answer a question this one already had in hand.
+    """
     statement = (
         select(
             connections.c.connection_id,
             institutions.c.name,
             connections.c.credential_ref,
+            connections.c.capabilities,
         )
         .select_from(connections.join(institutions))
         .where(connections.c.retired_at.is_(None))
@@ -417,7 +498,26 @@ def _live_connections(conn: SAConnection, *, only: int | None) -> list[tuple[int
     )
     if only is not None:
         statement = statement.where(connections.c.connection_id == only)
-    return [(int(r[0]), str(r[1]), str(r[2])) for r in conn.execute(statement).all()]
+    targets: list[tuple[int, str, str, frozenset[str]]] = []
+    for row in conn.execute(statement).all():
+        connection_id = int(row[0])
+        try:
+            capabilities = decode_capabilities(str(row[3]))
+        except ValueError as exc:
+            # 🔴 Said out loud rather than defaulted to "can do nothing". An
+            # unreadable capabilities column means this connection's optional
+            # domains go unpulled, and a connection that quietly stops pulling
+            # investments looks exactly like one whose institution never offered
+            # them. The domains it has no choice about still run.
+            logger.warning(
+                "connection %d has an unreadable capabilities record, so only the domains "
+                "every connection has are synced for it: %s",
+                connection_id,
+                exc,
+            )
+            capabilities = frozenset()
+        targets.append((connection_id, str(row[1]), str(row[2]), capabilities))
+    return targets
 
 
 def _sync_one(
@@ -427,6 +527,7 @@ def _sync_one(
     connection_id: int,
     institution_name: str,
     credential_ref: str,
+    capabilities: frozenset[str],
     wait: bool,
     sleep: Callable[[float], None] = time.sleep,
 ) -> ConnectionOutcome:
@@ -461,6 +562,28 @@ def _sync_one(
             accounts_page = client.accounts_get(access_token, connection_id=connection_id)
             _persist(config, accounts_page, connection_id)
 
+            # 🔴 AC-3.2: pulled for a connection that reports it can serve them,
+            # and for no other reason. Whole-value membership of the recorded
+            # list -- nothing here looks at which institution this is, and the
+            # roster stays out of the code.
+            #
+            # Before the page loop, not after it, because that loop returns early
+            # while the aggregator is still materializing a transactions backfill
+            # (`NOT_READY`, which can persist for minutes on a first sync). The
+            # positions are ready regardless -- they share no cursor and no
+            # window with the transactions -- so ordering them after that return
+            # would leave an investments-capable connection with no holdings for
+            # as long as its transactions took to build.
+            if INVESTMENTS_PRODUCT in capabilities:
+                _pull_investments(
+                    config,
+                    client,
+                    access_token,
+                    connection_id=connection_id,
+                    outcome=outcome,
+                )
+
+            _record_attempt(config, connection_id, TRANSACTIONS_DOMAIN)
             while outcome.pages < MAX_PAGES_PER_RUN:
                 cursor = _cursor_for(config, connection_id)
                 try:
@@ -624,13 +747,12 @@ def _record_granted_window(config: Config, connection_id: int, outcome: Connecti
             .where(connections.c.connection_id == connection_id)
             .values(granted_history_days=granted, updated_at=now)
         )
-        conn.execute(
-            update(sync_state)
-            .where(
-                sync_state.c.connection_id == connection_id,
-                sync_state.c.domain == TRANSACTIONS_DOMAIN,
-            )
-            .values(history_start_date=oldest, updated_at=now)
+        record_domain_history_start(
+            conn,
+            connection_id=connection_id,
+            domain=TRANSACTIONS_DOMAIN,
+            start=calendar_date(oldest),
+            at=now,
         )
 
     outcome.granted_history_days = granted
@@ -649,10 +771,16 @@ def _record_granted_window(config: Config, connection_id: int, outcome: Connecti
         )
 
 
-def _persist(config: Config, fetched: FetchedResponse, connection_id: int) -> None:
-    """Archive and derive one page. The cursor rides the derivation's transaction."""
+def _persist(config: Config, fetched: FetchedResponse, connection_id: int) -> RawResponse:
+    """Archive and derive one page. The cursor rides the derivation's transaction.
+
+    Returns the archived response, because the investments window needs to name
+    the pages it was assembled from: a row carrying none of THIS window's
+    response ids is a row the window did not return, and that is the only
+    removal signal the endpoint offers (`store.investments`).
+    """
     with writer_connection(config) as conn:
-        apply_response(
+        return apply_response(
             conn,
             connection_id=connection_id,
             endpoint=fetched.endpoint.path,
@@ -661,6 +789,233 @@ def _persist(config: Config, fetched: FetchedResponse, connection_id: int) -> No
             derivers=ALL_DERIVERS,
             request_context=fetched.request_context,
         )
+
+
+def _record_attempt(config: Config, connection_id: int, domain: str) -> None:
+    """This domain was tried on this run, whatever comes of it.
+
+    🔴 **Before the calls, not after them.** The health surface reads a domain
+    with no `sync_state` row at all as one that has never been tried, and that
+    reading is what makes AC-4.5's distinction possible -- so a pull that fails
+    on its first ever run has to have left the row behind before it failed.
+    Without this, a connection that cannot serve investments and one whose every
+    attempt has failed are the same absence.
+    """
+    with writer_connection(config) as conn:
+        record_domain_attempt(conn, connection_id=connection_id, domain=domain, at=now_utc())
+
+
+def _pull_investments(
+    config: Config,
+    client: PlaidClient,
+    access_token: str,
+    *,
+    connection_id: int,
+    outcome: ConnectionOutcome,
+) -> None:
+    """One capable connection's positions and its investment-transaction window.
+
+    🔴 **A failure here costs the investments DOMAIN and nothing else.** The
+    capability gate opens for any connection whose recorded capabilities name the
+    product, and those include products the Item has never initialized -- so this
+    can fail for a connection whose transactions are perfectly healthy. Two
+    things follow, and they are separate:
+
+    * The exception does not escape, so the page loop still runs. Raising would
+      abandon the transactions backfill on this run and every run after it, for a
+      reason that has nothing to do with transactions.
+    * The failure is recorded against this connection's investments `sync_state`
+      row rather than against `connections.status`. That column means credential
+      health; a `PRODUCT_NOT_READY` recorded there sends the operator to
+      `connections reauth`, which cannot fix it.
+
+    🔴 **Recorded HERE, where it is caught, rather than carried to the end of the
+    connection's run.** The page loop returns early while a first sync is still
+    materializing its history, so a failure carried past it reached no column at
+    all on exactly the run an operator most needs to see it.
+
+    🔴 **`last_success_at` is stamped only once BOTH feeds are in.** Positions
+    and the transaction window share one domain key, so a run whose holdings
+    landed while its window came back short has not made the domain current --
+    stamping it there would report a portfolio as fresh while most of its history
+    was missing, which is the silent staleness this product exists to refuse.
+    """
+    _record_attempt(config, connection_id, INVESTMENTS_DOMAIN)
+    try:
+        holdings_page = client.investments_holdings_get(access_token, connection_id=connection_id)
+        _persist(config, holdings_page, connection_id)
+        outcome.investments_pulled = True
+        window = _pull_investment_transactions(
+            config,
+            client,
+            access_token,
+            connection_id=connection_id,
+            outcome=outcome,
+        )
+    except ReauthRequiredError:
+        # 🔴 Re-raised, because this one IS about the login. It degrades the
+        # connection through the path that prints the repair, which is the whole
+        # difference between a failure an operator can fix and one they can only
+        # stare at.
+        raise
+    except (ConnectorError, StoreError) as exc:
+        outcome.investments_error_code = type(exc).__name__
+        outcome.investments_error_reason = str(exc)
+        now = now_utc()
+        with writer_connection(config) as conn:
+            record_domain_failure(
+                conn,
+                connection_id=connection_id,
+                domain=INVESTMENTS_DOMAIN,
+                code=outcome.investments_error_code,
+                at=now,
+            )
+        logger.warning(
+            "connection %d could not pull investments; its transactions are synced "
+            "regardless and the failure is recorded against the investments domain: %s",
+            connection_id,
+            exc,
+        )
+        return
+
+    if not window.exhausted:
+        # Nothing is wrong: the window was simply seen in part, which the run
+        # reports as work still owed. The domain is not current either, so the
+        # stamp is withheld rather than the failure recorded.
+        #
+        # 🔴 But the attempt is still recorded as having not failed. Writing
+        # nothing here left a previous run's `last_error_code` standing on a row
+        # whose last attempt reached the aggregator and came back clean, and
+        # every surface that reads that column then reported a failure that had
+        # already stopped happening.
+        with writer_connection(config) as conn:
+            record_domain_incomplete(
+                conn, connection_id=connection_id, domain=INVESTMENTS_DOMAIN, at=now_utc()
+            )
+        return
+    with writer_connection(config) as conn:
+        record_domain_success(
+            conn, connection_id=connection_id, domain=INVESTMENTS_DOMAIN, at=now_utc()
+        )
+
+
+def _pull_investment_transactions(
+    config: Config,
+    client: PlaidClient,
+    access_token: str,
+    *,
+    connection_id: int,
+    outcome: ConnectionOutcome,
+) -> WindowOutcome:
+    """The configured window of investment transactions, paged to exhaustion.
+
+    🔴 **Paged by offset against a stated total, with no cursor** *(§26)*. So
+    unlike the transactions loop, there is nothing to store between pages and
+    nothing to resume from: a run that stops early leaves no partial progress
+    behind, and the next run re-reads the window from its start. That converges
+    because every row is upserted on the aggregator's own id, and it is the
+    reason the page ceiling here costs a re-read rather than a gap.
+
+    AC-3.3: the window asked for is `config.history_days`, the one configured
+    window. What came back is recorded by
+    `record_investment_transaction_window`, which also owns the removal
+    reconciliation -- and refuses both if these pages did not exhaust the window.
+    """
+    end = now_utc().date()
+    start = end - timedelta(days=config.history_days)
+    page_response_ids: list[int] = []
+    rows_seen = 0
+    stated_total: int | None = None
+    # 🔴 The instant the removals are stamped with, taken from the ARCHIVE rather
+    # than the clock. A `removed_at` of `now_utc()` could never be reproduced by
+    # a replay of the same pages, so AC-5.2's "rebuildable from raw responses
+    # alone" would be false for every soft delete. The last page's `received_at`
+    # is a property of the window, so a rebuild that replays it concludes the
+    # same removal at the same instant.
+    concluded_at = now_utc()
+
+    while len(page_response_ids) < MAX_PAGES_PER_RUN:
+        fetched = client.investments_transactions_get(
+            access_token,
+            start_date=start,
+            end_date=end,
+            offset=rows_seen,
+            connection_id=connection_id,
+        )
+        response = _persist(config, fetched, connection_id)
+        page_response_ids.append(response.raw_response_id)
+        concluded_at = response.received_at
+        # 🔴 Read back off the ARCHIVED page rather than off the reply in hand,
+        # through the reader a rebuild uses on the same row. The two paths then
+        # cannot disagree about how many rows a page carried or how many the
+        # window claims to hold -- and a disagreement would surface only as a
+        # rebuild that concluded a removal this run never did.
+        page = read_investment_transaction_page(response)
+        rows_seen = page.rows_through_this_page
+        stated_total = page.stated_total
+        # 🔴 Three exits, and the first two are measured *(§26)*: an offset at
+        # or past the total answers with an empty list and no error, and the
+        # total does not move between pages. The empty-page exit is what stops a
+        # total that is wrong in the high direction from looping to the ceiling.
+        #
+        # 🔴 The unstated total is the third and is NOT the exhaustion predicate
+        # saying no. A window with no stated size has nothing to page against:
+        # there is no offset at which this loop could learn it had finished, so
+        # asking again 499 times spends the page ceiling in aggregator calls to
+        # reach the conclusion the first page already supports. `window_is_exhausted`
+        # answers False here for its own good reason -- nothing may be concluded
+        # about what is missing -- and folding this case into it cost exactly
+        # that: a single no-total page fetched to the ceiling, silently.
+        if page.rows == 0 or stated_total is None or window_is_exhausted(rows_seen, stated_total):
+            break
+    else:
+        logger.info(
+            "connection %d stopped at the %d-page ceiling of its investment-transaction "
+            "window with more to fetch. There is no cursor on this endpoint (§26), so the "
+            "next run re-reads the window from its start rather than resuming here",
+            connection_id,
+            MAX_PAGES_PER_RUN,
+        )
+
+    with writer_connection(config) as conn, transaction(conn):
+        window = record_investment_transaction_window(
+            conn,
+            connection_id=connection_id,
+            window_start=calendar_date(start),
+            window_end=calendar_date(end),
+            page_response_ids=page_response_ids,
+            rows_seen=rows_seen,
+            stated_total=stated_total,
+            at=concluded_at,
+        )
+        if window.history_start_date is not None:
+            # 🔴 Recorded by the SYNC, in the same transaction as the removals
+            # the range was measured after -- a store reporting one window's
+            # range beside another's rows would claim a measurement its own rows
+            # contradict. It is the sync's to record because `store rebuild`
+            # re-runs the reconciliation above from the archived pages, and a
+            # replay that stamped a domain's progress would restate a
+            # measurement the run that took it has since moved past. The
+            # transactions domain records its own range the same way, a few
+            # functions up.
+            record_domain_history_start(
+                conn,
+                connection_id=connection_id,
+                domain=INVESTMENTS_DOMAIN,
+                start=window.history_start_date,
+                at=concluded_at,
+            )
+    outcome.investment_transactions_removed = window.removed
+    if not window.exhausted:
+        # 🔴 Taken from the window's OWN verdict rather than from the page
+        # ceiling, because the ceiling is only one way to see a prefix. A page
+        # that comes back empty while the stated total says there is more exits
+        # the loop without ever reaching the `else` above -- and reporting that
+        # run as finished would tell the operator there is nothing left to fetch
+        # while the range stayed unmeasured and nothing was reconciled. One
+        # source for "did we see it whole", and it is the one that decided.
+        outcome.investments_window_short = True
+    return window
 
 
 def _cursor_for(config: Config, connection_id: int) -> str | None:
@@ -829,9 +1184,65 @@ def _report(run: RunOutcome) -> None:
                     f"{outcome.history_shortfall_days} days. It cannot be widened "
                     f"without re-linking (AC-1.2)"
                 )
+        # 🔴 Both at the loop's level rather than inside the healthy branch,
+        # like the two investments lines below and for the same reason:
+        # `_pull_investments` runs BEFORE the page loop, so a completed window
+        # sits behind a connection the pager then reports as degraded or as still
+        # materializing. Appended to the pages sentence, each said nothing at all
+        # in exactly those runs -- and for the retired count that is the
+        # invisibility it exists to end, since a soft delete leaves no trace in a
+        # page count: the rows simply stop appearing in every total.
+        if outcome.investments_pulled:
+            print("       investments: positions recorded")
+        if outcome.investment_transactions_removed:
+            print(
+                f"       investments: {outcome.investment_transactions_removed} "
+                f"transaction(s) are no longer reported and have been retired"
+            )
+        if outcome.investments_window_short:
+            # 🔴 Its own line rather than the pager's, which says "stopped at the
+            # page ceiling" -- a ceiling this window may never have reached. The
+            # window is short whenever it was not seen WHOLE, and the ordinary
+            # cause is a reply that stated no total at all.
+            print(
+                "       investments: the transaction window did not come back whole, so\n"
+                "       nothing was retired from it and its range is unmeasured. Run again"
+            )
+        if outcome.investments_error_reason is not None and not outcome.degraded:
+            # 🔴 Printed under a connection the run is otherwise reporting as
+            # healthy, which is the whole shape of this failure: the login works,
+            # the transactions landed, and one domain stopped. It names the
+            # domain rather than the connection so the operator does not reach
+            # for `connections reauth`, which repairs a credential and cannot
+            # touch a product the Item never initialized.
+            #
+            # 🔴 `not degraded` is what keeps that sentence TRUE. Both can happen
+            # in one run -- the investments call fails with a product error and
+            # the page loop afterwards hits an expired login -- and without this
+            # guard "no re-authentication is needed" printed two lines under the
+            # instruction to re-authenticate. The summary counter below already
+            # carries the same guard for the same reason.
+            print(
+                f"       🔴 investments: {outcome.investments_error_reason}. The "
+                f"connection's other data is unaffected and no re-authentication "
+                f"is needed"
+            )
     degraded = sum(1 for o in run.outcomes if o.degraded)
     if degraded:
         print(f"\n{degraded} of {len(run.outcomes)} connections could not be synced")
+    failed_domains = sum(
+        1 for o in run.outcomes if not o.degraded and o.investments_error_code is not None
+    )
+    if failed_domains:
+        # 🔴 Counted apart from the degraded connections rather than added to
+        # them, and `not o.degraded` is what makes the sentence true: these
+        # connections DID sync. A connection that lost its login AND its
+        # investments would otherwise be counted in both lines, which read
+        # together say it could not be synced and that it synced.
+        print(
+            f"\n{failed_domains} of {len(run.outcomes)} connections synced with their "
+            f"investments domain failing"
+        )
     owing = sum(1 for o in run.outcomes if not o.degraded and o.unfinished)
     if owing:
         # The summary an operator scanning ten institutions reads. Degraded

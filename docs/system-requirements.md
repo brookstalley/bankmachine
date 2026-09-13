@@ -250,6 +250,16 @@ enrollment and stored per connection. Securities live in their own table, refere
 **AC-3.3** — Investment pulls request the full configured window where supported, and **record the
 actual date range returned**, so shortfalls are visible rather than silent.
 
+*(As built, 2026-09-12: the sync half of build step 5 ships. Holdings and investment transactions
+are pulled for every connection whose recorded capabilities name the product, the window that
+actually returned is recorded per domain, and `bankmachine store rebuild` reproduces both from the
+archive alone -- including the soft deletes a window's own completeness concluded, which is the only
+removal signal this feed has. 🔴 The second clause above is satisfied by recording what returned
+rather than by detecting a shortfall: the granted window is unobservable on
+`/investments/transactions/get`, which states no window of its own (`api-notes-plaid.md` §26). What
+remains unbuilt is the READ side, and the tools that would expose it are tracked in
+`.prawduct/artifacts/api-contract.md`.)*
+
 **AC-3.4** — 🔴 **Liability accounts (loans, lines of credit) are covered by account type, balance,
 and transactions — the same path as any other account.** Liability-*product* detail (APR, minimum
 payment, payoff date, statement schedule) is **explicitly out of scope for v1**, and no liabilities

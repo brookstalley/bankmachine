@@ -130,6 +130,40 @@ def _unstamped_ledger_date_caveat(conn: SAConnection) -> list[Caveat]:
     ]
 
 
+@dataclass(frozen=True, slots=True)
+class _ConnectionFreshness:
+    """The three conditions the connection-level caveats fired on, for one connection.
+
+    🔴 **One owner for a decision two passes read.** The domain caveats say a
+    thing only where the connection has not already said it, and each of those
+    conditions used to be re-derived beside the domain rows from the same
+    columns. The copies agreed, and nothing held them there: a change to the
+    connection rule -- a grace period before stale, a second status value, a
+    standing complaint counting as degraded -- moves one and leaves the other,
+    and both directions of that drift are defects the code already names. Two
+    caveats describing one condition teaches a reader to skip the pair; a
+    suppressed one that should have fired is silent staleness.
+
+    Matching on the caveats actually emitted would be the other way to do it and
+    is not faithful: `partial` carries three unrelated connection-level meanings,
+    so a connection whose granted window is merely unmeasured would suppress a
+    domain that has genuinely never landed.
+
+    🔴 **Both passes read it, the connection pass included.** Building this and
+    then re-writing the same three predicates at the connection caveats' own
+    emit sites would leave the copy this record exists to remove -- a few lines
+    further from its twin, and no easier to change together. The predicates live
+    here; the sentences live at the sites.
+    """
+
+    #: `status` says so. The aggregator's STANDING complaint deliberately does
+    #: not: an Item can be unwell while its last poll succeeded, so a domain
+    #: failure beside one is a second fact and not a repetition.
+    degraded: bool
+    never_succeeded: bool
+    stale: bool
+
+
 def _pipeline_warnings(
     conn: SAConnection, now: UtcInstant, window: Window | None = None
 ) -> list[Caveat]:
@@ -168,10 +202,13 @@ def _pipeline_warnings(
             connections.join(institutions).outerjoin(
                 sync_state,
                 (sync_state.c.connection_id == connections.c.connection_id)
-                # Filtered on domain, like every other read of this table: it is
-                # keyed on (connection, domain), so an unfiltered join returns a
-                # row per domain the day a second one lands and every warning
-                # below fires twice per connection.
+                # 🔴 Pinned to the transactions domain because the value taken
+                # from this join IS a transactions fact: `history_start_date`
+                # here is the date `granted_history_days` was measured from, and
+                # that measurement walks the `transactions` table. Every domain's
+                # own freshness is reported beside these, per domain, by
+                # `_domain_caveats` -- widening this join instead would multiply
+                # one warning per domain rather than say anything new.
                 & (sync_state.c.domain == TRANSACTIONS_DOMAIN),
             )
         )
@@ -189,10 +226,17 @@ def _pipeline_warnings(
             )
         )
 
+    freshness: dict[int, _ConnectionFreshness] = {}
     for row in rows:
         connection_id, name = int(row[0]), str(row[1])
         status, last_success = str(row[2]), row[3]
         requested, granted = row[5], row[6]
+        said = _ConnectionFreshness(
+            degraded=status == "degraded",
+            never_succeeded=last_success is None,
+            stale=last_success is not None and now - last_success > STALE_AFTER,
+        )
+        freshness[connection_id] = said
 
         # 🔴 The aggregator's STANDING complaint about the Item, which is not
         # the same fact as a failed sync attempt. An Item can be unwell while
@@ -220,7 +264,7 @@ def _pipeline_warnings(
                 now=now,
             )
         )
-        if status == "degraded":
+        if said.degraded:
             warnings.append(
                 Caveat(
                     kind="degraded",
@@ -232,7 +276,7 @@ def _pipeline_warnings(
                     institution=name,
                 )
             )
-        if last_success is None:
+        if said.never_succeeded:
             warnings.append(
                 Caveat(
                     kind="partial",
@@ -241,7 +285,7 @@ def _pipeline_warnings(
                     institution=name,
                 )
             )
-        elif now - last_success > STALE_AFTER:
+        elif said.stale:
             hours = int((now - last_success).total_seconds() // 3600)
             warnings.append(
                 Caveat(
@@ -255,7 +299,7 @@ def _pipeline_warnings(
         # shortfall -- it is not yet known -- and the two are reported
         # differently, because reading the first as the second is the exact
         # inference AC-1.3a forbids.
-        if granted is None and last_success is not None:
+        if granted is None and not said.never_succeeded:
             warnings.append(
                 Caveat(
                     kind="partial",
@@ -283,7 +327,121 @@ def _pipeline_warnings(
                     institution=name,
                 )
             )
+    warnings.extend(_domain_caveats(conn, now, freshness))
     return warnings
+
+
+def _domain_caveats(
+    conn: SAConnection, now: UtcInstant, freshness: dict[int, _ConnectionFreshness]
+) -> list[Caveat]:
+    """What one sync DOMAIN is missing that the connection beside it is not.
+
+    🔴 **The failure this exists to refuse.** `sync_state` is keyed on
+    `(connection, domain)` and the domains advance on their own schedules, so a
+    connection can be paging transactions happily every night while its
+    investments have not returned since August. Every connection-level warning
+    above reads `connections`, which cannot see that: the login works, the last
+    run succeeded, and the answer comes back clean over a portfolio three weeks
+    out of date. AC-4.4 names silent staleness as this system's primary failure
+    mode, and a second sync domain that no surface reports is silent staleness
+    with a new cause.
+
+    🔴 **One condition, one caveat, said only where it is not already said.** A
+    domain that is stale because the whole CONNECTION is stale is already named
+    above, and a domain whose first attempt failed is both failing AND never
+    landed -- so both cases would otherwise emit a second caveat describing a
+    condition already described. Two of them riding every answer is what teaches
+    a reader to skip the pair, which is the same defect as saying nothing. The
+    tests are properties rather than lists of cases to exempt: a caveat fires
+    when it adds something the caveats already emitted do not, so a third domain
+    needs no new exemption and none can be forgotten.
+
+    What "already said" means is READ rather than recomputed: `freshness` carries
+    the conditions the connection pass fired on (`_ConnectionFreshness`), which
+    is the one statement of each -- the connection caveats are emitted from the
+    same record, so neither pass can drift from the other. A
+    connection missing from the map is a programming error rather than a case --
+    both passes select the same unretired connections -- and it is left to raise
+    instead of taking a default, because either default silently answers one of
+    the two questions wrongly.
+
+    A domain with no row at all has never been attempted and raises nothing: the
+    connection either cannot serve it or has not reached it, and both are the
+    connection's own story rather than a hole in this one's history (AC-4.5's
+    other half -- a row with a null `last_success_at` is a domain that HAS been
+    tried and has never landed, which is a very different thing and does fire).
+    """
+    caveats: list[Caveat] = []
+    rows = conn.execute(
+        select(
+            connections.c.connection_id,
+            institutions.c.name,
+            sync_state.c.domain,
+            sync_state.c.last_success_at,
+            sync_state.c.last_error_code,
+        )
+        .select_from(connections.join(institutions).join(sync_state))
+        .where(connections.c.retired_at.is_(None))
+        .order_by(connections.c.connection_id, sync_state.c.domain)
+    ).all()
+    for row in rows:
+        connection_id, name = int(row[0]), str(row[1])
+        domain, domain_success, domain_error = str(row[2]), row[3], row[4]
+        said = freshness[connection_id]
+        if domain_error is not None and not said.degraded:
+            caveats.append(
+                Caveat(
+                    kind="degraded",
+                    detail=(
+                        f"{name}'s {domain} last failed with {domain_error}, while the "
+                        f"connection itself is syncing normally. "
+                        + (
+                            f"Its {domain} have never landed in full, so it contributes "
+                            f"none of that data at all"
+                            if domain_success is None
+                            else f"Its {domain} data stops at the last one that landed"
+                        )
+                        + ", and re-authenticating repairs nothing here"
+                    ),
+                    connection_id=connection_id,
+                    institution=name,
+                )
+            )
+        if domain_success is None:
+            # 🔴 Only when nothing above has already spoken for this domain. A
+            # domain whose first attempt failed satisfies both branches -- which
+            # is the ORDINARY shape for a product an Item never initialized --
+            # and two caveats describing one condition, riding every answer, is
+            # what teaches a reader to skip the pair. The failing case says it
+            # more usefully anyway: it names the error.
+            if not said.never_succeeded and domain_error is None:
+                caveats.append(
+                    Caveat(
+                        kind="partial",
+                        detail=(
+                            f"{name} syncs, but its {domain} have never landed in full, so "
+                            f"it contributes none of that data yet"
+                        ),
+                        connection_id=connection_id,
+                        institution=name,
+                    )
+                )
+            continue
+        behind = now - utc_instant(domain_success)
+        if behind > STALE_AFTER and not said.stale:
+            caveats.append(
+                Caveat(
+                    kind="stale",
+                    detail=(
+                        f"{name}'s {domain} have not landed for "
+                        f"{int(behind.total_seconds() // 3600)} hours, though the connection "
+                        f"itself is syncing"
+                    ),
+                    connection_id=connection_id,
+                    institution=name,
+                )
+            )
+    return caveats
 
 
 #: How long before consent lapses the pipeline starts saying so.
@@ -677,10 +835,22 @@ def _account_coverage(conn: SAConnection) -> dict[int, AccountCoverage]:
             ).outerjoin(
                 sync_state,
                 (sync_state.c.connection_id == accounts.c.connection_id)
-                # Filtered on domain like every other read of this table: it is
-                # keyed on (connection, domain), so an unfiltered join multiplies
-                # every account row the day a second domain lands and the counts
-                # above would come back multiplied with it.
+                # 🔴 The transactions domain BY MEANING, not for want of a
+                # second one. Every fact this function computes is drawn from
+                # the `transactions` table, and `history_start_date` is the
+                # bound those counts are read against -- a second domain's
+                # start date would be a different history compared to the same
+                # rows. Widening the join instead would multiply every account
+                # row by the number of domains its connection has and take the
+                # counts with it.
+                #
+                # 🔴 **What this DOES leave unsaid**, recorded rather than
+                # discovered later: an account whose activity is investment
+                # transactions reports `transaction_count` 0 here and is
+                # reported `uncovered`. Reporting investment coverage per
+                # account changes the meaning of a field on two published row
+                # shapes, so it belongs with the tools that answer about
+                # positions rather than in the sync work that created the rows.
                 & (sync_state.c.domain == TRANSACTIONS_DOMAIN),
             )
         )
@@ -3410,6 +3580,54 @@ def money_summary(
         )
 
 
+def _sync_domains(conn: SAConnection) -> dict[int, list[dict[str, Any]]]:
+    """Every sync domain every connection has ever attempted, grouped by connection.
+
+    🔴 **Read as its own query rather than joined into the health rows**, because
+    the two answer different shapes: one connection has one health row and any
+    number of domains, and a join would return the product of the two. Every
+    count over `rows` on this surface -- and a consumer's own count of its
+    connections -- would double the day a second domain landed, silently and in
+    the direction of looking like more coverage rather than less.
+
+    Ordered by domain name so two calls against an unchanged store return the
+    same bytes; nothing reads the order for meaning.
+
+    An entry exists for a domain that has been ATTEMPTED, whether or not it has
+    ever succeeded, which is what makes AC-4.5's two cases distinguishable: a
+    null `last_success_at` here means the domain has been tried and has never
+    landed in full, while no entry at all means it has never been tried.
+    """
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for row in conn.execute(
+        select(
+            sync_state.c.connection_id,
+            sync_state.c.domain,
+            sync_state.c.last_attempt_at,
+            sync_state.c.last_success_at,
+            sync_state.c.last_error_code,
+            sync_state.c.last_error_at,
+            sync_state.c.history_start_date,
+        ).order_by(sync_state.c.connection_id, sync_state.c.domain)
+    ).all():
+        grouped.setdefault(int(row[0]), []).append(
+            {
+                "domain": str(row[1]),
+                "last_attempt_at": None if row[2] is None else row[2].isoformat(),
+                # 🔴 Null is NEVER LANDED IN FULL, never "fine". This is the
+                # field the size of the hole is measured from (AC-4.5), and it
+                # advances only when the domain got everything it asked for --
+                # a pull whose positions arrived and whose transaction window
+                # came back short leaves it exactly where it was.
+                "last_success_at": None if row[3] is None else row[3].isoformat(),
+                "last_error_code": row[4],
+                "last_error_at": None if row[5] is None else row[5].isoformat(),
+                "history_starts": None if row[6] is None else str(row[6]),
+            }
+        )
+    return grouped
+
+
 def pipeline_health(config: Config) -> Answer:
     """Every connection and what is wrong with it — the question AC-ARCH.3 names.
 
@@ -3438,12 +3656,19 @@ def pipeline_health(config: Config) -> Answer:
                 connections.join(institutions).outerjoin(
                     sync_state,
                     (sync_state.c.connection_id == connections.c.connection_id)
-                    # 🔴 Filtered on domain, like every other read of this table.
-                    # `sync_state` is keyed on (connection, domain) and balances
-                    # and holdings advance on their own schedules -- so the day a
-                    # second domain lands, an unfiltered join silently returns
-                    # one health row per domain and a consumer counts each
-                    # connection twice.
+                    # 🔴 Still one row per CONNECTION, and the domains ride it as
+                    # a block. `sync_state` is keyed on (connection, domain), so
+                    # joining it unfiltered would return one health row per
+                    # domain and every consumer counting connections would count
+                    # each one twice -- which is the regression a second domain
+                    # makes available for the first time. The per-domain facts
+                    # come from `_sync_domains` below, grouped under the
+                    # connection they belong to.
+                    #
+                    # Pinned here because this column is the transactions grant:
+                    # `history_starts` beside `granted_history_days` is the date
+                    # that window was measured from. Each domain's own start
+                    # rides its own entry.
                     & (sync_state.c.domain == TRANSACTIONS_DOMAIN),
                 )
             )
@@ -3456,6 +3681,7 @@ def pipeline_health(config: Config) -> Answer:
         # carries the three fields and none of them is conditional.
         measured = signs.measure(conn)
         conventions = {m.connection_id: m for m in measured}
+        domains = _sync_domains(conn)
         rows = [
             {
                 "connection_id": int(r[0]),
@@ -3478,6 +3704,14 @@ def pipeline_health(config: Config) -> Answer:
                 "sign_convention": conventions[int(r[0])].verdict,
                 "sign_convention_rows_judged": conventions[int(r[0])].rows_judged,
                 "sign_convention_rows_positive": conventions[int(r[0])].rows_positive,
+                # 🔴 AC-4.4 and AC-4.5, for a pipeline that is no longer one
+                # stream per connection. Empty is a real answer and means
+                # nothing has ever been attempted for this connection -- which
+                # is why an attempted-and-failed domain is an ENTRY carrying a
+                # null `last_success_at` rather than a missing one. A consumer
+                # that read absence as health would reproduce the exact failure
+                # this surface exists to catch.
+                "domains": domains.get(int(r[0]), []),
             }
             for r in result
         ]

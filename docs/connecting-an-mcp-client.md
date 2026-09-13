@@ -261,14 +261,24 @@ different question, because both are refused rather than answered. Narrowing the
 Warnings come in two scopes, and the difference is why they are worth reading. The first group
 describes the **pipeline**, so it rides every response equally:
 
-- `stale` — a connection has not synced recently.
-- `degraded` — a connection is failing; its data stops at the last successful run.
+- `stale` — a connection has not synced recently, **or one sync DOMAIN of one has not.** A
+  connection's transactions and its investments advance on separate schedules, so a connection can
+  be paging nightly while its portfolio is three weeks old. `detail` says which, and it decides
+  which `last_success_at` in `get_pipeline_health` the figure is as of: the connection's own on the
+  row, or a domain's under `rows[].domains[]`. 🔴 A domain-scoped notice fires precisely when the
+  connection's own stamp is fresh, so reading that one would tell you the answer is as of today —
+  which is the conclusion the warning exists to prevent.
+- `degraded` — a connection is failing, **or one sync domain of an otherwise healthy one is**; its
+  data stops at the last successful run. At domain scope the connection's `status` is `active` and
+  its `last_error_code` is null — the code lives in `rows[].domains[]`, and `connections reauth`
+  repairs nothing there.
 - `gapped` — the institution granted **less history than was asked for**, so older data is *absent
   rather than zero*. How much less varies by institution and cannot be predicted: read
   `granted_history_days` against `requested_history_days` rather than assuming a figure. *(Measured
   2026-09-08: a sandbox connection to `ins_109511` granted 722 days against 730 requested.)*
-- `partial` — something is not yet known, such as a granted window that has not been measured. 🔴 A
-  null granted window means *not yet measured*, never *no shortfall*.
+- `partial` — something is not yet known, such as a granted window that has not been measured, or
+  one sync domain of a healthy connection that has never landed in full. 🔴 A null granted window
+  means *not yet measured*, never *no shortfall*.
 
 The second group describes **this request**, and fires only when the request actually crosses the
 boundary it names — so the *absence* of one is information too:

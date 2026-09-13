@@ -807,3 +807,15 @@ test should pin that (drive the real script, fail the check, assert the recorded
 count moved). Verifying only the green path is the tell: the failure path is where a
 reporting bug can live, so a plan whose "Done when" mentions only success has not been
 verified, it has been demonstrated.
+
+## Evidence recorded over a tree you were editing is evidence about no tree: start the gate when you have nothing left to change, and never let a narrower re-run stand in for the declared command
+
+## A guard that greps tracked files is blind to the file you just created: stage a new fixture before a green says anything about it
+
+## A fixture that cannot reach the subject passes forever: mutate the code, and check which branch the fixture actually took
+
+## A refactor is judged by what the old code stopped doing, not by what the new code does: enumerate the branches the replaced expression had, and name where each one went
+
+## A fixture built from the mechanism you are reasoning about cannot tell apart the worlds your reasoning separates: reproduce the state the real producer leaves, not the state your helper leaves
+
+## A conformance note clears a rule on the surface it was checked against, and a rule with two entry points is cleared on neither by checking one: name the surface, and re-check a shape rule whenever a new column stores a value whose type contradicts its meaning

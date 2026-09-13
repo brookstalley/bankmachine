@@ -45,7 +45,7 @@ account from a retired one, can tell *how* the system knows, and cannot build a 
 silently includes a frozen balance without being told it did.
 
 **What is out of scope?** Retiring a *connection* (already built — `bankmachine connections retire`);
-investment position lifecycle (build step 5, unstarted); and any inference about *why* an account
+investment position lifecycle (unbuilt, and no plan claims it); and any inference about *why* an account
 disappeared beyond what the aggregator actually reports.
 
 ### 🔴 The question this item does not answer, and must not answer silently

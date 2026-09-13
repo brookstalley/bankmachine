@@ -37,7 +37,7 @@ from sqlalchemy import select, update
 from bankmachine import query
 from bankmachine.config import Config
 from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC
-from bankmachine.derivers import ALL_DERIVERS
+from bankmachine.derivers import ALL_DERIVERS, all_replay_passes
 from bankmachine.store import derivation
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import writer_connection
@@ -930,7 +930,7 @@ def test_a_rebuild_does_not_undo_the_operators_declaration(
     _shrinking_roster(initialized_config)
     _declare_closed(initialized_config, DROPPED)
 
-    rebuild(initialized_config, derivers=ALL_DERIVERS)
+    rebuild(initialized_config, derivers=ALL_DERIVERS, replay_passes=all_replay_passes)
 
     assert _rows(initialized_config)[f"Account {DROPPED}"]["lifecycle"] == "closed"
 
@@ -951,7 +951,7 @@ def test_retiring_a_connection_leaves_the_store_rebuildable(initialized_config: 
     with writer_connection(initialized_config) as conn:
         _mark_retired(conn, connection_id=1, now=now_utc())
 
-    rebuild(initialized_config, derivers=ALL_DERIVERS)
+    rebuild(initialized_config, derivers=ALL_DERIVERS, replay_passes=all_replay_passes)
 
     rows = _rows(initialized_config)
     assert rows[f"Account {KEPT}"]["lifecycle"] == "closed"
@@ -1017,7 +1017,7 @@ def test_a_store_derived_before_the_roster_column_rebuilds_instead_of_rolling_ba
         for table in (transactions, balances_daily):
             conn.execute(update(table).values(derivation_version_id=previous))
 
-    report = rebuild(initialized_config, derivers=ALL_DERIVERS)
+    report = rebuild(initialized_config, derivers=ALL_DERIVERS, replay_passes=all_replay_passes)
 
     assert report.content_changed, (
         "the rebuild did not move the digest, so this test is no longer exercising the "

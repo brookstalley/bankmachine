@@ -47,6 +47,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import Protocol
 
 from sqlalchemy import Connection as SAConnection
 from sqlalchemy import insert, select
@@ -129,6 +130,34 @@ class DerivationContext:
 #: Given a writable handle, one persisted response, and the version stamp its
 #: rows must carry, write the normalized rows that response implies.
 Deriver = Callable[[SAConnection, RawResponse, DerivationContext], None]
+
+
+class ReplayPass(Protocol):
+    """What a replay concludes from a SEQUENCE of responses, not from one body.
+
+    A deriver is a pure function of one response, and nearly everything this
+    system stores is derivable that way. One thing is not: an
+    investment-transaction window's removals are the rows ABSENT from a window
+    that came back whole, and absence is not visible on page four of twelve. A
+    rebuild that replayed only the derivers would re-upsert every row that ever
+    appeared and clear every soft delete with it -- so the rebuilt store would
+    hold rows the synced store had retired, and report success.
+
+    🔴 **Shown every response in archive order, including the ones it ignores.**
+    What closes a window is a page and what opens one is an earlier page, so a
+    pass that was handed a pre-filtered stream would be reading an order it did
+    not establish. Filtering is the pass's own job, against
+    `response.endpoint`.
+
+    🔴 **Stateful, and therefore built fresh for each replay.** A pass
+    accumulates across the responses it is shown, so one carried over from a
+    previous replay would attribute that replay's pages to this one's window.
+    `store.rebuild.rebuild` takes a factory rather than instances for exactly
+    that reason.
+    """
+
+    def observe(self, conn: SAConnection, response: RawResponse) -> None:
+        """Fold one replayed response in, writing whatever it now establishes."""
 
 
 def ensure_derivation_version(
