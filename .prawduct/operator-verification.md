@@ -761,7 +761,7 @@ stale procedure. Steps 2-4 carry the grader caveat below. Drained by the owner t
 
 ## VRF-015 — one real pending transaction watched across settlement
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#22) · **Raised:** 2026-09-12
 
@@ -773,9 +773,11 @@ obligation is **#22**, and it blocks production.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-015`
 
+**Accepted:** 2026-09-13 — rationale: Accepted at the owner's direction on 2026-09-13 to unblock the wave 1 investment-sync PR, which neither entry bears on: this branch pulls holdings and investment transactions and changes no transaction derivation, no pending-hold handling and no sign convention. VRF-015 (a real pending transaction across settlement, #22) and VRF-016 (the sign convention at two institutions, #23) both need production data the sandbox cannot produce — this is their fifth raising, and the reason is unchanged: the production cutover has not happened. Each is re-raised by hand as a fresh pending entry once this PR is open, so this acceptance discharges the block and not the obligation.
+
 ## VRF-016 — the sign convention on a real inflow, across two institutions
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#23) · **Raised:** 2026-09-12
 
@@ -792,6 +794,8 @@ way this build assumes. This entry needs a second **real** institution and a rea
 up to a pay cycle. The obligation is **#23**, and it blocks production.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-016`
+
+**Accepted:** 2026-09-13 — rationale: Accepted at the owner's direction on 2026-09-13 to unblock the wave 1 investment-sync PR, which neither entry bears on: this branch pulls holdings and investment transactions and changes no transaction derivation, no pending-hold handling and no sign convention. VRF-015 (a real pending transaction across settlement, #22) and VRF-016 (the sign convention at two institutions, #23) both need production data the sandbox cannot produce — this is their fifth raising, and the reason is unchanged: the production cutover has not happened. Each is re-raised by hand as a fresh pending entry once this PR is open, so this acceptance discharges the block and not the obligation.
 
 ## VRF-017 — a real sandbox sync records positions, and the operator can read them
 
