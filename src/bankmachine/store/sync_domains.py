@@ -96,6 +96,34 @@ def record_domain_failure(
     )
 
 
+def record_domain_incomplete(
+    conn: SAConnection, *, connection_id: int, domain: str, at: UtcInstant
+) -> None:
+    """This domain's attempt ran to the end and neither failed nor finished.
+
+    🔴 **The state that had no write, and whose absence made a published field
+    lie.** `api-contract.md` says `last_error_code` is "what the last attempt at
+    this domain failed with, null when it succeeded" -- and with nothing written
+    here, a domain that failed on Monday and came back SHORT on Tuesday still
+    reported Monday's code on Wednesday. Three surfaces then disagreed: the run
+    printed no failure, the caveat said the domain "last failed with X", and the
+    contract promised the code belonged to the last attempt. An operator chases a
+    failure that is not the last thing that happened.
+
+    So the error state is cleared and `last_success_at` is left exactly as it
+    was. Both halves matter: the attempt did not fail, and it did not make the
+    domain current either -- the hole is still there and is still measured from
+    the stamp this does not move.
+    """
+    _upsert(
+        conn,
+        connection_id=connection_id,
+        domain=domain,
+        values={"last_error_code": None, "last_error_at": None},
+        at=at,
+    )
+
+
 def record_domain_history_start(
     conn: SAConnection,
     *,

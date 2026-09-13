@@ -66,7 +66,7 @@ from sqlalchemy import insert, select, update
 
 from bankmachine.config import Config
 from bankmachine.connector import ITEM_GET, TRANSACTIONS_SYNC
-from bankmachine.derivers import ALL_DERIVERS
+from bankmachine.derivers import ALL_DERIVERS, all_replay_passes
 from bankmachine.secrets import generate_datastore_key, set_datastore_key
 from bankmachine.store import derivation
 from bankmachine.store.connection import reader, writer
@@ -939,7 +939,9 @@ def test_the_prescribed_rebuild_runs_on_the_store_the_upgrade_produced(
     """
     migrate(populated_at_the_previous_version)
 
-    report = rebuild(populated_at_the_previous_version, derivers=ALL_DERIVERS)
+    report = rebuild(
+        populated_at_the_previous_version, derivers=ALL_DERIVERS, replay_passes=all_replay_passes
+    )
 
     assert report.previous_derivation_versions == (DERIVATION_BEFORE_THE_TRANSFER_PAIRS,)
     assert report.content_changed, (
@@ -1000,7 +1002,9 @@ def test_the_rebuild_stamps_the_ledger_dates_migration_005_could_only_leave_empt
         "the fixture holds no unstamped row, so the rebuild below has nothing to prove"
     )
 
-    rebuild(populated_at_the_previous_version, derivers=ALL_DERIVERS)
+    rebuild(
+        populated_at_the_previous_version, derivers=ALL_DERIVERS, replay_passes=all_replay_passes
+    )
 
     with reader_connection(populated_at_the_previous_version) as conn:
         stamped = conn.execute(select(transactions.c.ledger_date)).scalars().all()
@@ -1044,7 +1048,9 @@ def test_the_rebuild_pairs_the_transfers_migration_009_could_only_leave_empty(
             999
         }, "the fixture did not stand in a pairing for the rebuild to overwrite"
 
-    rebuild(populated_at_the_previous_version, derivers=ALL_DERIVERS)
+    rebuild(
+        populated_at_the_previous_version, derivers=ALL_DERIVERS, replay_passes=all_replay_passes
+    )
 
     with reader_connection(populated_at_the_previous_version) as conn:
         after = list(conn.execute(select(transactions.c.transfer_pair_id)).scalars())
@@ -1092,7 +1098,9 @@ def test_the_rebuild_stamps_the_lineage_migration_007_could_only_leave_empty(
         "the fixture holds no unstamped row, so the rebuild below has nothing to prove"
     )
 
-    rebuild(populated_at_the_previous_version, derivers=ALL_DERIVERS)
+    rebuild(
+        populated_at_the_previous_version, derivers=ALL_DERIVERS, replay_passes=all_replay_passes
+    )
 
     with reader_connection(populated_at_the_previous_version) as conn:
         stamped = conn.execute(select(transactions.c.lineage_id)).scalars().all()
@@ -1123,7 +1131,9 @@ def test_the_rebuild_does_not_invent_the_roster_observation_the_migration_left_e
     """
     migrate(populated_at_the_previous_version)
 
-    rebuild(populated_at_the_previous_version, derivers=ALL_DERIVERS)
+    rebuild(
+        populated_at_the_previous_version, derivers=ALL_DERIVERS, replay_passes=all_replay_passes
+    )
 
     with reader_connection(populated_at_the_previous_version) as conn:
         observed = conn.execute(select(connections.c.roster_observed_date)).scalars().all()

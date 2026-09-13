@@ -1096,10 +1096,10 @@ three-week-old hole in the data and answer confidently.
 
 | Code | Means |
 |---|---|
-| `stale` | Last sync older than expected |
-| `degraded` | A contributing connection is in error |
+| `stale` | Last sync older than expected — of a contributing connection, or of ONE SYNC DOMAIN of one that is otherwise syncing. `detail` says which, and which scope's `last_success_at` in `get_pipeline_health` the figure is as of |
+| `degraded` | A contributing connection is in error, or ONE SYNC DOMAIN of an otherwise healthy connection is. `detail` says which. 🔴 At domain scope the connection's own `status` is `active` and its `last_error_code` is null — the code lives in `rows[].domains[]`, and `connections reauth` repairs nothing |
 | `gapped` | A known coverage hole in the queried window |
-| `partial` | A contributing account has bounded history |
+| `partial` | A contributing account has bounded history, no connection is enrolled, or ONE SYNC DOMAIN of a healthy connection has never landed in full. `detail` says which |
 | `rule-applied` | Rows were excluded from this aggregate ON PURPOSE, so the figure will not reconcile against a raw sum over the same window. `detail` names which rows and why |
 | `window_starts_before_coverage` | The window asked for reaches back past the first covered date |
 | `window_extends_past_coverage` | The window asked for reaches past the covered end — today, or the last transaction when that is later |

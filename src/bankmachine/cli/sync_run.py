@@ -82,6 +82,7 @@ from bankmachine.store.sync_domains import (
     record_domain_attempt,
     record_domain_failure,
     record_domain_history_start,
+    record_domain_incomplete,
     record_domain_success,
 )
 from bankmachine.store.types import UtcInstant, calendar_date, now_utc
@@ -142,6 +143,16 @@ class ConnectionOutcome:
     institution_name: str
     pages: int = 0
     stopped_short: bool = False
+    #: 🔴 The investments window's own shortfall, kept apart from `stopped_short`.
+    #: That flag is the transactions pager's, and `unfinished` reads it to decide
+    #: `history_complete`, which is the only thing that stamps
+    #: `connections.last_success_at`. Routing an investments shortfall through it
+    #: withheld the CONNECTION's freshness stamp for a condition belonging to one
+    #: domain -- so the connection then read stale, `_domain_caveats` suppressed
+    #: the per-domain caveat exactly because it did, and the operator was pointed
+    #: at the connection for something no connection-level repair touches. Both
+    #: flags mean "come back", and only one of them means the history is not in.
+    investments_window_short: bool = False
     degraded: bool = False
     reason: str | None = None
     #: Whether the failure is an expired login, which `connections reauth` repairs
@@ -193,6 +204,13 @@ class ConnectionOutcome:
         `stopped_short` is a second, independent way to owe more: a run can page
         through history the aggregator calls complete and still hit its ceiling
         with `has_more` true.
+
+        🔴 **An investments window that came back short is NOT one of them.**
+        This property answers "is this connection's HISTORY in", and that is the
+        transactions backfill -- it is what `_record_success` stamps
+        `last_success_at` from. A domain that owes more makes the RUN worth
+        repeating (`RunOutcome.exit_code` reads it separately) without making the
+        connection's freshness a lie.
         """
         return not self.historical_complete or self.stopped_short
 
@@ -224,7 +242,12 @@ class RunOutcome:
         # machine-readable signal say nothing is wrong.
         if any(o.degraded or o.investments_error_code is not None for o in self.outcomes):
             return EXIT_UNHEALTHY
-        if any(o.unfinished for o in self.outcomes):
+        # 🔴 A domain that owes more counts here and nowhere else. It asks the
+        # caller to come back, which is what `75` means -- and it deliberately
+        # does not travel through `unfinished`, which answers a different
+        # question (is the connection's history in) whose answer stamps
+        # `connections.last_success_at`.
+        if any(o.unfinished or o.investments_window_short for o in self.outcomes):
             return EXIT_RUN_AGAIN
         return EXIT_OK
 
@@ -859,6 +882,16 @@ def _pull_investments(
         # Nothing is wrong: the window was simply seen in part, which the run
         # reports as work still owed. The domain is not current either, so the
         # stamp is withheld rather than the failure recorded.
+        #
+        # 🔴 But the attempt is still recorded as having not failed. Writing
+        # nothing here left a previous run's `last_error_code` standing on a row
+        # whose last attempt reached the aggregator and came back clean, and
+        # every surface that reads that column then reported a failure that had
+        # already stopped happening.
+        with writer_connection(config) as conn:
+            record_domain_incomplete(
+                conn, connection_id=connection_id, domain=INVESTMENTS_DOMAIN, at=now_utc()
+            )
         return
     with writer_connection(config) as conn:
         record_domain_success(
@@ -920,16 +953,26 @@ def _pull_investment_transactions(
         page = read_investment_transaction_page(response)
         rows_seen = page.rows_through_this_page
         stated_total = page.stated_total
-        # 🔴 Both exits are measured *(§26)*: an offset at or past the total
-        # answers with an empty list and no error, and the total does not move
-        # between pages. The empty-page exit is what stops a total that is wrong
-        # in the high direction from looping to the ceiling.
-        if page.rows == 0 or window_is_exhausted(rows_seen, stated_total):
+        # 🔴 Three exits, and the first two are measured *(§26)*: an offset at
+        # or past the total answers with an empty list and no error, and the
+        # total does not move between pages. The empty-page exit is what stops a
+        # total that is wrong in the high direction from looping to the ceiling.
+        #
+        # 🔴 The unstated total is the third and is NOT the exhaustion predicate
+        # saying no. A window with no stated size has nothing to page against:
+        # there is no offset at which this loop could learn it had finished, so
+        # asking again 499 times spends the page ceiling in aggregator calls to
+        # reach the conclusion the first page already supports. `window_is_exhausted`
+        # answers False here for its own good reason -- nothing may be concluded
+        # about what is missing -- and folding this case into it cost exactly
+        # that: a single no-total page fetched to the ceiling, silently.
+        if page.rows == 0 or stated_total is None or window_is_exhausted(rows_seen, stated_total):
             break
     else:
         logger.info(
             "connection %d stopped at the %d-page ceiling of its investment-transaction "
-            "window with more to fetch; run again to continue",
+            "window with more to fetch. There is no cursor on this endpoint (§26), so the "
+            "next run re-reads the window from its start rather than resuming here",
             connection_id,
             MAX_PAGES_PER_RUN,
         )
@@ -971,7 +1014,7 @@ def _pull_investment_transactions(
         # run as finished would tell the operator there is nothing left to fetch
         # while the range stayed unmeasured and nothing was reconciled. One
         # source for "did we see it whole", and it is the one that decided.
-        outcome.stopped_short = True
+        outcome.investments_window_short = True
     return window
 
 
@@ -1151,13 +1194,29 @@ def _report(run: RunOutcome) -> None:
                     f"{outcome.history_shortfall_days} days. It cannot be widened "
                     f"without re-linking (AC-1.2)"
                 )
-        if outcome.investments_error_reason is not None:
+        if outcome.investments_window_short:
+            # 🔴 Its own line rather than the pager's, which says "stopped at the
+            # page ceiling" -- a ceiling this window may never have reached. The
+            # window is short whenever it was not seen WHOLE, and the ordinary
+            # cause is a reply that stated no total at all.
+            print(
+                "       investments: the transaction window did not come back whole, so\n"
+                "       nothing was retired from it and its range is unmeasured. Run again"
+            )
+        if outcome.investments_error_reason is not None and not outcome.degraded:
             # 🔴 Printed under a connection the run is otherwise reporting as
             # healthy, which is the whole shape of this failure: the login works,
             # the transactions landed, and one domain stopped. It names the
             # domain rather than the connection so the operator does not reach
             # for `connections reauth`, which repairs a credential and cannot
             # touch a product the Item never initialized.
+            #
+            # 🔴 `not degraded` is what keeps that sentence TRUE. Both can happen
+            # in one run -- the investments call fails with a product error and
+            # the page loop afterwards hits an expired login -- and without this
+            # guard "no re-authentication is needed" printed two lines under the
+            # instruction to re-authenticate. The summary counter below already
+            # carries the same guard for the same reason.
             print(
                 f"       🔴 investments: {outcome.investments_error_reason}. The "
                 f"connection's other data is unaffected and no re-authentication "

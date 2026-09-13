@@ -40,6 +40,7 @@ from bankmachine.connector.plaid.derivers import (
     balance_class_of,
     to_minor,
 )
+from bankmachine.derivers import all_replay_passes
 from bankmachine.store import types as store_types
 from bankmachine.store.derivation import (
     DerivationContext,
@@ -1327,7 +1328,7 @@ def test_a_rebuild_over_a_real_archive_reproduces_the_tables(store: Config) -> N
         before = content_digest(conn)
     assert rows(store, balances_daily), "nothing was derived, so the rebuild proves nothing"
 
-    report = rebuild(store, derivers=PLAID_DERIVERS)
+    report = rebuild(store, derivers=PLAID_DERIVERS, replay_passes=all_replay_passes)
 
     assert not report.content_changed, (
         "the rebuild did not reproduce what it replaced; a deriver is reading a clock, "
@@ -1701,7 +1702,7 @@ def test_a_rebuild_over_a_relinked_archive_converges_the_same_way_twice(store: C
     with writing(store) as conn:
         before = content_digest(conn)
 
-    report = rebuild(store, derivers=PLAID_DERIVERS)
+    report = rebuild(store, derivers=PLAID_DERIVERS, replay_passes=all_replay_passes)
 
     assert not report.content_changed, (
         "replaying a re-linked archive landed somewhere else, so the account this store "

@@ -294,7 +294,12 @@ def content_digest(conn: SAConnection) -> str:
 
 
 def no_replay_passes() -> tuple[ReplayPass, ...]:
-    """A replay that concludes nothing beyond what each response says on its own."""
+    """A replay that concludes nothing beyond what each response says on its own.
+
+    Passed explicitly by a caller whose archive holds no such fact, so that
+    "nothing to reassemble here" is a decision in the call rather than an
+    argument somebody left off.
+    """
     return ()
 
 
@@ -302,7 +307,7 @@ def rebuild(
     config: Config,
     *,
     derivers: Mapping[str, Deriver],
-    replay_passes: Callable[[], Sequence[ReplayPass]] = no_replay_passes,
+    replay_passes: Callable[[], Sequence[ReplayPass]],
     accept_content_change: bool = False,
 ) -> RebuildReport:
     """Reconstruct every raw-derived row from the archive, or change nothing at all.
@@ -316,6 +321,14 @@ def rebuild(
     instances shared between two rebuilds would carry the first one's pages into
     the second one's window. Building them here makes that impossible rather
     than merely discouraged.
+
+    🔴 **Required, for the reason `derivers` is** -- and more sharply. That
+    argument briefly had a default, and once the composition moved up a layer the
+    default had exactly one reachable outcome, so a caller could omit it, pass
+    mypy strict and the whole suite, and fail at runtime. Omitting the passes
+    fails *silently* instead: the rebuild runs, clears every investment-transaction
+    soft delete, and reports success over a store holding rows the source had
+    dropped. `no_replay_passes` is the value that says so out loud.
     """
     with writer_connection(config) as conn:
         tables = rebuildable_tables()

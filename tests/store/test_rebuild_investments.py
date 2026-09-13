@@ -343,6 +343,32 @@ def test_a_rebuild_reproduces_a_soft_delete_rather_than_undoing_it(enrolled: Con
     )
 
 
+def test_a_rebuild_reproduces_a_window_that_retired_everything_in_it(
+    enrolled: Config,
+) -> None:
+    """🔴 The widest removal this feed can express, replayed.
+
+    A reply stating `total_investment_transactions: 0` beside no rows is an
+    EXHAUSTED window, so every aggregator row inside it has gone away. That is
+    one archived body retiring a connection's whole window, and the replay has to
+    reach the same conclusion from the same body -- a rebuild that quietly
+    resurrected the lot would be the largest version of the defect this file
+    exists for.
+    """
+    sync_a_window(enrolled, [[_txn("inv-1"), _txn("inv-2", day=1)]], total=2, at=instant(1))
+    sync_a_window(enrolled, [[]], total=0, at=instant(2))
+    assert all(
+        row["removed_at"] == instant(2) for row in stored(enrolled, investment_transactions)
+    ), "the empty window retired nothing, so the rebuild has nothing to reproduce"
+    before = digest_of(enrolled)
+
+    report = rebuilt(enrolled)
+
+    assert not report.content_changed
+    assert digest_of(enrolled) == before
+    assert all(row["removed_at"] == instant(2) for row in stored(enrolled, investment_transactions))
+
+
 def test_a_rebuild_judges_each_window_against_the_rows_that_existed_when_it_closed(
     enrolled: Config,
 ) -> None:

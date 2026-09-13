@@ -93,38 +93,48 @@ class _Guidance:
 _GUIDANCE: dict[str, _Guidance] = {
     "stale": _Guidance(
         means=(
-            "a contributing connection has not completed a successful sync recently; `detail` "
-            "names the institution and how long it has been"
+            "a contributing connection, or ONE SYNC DOMAIN of one, has not completed a "
+            "successful sync recently; `detail` names the institution, which of the two it is, "
+            "and how long it has been"
         ),
         for_this_answer=(
-            "everything that institution contributes is as of its last successful sync rather "
-            "than as of now, so a window ending today can read as a quiet stretch that is "
-            "really an absence of syncing"
+            "everything that institution -- or that one domain of it -- contributes is as of "
+            "its last successful sync rather than as of now, so a window ending today can read "
+            "as a quiet stretch that is really an absence of syncing"
         ),
         act=(
-            "read `last_success_at` for that connection from `get_pipeline_health`, and report "
-            "the figure as of that moment rather than as of today. Do not read the recent end "
-            "of a window as low activity until you have."
+            "read `last_success_at` from `get_pipeline_health` at the scope `detail` names: "
+            "the connection's own on the row, a domain's under `rows[].domains[]`. 🔴 A "
+            "domain-scoped notice fires precisely when the CONNECTION is syncing normally, so "
+            "the connection's stamp is fresh and reading it would tell you the figure is as of "
+            "today -- which is the conclusion this warning exists to prevent. Report the figure "
+            "as of the stamp that belongs to the data you are reporting, and do not read the "
+            "recent end of a window as low activity until you have."
         ),
     ),
     "degraded": _Guidance(
         means=(
-            "a contributing connection is failing; `detail` names the institution and the "
-            "error it last failed with"
+            "a contributing connection is failing, or ONE SYNC DOMAIN of an otherwise healthy "
+            "one is; `detail` names the institution, which of the two it is, and the error it "
+            "last failed with"
         ),
         for_this_answer=(
-            "that institution's data stopped advancing at its last successful run and will not "
-            "catch up until the connection is repaired, so any total spanning it is an "
-            "undercount of a size nothing here can tell you"
+            "that institution's data -- or that one domain of it -- stopped advancing at its "
+            "last successful run and will not catch up until it is repaired, so any total "
+            "spanning it is an undercount of a size nothing here can tell you"
         ),
         act=(
-            "name the failing institution when you report the number, and treat a drop against "
-            "an earlier period as unexplained rather than as a change in the operator's "
-            "behaviour. `get_pipeline_health` carries `last_error_code`, which is what an "
-            "operator needs in order to fix it. If it names an expired or rejected login, the "
-            "repair is `bankmachine connections reauth <id>`, which keeps the history and the "
-            "cursor. Never suggest enrolling the institution again -- that mints a second "
-            "connection at the aggregator and doubles every total this datastore can report."
+            "name what is failing when you report the number, and treat a drop against an "
+            "earlier period as unexplained rather than as a change in the operator's "
+            "behaviour. Read `last_error_code` from `get_pipeline_health` at the scope `detail` "
+            "names: the connection's own on the row, a domain's under `rows[].domains[]`. 🔴 A "
+            "domain-scoped notice fires while the connection itself is active, so the "
+            "connection's own `last_error_code` is null and `connections reauth` repairs "
+            "nothing -- the detail says so. Where the connection IS the failing one and its "
+            "code names an expired or rejected login, the repair is `bankmachine connections "
+            "reauth <id>`, which keeps the history and the cursor. Never suggest enrolling the "
+            "institution again -- that mints a second connection at the aggregator and doubles "
+            "every total this datastore can report."
         ),
     ),
     "gapped": _Guidance(
@@ -146,8 +156,9 @@ _GUIDANCE: dict[str, _Guidance] = {
     "partial": _Guidance(
         means=(
             "something a complete answer rests on is not known yet: no connection is enrolled, "
-            "an enrolled one has never completed a sync, its granted history window has not "
-            "been measured, or the datastore itself could not be read"
+            "an enrolled one has never completed a sync, ONE SYNC DOMAIN of an otherwise "
+            "healthy one has never landed in full, its granted history window has not been "
+            "measured, or the datastore itself could not be read"
         ),
         for_this_answer=(
             "the zeroes and the empty `rows` are the shape of an unanswered question rather "
@@ -156,8 +167,9 @@ _GUIDANCE: dict[str, _Guidance] = {
         ),
         act=(
             "read `detail`, which says which of those it is, and where the datastore is "
-            "unreadable also carries the command that fixes it. Report which one you mean "
-            "rather than reporting the zero."
+            "unreadable also carries the command that fixes it. A domain that has never landed "
+            "is read from `rows[].domains[]` in `get_pipeline_health`, not from the connection "
+            "row, which is healthy. Report which one you mean rather than reporting the zero."
         ),
     ),
     "rule-applied": _Guidance(
@@ -427,6 +439,11 @@ def _flow_class_reference(flow_classes: tuple[str, ...]) -> str:
 #: the scope and nine copies of it is how the copies stop agreeing.
 _CONNECTION_SCOPE_NOTE = (
     "🔴 These describe the standing state of the PIPELINE, so they ride every answer alike. "
+    "Three of them -- `stale`, `degraded` and `partial` -- are emitted at TWO scopes: for a "
+    "connection, and for one sync domain of a connection that is otherwise healthy. `detail` "
+    "says which, and it decides where in `get_pipeline_health` the figures behind it live: on "
+    "the connection row, or under `rows[].domains[]`. Reading the wrong one is not a near miss "
+    "-- a domain notice fires exactly when the connection's own stamps look fine. "
     "Measurement found the `gapped` notice arriving character-for-character identical on a "
     "window wholly inside coverage, a window wholly outside it, a future window, and a query "
     "for an account that does not exist — true every time, and useless for telling you whether "

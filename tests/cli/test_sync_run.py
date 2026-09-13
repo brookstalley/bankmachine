@@ -2565,3 +2565,158 @@ def _investment_facts(config: Config) -> dict[str, tuple[Any, ...]]:
         )
         for row in _investment_transaction_rows(config)
     }
+
+
+def test_a_window_with_no_stated_total_is_asked_for_once(cli_env: Config) -> None:
+    """🔴 A window with no stated size has nothing to page against.
+
+    There is no offset at which the loop could learn it had finished, so asking
+    again spends the whole page ceiling in aggregator calls to reach the
+    conclusion the first page already supports. The offsets are the assertion: a
+    row count would look identical either way, because every extra call lands on
+    the same row.
+    """
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page()]
+    FakeClient.investment_transaction_pages = [
+        _investment_transactions_body([_investment_txn("inv-1")], state_total=False)
+    ]
+
+    assert run(["sync", "run", "--no-wait"]) == 75
+
+    assert FakeClient.investment_transaction_offsets == [0], (
+        "an unmeasured window was paged past its first reply"
+    )
+
+
+def test_a_short_investments_window_does_not_withhold_the_connection_s_freshness(
+    cli_env: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 The domain owes more; the CONNECTION's history is still in.
+
+    `connections.last_success_at` is what every freshness surface reads, and it
+    answers "is this connection's transaction backfill in". Routing an
+    investments shortfall through the pager's own flag withheld it — so the
+    connection then read stale, `_domain_caveats` suppressed the per-domain
+    caveat precisely BECAUSE the connection read stale too, and the operator was
+    sent to look at a connection for something belonging to one domain.
+    """
+    _capable_connection(cli_env)
+    # One page against a stated 99, so the window is seen in part and the loop
+    # stops where a real one would: at its ceiling, with more to fetch.
+    monkeypatch.setattr("bankmachine.cli.sync_run.MAX_PAGES_PER_RUN", 1)
+    FakeClient.pages = [_page()]
+    FakeClient.investment_transaction_pages = [
+        _investment_transactions_body([_investment_txn("inv-1")], total=99)
+    ]
+
+    assert run(["sync", "run", "--no-wait"]) == 75, "the run still owes the window"
+
+    with reader_connection(cli_env) as conn:
+        stamped = conn.execute(
+            select(connections.c.last_success_at).where(connections.c.connection_id == 2)
+        ).scalar_one()
+    assert stamped is not None, (
+        "an investments shortfall withheld the connection's own freshness stamp"
+    )
+    assert _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)["last_success_at"] is None, (
+        "the DOMAIN is not current, which is the fact that must survive"
+    )
+
+
+def test_an_attempt_that_came_back_short_retires_the_error_it_did_not_repeat(
+    cli_env: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 `last_error_code` is what the LAST attempt failed with, as published.
+
+    Writing nothing for an attempt that neither failed nor finished left the
+    previous run's code standing on a row whose last attempt reached the
+    aggregator and came back clean — and three surfaces then disagreed about
+    whether the domain was currently failing.
+    """
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page()]
+    FakeClient.holdings_error = TransportError(
+        "the aggregator is unreachable", endpoint=INVESTMENTS_HOLDINGS_GET
+    )
+    assert run(["sync", "run", "--no-wait"]) == 1
+    assert _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)["last_error_code"] == "TransportError"
+
+    FakeClient.holdings_error = None
+    monkeypatch.setattr("bankmachine.cli.sync_run.MAX_PAGES_PER_RUN", 1)
+    FakeClient.pages = [_page(next_cursor="cursor-2")]
+    FakeClient.investment_transaction_pages = [
+        _investment_transactions_body([_investment_txn("inv-1")], total=99)
+    ]
+
+    assert run(["sync", "run", "--no-wait"]) == 75
+
+    domain = _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)
+    assert domain["last_error_code"] is None, (
+        "the domain reports a failure that is not the last thing that happened to it"
+    )
+    assert domain["last_error_at"] is None
+    assert domain["last_success_at"] is None, "a short window did not make the domain current"
+
+
+def test_a_connection_that_lost_its_login_is_not_told_no_reauth_is_needed(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """🔴 Both failures in one run, and the two lines contradicted each other.
+
+    The investments call fails with a product error — recorded against the
+    domain, connection left alone — and the page loop afterwards hits an expired
+    login. The domain line's "no re-authentication is needed" then printed two
+    lines under the instruction to re-authenticate.
+    """
+    _capable_connection(cli_env)
+    FakeClient.holdings_error = TransportError(
+        "the aggregator is unreachable", endpoint=INVESTMENTS_HOLDINGS_GET
+    )
+    FakeClient.fail_with = ReauthRequiredError(
+        "the login expired", endpoint=TRANSACTIONS_SYNC, error_code="ITEM_LOGIN_REQUIRED"
+    )
+
+    assert run(["sync", "run", "--no-wait"]) == 1
+
+    out = capsys.readouterr().out
+    assert "connections reauth" in out, "the repair instruction is the line that matters"
+    assert "no re-authentication is needed" not in out, out
+    assert _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)["last_error_code"] == "TransportError", (
+        "the domain failure is still recorded; only the contradicting sentence is withheld"
+    )
+
+
+def test_a_complete_and_empty_window_retires_the_whole_window_and_says_so(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """🔴 The highest-consequence branch the reconciliation has.
+
+    A reply stating `total_investment_transactions: 0` beside no rows IS an
+    exhausted window, so every aggregator row inside it has gone away and is
+    retired. That is the feed's only removal signal applied at its widest, and
+    the thing that makes it safe rather than reckless is that exhaustion is
+    derived from the aggregator's own count rather than taken as a caller's
+    promise. It is reported, because a bulk soft delete otherwise leaves no trace
+    at all — the rows simply stop appearing in every total.
+    """
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page()]
+    FakeClient.investment_transaction_pages = [
+        _investment_transactions_body([_investment_txn("inv-1"), _investment_txn("inv-2")])
+    ]
+    assert run(["sync", "run", "--no-wait"]) == 0
+    assert len(_investment_transaction_rows(cli_env)) == 2
+    capsys.readouterr()
+
+    FakeClient.pages = [_page(next_cursor="cursor-2")]
+    FakeClient.investment_transaction_pages = [_investment_transactions_body([], total=0)]
+
+    assert run(["sync", "run", "--no-wait"]) == 0
+
+    rows = _investment_transaction_rows(cli_env)
+    assert len(rows) == 2, "a removal is a soft delete; no row is dropped"
+    assert all(row["removed_at"] is not None for row in rows), (
+        "a window that came back complete and empty says every row in it has gone"
+    )
+    assert "2 investment transaction(s) no longer reported" in capsys.readouterr().out

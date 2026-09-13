@@ -95,11 +95,56 @@ over generated sequences of windows and the valuation rounding bound, the half-e
 and sign symmetry across every minor-unit width this build knows. `VRF-019` is queued for the
 rebuild on the operator's own sandbox store, which is the claim no fake can make.
 
+**What the review round changed.** Zero blocking findings; these are warnings taken as
+defects rather than accepted.
+
+- 🔴 **An investments shortfall no longer withholds the CONNECTION's freshness stamp.** It was
+  reported through `stopped_short`, the transactions pager's flag, which `unfinished` reads to
+  decide `history_complete` -- the only thing that stamps `connections.last_success_at`. So a
+  short window made the whole connection read stale, the per-domain caveat was then suppressed
+  *because* the connection read stale, and the operator was pointed at the connection for a
+  condition belonging to one domain. Exactly the mis-attribution Chunk 03's decision exists to
+  prevent, reintroduced through the exit-code plumbing. The window has its own flag, its own
+  report line, and its own path to exit 75.
+- 🔴 **A window that states no total is asked for once, not five hundred times.** Routing the
+  loop's exits through the shared exhaustion predicate dropped the unstated-total exit: a
+  predicate that answers "no" for its own good reason is not the same as an exit. Measured at
+  4.4 seconds of fake aggregator calls for one page of one row.
+- **An attempt that came back short now records that it did not fail.** `last_error_code` is
+  published as "what the last attempt failed with", and with nothing written for an attempt
+  that neither failed nor finished, a previous run's code stood on a row whose last attempt had
+  come back clean.
+- **The investments-failure line no longer prints under a connection reported as degraded**,
+  where "no re-authentication is needed" sat two lines under the instruction to
+  re-authenticate. Both failures in one run is an ordinary shape, and no test covered it.
+- **`replay_passes` is required, not defaulted.** `boundary-patterns.md` records `derivers`
+  losing its default because one reachable outcome made omission a runtime failure; omitting
+  the passes is worse, because it fails silently. `no_replay_passes` is the value that says so.
+- **The warning vocabulary's guidance follows the caveats that widened.** `stale`, `degraded`
+  and `partial` are emitted at two scopes since Chunk 03, and their published guidance still
+  described the connection -- a domain-stale caveat fires precisely when the connection's stamp
+  is fresh, so an agent following the old text reported the figure as of today, which is the
+  conclusion the caveat exists to prevent.
+- **`boundary-patterns.md` § Derivation Seam gains the clause `ReplayPass` needs**, so the next
+  windowed feed's reconciliation is not written into a deriver and lost on every rebuild.
+- **A window that came back complete and empty retires everything in it** -- the widest removal
+  this feed can express, and it had no test on either the sync path or the replay.
+
 **Found and filed, not fixed:** `_upsert_account` takes the last-REPLAYED observation where
-`_upsert_security` beside it takes the latest one, so an archive whose `received_at` order
-disagrees with its insertion order would make a rebuild unreproducible. Not reachable through
-today's sync path — `received_at` is monotonic — and the failure direction is a refusal rather
-than drift, so it is filed rather than folded in.
+`_upsert_security` beside it takes the latest one (**#108**), so an archive whose `received_at`
+order disagrees with its insertion order would make a rebuild unreproducible. Not reachable
+through today's sync path — `received_at` is monotonic — and the failure direction is a refusal
+rather than drift, so it is filed rather than folded in.
+
+**Two older deferrals these records called "filed" were in no queue at all**, and the review
+round is what found them: capabilities are never refreshed after enrollment, so a connection
+enrolled before its institution gained the product never starts pulling it (**#109**), and
+`cancel_transaction_id` has no settled ledger meaning (**#110**). Every "filed" claim in this
+log and in the build plan now carries its id, which is what makes the word checkable rather
+than asserted. The round also closed **#43**, whose revisit trigger was "build step 5 —
+investment sync scoping": the investments write path is upsert-shaped rather than
+graph-shaped, so it stays on SQLAlchemy Core — and the relational case the item named is not
+modelled at all, since the feed sends tax lots and this build drops every one.
 
 ## 2026-09-12: A connection is no longer one stream, and the health surface says so
 
@@ -212,7 +257,7 @@ truncated history on every run. AC-3.3 asks to "record the actual date range ret
 that is what is recorded: computed from the rows, and only at exhaustion, because the rows
 arrive newest-first and the earliest date is on the last page.
 
-`cancel_transaction_id` is filed rather than guessed. It was null on all 100 recorded rows,
+`cancel_transaction_id` is filed as **#110** rather than guessed. It was null on all 100 recorded rows,
 and its ledger meaning is itself unsettled — in accounting a cancellation usually keeps both
 rows so they net to zero, so treating it as a tombstone would change the arithmetic.
 

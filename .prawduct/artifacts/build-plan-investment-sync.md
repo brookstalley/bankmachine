@@ -108,9 +108,11 @@ waves 2–3 that is **not** Medium: it was derived and argued in
   `enroll.py`, and by nothing else. `derive_item` explicitly says so. A connection
   enrolled before its institution gained investments therefore never starts pulling them,
   and nothing tells the operator that. Conforming to AC-3.2 as written ("recorded
-  capabilities") is what this plan does; the refresh is a separate piece of work and is
-  filed rather than folded in, because folding it in means calling `/item/get` per
-  connection per run, which is a cost decision the owner should take on its own.
+  capabilities") is what this plan does; the refresh is a separate piece of work and is filed
+  as **#109** rather than folded in, because folding it in means calling `/item/get` per
+  connection per run, which is a cost decision the owner should take on its own. 🔴 The id is
+  written here because a "filed" claim with no id is a claim nobody can check — this one went
+  unfiled for a whole wave and was caught by a review rather than by a reader.
 - ~~`[ASSUMPTION: investment transactions request the same `history_days` window as
   transactions | LOW impact | user can override]`~~ — **measured 2026-09-12 (§26)**: asking
   for the configured maximum returned rows spanning the whole 730 days, so the window is
@@ -122,6 +124,23 @@ waves 2–3 that is **not** Medium: it was derived and argued in
   applied to the series the same norm names. The alternative (last capture wins) makes the
   series depend on what time of day the operator happened to run a sync, which is the
   thing the norm exists to prevent.
+- `[DECISION: the investments write path stays on SQLAlchemy Core | taken while building
+  Chunk 04 | closes the revisit backlog #43 booked for this moment]` — #43 exists so the
+  Core-vs-ORM question is asked once, at investment-sync scoping, on the reasoning that
+  "holdings, positions and tax lots are genuinely relational, genuinely mutable". Built, they
+  are not: `_upsert_security`, `_write_holding` and `_write_investment_transaction` each
+  converge ONE row on a natural key, and the only relationship traversed is
+  `holdings.security_id`, resolved from a dict built once per response. Nothing loads an
+  object graph, mutates it and flushes, which is what an ORM buys. Two mechanisms would have
+  to go to adopt one: `schema.py` and `core_schema.py` are an independently-written pair
+  compared column by column on every test run, which is what makes schema drift visible and
+  which a declarative base collapses into one source; and `store/connection.py` is the sole
+  constructor of every connection, enforced structurally, which a `Session` would sit above.
+  🔴 Tax lots — #43's own strongest case — are not modelled in v1 at all: the feed SENDS them
+  (3 of the 13 positions in the recorded capture carry lots) and this build drops every one,
+  since `tax_lot` appears nowhere under `src/`. So the relational case #43 was written to test
+  has not arrived in the schema, and the item's revisit condition is now "whenever lots are
+  modelled" rather than "at step 5". No code changed; the decision is the deliverable.
 - `[DECISION: the replayed window reconciliation runs at each window's closing page, not once
   over the finished tables | taken while building Chunk 04 | corrects this plan]` — the
   deliverable said "at the end of the replay" and that is unbuildable. Once every page is
@@ -151,7 +170,7 @@ waves 2–3 that is **not** Medium: it was derived and argued in
 - [x] Chunk 01: One capable connection's holdings, end to end
 - [x] Chunk 02: Investment transactions, and the window that actually came back
 - [x] Chunk 03: Investments fails on its own, and the health surface says so
-- [ ] Chunk 04: Rebuild, idempotency, and the properties that hold across both
+- [x] Chunk 04: Rebuild, idempotency, and the properties that hold across both
 - [ ] Chunk 05: `list_holdings` — positions, under one strict row shape
 - [ ] Chunk 06: What a holdings answer must disclose about itself
 - [ ] Chunk 07: `balance_history` — one series, read two ways
@@ -330,7 +349,7 @@ Tests are the floor, and three things here are not testable from a fixture:
     aggregator truncated from an account that simply had no trades, so `_is_short`'s shape is
     deliberately NOT reused for it — doing so would report every quiet brokerage as a
     truncated history on every run. A cancellation's effect on the ledger
-    (`cancel_transaction_id`, null on 100/100 sandbox rows) is filed rather than guessed
+    (`cancel_transaction_id`, null on 100/100 sandbox rows) is filed as **#110** rather than guessed
 - **Tests:** unit — an investment transaction's amount signed from the operator's point of
   view; a quantity kept as exact text through 17 digits; a price rounded half-even where §26
   found sub-cent prices; `trade_date` as a calendar date against `captured_at` as an instant.
@@ -506,6 +525,16 @@ Tests are the floor, and three things here are not testable from a fixture:
     currency has no known exponent — the per-row refusal wave 1 built, made visible here
   - `account_no_longer_active` reaching holdings, not only balances: the existing kind
     already means what is needed, so this is an emitter, not a new kind
+  - 🔴 **say on the coverage surface that its measurements are the TRANSACTIONS domain's.**
+    `query._account_coverage` is pinned to that domain, so a brokerage account whose only
+    activity is investment transactions reports `transaction_count` 0 and draws
+    `accounts_without_coverage` on the night its trades were pulled. Wave 1 descoped the fix
+    (#107) and recorded it at the site in `query.py`, which is the only place it is written —
+    defensible while every field on that row is transaction-named and no tool can answer about
+    positions, and indefensible the moment `list_holdings` ships. So either the
+    `get_coverage_report` field table and `accounts_without_coverage`'s guidance say which
+    domain they speak for, or #107 is resolved here; what is not available any more is
+    silence
   - 🔴 **the new kind landed across every surface in ONE commit.** A warning kind is a shared
     closed set, and the surfaces are: `envelope.REQUEST_SCOPED_KINDS`; the guidance map in
     `src/bankmachine/mcp_resources.py` (a kind with no section fails

@@ -21,7 +21,7 @@ from sqlalchemy import select
 from bankmachine.cli import sync_run
 from bankmachine.config import Config
 from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC, FetchedResponse
-from bankmachine.derivers import ALL_DERIVERS
+from bankmachine.derivers import ALL_DERIVERS, all_replay_passes
 from bankmachine.store.derivation import DerivationError, apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
 from bankmachine.store.schema import TRANSACTIONS_DOMAIN, connections, institutions, sync_state
@@ -286,7 +286,7 @@ def test_a_rebuild_replays_to_the_same_cursor(enrolled: Config) -> None:
             .where(sync_state.c.domain == TRANSACTIONS_DOMAIN)
             .values(cursor="wrong-after-tampering")
         )
-    rebuild(enrolled, derivers=ALL_DERIVERS)
+    rebuild(enrolled, derivers=ALL_DERIVERS, replay_passes=all_replay_passes)
 
     assert _cursor(enrolled) == CURSOR_TWO
 
