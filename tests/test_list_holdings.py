@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 from sqlalchemy import delete, func, insert, select, update
 
-from bankmachine import envelope, mcp, query
+from bankmachine import envelope, mcp, query, query_holdings
 from bankmachine.config import Config
 from bankmachine.connector import ACCOUNTS_GET, INVESTMENTS_HOLDINGS_GET
 from bankmachine.derivers import ALL_DERIVERS
@@ -137,7 +137,7 @@ def test_every_recorded_position_comes_back_with_quantity_value_and_currency(
     payload = recorded()
     _seed(enrolled, payload)
 
-    rows = query.list_holdings(enrolled).rows
+    rows = query_holdings.list_holdings(enrolled).rows
 
     expected = sorted(
         (str(h["quantity"]), _cents(str(h["institution_value"])), h["iso_currency_code"])
@@ -154,14 +154,14 @@ def test_every_recorded_position_comes_back_with_quantity_value_and_currency(
 def test_a_store_holding_no_positions_answers_empty_rather_than_erroring(
     initialized_config: Config,
 ) -> None:
-    answer = query.list_holdings(initialized_config)
+    answer = query_holdings.list_holdings(initialized_config)
 
     assert answer.rows == []
 
 
 def test_a_missing_datastore_answers_empty_rather_than_erroring(config: Config) -> None:
     """AC-ARCH.3's rule for every tool: an unreadable store is reported, not raised."""
-    answer = query.list_holdings(config)
+    answer = query_holdings.list_holdings(config)
 
     assert answer.rows == []
     assert answer.warnings, "an unreadable store answered with no word about why it was empty"
@@ -179,7 +179,7 @@ def test_an_unknown_cost_basis_is_present_and_null_never_missing(enrolled: Confi
         entry["cost_basis"] = None
     _seed(enrolled, payload)
 
-    rows = query.list_holdings(enrolled).rows
+    rows = query_holdings.list_holdings(enrolled).rows
 
     assert rows
     assert all("cost_basis_minor_units" in row for row in rows)
@@ -191,7 +191,9 @@ def test_a_known_cost_basis_is_served_in_minor_units(enrolled: Config) -> None:
     payload = recorded()
     _seed(enrolled, payload)
 
-    served = sorted(row["cost_basis_minor_units"] for row in query.list_holdings(enrolled).rows)
+    served = sorted(
+        row["cost_basis_minor_units"] for row in query_holdings.list_holdings(enrolled).rows
+    )
 
     assert served == sorted(_cents(str(h["cost_basis"])) for h in payload["holdings"])
 
@@ -227,7 +229,7 @@ def test_the_row_carries_the_price_date_beside_the_capture_date(enrolled: Config
     payload = recorded()
     _seed(enrolled, payload)
 
-    rows = query.list_holdings(enrolled).rows
+    rows = query_holdings.list_holdings(enrolled).rows
 
     assert {row["price_as_of"] for row in rows} == {
         h["institution_price_as_of"] for h in payload["holdings"]
@@ -243,7 +245,7 @@ def test_a_price_date_the_store_never_recorded_is_served_null_not_the_capture_da
     with writer_connection(enrolled) as conn:
         conn.execute(update(holdings).values(price_as_of=None))
 
-    rows = query.list_holdings(enrolled).rows
+    rows = query_holdings.list_holdings(enrolled).rows
 
     assert rows
     assert all(row["price_as_of"] is None for row in rows)
@@ -256,7 +258,7 @@ def test_every_row_carries_its_accounts_lifecycle_as_list_accounts_reports_it(
     _seed(enrolled, payload)
     accounts = {row["account_id"]: row for row in query.list_accounts(enrolled).rows}
 
-    rows = query.list_holdings(enrolled).rows
+    rows = query_holdings.list_holdings(enrolled).rows
 
     assert rows
     for row in rows:
@@ -291,7 +293,7 @@ def test_the_latest_capture_is_read_per_account_and_not_one_day_store_wide(
     later["holdings"] = [h for h in later["holdings"] if h["account_id"] == moved][1:]
     _seed(enrolled, later, CAPTURED_LATER)
 
-    rows = query.list_holdings(enrolled).rows
+    rows = query_holdings.list_holdings(enrolled).rows
 
     later_day = CAPTURED_LATER.date().isoformat()
     earlier_day = CAPTURED.date().isoformat()
@@ -309,7 +311,7 @@ def test_a_capture_day_before_today_is_served_rather_than_nothing(enrolled: Conf
     long_ago = utc_instant(datetime.now(UTC) - timedelta(days=40))
     _seed(enrolled, recorded(), long_ago)
 
-    rows = query.list_holdings(enrolled).rows
+    rows = query_holdings.list_holdings(enrolled).rows
 
     assert rows
     assert {row["as_of_date"] for row in rows} == {long_ago.date().isoformat()}
@@ -323,7 +325,7 @@ def test_a_capture_day_before_today_is_served_rather_than_nothing(enrolled: Conf
 
 def _warnings(config: Config, kind: str) -> list[str]:
     """The `detail` of every warning of one kind on a `list_holdings` answer."""
-    return [w.detail for w in query.list_holdings(config).warnings if w.kind == kind]
+    return [w.detail for w in query_holdings.list_holdings(config).warnings if w.kind == kind]
 
 
 def _priced(payload: dict[str, Any], day: date) -> dict[str, Any]:
@@ -393,7 +395,7 @@ def test_the_recorded_capture_says_its_prices_are_older_than_the_day_it_was_capt
     payload = recorded()
     _seed(enrolled, payload)
 
-    answer = query.list_holdings(enrolled)
+    answer = query_holdings.list_holdings(enrolled)
 
     assert answer.rows, "the warning replaced the answer rather than qualifying it"
     details = [w.detail for w in answer.warnings if w.kind == "positions_not_current"]
@@ -567,7 +569,7 @@ def test_a_refused_position_is_named_under_rule_applied_and_absent_from_the_rows
     odd["unofficial_currency_code"] = "ZZZ"
     _seed(enrolled, payload)
 
-    answer = query.list_holdings(enrolled)
+    answer = query_holdings.list_holdings(enrolled)
 
     assert len(answer.rows) == len(payload["holdings"]) - 1
     with reader_connection(enrolled) as conn:
@@ -608,7 +610,7 @@ def test_an_account_whose_newest_capture_refused_every_position_answers_from_tha
         entry["unofficial_currency_code"] = "ZZZ"
     _seed(enrolled, later, CAPTURED_LATER)
 
-    answer = query.list_holdings(enrolled)
+    answer = query_holdings.list_holdings(enrolled)
 
     with reader_connection(enrolled) as conn:
         moved_id = conn.execute(
@@ -626,7 +628,7 @@ def test_an_account_whose_newest_capture_refused_every_position_answers_from_tha
 def test_a_position_on_a_closed_account_says_its_positions_froze(enrolled: Config) -> None:
     """The existing kind, emitted here: a position on a closed account is not today's."""
     _seed(enrolled, recorded())
-    held = query.list_holdings(enrolled).rows[0]["account_id"]
+    held = query_holdings.list_holdings(enrolled).rows[0]["account_id"]
     _close(enrolled, held)
 
     details = _warnings(enrolled, "account_no_longer_active")
@@ -641,7 +643,7 @@ def test_a_closed_account_holding_no_position_is_not_this_answers_to_name(
 ) -> None:
     """Request-scoped: an account this answer is not about raises nothing on it."""
     _seed(enrolled, recorded())
-    held = {row["account_id"] for row in query.list_holdings(enrolled).rows}
+    held = {row["account_id"] for row in query_holdings.list_holdings(enrolled).rows}
     with reader_connection(enrolled) as conn:
         idle = [
             int(account_id)
@@ -709,7 +711,7 @@ def test_a_days_first_capture_refusing_a_position_keeps_it_out_of_the_rows(
     _seed(enrolled, _priced(recorded(), CAPTURED.date()), CAPTURED_SAME_DAY)
     account_id, security_id = _the_disputed_key(enrolled, "refused_holdings")
 
-    answer = query.list_holdings(enrolled)
+    answer = query_holdings.list_holdings(enrolled)
 
     assert not any(
         (row["account_id"], row["security_id"]) == (account_id, security_id) for row in answer.rows
@@ -727,7 +729,7 @@ def test_a_days_first_capture_recording_a_position_is_not_named_absent(enrolled:
     )
     account_id, security_id = _the_disputed_key(enrolled, "holdings")
 
-    answer = query.list_holdings(enrolled)
+    answer = query_holdings.list_holdings(enrolled)
 
     assert any(
         (row["account_id"], row["security_id"]) == (account_id, security_id) for row in answer.rows
@@ -758,7 +760,7 @@ def _left_behind_by_a_newer_capture(
         _investments_attempted(config, attempted_again, succeeded=False)
     left = {
         row["account_id"]
-        for row in query.list_holdings(config).rows
+        for row in query_holdings.list_holdings(config).rows
         if row["as_of_date"] == CAPTURED.date().isoformat()
     }
     assert left, "the capture needs a second account for the newer capture to leave out"
@@ -839,7 +841,7 @@ def test_the_totals_add_up_the_rows_per_currency(enrolled: Config) -> None:
     """Summed from the rows beside them, and equal to what the capture itself states."""
     _seed(enrolled, recorded())
 
-    answer = query.list_holdings(enrolled)
+    answer = query_holdings.list_holdings(enrolled)
 
     assert answer.rows, "no rows, so the totals summed nothing"
     by_currency: dict[str, tuple[int, int]] = {}
@@ -865,11 +867,11 @@ def test_a_position_on_a_closed_account_stays_in_the_total_and_its_part_is_state
     subtract them. So they stay in, and their count and value ride beside.
     """
     _seed(enrolled, recorded())
-    before = _totals(query.list_holdings(enrolled))
-    closed = query.list_holdings(enrolled).rows[0]["account_id"]
+    before = _totals(query_holdings.list_holdings(enrolled))
+    closed = query_holdings.list_holdings(enrolled).rows[0]["account_id"]
     _close(enrolled, closed)
 
-    answer = query.list_holdings(enrolled)
+    answer = query_holdings.list_holdings(enrolled)
 
     frozen = [row for row in answer.rows if row["account_id"] == closed]
     entry = _totals(answer)[frozen[0]["currency"]]
@@ -891,7 +893,7 @@ def test_the_non_active_part_of_the_totals_is_present_and_zero_when_nothing_qual
 ) -> None:
     _seed(enrolled, recorded())
 
-    totals = _totals(query.list_holdings(enrolled))
+    totals = _totals(query_holdings.list_holdings(enrolled))
 
     assert totals, "no totals entry, so nothing was checked"
     for entry in totals.values():
@@ -900,18 +902,18 @@ def test_the_non_active_part_of_the_totals_is_present_and_zero_when_nothing_qual
 
 
 def test_a_store_holding_no_positions_carries_an_empty_totals_block(enrolled: Config) -> None:
-    assert query.list_holdings(enrolled).totals == []
+    assert query_holdings.list_holdings(enrolled).totals == []
 
 
 def test_a_missing_datastore_still_carries_an_empty_totals_block(config: Config) -> None:
-    assert query.list_holdings(config).totals == []
+    assert query_holdings.list_holdings(config).totals == []
 
 
 def test_a_refused_position_is_not_in_the_totals(enrolled: Config) -> None:
     """It has no minor units to add, and `rule-applied` already names it absent."""
     _seed(enrolled, _refusing_first_position(recorded()))
 
-    answer = query.list_holdings(enrolled)
+    answer = query_holdings.list_holdings(enrolled)
 
     assert len(answer.rows) == len(recorded()["holdings"]) - 1
     assert sum(e["positions"] for e in _totals(answer).values()) == len(answer.rows)

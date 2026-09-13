@@ -31,7 +31,7 @@ from collections.abc import Callable, Iterator
 from datetime import date
 from typing import IO, Any
 
-from bankmachine import envelope, mcp_resources, query, signs
+from bankmachine import envelope, mcp_resources, query, query_balances, query_holdings, signs
 from bankmachine.build_id import build_identity
 from bankmachine.cli.exit_codes import EXIT_ERROR, EXIT_OK
 from bankmachine.cli.parser import AnyParser
@@ -1809,8 +1809,8 @@ def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> e
     grouping = _text(arguments, "group_by", "category")
     handlers: dict[str, Callable[..., envelope.Answer]] = {
         "list_accounts": lambda: query.list_accounts(config),
-        "list_holdings": lambda: query.list_holdings(config),
-        "balance_history": lambda: query.balance_history(
+        "list_holdings": lambda: query_holdings.list_holdings(config),
+        "balance_history": lambda: query_balances.balance_history(
             config,
             since=since,
             until=until,

@@ -921,6 +921,20 @@ Tests are the floor, and three things here are not testable from a fixture:
 - **Acceptance criteria:** the published surface is byte-identical. `_tool_definitions()`
   serialised with sorted keys, and `mcp_resources.documents()` over it, match a dump from `68566f2`
   byte for byte. The result is recorded here, as the envelope plan recorded its own.
+- **Result, recorded 2026-09-13:**
+  - **Published surface:** `_tool_definitions()` for all seven tools, serialised with sorted keys,
+    is 90,238 bytes before and after, and `cmp` is clean. `mcp_resources.documents()` over it
+    (both reference documents) is 34,306 bytes both sides, `cmp` clean. Both are dumped from this
+    checkout at `68566f2`'s code and again after the move.
+  - **Tests:** across the three test files that changed, the lines removed and the lines added
+    differ only by the `query_holdings.`/`query_balances.` prefix and the import line. Checked as a
+    multiset of lines, not by eye. Four lines the longer prefix pushed past the limit were reflowed
+    by `ruff format`. No monkeypatch target named a moved attribute.
+  - **Harness:** 25 cases re-pointed (16 to `QUERY_HOLDINGS`, 9 to `QUERY_BALANCES`). An anchor was
+    retargeted only when its count in `query.py` fell to zero and it appeared in exactly one new
+    module. The other 42 `QUERY` cases keep their count in `query.py`. The harness was run alone and
+    detached: all 211 norm breaks were caught, with no SKIP, AMBIGUOUS or INVALID. The surface dump
+    was repeated after it and is still byte-identical, so no mutation was left behind.
 - **Type:** code
 - **Critic mode:** chunk
 - **Done when:**
@@ -979,6 +993,17 @@ Tests are the floor, and three things here are not testable from a fixture:
     - `api-contract.md`: both field tables, the vocabulary row, the paragraph on where the kind
       fires, and the § Operations note that leaves #107 open
     - `docs/connecting-an-mcp-client.md`
+  - 🔴 **The envelope reference's "What this server cannot answer" says trades are stored and
+    "read by no tool", and this chunk makes that false.** Counting them is reading them.
+    `tests/test_mcp.py::test_the_unserved_trades_claim_holds_against_what_every_tool_reads`
+    captures every statement each tool executes and fails the moment any tool touches
+    `investment_transactions`. That is the guard working, and it is not to be quieted. The claim
+    becomes what is true: trades are counted per account and served as rows by no tool. The guard
+    is re-aimed at that claim, and it must stay able to fail. It holds that no tool's ROWS carry a
+    trade, and it still fails if the text claims more or less than the SQL does.
+    `[DECISION: re-aim rather than delete | surfaced while reading the guard before building this
+    chunk, 2026-09-13 | user can veto]`. The guard's purpose, which is that the cannot-answer list
+    matches what the tools do, survives. The old sentence it held does not.
 - **Tests** (`tests/test_account_coverage.py`, beside the cases they refine):
   - an investment-only account reports its trade count and holdings day. Neither listing names it,
     and `query_transactions(account_id=N)` still warns about it

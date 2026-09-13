@@ -22,7 +22,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import func, insert, select, update
 
-from bankmachine import envelope, mcp, query
+from bankmachine import envelope, mcp, query, query_balances
 from bankmachine.config import Config
 from bankmachine.connector import ACCOUNTS_GET, INVESTMENTS_HOLDINGS_GET
 from bankmachine.derivers import ALL_DERIVERS
@@ -192,7 +192,7 @@ def test_every_capture_comes_back_as_an_account_row_split_by_its_class(
     stored = _stored(two_connections)
     assert {entry[4] for entry in stored} == {"asset", "liability"}
 
-    rows = query.balance_history(two_connections).rows
+    rows = query_balances.balance_history(two_connections).rows
 
     assert all(set(row) == ROW_KEYS for row in rows)
     assert sorted(
@@ -227,7 +227,7 @@ def test_a_complete_days_net_worth_row_is_the_sum_of_its_account_rows(
         _capture(two_connections, 1, _day(n), _first_connection(checking=100.0 + n))
         _capture(two_connections, 2, _day(n), _second_connection(savings=200.0 + n))
 
-    rows = query.balance_history(two_connections).rows
+    rows = query_balances.balance_history(two_connections).rows
     net_worth = _net_worth(rows)
 
     assert set(net_worth) == {_day(0).date().isoformat(), _day(1).date().isoformat()}
@@ -247,7 +247,7 @@ def test_a_day_nobody_captured_is_absent_at_both_levels(two_connections: Config)
         _capture(two_connections, 1, _day(n), _first_connection())
         _capture(two_connections, 2, _day(n), _second_connection())
 
-    answer = query.balance_history(two_connections)
+    answer = query_balances.balance_history(two_connections)
 
     assert _day(1).date().isoformat() not in {row["date"] for row in answer.rows}
     assert set(_net_worth(answer.rows)) == {
@@ -272,7 +272,7 @@ def test_a_day_one_connection_missed_has_account_rows_and_no_net_worth_row(
         _capture(two_connections, 2, _day(n), _second_connection())
     missed = _day(1).date().isoformat()
 
-    answer = query.balance_history(two_connections)
+    answer = query_balances.balance_history(two_connections)
 
     assert missed not in _net_worth(answer.rows)
     assert {r["account_id"] for r in answer.rows if r["date"] == missed} == _ids_on(
@@ -298,7 +298,7 @@ def test_a_connection_that_stopped_syncing_withholds_every_net_worth_since(
         _capture(two_connections, 1, _day(n), _first_connection())
     _capture(two_connections, 2, _day(0), _second_connection())
 
-    answer = query.balance_history(two_connections)
+    answer = query_balances.balance_history(two_connections)
 
     assert set(_net_worth(answer.rows)) == {_day(0).date().isoformat()}
     details = _details(answer, "rule-applied")
@@ -329,7 +329,7 @@ def test_a_currency_whose_every_account_missed_a_day_is_withheld_and_named(
     _capture(two_connections, 2, _day(0), [_in_cad(_account("savings", 210.0, suffix="c2"))])
     _capture(two_connections, 1, _day(1), _first_connection())
 
-    answer = query.balance_history(two_connections)
+    answer = query_balances.balance_history(two_connections)
 
     first, second = _day(0).date().isoformat(), _day(1).date().isoformat()
     assert sorted((r["date"], r["currency"]) for r in answer.rows if r["account_id"] is None) == [
@@ -351,7 +351,7 @@ def test_an_account_first_captured_later_does_not_withhold_the_days_before_it(
         _capture(two_connections, 1, _day(n), _first_connection())
     _capture(two_connections, 2, _day(1), _second_connection())
 
-    answer = query.balance_history(two_connections)
+    answer = query_balances.balance_history(two_connections)
 
     assert set(_net_worth(answer.rows)) == {
         _day(0).date().isoformat(),
@@ -375,7 +375,7 @@ def test_an_account_no_longer_listed_counts_only_through_its_last_capture_and_is
             ).scalar_one()
         )
 
-    answer = query.balance_history(two_connections)
+    answer = query_balances.balance_history(two_connections)
 
     second = _day(1).date().isoformat()
     assert second in _net_worth(answer.rows), "a no-longer-listed account withheld a net worth"
@@ -414,7 +414,7 @@ def test_a_balance_is_split_by_its_accounts_class_never_by_its_sign(
 
     rows = {
         r["account_id"]: r
-        for r in query.balance_history(two_connections).rows
+        for r in query_balances.balance_history(two_connections).rows
         if r["account_id"] is not None
     }
 
@@ -448,11 +448,11 @@ def test_both_readings_agree_over_any_series(data: st.DataObject) -> None:
     shape = data.draw(
         st.lists(st.tuples(_CLASSES, _CURRENCIES, st.booleans()), min_size=1, max_size=5)
     )
-    captures: list[query.BalanceCapture] = []
+    captures: list[query_balances.BalanceCapture] = []
     for account_id, (balance_class, currency, _active) in enumerate(shape, start=1):
         for offset in sorted(data.draw(st.sets(st.integers(0, 6), max_size=7))):
             captures.append(
-                query.BalanceCapture(
+                query_balances.BalanceCapture(
                     account_id=account_id,
                     day=calendar_date(_START + timedelta(days=offset)),
                     current_minor=data.draw(st.integers(-(10**9), 10**9)),
@@ -466,7 +466,9 @@ def test_both_readings_agree_over_any_series(data: st.DataObject) -> None:
         if days:
             counted[(account_id, currency)] = (min(days), None if active else max(days))
 
-    rows, withheld = query.compose_balance_series(captures, counted=counted, aggregate=True)
+    rows, withheld = query_balances.compose_balance_series(
+        captures, counted=counted, aggregate=True
+    )
 
     positions = [position for position, _ in rows]
     assert positions == sorted(positions) and len(set(positions)) == len(positions)
@@ -520,7 +522,7 @@ def test_narrowed_to_one_account_the_answer_is_its_series_and_no_net_worth_row(
     _capture(two_connections, 2, _day(0), _second_connection())
     chosen = min(_ids_on(two_connections, 1))
 
-    answer = query.balance_history(two_connections, account_id=chosen)
+    answer = query_balances.balance_history(two_connections, account_id=chosen)
 
     assert {r["account_id"] for r in answer.rows} == {chosen}
     assert len(answer.rows) == 2
@@ -529,7 +531,7 @@ def test_narrowed_to_one_account_the_answer_is_its_series_and_no_net_worth_row(
 
 def test_an_account_that_does_not_exist_is_refused(two_connections: Config) -> None:
     with pytest.raises(query.UnknownAccountError, match="account_id 999"):
-        query.balance_history(two_connections, account_id=999)
+        query_balances.balance_history(two_connections, account_id=999)
 
 
 def test_the_window_is_clamped_to_the_days_balances_were_captured(
@@ -545,7 +547,9 @@ def test_the_window_is_clamped_to_the_days_balances_were_captured(
     for n in (0, 1):
         _capture(two_connections, 1, _day(n), _first_connection())
 
-    answer = query.balance_history(two_connections, since=date(2026, 1, 1), until=_day(1).date())
+    answer = query_balances.balance_history(
+        two_connections, since=date(2026, 1, 1), until=_day(1).date()
+    )
     wire = answer.to_wire()
 
     assert wire["effective_window"]["effective"] == {
@@ -565,7 +569,9 @@ def test_a_window_selects_only_the_days_inside_it_and_still_judges_completeness_
         _capture(two_connections, 1, _day(n), _first_connection())
     _capture(two_connections, 2, _day(0), _second_connection())
 
-    answer = query.balance_history(two_connections, since=_day(1).date(), until=_day(2).date())
+    answer = query_balances.balance_history(
+        two_connections, since=_day(1).date(), until=_day(2).date()
+    )
 
     assert {r["date"] for r in answer.rows} == {
         _day(1).date().isoformat(),
@@ -578,14 +584,14 @@ def test_a_long_series_pages_to_every_row_exactly_once(two_connections: Config) 
     """The cap, the cursor and the count, walked to the end."""
     for n in range(5):
         _capture(two_connections, 1, _day(n), _first_connection(checking=100.0 + n))
-    whole = query.balance_history(two_connections, limit=500)
+    whole = query_balances.balance_history(two_connections, limit=500)
     assert whole.truncation is not None and not whole.truncation.truncated
     assert len(whole.rows) == 15
 
     walked: list[dict[str, Any]] = []
     after: envelope.SeriesCursor | None = None
     for _ in range(10):
-        page = query.balance_history(two_connections, limit=4, after=after)
+        page = query_balances.balance_history(two_connections, limit=4, after=after)
         assert page.truncation is not None
         assert page.truncation.matching == 15
         walked.extend(page.rows)
@@ -615,14 +621,14 @@ def test_a_two_currency_series_pages_to_every_row_exactly_once(two_connections: 
         _capture(
             two_connections, 2, _day(n), [_in_cad(_account("savings", 210.0 + n, suffix="c2"))]
         )
-    whole = query.balance_history(two_connections, limit=500)
+    whole = query_balances.balance_history(two_connections, limit=500)
     assert {r["currency"] for r in whole.rows if r["account_id"] is None} == {"CAD", "USD"}
 
     for limit in (1, 2, 3):
         walked: list[dict[str, Any]] = []
         after: envelope.SeriesCursor | None = None
         for _ in range(len(whole.rows) + 1):
-            page = query.balance_history(two_connections, limit=limit, after=after)
+            page = query_balances.balance_history(two_connections, limit=limit, after=after)
             assert page.truncation is not None
             walked.extend(page.rows)
             if page.truncation.next_cursor is None:
@@ -676,13 +682,13 @@ def test_net_worth_reads_the_balance_series_and_never_adds_the_positions_that_de
     """
     capture = _holdings_capture()
     _capture(two_connections, 1, _day(0), capture["accounts"])
-    before = query.balance_history(two_connections).rows
+    before = query_balances.balance_history(two_connections).rows
     _positions_land(two_connections, capture, _day(0))
     assert _positions_stored(two_connections) == len(capture["holdings"]), (
         "the positions did not land, so nothing is under test"
     )
 
-    after = query.balance_history(two_connections).rows
+    after = query_balances.balance_history(two_connections).rows
 
     assert after == before, "positions moved a balance series they only decompose"
     (net,) = _net_worth(after).values()
@@ -722,7 +728,7 @@ def test_net_worth_is_the_sum_of_balances_however_many_positions_decompose_them(
     _positions_land(two_connections, capture, _day(offset))
 
     stored = _stored(two_connections)
-    net = _net_worth(query.balance_history(two_connections).rows)
+    net = _net_worth(query_balances.balance_history(two_connections).rows)
     assert net, "no net worth was served, so nothing was checked"
     for day, row in net.items():
         assert row["net_minor_units"] == sum(m for _, on, m, _, _ in stored if on == day), day
@@ -762,13 +768,13 @@ def test_an_account_in_no_known_currency_is_named_as_excluded(two_connections: C
     with writer_connection(two_connections) as conn:
         conn.execute(update(accounts).where(accounts.c.account_id == chosen).values(currency=None))
 
-    details = _details(query.balance_history(two_connections), "rule-applied")
+    details = _details(query_balances.balance_history(two_connections), "rule-applied")
 
     assert len(details) == 1 and f"account(s) {chosen} are in no currency" in details[0]
 
 
 def test_an_unreadable_store_answers_empty_with_the_windowed_capped_shape(config: Config) -> None:
-    wire = query.balance_history(config, since=date(2026, 1, 1)).to_wire()
+    wire = query_balances.balance_history(config, since=date(2026, 1, 1)).to_wire()
 
     assert wire["rows"] == []
     assert [w["kind"] for w in wire["warnings"]] == ["partial"]

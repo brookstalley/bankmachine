@@ -74,6 +74,8 @@ TXN_TESTS = "tests/connector/test_transaction_derivers.py"
 SYNC_RUN = pathlib.Path("src/bankmachine/cli/sync_run.py")
 SYNC_RUN_TESTS = "tests/cli/test_sync_run.py"
 QUERY = pathlib.Path("src/bankmachine/query.py")
+QUERY_HOLDINGS = pathlib.Path("src/bankmachine/query_holdings.py")
+QUERY_BALANCES = pathlib.Path("src/bankmachine/query_balances.py")
 SIGNS = pathlib.Path("src/bankmachine/signs.py")
 SIGN_TESTS = "tests/test_sign_convention.py"
 ENVELOPE = pathlib.Path("src/bankmachine/envelope.py")
@@ -1670,7 +1672,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     ),
     (
         "valuation norm: a refused position is named under rule-applied",
-        QUERY,
+        QUERY_HOLDINGS,
         "                _refused_positions_caveat(refused)\n"
         "                + _positions_not_current_caveat(",
         "                []\n                + _positions_not_current_caveat(",
@@ -1680,7 +1682,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # Without it an account whose newest capture refused every position answers
         # from an older day, serving what it may no longer hold as its latest.
         "a refusal counts as a capture when finding an account's latest day",
-        QUERY,
+        QUERY_HOLDINGS,
         "            select(refused_holdings.c.account_id, refused_holdings.c.as_of_date),",
         "            select(holdings.c.account_id, holdings.c.as_of_date),",
         f"{HOLDINGS_TESTS}::"
@@ -1688,7 +1690,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     ),
     (
         "positions_not_current: a price older than its capture is named",
-        QUERY,
+        QUERY_HOLDINGS,
         "            elif captured - calendar_date(priced) > POSITION_PRICE_STALE_AFTER:",
         "            elif False:",
         f"{HOLDINGS_TESTS}::"
@@ -1696,7 +1698,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     ),
     (
         "positions_not_current: an unknown price date is named, never read as fresh",
-        QUERY,
+        QUERY_HOLDINGS,
         "                unknown_prices[account_id] = unknown_prices.get(account_id, 0) + 1",
         "                pass",
         f"{HOLDINGS_TESTS}::"
@@ -1704,7 +1706,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     ),
     (
         "positions_not_current: an attempt that brought no reply back is a stopped feed",
-        QUERY,
+        QUERY_HOLDINGS,
         "self.replied is None or self.replied < self.attempted",
         "self.replied is None",
         f"{HOLDINGS_TESTS}::"
@@ -1713,7 +1715,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         # The property and its call site are the two halves; each needs its own break.
         "positions_not_current: an account on a stopped feed is named",
-        QUERY,
+        QUERY_HOLDINGS,
         "            if feed is not None and feed.stopped:",
         "            if False:",
         f"{HOLDINGS_TESTS}::"
@@ -1722,7 +1724,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         # A failure after the reply landed is the trades' window, not the positions.
         "positions_not_current: a failure after the reply landed is not a stopped feed",
-        QUERY,
+        QUERY_HOLDINGS,
         "        return self.attempted is not None and (",
         "        if self.error is not None:\n"
         "            return True\n"
@@ -1734,7 +1736,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # Any two instants of one sync can straddle midnight UTC; a capture day is
         # compared with the reply's own day, never with the domain's success stamp.
         "positions_not_current: a capture is compared with the reply's own day",
-        QUERY,
+        QUERY_HOLDINGS,
         "                replied = None if feed is None else feed.replied_day\n",
         "                replied = (\n"
         "                    None\n"
@@ -1746,7 +1748,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         # A reply listing no position writes no row; it is still a newer capture.
         "positions_not_current: a reply that listed nothing is a newer capture",
-        QUERY,
+        QUERY_HOLDINGS,
         "captured if replied is None else replied,",
         "captured,",
         f"{HOLDINGS_TESTS}::"
@@ -1756,7 +1758,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # Whether the feed stopped is the connection's fact, so an account a newer
         # capture left out still carries it; skipping on to the next account drops it.
         "positions_not_current: a left-out account on a stopped feed is named for both",
-        QUERY,
+        QUERY_HOLDINGS,
         "                left_behind[account_id] = (captured, newest_capture)\n",
         "                left_behind[account_id] = (captured, newest_capture)\n"
         "                continue\n",
@@ -1766,14 +1768,14 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         # A net worth summed over a partial day is a wrong figure with no signal.
         "balance_history: a day an account it counts was not captured has no net-worth row",
-        QUERY,
+        QUERY_BALANCES,
         "            if missing:\n                withheld.append(",
         "            if False:\n                withheld.append(",
         f"{BALANCE_TESTS}::test_a_day_one_connection_missed_has_account_rows_and_no_net_worth_row",
     ),
     (
         "balance_history: assets and liabilities split by the account's class, never its sign",
-        QUERY,
+        QUERY_BALANCES,
         '    if balance_class == "liability":\n        return 0, -current_minor',
         "    if current_minor < 0:\n        return 0, -current_minor",
         f"{BALANCE_TESTS}::test_a_balance_is_split_by_its_accounts_class_never_by_its_sign",
@@ -1782,14 +1784,14 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # Ending an active account's span at its last capture drops a stopped
         # connection out of every later net worth, silently.
         "balance_history: an active account counts in net worth with no end to its span",
-        QUERY,
+        QUERY_BALANCES,
         "counted[key] = (calendar_date(first_day), None if active else calendar_date(last_day))",
         "counted[key] = (calendar_date(first_day), calendar_date(last_day))",
         f"{BALANCE_TESTS}::test_a_connection_that_stopped_syncing_withholds_every_net_worth_since",
     ),
     (
         "balance_history: an account no longer active counts only through its last capture",
-        QUERY,
+        QUERY_BALANCES,
         "counted[key] = (calendar_date(first_day), None if active else calendar_date(last_day))",
         "counted[key] = (calendar_date(first_day), None)",
         f"{BALANCE_TESTS}::"
@@ -1818,7 +1820,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     ),
     (
         "balance_history: narrowed to one account, the answer carries no net-worth row",
-        QUERY,
+        QUERY_BALANCES,
         "captures, counted=counted, aggregate=account_id is None",
         "captures, counted=counted, aggregate=True",
         f"{BALANCE_TESTS}::"
@@ -1840,7 +1842,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     ),
     (
         "lifecycle norm: a position on a non-active account says so",
-        QUERY,
+        QUERY_HOLDINGS,
         "        not_active = [lifecycle[a] for a in sorted(latest) if not lifecycle[a].active]",
         "        not_active: list[AccountLifecycle] = []",
         f"{HOLDINGS_TESTS}::test_a_position_on_a_closed_account_says_its_positions_froze",
@@ -1849,14 +1851,14 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # An account a newer capture of its own connection listed nothing for is not
         # a stopped feed; blaming the feed sends a reader to repair a working sync.
         "positions_not_current: a capture behind its own connection's newest is not a stopped feed",
-        QUERY,
+        QUERY_HOLDINGS,
         "            if captured < newest_capture:\n                left_behind[account_id]",
         "            if False:\n                left_behind[account_id]",
         f"{HOLDINGS_TESTS}::test_an_account_left_out_of_a_newer_capture_is_not_blamed_on_the_feed",
     ),
     (
         "positions_not_current: a non-active account is left to account_no_longer_active",
-        QUERY,
+        QUERY_HOLDINGS,
         "            if entry.connection_id is None or not entry.active:",
         "            if entry.connection_id is None:",
         f"{HOLDINGS_TESTS}::"
@@ -1882,7 +1884,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # A currency whose every account missed a captured day has no (day, currency)
         # pair holding a capture, so judging only those drops its net worth silently.
         "balance_history: completeness is judged for every currency on every captured day",
-        QUERY,
+        QUERY_BALANCES,
         "        for day, currency in sorted((d, c) for d in days for c in currencies):\n"
         "            held = by_day.get((day, currency), {})",
         "        for (day, currency), held in sorted(by_day.items()):\n"
@@ -1911,7 +1913,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         # The lifecycle norm's condition: red with the MAGNITUDE removed, not only the flag.
         "AC-12.8 ruling: net worth over time states the sum that stopped counting",
-        QUERY,
+        QUERY_BALANCES,
         "{figure}",
         "some accounts",
         f"{BALANCE_TESTS}::"
@@ -1919,7 +1921,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     ),
     (
         "AC-12.8 ruling: net worth over time names each account's last day and balance",
-        QUERY,
+        QUERY_BALANCES,
         "{each}",
         "some accounts",
         f"{BALANCE_TESTS}::"
@@ -1929,7 +1931,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # A total that counts frozen positions and says nothing of them passes the
         # flag and fails the reason: the reader has nothing to subtract.
         "AC-12.8: a holdings total states what its non-active positions are worth",
-        QUERY,
+        QUERY_HOLDINGS,
         '            entry["not_active_market_value_minor_units"] += value',
         "            pass",
         f"{HOLDINGS_TESTS}::"
@@ -1937,7 +1939,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     ),
     (
         "AC-12.8: a holdings total includes the positions on non-active accounts",
-        QUERY,
+        QUERY_HOLDINGS,
         '        entry["market_value_minor_units"] += value\n',
         '        entry["market_value_minor_units"] += value '
         'if row["lifecycle"] == "active" else 0\n',
@@ -1946,7 +1948,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     ),
     (
         "list_holdings: an unreadable store still carries the totals key",
-        QUERY,
+        QUERY_HOLDINGS,
         "requested_window=None, truncation=None, totals=[])",
         "requested_window=None, truncation=None)",
         f"{HOLDINGS_TESTS}::test_a_missing_datastore_still_carries_an_empty_totals_block",
@@ -1955,7 +1957,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # The double-count guard: an investment account's value is already in its
         # balance, and adding the positions that decompose it counts it twice.
         "net worth never adds the positions that decompose a balance",
-        QUERY,
+        QUERY_BALANCES,
         "                        current_minor=int(current),\n",
         "                        current_minor=int(current) + "
         "int(conn.execute(select(func.coalesce("

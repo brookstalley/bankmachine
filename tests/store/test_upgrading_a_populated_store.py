@@ -66,7 +66,7 @@ from typing import Any
 import pytest
 from sqlalchemy import insert, select, update
 
-from bankmachine import query
+from bankmachine import query_holdings
 from bankmachine.config import Config
 from bankmachine.connector import INVESTMENTS_HOLDINGS_GET, ITEM_GET, TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS, all_replay_passes
@@ -1379,7 +1379,7 @@ def test_an_upgraded_store_serves_an_unknown_price_date_rather_than_the_capture_
     """
     migrate(populated_before_the_holdings_price_date)
 
-    rows = query.list_holdings(populated_before_the_holdings_price_date).rows
+    rows = query_holdings.list_holdings(populated_before_the_holdings_price_date).rows
 
     assert rows, "the upgraded store served no position, so nothing here is under test"
     assert all(row["price_as_of"] is None for row in rows), (
@@ -1471,7 +1471,7 @@ def test_the_rebuild_records_the_refusals_migration_011_could_only_leave_empty(
     )
     named = [
         warning.detail
-        for warning in query.list_holdings(populated_at_the_previous_version).warnings
+        for warning in query_holdings.list_holdings(populated_at_the_previous_version).warnings
         if warning.kind == "rule-applied"
     ]
     assert len(named) == 1 and UNPRICEABLE_CURRENCY in named[0], (
