@@ -107,12 +107,13 @@ creates one, because an empty encrypted store would answer every question with a
 | Tool | Answers |
 |---|---|
 | `list_accounts` | every account with its latest recorded balance |
+| `list_holdings` | every investment position, as its account's latest capture recorded it, with the date of the price it was valued at |
 | `query_transactions` | transactions in a date window, newest first |
 | `money_summary` | money in and out over a window, grouped by category, merchant, account, month or flow class — split by flow class under every grouping, and carrying the totals block described below |
 | `get_pipeline_health` | every connection, when it last synced, what is wrong |
 | `get_coverage_report` | per account: what data exists, and how long it has been silent |
 
-🔴 **Five of the eight specified tools.** `balance_history`, `list_holdings` and `find_recurring`
+🔴 **Six of the eight specified tools.** `balance_history` and `find_recurring`
 are not built yet — the descope is recorded in `.prawduct/artifacts/api-contract.md`.
 
 🔴 **The verification surface is now whole.** `get_pipeline_health` tells you whether the pipeline

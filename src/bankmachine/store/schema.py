@@ -405,6 +405,9 @@ holdings = Table(
         ForeignKey("derivation_versions.derivation_version_id"),
         nullable=False,
     ),
+    # Migration 010. Last, because `ALTER TABLE ... ADD COLUMN` put it there and
+    # the drift guard compares columns in order. Null is never "priced today".
+    Column("price_as_of", CalendarDateColumn, nullable=True),
 )
 
 investment_transactions = Table(

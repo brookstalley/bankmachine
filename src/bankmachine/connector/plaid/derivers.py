@@ -1942,6 +1942,10 @@ def _write_holding(
             f"is NOT NULL and a position of unstated value is not a zero"
         )
     cost_basis = entry.get("cost_basis")
+    # 🔴 The price's date, not the position's: a capture today can value a
+    # position at a price years old *(§22)*. Absent stays absent -- never the
+    # capture day, which is the one reading this column exists to refuse.
+    price_as_of = _optional(entry.get("institution_price_as_of"))
     values: dict[str, Any] = {
         "quantity": _exact_quantity(entry.get("quantity"), response),
         "market_value_minor": to_minor(market_value, currency, "a position value", response),
@@ -1956,6 +1960,11 @@ def _write_holding(
         "raw_response_id": response.raw_response_id,
         "manual_import_id": None,
         "derivation_version_id": context.derivation_version_id,
+        "price_as_of": (
+            None
+            if price_as_of is None
+            else _parse_calendar(price_as_of, "a position price date", response)
+        ),
     }
     account_id = known_accounts[source_account_id]
     security_id = local_security[source_security_id]

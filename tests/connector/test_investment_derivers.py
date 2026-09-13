@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -423,6 +423,45 @@ def test_a_cost_basis_the_capture_omits_is_stored_as_absent(enrolled: Config) ->
     _apply(enrolled, INVESTMENTS_HOLDINGS_GET.path, _holdings_body(payload))
 
     assert stored_row(enrolled, entry)["cost_basis_minor"] is None
+
+
+def test_a_position_records_the_date_of_the_price_it_was_valued_at(enrolled: Config) -> None:
+    """🔴 The only date the aggregator puts on a position, kept beside the capture day.
+
+    The recorded capture values every position at a price years older than the
+    day it was captured, so this compares against the capture's own field and
+    asserts the two dates differ -- a deriver that stamped the capture day would
+    otherwise agree with itself.
+    """
+    payload = recorded()
+    entry = payload["holdings"][0]
+    _apply(enrolled, INVESTMENTS_HOLDINGS_GET.path, _holdings_body(payload))
+
+    row = stored_row(enrolled, entry)
+    assert row["price_as_of"] == calendar_date(date.fromisoformat(entry["institution_price_as_of"]))
+    assert row["price_as_of"] != row["as_of_date"], (
+        "the capture's price date equals its capture day, so this cannot tell the two apart"
+    )
+
+
+def test_a_price_date_the_capture_omits_is_stored_as_absent_not_as_the_capture_day(
+    enrolled: Config,
+) -> None:
+    """Null means unknown. The capture day is the one value it must never be filled with."""
+    payload = recorded()
+    entry = payload["holdings"][0]
+    del entry["institution_price_as_of"]
+    _apply(enrolled, INVESTMENTS_HOLDINGS_GET.path, _holdings_body(payload))
+
+    assert stored_row(enrolled, entry)["price_as_of"] is None
+
+
+def test_a_price_date_that_is_not_a_date_is_refused(enrolled: Config) -> None:
+    payload = recorded()
+    payload["holdings"][0]["institution_price_as_of"] = "last Tuesday"
+
+    with pytest.raises(DerivationError, match="not a calendar date"):
+        _apply(enrolled, INVESTMENTS_HOLDINGS_GET.path, _holdings_body(payload))
 
 
 # --------------------------------------------------------------------------

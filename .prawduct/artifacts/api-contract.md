@@ -22,9 +22,9 @@ artifact; §0 and §5 of `docs/system-requirements.md` carry that content.
 
 **Build status** *(2026-09-08)*. The **CLI exists** through build step 4 — `store`, `connector`,
 `sync shell`, `enroll`, `connections`, `sync run`, `mcp`. The **MCP surface exists in first slice**:
-five of the eight tools below are implemented and three are specification only, recorded as a dated
+six of the eight tools below are implemented and two are specification only, recorded as a dated
 descope under the tool table. This contract is therefore *description* for most of the CLI, *both*
-for the five shipped tools, and *specification* for the remaining three — and each operation below
+for the shipped tools, and *specification* for the rest — and each operation below
 says which.
 Writing it now is the point: introducing an error model or a versioning handle after consumers exist
 is a breaking change.
@@ -264,7 +264,7 @@ codes are a machine contract**, not just operator ergonomics.
 
 ## Operations
 
-### MCP tool surface — the eight tools (§5) · *five built, three specified*
+### MCP tool surface — the eight tools (§5) · *six built, two specified*
 
 🔴 **Read-only over everything the aggregator produced; no mutation tool reaches a derived row.**
 (Vetting a comparable server surfaced 19 mutation tools including `delete_transaction` with no undo.
@@ -289,10 +289,10 @@ Raw-row access exists but is paginated and hard-capped.
 
 Every tool is safe and idempotent, trivially — nothing writes.
 
-> **Amendment (2026-09-08, build step 7's first slice; revised 2026-09-09).** 🔴 **Five of these
-> eight ship; three do not yet.** Built: `get_pipeline_health`, `list_accounts`,
-> `query_transactions`, `money_summary`, `get_coverage_report`.
-> Not built: `balance_history`, `list_holdings`, `find_recurring`.
+> **Amendment (2026-09-08, build step 7's first slice; revised 2026-09-09 and 2026-09-13).** 🔴 **Six
+> of these eight ship; two do not yet.** Built: `get_pipeline_health`, `list_accounts`,
+> `list_holdings`, `query_transactions`, `money_summary`, `get_coverage_report`.
+> Not built: `balance_history`, `find_recurring`.
 >
 > Recorded as a descope rather than left to be noticed, because the same commit updated the README
 > and `architecture.md` to say the MCP surface was "built and serving" — which is true of a surface
@@ -324,6 +324,14 @@ Every tool is safe and idempotent, trivially — nothing writes.
 > Still not built, unchanged: `balance_history`, `list_holdings`, `find_recurring`. The tool table
 > above is the specification and is not amended here -- what changed is which sentence explains the
 > distance between it and the code.
+
+> **Amendment (2026-09-13, investment sync, wave 2).** 🔴 **`list_holdings` is BUILT; six of these
+> eight ship.** `balance_history` and `find_recurring` remain specified and not built. A row is one
+> position as its account's LATEST holdings capture recorded it, under one strict row shape (§ *The
+> published field shapes*), and it carries the date of the price the position was valued at beside
+> the day it was captured -- the aggregator's sandbox values every position at a 2021 price, so a
+> capture date alone would present a years-old value as current. No total is emitted: a total over
+> holdings owes the same lifecycle treatment a total over balances does, and is not built.
 
 🔴 **Two of these eight are the verification surface, not the analysis surface.** `get_pipeline_health`
 and `get_coverage_report` exist so the analyst agent can **establish completeness *before* answering**.
@@ -920,6 +928,27 @@ here.
 | `last_seen_in_roster` | string, nullable | the date this account was last listed by its institution; null when there is no roster observation behind this account: an import-only account (FR-7) has no connection, and an aggregator account's connection has none until its first sync after migration 004. 🔴 A null is silence, never a statement that the account is import-only — read `lifecycle` and the row's own provenance for that. A DIFFERENT fact from `last_transaction_date` and often a much later one — neither may be derived from the other |
 | `roster_last_observed` | string, nullable | the date this account's institution's roster was last successfully observed; null for an import-only account, and equally for any aggregator account whose connection's roster has never been observed — which is every one of them during the upgrade window migration 004 opens. Read against `last_seen_in_roster`: the two being equal is what makes an account `active`, and the earlier one is the whole derivation of `no_longer_reported`, so the verdict can be re-derived from the row without a second call |
 
+**Fields — `rows[]`** *(`list_holdings`)*.
+
+| Field | Type | Means |
+|---|---|---|
+| `account_id` | integer | this store's id for the account holding the position — the same value `list_accounts` publishes |
+| `account` | string | the account's NAME. Display text, not a key: two accounts can share it, and `account_id` is the join |
+| `security_id` | integer | this store's id for the instrument, converged on the aggregator's own id for it, so one security held in two accounts carries one value. Opaque |
+| `security_name` | string, nullable | the instrument's name as the institution reports it; null when none is reported |
+| `ticker` | string, nullable | the instrument's ticker symbol; null when none is reported |
+| `security_type` | string, nullable | the institution's own classification of the instrument, retained verbatim and not normalised |
+| `quantity` | string | 🔴 the position size as EXACT DECIMAL TEXT, never a JSON number: fractional shares are routine and a float drops digits before anyone can look. Parse it as a decimal |
+| `market_value_minor_units` | integer | the position's value on `as_of_date`, in MINOR UNITS of `currency` — a valuation, rounded half-even to the minor unit. 🔴 It DECOMPOSES the account's balance and never adds to it, and a sum over one account's positions need not equal that balance |
+| `cost_basis_minor_units` | integer, nullable | what the position cost, in MINOR UNITS; null means the institution supplied none — never zero |
+| `currency` | string | the currency both figures are in |
+| `as_of_date` | string | the day this position was CAPTURED, `YYYY-MM-DD` — the most recent capture for its account, which is not today on a connection that has not synced today |
+| `price_as_of` | string, nullable | 🔴 the date of the PRICE the value was computed at, `YYYY-MM-DD`, and the only date the institution puts on a position. It can be years before `as_of_date`. Null means the date is UNKNOWN — the row predates migration 010 and the store has not been rebuilt, or the institution sent none — and never that the price is as recent as the capture |
+| `lifecycle` | string | the holding account's lifecycle, as on `list_accounts`: a position on an account that is not `active` froze on the day it was captured |
+| `closed_date` | string, nullable | as on `list_accounts` |
+| `last_seen_in_roster` | string, nullable | as on `list_accounts` |
+| `roster_last_observed` | string, nullable | as on `list_accounts` |
+
 **Fields — `rows[]`** *(`query_transactions`)*.
 
 | Field | Type | Means |
@@ -1319,12 +1348,12 @@ Retention: additive-first; removal of a `stable` member defers to a major versio
 The public contract, declared rather than inferred. Members not listed are internal and carry no
 promise. `experimental` means *this may break* — removing one is the policy working, not a violation.
 
-**MCP tools** — all `experimental` until the §7 verification gate passes. As of 2026-09-09 five of
-the eight are implemented (`get_pipeline_health`, `list_accounts`, `query_transactions`,
-`money_summary`, `get_coverage_report`) and three are still specification only; see the amendment
-under the tool table above for what is descoped and why. `experimental` therefore means two
-different things in this list, and the distinction is worth keeping in view: for the shipped five it
-means *this may break*, and for the other three it means *this does not exist yet*:
+**MCP tools** — all `experimental` until the §7 verification gate passes. As of 2026-09-13 six of
+the eight are implemented (`get_pipeline_health`, `list_accounts`, `list_holdings`,
+`query_transactions`, `money_summary`, `get_coverage_report`) and two are still specification only;
+see the amendment under the tool table above for what is descoped and why. `experimental` therefore
+means two different things in this list, and the distinction is worth keeping in view: for the
+shipped tools it means *this may break*, and for the rest it means *this does not exist yet*:
 
 - `get_pipeline_health` — experimental
 - `list_accounts` — experimental

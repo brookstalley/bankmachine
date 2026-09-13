@@ -34,6 +34,39 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-13: `list_holdings` serves positions, with the date of the price each is valued at
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** wave 1 stored what is inside an investment account and no tool read it, so an agent asked
+about positions was told the server could not answer. And the one date the aggregator puts on a
+position, `institution_price_as_of`, was dropped: every sandbox position is valued at a 2021 price,
+while `holdings.as_of_date` is always the sync day, so a stored row presented a years-old value as
+current and nothing downstream could say otherwise.
+
+**What changed:** migration 010 adds nullable `holdings.price_as_of` in its own module, and the
+holdings deriver fills it (`DERIVATION_VERSION` 8 → 9, so `store rebuild` fills existing rows from
+the archive). `list_holdings` reads each account's latest capture day, not today's and not one day
+store-wide, and returns one strict row per position: security identity, quantity as exact decimal
+text, value and cost basis in minor units (cost basis present and null when unknown), currency,
+capture date, price date (served null, never coalesced to the capture date) and the account's
+lifecycle. No total. The tool left `UNBUILT_TOOLS`, the primer stopped calling positions
+unanswerable, and the contract, client guide, requirements and README now count six built tools.
+The populated-store upgrade tests now track migration 010, and their newest-version check reads the
+highest version rather than the last row, which sorts `(10, …)` before `(9, …)`.
+
+**Verified against the sandbox:** migrate, rebuild and sync, then `list_holdings` returned all 13
+positions across both investment accounts with `price_as_of` 2021-05-25 beside a 2026-09-13
+capture date.
+
+**Also fixed, found by re-proving the norms red:** the go-red harness reported AC-4.1 (one
+connection's failure never aborts another) as unguarded. The guard was fine; the case was not. Its
+anchor, the `_degrade` return line, also closes the expired-login handler just above the broad
+catch, and the harness breaks only the FIRST occurrence, so it mutated a path the named test never
+takes. Ten of the harness's cases anchored on text that occurs twice; the other nine happened to hit
+the right copy. Every anchor is now widened until it names one place, the harness refuses an
+ambiguous anchor as `AMBIGUOUS`, and the sub-second reach test fails on one.
+
 ## 2026-09-13: Stop telling every agent that holdings are not stored
 
 <!-- prawduct: scope=investments-v1 -->

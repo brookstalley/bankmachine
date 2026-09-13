@@ -62,7 +62,9 @@ from bankmachine.store.schema import (
     accounts,
     balances_daily,
     connections,
+    holdings,
     institutions,
+    securities,
     sync_state,
     transactions,
 )
@@ -2042,6 +2044,107 @@ def list_accounts(config: Config) -> Answer:
                 + _not_active_caveat(not_active)
                 + _roster_observed_empty_caveat(not_active)
             ),
+            lifecycle=lifecycle,
+        )
+
+
+def list_holdings(config: Config) -> Answer:
+    """Every position, as its account's latest holdings capture recorded it.
+
+    🔴 **The latest captured day PER ACCOUNT, never today's and never one day
+    store-wide.** A position is what it was on the day it was captured, so asking
+    for today's rows answers nothing on any day the sync has not run -- and one
+    store-wide latest day would drop every account whose most recent capture is
+    older than another's, reading as "holds nothing" rather than as "not seen
+    since". `as_of_date` on each row says which day it is.
+
+    🔴 **`price_as_of` is served as stored and never coalesced.** A null means the
+    row predates the column and has not been rebuilt, or the institution sent no
+    price date -- filling it with `as_of_date` would state that the price is as
+    recent as the capture, which is exactly what it cannot be assumed to be.
+
+    No total is emitted: a sum over positions is not the account's balance (the
+    institution reports the two separately and they do not reconcile), and a total
+    over holdings owes the lifecycle treatment a balance total does.
+    """
+    problem = _readable(config)
+    if problem is not None:
+        return _unusable(config, problem, requested_window=None, truncation=None)
+    with reader_connection(config) as conn:
+        latest = (
+            select(
+                holdings.c.account_id,
+                func.max(holdings.c.as_of_date).label("as_of_date"),
+            )
+            .group_by(holdings.c.account_id)
+            .subquery()
+        )
+        result = conn.execute(
+            select(
+                holdings.c.account_id,
+                accounts.c.name,
+                holdings.c.security_id,
+                securities.c.name,
+                securities.c.ticker,
+                securities.c.security_type,
+                holdings.c.quantity,
+                holdings.c.market_value_minor,
+                holdings.c.cost_basis_minor,
+                holdings.c.currency,
+                holdings.c.as_of_date,
+                holdings.c.price_as_of,
+            )
+            .select_from(
+                holdings.join(
+                    latest,
+                    (latest.c.account_id == holdings.c.account_id)
+                    & (latest.c.as_of_date == holdings.c.as_of_date),
+                )
+                .join(securities, securities.c.security_id == holdings.c.security_id)
+                .join(accounts, accounts.c.account_id == holdings.c.account_id)
+                .join(institutions, institutions.c.institution_id == accounts.c.institution_id)
+            )
+            .order_by(
+                institutions.c.name,
+                accounts.c.name,
+                holdings.c.account_id,
+                securities.c.name,
+                holdings.c.security_id,
+            )
+        ).all()
+        lifecycle = _account_lifecycle(conn)
+        rows = [
+            {
+                "account_id": int(r[0]),
+                "account": r[1],
+                "security_id": int(r[2]),
+                "security_name": r[3],
+                "ticker": r[4],
+                "security_type": r[5],
+                # 🔴 The stored TEXT, untouched. A quantity is not money and is
+                # never a float: `0.00293644` of a coin survives only as text.
+                "quantity": str(r[6]),
+                "market_value_minor_units": int(r[7]),
+                # Present and null when the institution supplied none -- never
+                # dropped, and never a zero.
+                "cost_basis_minor_units": None if r[8] is None else int(r[8]),
+                "currency": r[9],
+                "as_of_date": str(r[10]),
+                "price_as_of": iso_or_none(r[11]),
+                # 🔴 On EVERY row, for the reason `list_accounts` carries it: a
+                # position in an account that is no longer active froze on the
+                # day it was captured, and a caller who has to opt in to learning
+                # that is a caller who sums it anyway.
+                **lifecycle[int(r[0])].to_wire(),
+            }
+            for r in result
+        ]
+        return _answer(
+            config,
+            conn,
+            rows,
+            requested_window=None,
+            truncation=None,
             lifecycle=lifecycle,
         )
 

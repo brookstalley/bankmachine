@@ -24,6 +24,7 @@ from bankmachine.store.connection import (
 )
 from bankmachine.store.migrations.account_last_seen import apply_account_last_seen
 from bankmachine.store.migrations.core_schema import apply_core_schema
+from bankmachine.store.migrations.holdings_price_as_of import apply_holdings_price_as_of
 from bankmachine.store.migrations.item_consent import apply_item_consent
 from bankmachine.store.migrations.ledger_date import apply_ledger_date
 from bankmachine.store.migrations.nullable_account_currency import (
@@ -103,6 +104,11 @@ MIGRATIONS: Sequence[Migration] = (
         version=9,
         name="record which rows are the two legs of one transfer",
         apply=apply_transfer_pairs,
+    ),
+    Migration(
+        version=10,
+        name="record the date of the price a position is valued at",
+        apply=apply_holdings_price_as_of,
     ),
 )
 

@@ -32,15 +32,15 @@ performs next, so when a migration lands, the constants move to it. They cannot
 be written relatively -- see the note on them -- so the move is by hand, and the
 alternative is a module that quietly stops testing the migration anyone is about
 to run. It was first written against migration 004 and has moved with each one
-since; it is pointed at 007 now.
+since; the constants below name the one it points at.
 
-🔴 **007 adds `transactions.lineage_id`, and the sharp question is what that
-column holds on rows that predate it.** It must be EMPTY: no `ALTER TABLE ...
-ADD COLUMN` can name the Item that produced each row, and the read path reads a
-null as *this row predates the split* and counts the row. A migration that put
-anything there would make that reading false and drop rows out of totals in
-silence. The remedy is `store rebuild`, and the test at the bottom is what says
-the remedy works rather than merely being prescribed.
+🔴 **A column a migration adds must come out EMPTY on the rows that predate it,
+and the newest one shows why.** 010 adds `holdings.price_as_of`, and the read
+path serves a null there as *the price date is unknown* -- never as *priced on
+the capture day*. No `ALTER TABLE ... ADD COLUMN` can know the date of the price
+a position was valued at, so a migration that put anything there would make that
+reading false. The remedy is `store rebuild`, and the tests at the bottom are
+what say each remedy works rather than merely being prescribed.
 
 🔴 **006's fixture is KEPT rather than retired with the re-point, and that is
 deliberate.** It is the only TABLE REBUILD in this store's history: it creates a
@@ -64,8 +64,9 @@ from typing import Any
 import pytest
 from sqlalchemy import insert, select, update
 
+from bankmachine import query
 from bankmachine.config import Config
-from bankmachine.connector import ITEM_GET, TRANSACTIONS_SYNC
+from bankmachine.connector import INVESTMENTS_HOLDINGS_GET, ITEM_GET, TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS, all_replay_passes
 from bankmachine.secrets import generate_datastore_key, set_datastore_key
 from bankmachine.store import derivation
@@ -79,7 +80,9 @@ from bankmachine.store.schema import (
     balances_daily,
     connections,
     derivation_versions,
+    holdings,
     institutions,
+    securities,
     transactions,
 )
 from bankmachine.store.types import UtcInstant, utc_instant
@@ -93,13 +96,13 @@ from bankmachine.store.types import UtcInstant, utc_instant
 #: constants, so the seeded store and the running build could never be at
 #: different versions and every assertion below would hold whether or not the
 #: migration did anything at all.
-SCHEMA_BEFORE_THE_TRANSFER_PAIRS = 8
-DERIVATION_BEFORE_THE_TRANSFER_PAIRS = 7
+SCHEMA_BEFORE_THE_HOLDINGS_PRICE_DATE = 9
+DERIVATION_BEFORE_THE_HOLDINGS_PRICE_DATE = 8
 
 #: What that derivation version meant, so the seeded `derivation_versions` row
 #: says something true about the rows hanging off it rather than describing a
 #: convergence rule those rows predate.
-DESCRIPTION_BEFORE_THE_TRANSFER_PAIRS = (
+DESCRIPTION_BEFORE_THE_HOLDINGS_PRICE_DATE = (
     "institutions and accounts derived from the aggregator; balances signed from the "
     "operator's point of view; the roster observation recorded per account "
     "(`accounts.last_seen_date`) and per connection (`connections.roster_observed_date`); "
@@ -109,16 +112,17 @@ DESCRIPTION_BEFORE_THE_TRANSFER_PAIRS = (
     "minor-unit exponent refused rather than rounded; an account matched on the persistent "
     "identity the aggregator gives it, scoped to its institution, so a re-link converges on "
     "the row its history already hangs from; and every transaction stamped with the "
-    "aggregator Item that produced it (`transactions.lineage_id`); and the Item's consent "
-    "expiry and its standing error recorded on the connection"
+    "aggregator Item that produced it (`transactions.lineage_id`); the Item's consent "
+    "expiry and its standing error recorded on the connection; and the two legs of a "
+    "transfer between enrolled accounts paired, so a movement between them is not "
+    "counted as money leaving the household"
 )
 
 #: The migration the seeded store is missing, the table it adds columns to, and
-#: the columns themselves. Migration 008 adds TWO, which is why this is a tuple
-#: where its predecessors were a single name.
-THE_PENDING_MIGRATION = SCHEMA_BEFORE_THE_TRANSFER_PAIRS + 1
-THE_TABLE_IT_EXTENDS = transactions.name
-THE_COLUMNS_IT_ADDS = ("transfer_pair_id",)
+#: the columns themselves -- a tuple, because a migration may add more than one.
+THE_PENDING_MIGRATION = SCHEMA_BEFORE_THE_HOLDINGS_PRICE_DATE + 1
+THE_TABLE_IT_EXTENDS = holdings.name
+THE_COLUMNS_IT_ADDS = ("price_as_of",)
 
 #: The migrations BETWEEN the older fixture and this build, each named with the
 #: version it IS rather than as an offset from the newest.
@@ -133,6 +137,9 @@ THE_COLUMN_THE_LINEAGE_MIGRATION_ADDS = "lineage_id"
 
 THE_ITEM_STANDING_MIGRATION = 8
 THE_COLUMNS_THE_ITEM_MIGRATION_ADDS = ("consent_expires_at", "source_error_code")
+
+THE_TRANSFER_PAIRS_MIGRATION = 9
+THE_COLUMNS_THE_TRANSFER_PAIRS_MIGRATION_ADDS = ("transfer_pair_id",)
 
 #: 🔴 **The version before THAT, kept rather than retired with the re-point.**
 #: Migration 006 is the only table rebuild in this store's history, and the ways
@@ -152,12 +159,13 @@ DESCRIPTION_BEFORE_THE_NULLABLE_CURRENCY = (
     "`transactions.ledger_date` and never moved by settlement"
 )
 
-#: The two migrations that store is missing, and the column whose NOT NULL the
+#: The migrations that store is missing, and the column whose NOT NULL the
 #: first of them drops.
 THE_PENDING_MIGRATIONS = [
     SCHEMA_BEFORE_THE_NULLABLE_CURRENCY + 1,
     THE_LINEAGE_MIGRATION,
     THE_ITEM_STANDING_MIGRATION,
+    THE_TRANSFER_PAIRS_MIGRATION,
     THE_PENDING_MIGRATION,
 ]
 THE_COLUMN_IT_WIDENS = "currency"
@@ -177,6 +185,8 @@ POPULATED_BY_THE_SEEDING = (
     accounts.name,
     balances_daily.name,
     transactions.name,
+    securities.name,
+    holdings.name,
 )
 
 SOURCE_INSTITUTION = "ins_109508"
@@ -204,6 +214,12 @@ POSTED_DATE = date(2026, 9, 7)
 #: A day BEFORE the posting date, so a `ledger_date` that fell back to
 #: `posted_date` is distinguishable from one that took the authorization.
 AUTHORIZED_DATE = date(2026, 9, 6)
+
+#: The date of the price the seeded position is valued at -- days BEFORE the
+#: capture, so a price date that fell back to the capture day is distinguishable
+#: from the one the body sent.
+PRICE_DATE = date(2026, 9, 2)
+SOURCE_SECURITY = "sec-under-upgrade"
 
 
 # --------------------------------------------------------------------------
@@ -282,6 +298,45 @@ def _sync_body() -> bytes:
     ).encode()
 
 
+def _holdings_body() -> bytes:
+    """One position, in the shape `/investments/holdings/get` sends it.
+
+    It lists the same account the sync body does, because a holdings reply carries
+    the Item's accounts too and the deriver derives them.
+    """
+    return json.dumps(
+        {
+            "accounts": [_account_entry()],
+            "holdings": [
+                {
+                    "account_id": SOURCE_ACCOUNT,
+                    "security_id": SOURCE_SECURITY,
+                    "quantity": "12.5",
+                    "institution_price": "10.00",
+                    "institution_value": "125.00",
+                    "cost_basis": "100.00",
+                    "institution_price_as_of": PRICE_DATE.isoformat(),
+                    "iso_currency_code": "USD",
+                    "unofficial_currency_code": None,
+                }
+            ],
+            "securities": [
+                {
+                    "security_id": SOURCE_SECURITY,
+                    "name": "Platypus Broad Market Index",
+                    "ticker_symbol": "PLTY",
+                    "type": "etf",
+                    "iso_currency_code": "USD",
+                    "unofficial_currency_code": None,
+                    "close_price": None,
+                }
+            ],
+            "item": {"item_id": SOURCE_CONNECTION},
+            "request_id": "req-holdings",
+        }
+    ).encode()
+
+
 def _enroll(config: Config) -> None:
     """The institution and the connection an operator linked.
 
@@ -352,10 +407,10 @@ def populated_at_the_previous_version(config: Config, monkeypatch: pytest.Monkey
     _seed(
         config,
         monkeypatch,
-        DERIVATION_BEFORE_THE_TRANSFER_PAIRS,
-        DESCRIPTION_BEFORE_THE_TRANSFER_PAIRS,
+        DERIVATION_BEFORE_THE_HOLDINGS_PRICE_DATE,
+        DESCRIPTION_BEFORE_THE_HOLDINGS_PRICE_DATE,
     )
-    _rewind_past_the_transfer_pairs(config)
+    _rewind_past_the_holdings_price_date(config)
 
     _refuse_a_fixture_with_nothing_in_it(config)
     assert not set(THE_COLUMNS_IT_ADDS) & set(dump_every_table(config)[THE_TABLE_IT_EXTENDS][0]), (
@@ -396,6 +451,7 @@ def populated_before_the_nullable_currency(
     _rewind_past_the_lineage_column(config)
     _rewind_past_the_item_standing(config)
     _rewind_past_the_transfer_pairs(config)
+    _rewind_past_the_holdings_price_date(config)
 
     _refuse_a_fixture_with_nothing_in_it(config)
     assert required_columns(config, THE_TABLE_IT_REBUILDS) >= {THE_COLUMN_IT_WIDENS}, (
@@ -421,6 +477,7 @@ def _seed(
         _enroll(config)
         _archive_and_derive(config, ITEM_GET.path, _item_body())
         _archive_and_derive(config, TRANSACTIONS_SYNC.path, _sync_body())
+        _archive_and_derive(config, INVESTMENTS_HOLDINGS_GET.path, _holdings_body())
 
 
 def _refuse_a_fixture_with_nothing_in_it(config: Config) -> None:
@@ -430,11 +487,11 @@ def _refuse_a_fixture_with_nothing_in_it(config: Config) -> None:
     assert not empty, f"the derivers wrote nothing into {empty}, so nothing here is under test"
 
 
-def _rewind_past_the_transfer_pairs(config: Config) -> None:
+def _rewind_past_the_holdings_price_date(config: Config) -> None:
     """Take the seeded store back to the version before this build's last migration.
 
-    Undoes exactly what migration 009 did -- one column on `transactions`, and
-    its row in `schema_version` -- so the file reports the older version and a
+    Undoes exactly what migration 010 did -- one column on `holdings`, and its
+    row in `schema_version` -- so the file reports the older version and a
     reader of it cannot tell it from a store that never crossed the migration.
 
     🔴 **`DROP COLUMN`, deliberately not the inverse of the shipped statement.**
@@ -451,6 +508,21 @@ def _rewind_past_the_transfer_pairs(config: Config) -> None:
         for column in THE_COLUMNS_IT_ADDS:
             conn.execute(f"ALTER TABLE {THE_TABLE_IT_EXTENDS} DROP COLUMN {column}")
         conn.execute("DELETE FROM schema_version WHERE version = ?", (THE_PENDING_MIGRATION,))
+
+
+def _rewind_past_the_transfer_pairs(config: Config) -> None:
+    """Take a store back past 009, the migration that paired the legs of a transfer.
+
+    🔴 Kept when the module re-pointed at 010, for the reason the older rewinds
+    below are: the older fixture crosses every migration from its own version
+    forward, so it has to be able to arrive at that version.
+    """
+    with writer(config) as conn:
+        for column in THE_COLUMNS_THE_TRANSFER_PAIRS_MIGRATION_ADDS:
+            conn.execute(f"ALTER TABLE {transactions.name} DROP COLUMN {column}")
+        conn.execute(
+            "DELETE FROM schema_version WHERE version = ?", (THE_TRANSFER_PAIRS_MIGRATION,)
+        )
 
 
 def _rewind_past_the_item_standing(config: Config) -> None:
@@ -631,7 +703,7 @@ def _assert_only_the_new_column_moved(
     after: dict[str, TableDump],
     added: dict[str, tuple[str, ...]] | None = None,
 ) -> None:
-    """Every table came through unchanged, but for the columns 008 appends.
+    """Every table came through unchanged, but for the columns the migrations append.
 
     🔴 The extended table is compared value by value rather than skipped. A
     migration that reached past its own DDL is exactly what this module exists to
@@ -642,8 +714,8 @@ def _assert_only_the_new_column_moved(
     somewhere that had no business writing it.
     """
     # 🔴 Named per test rather than read off one module constant. A fixture that
-    # crosses ONE migration widens one table; the older fixture crosses three and
-    # widens two, and a helper that assumed the newest migration's table would
+    # crosses ONE migration widens one table; the older fixture crosses several and
+    # widens more than one, and a helper that assumed the newest migration's table would
     # have exempted `transactions` from comparison entirely on that run -- which
     # is the one table those extra migrations could have damaged.
     widened = {THE_TABLE_IT_EXTENDS: THE_COLUMNS_IT_ADDS} if added is None else added
@@ -679,11 +751,10 @@ def test_migrating_a_populated_store_forward_keeps_every_row_it_already_held(
     reached past its own DDL has nowhere to hide.
 
     🔴 **The new column comes out EMPTY on every row, and that is the assertion
-    the read path depends on.** `lineage_id` is nullable because no `ALTER TABLE
-    ... ADD COLUMN` can name the Item that produced each row, and the read path
-    reads a null as *this row predates the split* -- never as *it belongs to the
-    current Item*. A migration that put anything there would make that reading
-    false and would silently exclude rows from totals.
+    the read path depends on.** `price_as_of` is nullable because no `ALTER TABLE
+    ... ADD COLUMN` can know the date of the price a position was valued at, and
+    the read path serves a null as *unknown* -- never as *priced on the capture
+    day*. A migration that put anything there would make that reading false.
     """
     before = dump_every_table(populated_at_the_previous_version)
 
@@ -692,7 +763,9 @@ def test_migrating_a_populated_store_forward_keeps_every_row_it_already_held(
     assert applied == [THE_PENDING_MIGRATION]
     after = dump_every_table(populated_at_the_previous_version)
     _assert_only_the_new_column_moved(before, after)
-    assert after[SCHEMA_VERSION_TABLE][1][-1][0] == THE_PENDING_MIGRATION
+    # The highest version, not the last row: the dump sorts by `repr`, and
+    # `(10, …)` sorts before `(9, …)`.
+    assert max(row[0] for row in after[SCHEMA_VERSION_TABLE][1]) == THE_PENDING_MIGRATION
     assert len(after[SCHEMA_VERSION_TABLE][1]) == len(before[SCHEMA_VERSION_TABLE][1]) + 1
 
 
@@ -726,12 +799,15 @@ def test_migrating_a_populated_store_across_the_table_rebuild_keeps_every_row(
         added={
             transactions.name: (
                 THE_COLUMN_THE_LINEAGE_MIGRATION_ADDS,
-                *THE_COLUMNS_IT_ADDS,
+                *THE_COLUMNS_THE_TRANSFER_PAIRS_MIGRATION_ADDS,
             ),
             connections.name: THE_COLUMNS_THE_ITEM_MIGRATION_ADDS,
+            holdings.name: THE_COLUMNS_IT_ADDS,
         },
     )
-    assert after[SCHEMA_VERSION_TABLE][1][-1][0] == THE_PENDING_MIGRATION
+    # The highest version, not the last row: the dump sorts by `repr`, and
+    # `(10, …)` sorts before `(9, …)`.
+    assert max(row[0] for row in after[SCHEMA_VERSION_TABLE][1]) == THE_PENDING_MIGRATION
     assert len(after[SCHEMA_VERSION_TABLE][1]) == len(before[SCHEMA_VERSION_TABLE][1]) + len(
         THE_PENDING_MIGRATIONS
     )
@@ -906,7 +982,7 @@ def test_an_upgraded_store_serves_the_values_its_derivers_wrote(
     assert account.last_seen_date is None, (
         "a sync body is not a roster read, so it must not leave a record that one happened"
     )
-    assert stamped == [DERIVATION_BEFORE_THE_TRANSFER_PAIRS], (
+    assert stamped == [DERIVATION_BEFORE_THE_HOLDINGS_PRICE_DATE], (
         "the upgrade restamped rows it did not re-derive, so their provenance is now a claim "
         "about logic that never touched them"
     )
@@ -943,7 +1019,7 @@ def test_the_prescribed_rebuild_runs_on_the_store_the_upgrade_produced(
         populated_at_the_previous_version, derivers=ALL_DERIVERS, replay_passes=all_replay_passes
     )
 
-    assert report.previous_derivation_versions == (DERIVATION_BEFORE_THE_TRANSFER_PAIRS,)
+    assert report.previous_derivation_versions == (DERIVATION_BEFORE_THE_HOLDINGS_PRICE_DATE,)
     assert report.content_changed, (
         "the replay reproduced the upgraded store byte for byte, so the guard this test exists "
         "to exercise was never consulted"
@@ -952,7 +1028,7 @@ def test_the_prescribed_rebuild_runs_on_the_store_the_upgrade_produced(
         "`store rebuild` would refuse and roll back on a store that just came across the "
         "migration, so the remedy the upgrade procedure prescribes does not run"
     )
-    assert report.responses_replayed == 2
+    assert report.responses_replayed == 3
     with reader_connection(populated_at_the_previous_version) as conn:
         held = {
             str(row.source_transaction_id): row.amount_minor
@@ -1140,3 +1216,66 @@ def test_the_rebuild_does_not_invent_the_roster_observation_the_migration_left_e
         seen = conn.execute(select(accounts.c.last_seen_date)).scalars().all()
     assert observed == [None]
     assert seen == [None]
+
+
+# --------------------------------------------------------------------------
+# The price date migration 010 leaves empty, and the remedy that fills it.
+# --------------------------------------------------------------------------
+
+
+def test_an_upgraded_store_serves_an_unknown_price_date_rather_than_the_capture_day(
+    populated_at_the_previous_version: Config,
+) -> None:
+    """🔴 Between the migration and the rebuild, `list_holdings` must not fill the gap.
+
+    Every position on the upgraded store has a capture day and no price date.
+    Serving the capture day in its place would tell a consumer the price is as
+    recent as the sync -- the exact reading the column exists to refuse -- on the
+    store where it is least true. Its rows carry the derivation version the
+    previous build stamped, which is the real shape of that store.
+    """
+    migrate(populated_at_the_previous_version)
+
+    rows = query.list_holdings(populated_at_the_previous_version).rows
+
+    assert rows, "the upgraded store served no position, so nothing here is under test"
+    assert all(row["price_as_of"] is None for row in rows), (
+        "a price date the store never recorded was served as a value"
+    )
+    assert {row["as_of_date"] for row in rows} == {FETCHED.date().isoformat()}
+
+
+def test_the_rebuild_fills_the_price_dates_migration_010_could_only_leave_empty(
+    populated_at_the_previous_version: Config,
+) -> None:
+    """🔴 The remedy `holdings.price_as_of` is owed, asserted rather than prescribed.
+
+    The column lands empty on every position the store already held, which hides
+    the one staleness signal a position has until `store rebuild` replays the
+    archived capture. So the rebuild is what this asserts, against the date the
+    capture SENT rather than whatever came back.
+
+    🔴 **The rows carry a fixed historical derivation version, one behind this
+    build.** Reverting the bump that ships with the column makes the replay's
+    content change unexpected, and the rebuild refuses here rather than on an
+    operator's store.
+    """
+    migrate(populated_at_the_previous_version)
+    with reader_connection(populated_at_the_previous_version) as conn:
+        before = conn.execute(select(holdings.c.price_as_of)).scalars().all()
+    assert before and all(value is None for value in before), (
+        "the fixture holds no position with an empty price date, so the rebuild below has "
+        "nothing to prove"
+    )
+
+    report = rebuild(
+        populated_at_the_previous_version, derivers=ALL_DERIVERS, replay_passes=all_replay_passes
+    )
+
+    assert report.change_was_expected, (
+        "`store rebuild` would refuse on a store that just gained the price date column. Bump "
+        "DERIVATION_VERSION in the commit that populates a new column"
+    )
+    with reader_connection(populated_at_the_previous_version) as conn:
+        after = conn.execute(select(holdings.c.price_as_of)).scalars().all()
+    assert after == [PRICE_DATE], "the rebuild did not recover the price date the capture states"

@@ -888,6 +888,7 @@ def test_no_tool_mutates_anything(initialized_config: Config) -> None:
     tools = mcp._tool_definitions()
     assert {t["name"] for t in tools} == {
         "list_accounts",
+        "list_holdings",
         "query_transactions",
         "money_summary",
         "get_pipeline_health",
@@ -3134,6 +3135,7 @@ def _keywords(schema: dict[str, Any]) -> set[str]:
 #: whose every optional half is absent checks only the half that cannot fail.
 _LIVE_CALLS: tuple[tuple[str, dict[str, Any]], ...] = (
     ("list_accounts", {}),
+    ("list_holdings", {}),
     ("query_transactions", {"since": "2020-01-01", "until": "2030-12-31"}),
     ("money_summary", {"since": "2020-01-01", "until": "2030-12-31"}),
     ("get_pipeline_health", {}),
@@ -3205,6 +3207,8 @@ def test_a_real_answer_from_every_tool_validates_against_its_own_schema(
     schema at all: the client rejects a good answer.
     """
     _seed(initialized_config)
+    # Positions, so `list_holdings` answers with rows its row schema can check.
+    _seed_investments(initialized_config)
     schemas = {d["name"]: d["outputSchema"] for d in mcp._tool_definitions()}
     seen: list[dict[str, Any]] = []
 

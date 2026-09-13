@@ -775,9 +775,9 @@ Required tools:
 | `find_recurring` | Detected recurring charges with cadence, amount drift, last-seen |
 | `get_coverage_report` | Per account: first and last transaction date, gaps against the account's own cadence, source breakdown |
 
-*(Build status 2026-09-09: `get_pipeline_health`, `list_accounts`, `query_transactions`,
-`money_summary` and `get_coverage_report` are implemented; `balance_history`, `list_holdings` and
-`find_recurring` are not yet built, and the descope — including what the shipped tools do not yet
+*(Build status 2026-09-13: `get_pipeline_health`, `list_accounts`, `list_holdings`,
+`query_transactions`, `money_summary` and `get_coverage_report` are implemented; `balance_history`
+and `find_recurring` are not yet built, and the descope — including what the shipped tools do not yet
 carry — is recorded in `.prawduct/artifacts/api-contract.md`.)*
 
 > 🔴 **`list_accounts`'s "lifecycle state" has never been on the wire (2026-09-09).** It is

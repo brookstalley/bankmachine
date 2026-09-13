@@ -526,6 +526,13 @@ units; a *quantity* is not money — fractional shares are routine and a share i
 hundredths, so a scaled integer's scale would be a guess. Text keeps the source's own precision and
 converts to `Decimal` **without ever passing through a float.**
 
+🔴 **`holdings.price_as_of` (migration 010) is the date of the PRICE, not of the position.** A position
+carries no date of its own, so `as_of_date` is the capture day; the only date the aggregator puts on a
+position is its price's, and that can be years older — the sandbox values every capture at a 2021
+price. Nullable, and last in column order because `ALTER TABLE` put it there. Null means *unknown* —
+the row predates the column and has not been rebuilt, or the institution sent none — and is never read
+as the capture day.
+
 `investment_transactions` carries the same identity, provenance, and soft-delete shape as
 `transactions`, keyed on `trade_date`.
 

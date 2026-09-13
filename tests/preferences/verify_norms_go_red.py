@@ -107,8 +107,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "norm 1: the writer factory takes the exclusive lock",
         CONNECTION,
-        "fcntl.LOCK_EX | fcntl.LOCK_NB",
-        "fcntl.LOCK_SH | fcntl.LOCK_NB",
+        "            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)",
+        "            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)",
         f"{NORMS}::test_second_writer_process_refuses_while_the_first_holds_the_lock",
     ),
     (
@@ -172,8 +172,12 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-6.2: a monetary column refuses a float at the database",
         DDL,
-        "CHECK (typeof(amount_minor) = 'integer')",
-        "CHECK (1)",
+        "authorized_date              TEXT CHECK (authorized_date %(date)s),\n"
+        "        amount_minor                 INTEGER NOT NULL\n"
+        "                                     CHECK (typeof(amount_minor) = 'integer'),",
+        "authorized_date              TEXT CHECK (authorized_date %(date)s),\n"
+        "        amount_minor                 INTEGER NOT NULL\n"
+        "                                     CHECK (1),",
         f"{SCHEMA}::test_a_float_amount_is_refused_by_the_database_itself",
     ),
     (
@@ -251,15 +255,17 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "drift: the Core metadata and the frozen DDL describe the same tables",
         METADATA,
-        'Column("amount_minor", MinorUnitsColumn, nullable=False),',
-        'Column("amount_minor", MinorUnitsColumn, nullable=True),',
+        'Column("authorized_date", CalendarDateColumn, nullable=True),\n'
+        '    Column("amount_minor", MinorUnitsColumn, nullable=False),',
+        'Column("authorized_date", CalendarDateColumn, nullable=True),\n'
+        '    Column("amount_minor", MinorUnitsColumn, nullable=True),',
         f"{SCHEMA}::test_the_metadata_matches_the_migrated_database",
     ),
     (
         "checkout: the carve-out for engine.py does not admit a parameterized connect",
         ENGINE,
-        "engine.connect() as conn",
-        "engine.connect(None) as conn",
+        "with writer_engine(config) as engine, engine.connect() as conn",
+        "with writer_engine(config) as engine, engine.connect(None) as conn",
         f"{SOLE_CONSTRUCTOR}::test_only_connection_py_constructs_a_connection",
     ),
     (
@@ -770,8 +776,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-2.2: a transaction sent again after removal is present again",
         CONNECTOR_DERIVERS,
-        "            removed_at=None,\n            **values,",
-        "            **values,",
+        "its row said otherwise.\n            removed_at=None,\n            **values,",
+        "its row said otherwise.\n            **values,",
         f"{TXN_TESTS}::test_a_transaction_removed_then_sent_again_is_present_again",
     ),
     (
@@ -784,8 +790,9 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-2.1: a transaction for an unknown account is refused, not skipped",
         CONNECTOR_DERIVERS,
-        "    if not isinstance(source_account_id, str) or source_account_id not in known:",
-        "    if False:",
+        "    if not isinstance(source_account_id, str) or source_account_id not in known:\n"
+        "        raise DerivationError(",
+        "    if False:\n        raise DerivationError(",
         f"{TXN_TESTS}::test_a_transaction_for_an_unknown_account_is_refused",
     ),
     (
@@ -805,8 +812,12 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-4.1: one connection's failure never aborts another",
         SYNC_RUN,
+        # 🔴 Anchored on the comment above the BROAD catch. The same return
+        # line also closes the expired-login handler just before it, and an
+        # unqualified anchor broke that one -- a path this test never takes.
+        "        # the one thing AC-4.1 says must never happen.\n"
         "        return _degrade(config, outcome, type(exc).__name__, str(exc))",
-        "        raise",
+        "        # the one thing AC-4.1 says must never happen.\n        raise",
         f"{SYNC_RUN_TESTS}::test_one_connection_failing_does_not_stop_the_others",
     ),
     (
@@ -917,8 +928,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "MCP: a caveat names a kind the vocabulary declares",
         QUERY,
-        'kind="stale",',
-        'kind="rate_limited",',
+        'kind="stale",\n                    detail=f"{name} has not synced successfully',
+        'kind="rate_limited",\n                    detail=f"{name} has not synced successfully',
         f"{VOCABULARY}::test_every_caveat_names_a_kind_the_vocabulary_declares",
     ),
     (
@@ -1176,7 +1187,9 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # it. The constant moved modules when the pairer needed it too, and the
         # anchor went stale for a reason that had nothing to do with the norm --
         # which is the kind of stale that gets re-pinned without being read.
+        "    return case(\n        (\n            and_(\n"
         "                transactions.c.source_category_detailed.in_(",
+        "    return case(\n        (\n            and_(\n"
         "                transactions.c.category_override.in_(",
         f"{AGGREGATE_TESTS}::test_a_re_categorisation_cannot_move_a_transfer_into_spending",
     ),
@@ -1375,8 +1388,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # again, so the documented fix would fail on the store it is for.
         "AC-5.3: a newly-populated column bumps the derivation version",
         pathlib.Path("src/bankmachine/store/derivation.py"),
+        "DERIVATION_VERSION = 9",
         "DERIVATION_VERSION = 8",
-        "DERIVATION_VERSION = 7",
         # 🔴 Pinned to the UPGRADE test, not the lifecycle one. The lifecycle
         # test's store is stamped two versions back, so `change_was_expected`
         # stays true under a single reverted bump and the mutation passes -- the
@@ -1384,7 +1397,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # rows at exactly one version back, which is the operator's real
         # situation and the only gap a single reverted bump closes.
         "tests/store/test_upgrading_a_populated_store.py::"
-        "test_the_rebuild_stamps_the_ledger_dates_migration_005_could_only_leave_empty",
+        "test_the_rebuild_fills_the_price_dates_migration_010_could_only_leave_empty",
     ),
     (
         "AC-12.7: a non-active account's silence is closure, not a coverage finding",
@@ -1586,8 +1599,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # figure on the hold and on the posting, so both stay green here.
         "AC-13.2: a settlement carries the settled amount, not the hold's",
         CONNECTOR_DERIVERS,
-        "            removed_at=None,\n            **values,",
-        "            removed_at=None,\n"
+        "its row said otherwise.\n            removed_at=None,\n            **values,",
+        "its row said otherwise.\n            removed_at=None,\n"
         '            **{k: v for k, v in values.items() if k != "amount_minor"},',
         f"{TXN_TESTS}::test_a_settlement_that_changes_the_amount_updates_it_in_place",
     ),
@@ -1661,6 +1674,17 @@ def main() -> int:
         original = path.read_text(encoding="utf-8")
         if old not in original:
             print(f"SKIP   {name}\n       anchor no longer present: {old!r}")
+            survivors.append(name)
+            continue
+        # 🔴 An anchor that occurs twice breaks only its FIRST copy, which need not be
+        # the code the test exercises -- and then the case prints GREEN for a norm that
+        # holds, or RED for a break that never reached the path. Refused, not guessed.
+        if original.count(old) > 1:
+            print(
+                f"AMBIGUOUS {name}\n"
+                f"       the anchor occurs {original.count(old)} times, so which copy is broken "
+                f"is an accident of order: widen it until it names one"
+            )
             survivors.append(name)
             continue
 

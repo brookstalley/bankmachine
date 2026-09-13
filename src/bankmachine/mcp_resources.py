@@ -653,24 +653,21 @@ _ENVELOPE_SOMETIMES = (
 
 #: The tools `api-contract.md` specifies and this server does not serve. 🔴 They
 #: are named ON THE WIRE, not only in the documents a person reads: the human
-#: surfaces all say the surface is five of eight, and an agent receives none of
+#: surfaces all say which tools are missing, and an agent receives none of
 #: them. Asked "what was my net worth a year ago", an agent with no notice that
 #: the tool is absent improvises from today's balances and answers with a number
 #: that has no basis -- which is the failure this whole surface exists to refuse,
 #: arriving through the one door nothing was watching.
-UNBUILT_TOOLS: tuple[str, ...] = ("balance_history", "list_holdings", "find_recurring")
+UNBUILT_TOOLS: tuple[str, ...] = ("balance_history", "find_recurring")
 
 _CANNOT_ANSWER = (
     "## What this server cannot answer\n\n"
     "🔴 **Say so rather than deriving it.** Each of these is a question this surface has no "
     "data path for, and every one of them can be given a plausible-looking answer by "
     "improvising over the tools that do exist.\n\n"
-    # 🔴 Written for the finished investments surface, so it names `list_holdings` as
-    # serving positions while `UNBUILT_TOOLS` below still lists it: the two agree once
-    # the tool registers, and neither ships to an operator before then. What stays
-    # true after it lands is the part a model would otherwise improvise -- a lot no
-    # table extracts, and trades stored but read by no query. Tests hold both claims
-    # against the code.
+    # 🔴 Positions ARE served, so this bullet is about what sits behind one -- the
+    # part a model would otherwise improvise: a lot no table extracts, and trades
+    # stored but read by no query. Tests hold both claims against the code.
     "- **Tax lots, and the trades behind a position.** Positions are served by "
     "`list_holdings` as they stood on the day they were captured: quantity, market value, "
     "and cost basis where the institution supplied one. What sits behind a position is not "
