@@ -1118,3 +1118,35 @@ store-level test cannot stand in for it is that a replay must not restate a doma
 the rebuild reproduces rows and does not restate when a domain last succeeded.
 
 **Verified:** 2026-09-12
+
+🔴 **VRF-020 and VRF-021 re-raise obligations that VRF-015 and VRF-016 were accepted out of on
+2026-09-13 to open the wave 1 investment-sync PR — the fifth raising of each.** The earlier note
+said a fifth raising would mean the production cutover has slipped again, and that is what it
+means: it has not happened, and nothing about either check has changed. Said here out loud
+rather than re-raised quietly. `accept-operator-verification` still flips every pending entry.
+
+## VRF-020 — one real pending transaction watched across settlement
+
+**Status:** pending
+
+**Chunk:** production-data semantics (#22) · **Raised:** 2026-09-13
+
+**Why a human:** unchanged from **VRF-005**, which carries the full procedure and is the entry to
+follow. Accepted as VRF-005, VRF-009, VRF-012 and VRF-015 — every time for the same reason, which
+is that the sandbox has never held a pending row and no fixture can express one. It needs the
+production cutover and a card hold settling. The obligation is **#22**, and it blocks production.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-020`
+
+## VRF-021 — the sign convention on a real inflow, across two institutions
+
+**Status:** pending
+
+**Chunk:** production-data semantics (#23) · **Raised:** 2026-09-13
+
+**Why a human:** unchanged from **VRF-006**, which carries the full procedure and is the entry to
+follow. Accepted as VRF-006, VRF-010, VRF-013 and VRF-016. One feed obeying the sign convention is
+not evidence about another, so this needs a second real institution enrolled and a real inflow.
+The obligation is **#23**, and it blocks production.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-021`
