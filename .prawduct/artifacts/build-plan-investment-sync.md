@@ -173,7 +173,7 @@ waves 2–3 that is **not** Medium: it was derived and argued in
 - [x] Chunk 04: Rebuild, idempotency, and the properties that hold across both
 - [x] Chunk 05: `list_holdings` — positions, under one strict row shape
 - [x] Chunk 06: What a holdings answer must disclose about itself
-- [ ] Chunk 07: `balance_history` — one series, read two ways
+- [x] Chunk 07: `balance_history` — one series, read two ways
 - [ ] Chunk 08: Net worth, and the two ways it can be quietly wrong
 
 Context: Wave 1 (chunks 01-04) merged to `develop` as PR #114 on 2026-09-13; the branch
@@ -190,8 +190,14 @@ Chunk 06 is committed as `eec7af8` plus `f59ec2c`, which settles its cumulative 
 
 The review raised 0 blocking and 4 warnings, all fixed, and the verify-resolutions pass
 found nothing further. Verified on the sandbox store at schema 11
-after rebuild. Suite green; all 187 norm breaks are caught.
-Next: the wave 2 PR, which is the owner's call and blocked as above. Then Chunk 07.
+after rebuild.
+
+Chunk 07 is committed as `23d0245`: `balance_history` on the owner's four decisions, with the three
+refinements recorded under its deliverables, plus the carried `list_holdings` fix. Its review
+(`rev-20260913T201311Z-35ac5f2c`) raised 0 blocking, 3 warnings and 4 notes. R-1 to R-5 are carried
+into Chunk 08's deliverables, R-6 is fixed in a doc-only commit, and R-7 is informational. Verified
+on the sandbox store. The gate passed; all 198 norm breaks are caught.
+Next: Chunk 08, carrying those five. 🔴 A wave 2 PR opened before wave 3 lands is cut from `1320344`.
 
 ## The Program
 
@@ -739,9 +745,29 @@ Tests are the floor, and three things here are not testable from a fixture:
     do anything about it
   - the same treatment extended to a holdings total, which is the ruling Chunk 03 declined to
     settle and this chunk owes
-  - `docs/system-requirements.md` and `api-contract.md` amended: the three-tools-not-built
-    note drops to one (`find_recurring`), and the § Surface Inventory rows stay as they are
-    because both tools were always specified
+  - `docs/system-requirements.md` and `api-contract.md` amended for the lifecycle treatment. *(The
+    unbuilt note already dropped to `find_recurring` alone in Chunk 07, because the documented
+    tool-surface guard holds every counted document to the built set in the same commit.)*
+  - 🔴 **carried from Chunk 07's review (`rev-20260913T201311Z-35ac5f2c`)**, riding this chunk's
+    commit rather than buying a round of its own. Each was accepted there with this deliverable as
+    its reason, so dropping one is dropping a recorded commitment:
+    - **R-1:** walk `balance_history`'s cursor through the MCP boundary (`_call`) until it is gone,
+      every row arriving once. Show each tool refusing the other's cursor there. Add a go-red case
+      that removes `after=series_cursor`.
+    - **R-2:** judge completeness over every captured day crossed with the currencies counted, so a
+      currency whose accounts all missed a day the sync ran is withheld and named, not silently
+      absent. Add a two-currency case.
+    - **R-3:** decide `positions_not_current`'s "stopped" from the INVESTMENTS domain's own
+      `sync_state`: its `last_success_at` older than the transactions domain's, or a
+      `last_error_code`. Stop inferring it from capture dates, since a successful pull that lists no
+      position writes none. Add a test where such a pull emits no "stopped" wording.
+    - **R-4:** claim a position's `(account, security, day)` key across `holdings` and
+      `refused_holdings` at WRITE time, so the two tables never share a key. `list_holdings` then
+      drops `held_first` and `overruled`, and the holdings total this chunk builds reads one table.
+      Test that replay order changes nothing, price any `DERIVATION_VERSION` move, and keep the
+      manual-row rule.
+    - **R-5:** make `SeriesCursor.position()` delegate to `series_position`. Add a two-currency
+      paging case.
 - **Tests:** integration — a store holding a closed brokerage account reports the total, the
   count and the contributed magnitude, and the guard is seen red **with the magnitude
   removed**, not merely with the flag flipped (that is the condition the norm set for its own

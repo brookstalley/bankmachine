@@ -69,9 +69,11 @@ rather than a promise: `CORE_SCHEMA_DDL_SHA256` records a hash of migration
 the constraint idioms a later migration would want to share — fails a test.
 
 **Crossing it:** adding or changing a column touches every consumer above,
-including ones not yet written. Adding a table is also a change to
-`schema.py::CORE_TABLES`, which is deliberately a literal list so a table added
-without a place in FR-6 fails a test rather than quietly widening the contract.
+including ones not yet written. Adding a table also declares it in `schema.py`:
+`CORE_TABLES` for FR-6's own, `LATER_TABLES` for a table a later migration adds.
+Both are deliberately literal lists, and the metadata guard in `test_schema.py`
+refuses a table named in neither, so a table nobody declared fails a test rather
+than quietly widening the contract.
 
 ### Connection Roles
 
