@@ -119,7 +119,7 @@ field, and which vocabulary that field carries is the owner's call.
 
 **Not drainable, and the recorded blocker was wrong:** VRF-014 needs an MCP server on the
 build under test, and an MCP server outlives `/clear` — the reachable one answers
-`build.commit: efd64ad` where this checkout answers `7985a3b`. The merge it was said to wait
+`build.commit: efd64ad` where this checkout answers `41b58af`. The merge it was said to wait
 on never bore on it. Only relaunching the client moves it.
 
 **Verified:** VRF-017/018/019 recorded verbatim with their readings, including the step that

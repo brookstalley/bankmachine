@@ -714,11 +714,10 @@ supports and which squash would break.
   Its property must not assume Σ holdings = balance: the IRA reconciles exactly and the 401k is
   6% over. A field the row should expose: `institution_price_as_of`, dropped by wave 1, which
   moved chunks 05 and 06.
-- 🔴 **Release blocker: `develop` does not release until wave 2 merges.** The wave 1 PR ships the
-  envelope reference's investments bullet, written for the finished surface at the owner's
-  direction, which says positions are served by `list_holdings`. That is untrue until Chunk 05
-  registers the tool, and `develop` is this repo's default branch. A release cut from `develop`
-  between the two merges would tell every agent to call a tool that does not exist.
+- **Mid-cycle wire text is not kept accurate between waves** (owner, 2026-09-13). The envelope
+  reference names `list_holdings` from wave 1 onward, although the tool registers in Chunk 05 and
+  both MCP servers run from this checkout. Accepted because nobody uses or tests the server until
+  all three waves land; Chunk 05's deliverable writes the final text.
 - **After Chunk 06** — the warning surfaces: is every kind covered in the guidance map, and
   did the primer stay under budget without losing the sentence that made a kind actionable?
 - **Chunk 08 (cumulative)** — full-bundle review across all three waves, with particular

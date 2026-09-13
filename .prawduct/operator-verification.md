@@ -687,7 +687,7 @@ pre-fix doubled state.
 🔴 **Measured 2026-09-12: the merge was never the blocker, and the real one is one action long.**
 `get_pipeline_health` on the reachable server answers `build.commit: efd64ad` — the merge of #101,
 an ancestor of both `develop` and this branch and neither one's tip — while the same call made
-from this checkout answers `7985a3b`. The server's rows also carry no `domains` key, which the
+from this checkout answers `41b58af`. The server's rows also carry no `domains` key, which the
 build under test emits. The cause is process lifetime, not code: **an MCP server outlives `/clear`**,
 so a session that begins by clearing is talking to whatever build the client launched, however many
 days ago. Nothing a session can do reaches it — `build_id` is captured at import in the server's
@@ -701,7 +701,7 @@ stamp FIRST every time: an answer from the wrong build is indistinguishable from
 **Run 2026-09-13 — all six steps run. Steps 1, 2, 3, 4 and 6 pass; step 5's payload passes on a
 stale procedure. Steps 2-4 carry the grader caveat below. Drained by the owner the same day.**
 
-- **Build stamp first:** `get_pipeline_health` answered `build.commit: 176104d`, `dirty: false`,
+- **Build stamp first:** `get_pipeline_health` answered `build.commit: 9186a0f`, `dirty: false`,
   equal to `git rev-parse --short HEAD`, and its rows carry `domains`. The relaunch unblocked it.
 - 🔴 **Grader caveat.** The client in this run was the session agent, which had read this entry's
   pass criteria before asking anything. What steps 2-4 exist to test is whether the descriptions
@@ -741,7 +741,7 @@ stale procedure. Steps 2-4 carry the grader caveat below. Drained by the owner t
   Run that way it succeeded at 2026-09-13T15:08:59Z: `status: active`, only `gapped` left.
 - **Step 1 — PASS.** After a client relaunch `claude mcp list` shows `bankmachine-sandbox` and
   `bankmachine-production-nostore`, both connected. Every answer's `environment` field matches
-  its key (`sandbox` / `production`), and both answer `build.commit: 176104d`, `dirty: false`.
+  its key (`sandbox` / `production`), and both answer `build.commit: 9186a0f`, `dirty: false`.
 - **Step 6 — PASS, under a corrected premise.** 🔴 A production `store.db` exists at the
   unsuffixed default on this machine, so "point a server at production with no datastore" would
   have opened it. The server was registered with `BANKMACHINE_ENVIRONMENT=production` and
