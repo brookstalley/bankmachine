@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import re
 import sys
 from typing import Final, Protocol
 
@@ -54,6 +55,15 @@ with contextlib.suppress(ImportError):  # readline is absent on some platforms
     # Imported for the side effect: it backs `input()` with line editing and
     # history, which is most of what makes the prompt usable by hand.
     import readline  # noqa: F401
+
+
+#: A cell that is wholly a decimal *measurement*: digits, a point, digits.
+#:
+#: The point is the whole discriminator, and it is what makes sparing these
+#: safe. An account number, a digest and a token are each one unbroken run of
+#: characters, so none of them can match this -- while every exact decimal the
+#: store holds is written with the point that identifies it.
+_EXACT_DECIMAL: Final = re.compile(r"-?\d+\.\d+")
 
 
 class InputStream(Protocol):
@@ -449,6 +459,22 @@ def _render(value: object) -> str:
     read, while protecting nothing that an account number is actually stored
     as. A four-digit mask passes through, which is what AC-10.3 asks for.
 
+    🔴 **One arithmetic quantity IS text, and it is spared by shape.** A
+    position size is exact decimal text -- `holdings.quantity` and
+    `investment_transactions.quantity` hold the digits the aggregator sent,
+    because a fractional share carries more precision than any scale this
+    product could pick for a scaled integer. Put through the value rule, a
+    sandbox Bitcoin position of `0.00293644` comes back `0.****3644`: the
+    account-number rule blanks any run of eight digits and the fractional part
+    of an exact decimal is one, so the operator reading a position cannot see
+    the number they opened the shell for. A cell that is wholly
+    digits-point-digits is therefore rendered verbatim.
+
+    A quantity spelled with no fractional part is NOT spared. By shape it is
+    indistinguishable from an identifier, and over-redaction is still the
+    direction to be wrong in here -- so `12345678` shares reads `****5678`,
+    visibly masked rather than quietly wrong.
+
     A blob is summarised rather than printed. `raw_responses.body_gzip` is the
     one that comes up, and a terminal full of gzip is not a debugging
     affordance.
@@ -471,5 +497,5 @@ def _render(value: object) -> str:
     if isinstance(value, bytes):
         return f"<blob, {len(value)} bytes>"
     if isinstance(value, str):
-        return redact(value)
+        return value if _EXACT_DECIMAL.fullmatch(value) else redact(value)
     return str(value)

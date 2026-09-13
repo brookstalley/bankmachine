@@ -113,11 +113,24 @@ adds nothing of its own to the refusal — `mode=ro` at the file is what makes
 `PRAGMA query_only = OFF` typed at this prompt harmless. Everything it writes,
 including the statement it echoes back in a piped session, goes through
 `logging_setup`'s redaction, so AC-10.3 has one rule for values rather than one
-per surface. Three boundaries make that rule precise:
+per surface. Four boundaries make that rule precise:
 
 - **Values, not numbers.** Money here is an INTEGER of minor units while an
   account number is TEXT (`accounts.mask`), so redacting integers would blank a
   six-figure balance and protect nothing.
+- **A measurement is not an identifier.** That first line held while every
+  arithmetic quantity in the schema was an integer, and a position size is not:
+  `holdings.quantity` and `investment_transactions.quantity` are exact decimal
+  TEXT, because a fractional share carries more precision than a scaled integer
+  could hold. The account-number rule blanks any run of eight digits, and the
+  fractional part of an ordinary position is one — a sandbox Bitcoin holding of
+  `0.00293644` rendered `0.****3644`, so the operator could not read the number
+  the position exists to state. A cell that is wholly digits-point-digits is
+  rendered verbatim. **The decimal point is the entire exemption**: an account
+  number, a digest and a token are each one unbroken run, so none can match it,
+  and a quantity spelled without a fractional part is masked along with them —
+  `****5678` for 12,345,678 shares is over-redaction in the direction this
+  surface stays wrong in, and it is visible rather than quietly wrong.
 - **Values, not structure.** Schema text is not a redaction surface at all.
   Everything in `sqlite_master` was authored by this repo's migrations, and
   AC-6.6 — enforced by `tests/preferences/test_no_provider_identity.py` — is

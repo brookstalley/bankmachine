@@ -1605,6 +1605,30 @@ def test_a_capable_connection_records_its_investments_domain_and_says_so(
     assert [row[0] for row in domains] == [2]
 
 
+def test_a_connection_that_cannot_serve_investments_is_not_said_to_have_recorded_positions(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The other direction of the same line, which the positive one cannot prove.
+
+    A report that appended `positions recorded` to every connection would pass
+    the capable case exactly as a working one does, and the operator reading it
+    would conclude a connection had positions when nothing ever asked for them.
+    Both connections run here so the discrimination is what is asserted.
+    """
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page()]
+
+    assert run(["sync", "run", "--no-wait"]) == 0
+
+    lines = {
+        line.split()[0]: line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("  ")
+    }
+    assert "positions recorded" not in lines["1"]
+    assert "positions recorded" in lines["2"]
+
+
 def test_a_second_run_the_same_day_leaves_the_positions_alone(cli_env: Config) -> None:
     """AC-2.4 for the holdings series: the first capture of the day is the one kept."""
     _capable_connection(cli_env)

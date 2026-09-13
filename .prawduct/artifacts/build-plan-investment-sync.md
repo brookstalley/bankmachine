@@ -185,6 +185,17 @@ carry and re-runs the reconciliation 🔴 at the page that CLOSED that window �
 finished tables, which would judge an early window against rows that only arrived in a later
 one. `store.rebuild` gained one seam for it (`ReplayPass`). The measured history range moved out
 of the store function and into the sync, because a replay must not restate a domain's progress.
+Wave 1 was then verified against the real sandbox: VRF-017, VRF-018 and VRF-019 all drained on
+2026-09-12 from one enrolled connection — positions, the investment-transaction window and its
+recorded range, idempotency on a same-day re-run, and two clean `store rebuild`s reporting
+identical content over 1167 replayed transactions. 🔴 **That pass found the one defect no test
+here could see**: `quantity` is exact decimal TEXT, and `sync shell`'s account-number rule blanks
+any run of eight digits, so every high-precision position rendered `0.****3644`. The cell renderer
+now spares a value that is wholly digits-point-digits; `boundary-patterns.md` carries it as a
+fourth boundary, and the premise it corrects — that every arithmetic quantity in this schema is an
+integer — is the one investments invalidated. VRF-014 is NOT drainable from a session: the MCP
+server outlives `/clear`, so the reachable one answers on whatever build the client launched
+(measured `efd64ad` against HEAD `7985a3b`), and only relaunching the client moves it.
 Next: `/prawduct:critic cumulative`, then wave 1's PR, then the mandatory re-read of chunks
 05-08 against what was built.
 

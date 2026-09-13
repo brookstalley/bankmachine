@@ -682,9 +682,21 @@ follow. Accepted as VRF-004, VRF-008 and VRF-011.
 🔴 **Its blocker is mechanical, not a missing decision, and has its own item: #25.** The check runs
 against sandbox, but only against a server on the build under test — measured 2026-09-11, the
 reachable sandbox MCP server was on `296b7a0`, an ancestor of no live branch, and still reported the
-pre-fix doubled state. **This one becomes drainable the moment the mypy/CI PR merges**: relaunch the
-sandbox MCP server on the merged `develop` and verify against VRF-004's steps. It is the only one of
-the three that a session can close without waiting on calendar.
+pre-fix doubled state.
+
+🔴 **Measured 2026-09-12: the merge was never the blocker, and the real one is one action long.**
+`get_pipeline_health` on the reachable server answers `build.commit: efd64ad` — the merge of #101,
+an ancestor of both `develop` and this branch and neither one's tip — while the same call made
+from this checkout answers `7985a3b`. The server's rows also carry no `domains` key, which the
+build under test emits. The cause is process lifetime, not code: **an MCP server outlives `/clear`**,
+so a session that begins by clearing is talking to whatever build the client launched, however many
+days ago. Nothing a session can do reaches it — `build_id` is captured at import in the server's
+own process.
+
+**What unblocks it:** the operator quits and relaunches the client (not `/clear`), which starts the
+server on the checkout's current HEAD. Confirm with `get_pipeline_health` — `build.commit` must
+match `git rev-parse --short HEAD` — and then run VRF-004's steps in one pass. Verify the build
+stamp FIRST every time: an answer from the wrong build is indistinguishable from a wrong answer.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-014`
 
@@ -724,7 +736,7 @@ up to a pay cycle. The obligation is **#23**, and it blocks production.
 
 ## VRF-017 — a real sandbox sync records positions, and the operator can read them
 
-**Status:** pending
+**Status:** verified
 
 **Chunk:** investments — holdings end to end · **Raised:** 2026-09-12
 
@@ -765,17 +777,103 @@ bankmachine sync run --no-wait
    ```sql
    SELECT a.name, b.current_minor, (SELECT SUM(market_value_minor) FROM holdings h
           WHERE h.account_id = a.account_id AND h.as_of_date = b.as_of_date)
-     FROM accounts a JOIN balances_daily b USING (account_id) WHERE a.type = 'investment';
+     FROM accounts a JOIN balances_daily b USING (account_id)
+    WHERE a.account_type = 'investment';
    ```
    They may well **disagree** — the aggregator's own sandbox is off by 6% on one account
    *(§23)*. That is expected and is exactly why nothing sums the two. What must be true is
    that both are present: the positions decompose the account, they do not replace it.
 
-**Drain with:** `prawduct-hook verify-operator-verification VRF-017`
+**Recorded session** (2026-09-12, against the enrolled sandbox connection `ins_109511`
+"Tartan Bank", capabilities `["balance","investments","transactions"]`; no browser was needed
+because the connection was already enrolled):
+
+```
+$ BANKMACHINE_ENVIRONMENT=sandbox bankmachine sync run --no-wait
+  1  Tartan Bank: 1 page applied, positions recorded
+       🔴 725 days of history granted against what was requested — a gap of 5 days. It cannot be widened without re-linking (AC-1.2)
+
+bankmachine> SELECT s.ticker, s.name, h.quantity, h.market_value_minor, h.currency, h.as_of_date
+         ...>   FROM holdings h JOIN securities s USING (security_id)
+         ...>  ORDER BY h.market_value_minor;
+ticker               name                                     quantity    market_value_minor  currency  as_of_date
+-------------------  ---------------------------------------  ----------  ------------------  --------  ----------
+NULL                 U S Dollar                               0.01        1                   USD       2026-09-13
+ACHN                 Achillion Pharmaceuticals Inc.           1           211                 USD       2026-09-13
+DBLTX                DoubleLine Total Return Bond Fund        2           2084                USD       2026-09-13
+NFLX180201C00355000  Nflx Feb 01'18 $355 Call                 10000       11000               USD       2026-09-13
+BTC                  Bitcoin                                  0.00293644  11557               USD       2026-09-13
+EWZ                  iShares Inc MSCI Brazil                  5           21075               USD       2026-09-13
+NULL                 Trp Equity Income                        21.5        43000               USD       2026-09-13
+MIPTX                Matthews Pacific Tiger Fund Insti Class  23.567      63631               USD       2026-09-13
+NULL                 United States Treas Bills 0.000% ...     10          94808               USD       2026-09-13
+NHX105509            NH PORTFOLIO 1055 (... INDEX)            100.05      137369              USD       2026-09-13
+CAMYX                Cambiar International Equity Insti       75.75       185588              USD       2026-09-13
+SBSI                 Southside Bancshares Inc.                213         739749              USD       2026-09-13
+NULL                 U S Dollar                               12345.67    1234567             USD       2026-09-13
+(13 rows)
+bankmachine> SELECT domain, last_success_at, history_start_date, last_error_code FROM sync_state;
+domain        last_success_at                   history_start_date  last_error_code
+------------  --------------------------------  ------------------  ---------------
+transactions  2026-09-13T01:34:43.846431+00:00  2024-09-16          NULL
+investments   2026-09-13T01:34:43.511556+00:00  2024-09-13          NULL
+(2 rows)
+```
+
+*(Two security names are elided above. One is a sandbox string carrying an institution this
+operator's roster names, which `check-no-personal-data.sh` refuses to let this repository hold,
+and one was too wide for the column. Every number is as printed.)*
+
+**Step 1 — one half observed live, the other closed in-process and NOT by omission.** The report
+says `positions recorded` for the capable connection. The negative half cannot be observed here:
+the sandbox holds one enrolled connection and it is investments-capable, and the only non-browser
+way to mint a second Item (`/sandbox/public_token/create`) bypasses `bankmachine enroll` — a
+connection that never went through the product's own path is not evidence about the product's
+report. Rather than accept the half, it was made a contract:
+`test_a_connection_that_cannot_serve_investments_is_not_said_to_have_recorded_positions` runs both
+connections in one report and asserts the phrase appears on the capable line and on no other. The
+gate's own discrimination is `test_investments_are_pulled_for_the_connection_that_reports_them_and_no_other`.
+
+**Step 2 — 🔴 this step FAILED on first reading, and the failure is the reason it exists.**
+`quantity` came back `0.****3644` for the Bitcoin position and `-430.****3123` in the transaction
+table: `holdings.quantity` is exact decimal TEXT, and the shell's account-number rule blanks any
+run of eight digits, so the fractional part of every high-precision position was masked. Nothing
+was wrong with the stored value — the operator simply could not read the number the column exists
+to state. Fixed by sparing a cell that is wholly digits-point-digits, held by
+`test_an_exact_decimal_quantity_reads_whole` and `test_a_bare_digit_run_is_still_masked_however_it_is_labelled`,
+and recorded as the fourth boundary in `boundary-patterns.md`. The transcript above is the re-read
+after the fix. A fractional position now reads exactly; `0.00293644` is not a rounded `0.003`.
+
+**Step 3 — observed.** Two rows, advancing independently: the investments row's `last_success_at`
+is 0.3s ahead of the transactions row's, which is the two domains being stamped by their own
+passes rather than by one shared write.
+
+**Step 4 — observed.** A second `sync run` the same day left `holdings.captured_at` at
+`2026-09-13T01:34:40.446399+00:00` — the first run's instant — with all 13 rows and values
+unchanged (AC-2.4).
+
+**Step 5 — observed, and the entry's own SQL was wrong.** It named `a.type`; the column is
+`accounts.account_type`, and the query is corrected above. Both numbers are present and they
+disagree in exactly the way §23 predicts:
+
+```
+name        as_of_date  current_minor  SUM(market_value_minor)
+Plaid IRA   2026-09-13  32076          32076
+Plaid 401k  2026-09-13  2363198        2512564
+```
+
+The IRA agrees to the cent, the 401k is 6.3% apart. Both are recorded and neither is summed into
+the other.
+
+**`as_of_date` is the sync's own UTC day**, not the price's — stamped `2026-09-13` by a run made
+at 19:34 local (UTC-6). `balances_daily` for the same run carries the same date, so the join in
+step 5 lines up; the convention is the store's, not something investments introduced.
+
+**Verified:** 2026-09-12
 
 ## VRF-018 — a real sandbox sync records investment transactions, and the window it got
 
-**Status:** pending
+**Status:** verified
 
 **Chunk:** investments — investment transactions and the window · **Raised:** 2026-09-12
 
@@ -822,11 +920,57 @@ bankmachine sync run --no-wait
 4. The run's report. A run that retired nothing says nothing about removals; if it does name
    a count, that count must be explainable by rows the aggregator genuinely stopped sending.
 
-**Drain with:** `prawduct-hook verify-operator-verification VRF-018`
+**Recorded session** (2026-09-12, the same run as VRF-017, re-read after that entry's redaction
+fix):
+
+```
+bankmachine> SELECT investment_type, investment_subtype, trade_date, quantity,
+         ...>        amount_minor, fees_minor, currency, settlement_date, removed_at
+         ...>   FROM investment_transactions ORDER BY trade_date DESC LIMIT 12;
+investment_type  investment_subtype  trade_date  quantity             amount_minor  fees_minor  currency  settlement_date  removed_at
+---------------  ------------------  ----------  -------------------  ------------  ----------  --------  ---------------  ----------
+buy              buy                 2026-09-11  0.520877874205698    -110          -799        USD       NULL             NULL
+buy              buy                 2026-09-10  4211.152345617756    -4632         -500        USD       NULL             NULL
+cash             contribution        2026-09-10  -1200                120000        0           USD       NULL             NULL
+cash             contribution        2026-09-10  -1500                150000        0           USD       NULL             NULL
+sell             sell                2026-09-09  -49.02909689729298   206658        0           USD       NULL             NULL
+sell             sell                2026-09-09  -430.80867509953123  1496199       0           USD       NULL             NULL
+buy              buy                 2026-09-08  33.99208384602773    -46671        -195        USD       NULL             NULL
+cash             interest            2026-09-08  0                    10            0           USD       NULL             NULL
+buy              buy                 2026-09-08  0.00293644           -12003        0           USD       NULL             NULL
+fee              account fee         2026-09-06  3                    -300          0           USD       NULL             NULL
+cash             dividend            2026-09-05  0                    872           0           USD       NULL             NULL
+buy              buy                 2026-09-05  10                   -94808        0           USD       NULL             NULL
+(12 rows)
+```
+
+**Step 1 — observed.** 1167 rows for the connection, across accounts 20 (219) and 21 (948).
+
+- **The signs are the operator's, not the aggregator's.** Every `buy` carries a NEGATIVE
+  `amount_minor` and every `cash`/`contribution` a positive one, which is the reverse of what the
+  feed sends. `fees_minor` is negative alongside both a buy and a sell — a fee is money leaving
+  whichever way the trade went.
+- `settlement_date` is null on every one of the 1167 rows. The feed carries no such field, and a
+  populated one would mean something invented it.
+- `quantity` reads as exact decimal text — after the fix VRF-017 step 2 forced. Note that a `cash`
+  contribution arrives with a NEGATIVE quantity beside a positive amount; that is the feed's own
+  spelling, stored as sent, and no sign is flipped on a quantity.
+
+**Step 2 — observed.** `history_start_date` for the investments domain is `2024-09-13`, not null,
+and equal to the oldest `trade_date` in the table (`MIN(trade_date) = 2024-09-13`,
+`MAX = 2026-09-11`) — at or after the oldest row, as the step requires.
+
+**Step 3 — observed.** A second `sync run` left `COUNT(*) = 1167` and `COUNT(removed_at) = 0`. An
+identical window retired nothing.
+
+**Step 4 — observed.** The report named no removal count, which is what a run that retired nothing
+should say.
+
+**Verified:** 2026-09-12
 
 ## VRF-019 — a real sandbox store rebuilds byte-for-byte with investments in it
 
-**Status:** pending
+**Status:** verified
 
 **Chunk:** investments — rebuild, idempotency, and the properties that hold across both ·
 **Raised:** 2026-09-12
@@ -864,4 +1008,39 @@ bankmachine store rebuild
 3. Run `bankmachine sync run --no-wait` once more, then `bankmachine store rebuild` again.
    Both exit 0 and the second rebuild again reports identical content (AC-2.4).
 
-**Drain with:** `prawduct-hook verify-operator-verification VRF-019`
+**Recorded session** (2026-09-12, against the store VRF-017 and VRF-018 left behind):
+
+```
+$ BANKMACHINE_ENVIRONMENT=sandbox bankmachine store rebuild
+raw responses replayed:  82
+rows replaced:           2020
+  balances_daily: 56
+  holdings: 13
+  investment_transactions: 1167
+  transactions: 784
+derivation version:      8
+previous version(s):     8
+content:                 identical to what it replaced
+```
+
+**Step 1 — observed.** Exit 0, `content: identical to what it replaced`, and
+`--accept-content-change` was not passed. A window of 1167 transactions over three real pages,
+securities shared between the holdings and the transactions, and page instants a real run assigned
+all replayed to the same rows.
+
+**Step 2 — observed, and one column of it is vacuous in this store.** After the rebuild:
+`COUNT(*) = 1167`, `COUNT(removed_at) = 0`, `COUNT(*) FROM holdings = 13` — each matching what
+VRF-017 and VRF-018 recorded. 🔴 **The soft-delete column is 0 both before and after, so this run
+cannot distinguish a rebuild that preserves removals from one that resurrects them.** The sandbox
+returns the same complete window on every call, so nothing was ever retired to preserve; provoking
+a removal would mean making the aggregator stop sending a row, which no sandbox control does. That
+direction is held in-process by
+`test_a_rebuild_judges_each_window_against_the_rows_that_existed_when_it_closed`, and the reason a
+store-level test cannot stand in for it is that a replay must not restate a domain's progress.
+
+**Step 3 — observed.** A third `sync run --no-wait` (exit 0) followed by a second
+`store rebuild` (exit 0) replayed 88 responses to the same 2020 rows and again reported
+`content: identical to what it replaced`. `sync_state` came through both rebuilds unchanged —
+the rebuild reproduces rows and does not restate when a domain last succeeded.
+
+**Verified:** 2026-09-12
