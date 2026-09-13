@@ -11,6 +11,7 @@ import argparse
 import inspect
 import io
 import json
+import re
 import subprocess
 import sys
 from datetime import timedelta
@@ -19,15 +20,22 @@ from typing import IO, Any, cast
 from unittest import mock
 
 import pytest
+from sqlalchemy import event, func, select
+from sqlalchemy.engine import Engine
 
 from bankmachine import build_id, envelope, mcp, mcp_resources, query, signs
 from bankmachine.cli.exit_codes import EXIT_OK
 from bankmachine.config import Config
-from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC
+from bankmachine.connector import (
+    ACCOUNTS_GET,
+    INVESTMENTS_HOLDINGS_GET,
+    INVESTMENTS_TRANSACTIONS_GET,
+    TRANSACTIONS_SYNC,
+)
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import writer_connection
-from bankmachine.store.schema import connections, institutions
+from bankmachine.store.schema import connections, institutions, investment_transactions
 from bankmachine.store.types import now_utc
 
 
@@ -888,6 +896,101 @@ def test_no_tool_mutates_anything(initialized_config: Config) -> None:
     forbidden = ("create", "update", "delete", "remove", "write", "set_", "transfer", "pay")
     for tool in tools:
         assert not any(word in tool["name"] for word in forbidden), tool["name"]
+
+
+def _seed_investments(config: Config) -> None:
+    """The recorded holdings and trades captures, derived onto the seeded connection.
+
+    Taken from the live sandbox captures rather than hand-written, and the roster
+    they hang from is the captures' own accounts added to the seeded one, so the
+    positions and trades reference ids this store actually holds.
+    """
+    fixtures = Path(__file__).parent / "connector" / "fixtures"
+    captures = {
+        endpoint: json.loads((fixtures / name).read_bytes(), parse_float=str)
+        for endpoint, name in (
+            (INVESTMENTS_HOLDINGS_GET.path, "investments_holdings_get.json"),
+            (INVESTMENTS_TRANSACTIONS_GET.path, "investments_transactions_get.json"),
+        )
+    }
+    roster = json.loads(_accounts_body())
+    known = {entry["account_id"] for entry in roster["accounts"]}
+    for capture in captures.values():
+        for entry in capture["accounts"]:
+            if entry["account_id"] not in known:
+                roster["accounts"].append(entry)
+                known.add(entry["account_id"])
+    now = now_utc()
+    with writer_connection(config) as conn:
+        for endpoint, body in ((ACCOUNTS_GET.path, roster), *captures.items()):
+            apply_response(
+                conn,
+                connection_id=1,
+                endpoint=endpoint,
+                body=json.dumps(body).encode(),
+                received_at=now,
+                derivers=ALL_DERIVERS,
+            )
+
+
+def _cannot_answer_text() -> str:
+    documents = mcp_resources.documents(mcp._tool_definitions())
+    text = next(d.text for d in documents if d.uri == mcp_resources.ENVELOPE_URI)
+    start = text.index("## What this server cannot answer")
+    end = text.find("\n## ", start + 1)
+    return text[start:] if end == -1 else text[start:end]
+
+
+def test_the_unserved_trades_claim_holds_against_what_every_tool_reads(
+    initialized_config: Config,
+) -> None:
+    """🔴 The reference says trades are stored and read by no tool; this holds that to the SQL.
+
+    Checked against the statements every registered tool actually executes, not
+    against a list of files: a tool's query already runs through store helpers
+    beyond `query.py`, and the next one to read trades could arrive through any of
+    them. The store holds real trades first, because a query that reads them only
+    when an investment account exists would issue nothing over a store without one.
+    """
+    _seed(initialized_config)
+    _seed_investments(initialized_config)
+    with writer_connection(initialized_config) as conn:
+        stored = conn.execute(select(func.count()).select_from(investment_transactions)).scalar()
+    assert stored, "no trade reached the store, so a tool that reads trades had nothing to read"
+
+    statements: list[str] = []
+
+    def _capture(
+        _conn: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        statements.append(statement)
+
+    event.listen(Engine, "before_cursor_execute", _capture)
+    try:
+        for name in _every_tool():
+            assert not _call(initialized_config, name).get("isError"), name
+    finally:
+        event.remove(Engine, "before_cursor_execute", _capture)
+
+    # Positive control: the capture reaches the tools' queries at all. A listener
+    # on an engine the server never uses would record nothing and pass forever.
+    assert any(re.search(r"\btransactions\b", s) for s in statements), (
+        "no tool's query was captured, so this cannot tell a tool that reads trades from one "
+        "that does not"
+    )
+    reads_trades = any("investment_transactions" in s for s in statements)
+    says_unserved = "read by no tool" in _cannot_answer_text()
+
+    assert says_unserved != reads_trades, (
+        "the cannot-answer list says no tool reads trades, and a tool now does"
+        if says_unserved
+        else "no tool reads trades, and the list an agent is sent to no longer says so"
+    )
 
 
 def test_every_tool_says_on_the_wire_that_it_only_reads(initialized_config: Config) -> None:

@@ -672,7 +672,7 @@ to re-raise a sixth time.
 
 ## VRF-014 — the MCP surface answers usefully in a real client
 
-**Status:** pending
+**Status:** verified
 
 **Chunk:** the MCP surface · **Raised:** 2026-09-12
 
@@ -698,7 +698,66 @@ server on the checkout's current HEAD. Confirm with `get_pipeline_health` — `b
 match `git rev-parse --short HEAD` — and then run VRF-004's steps in one pass. Verify the build
 stamp FIRST every time: an answer from the wrong build is indistinguishable from a wrong answer.
 
+**Run 2026-09-13 — all six steps run. Steps 1, 2, 3, 4 and 6 pass; step 5's payload passes on a
+stale procedure. Steps 2-4 carry the grader caveat below. Drained by the owner the same day.**
+
+- **Build stamp first:** `get_pipeline_health` answered `build.commit: 176104d`, `dirty: false`,
+  equal to `git rev-parse --short HEAD`, and its rows carry `domains`. The relaunch unblocked it.
+- 🔴 **Grader caveat.** The client in this run was the session agent, which had read this entry's
+  pass criteria before asking anything. What steps 2-4 exist to test is whether the descriptions
+  steer an UNBRIEFED model; this run shows the payload carries what such a model needs, not that
+  one would use it.
+- **Step 2 — PASS.** `money_summary` for 2024-08-01..2024-08-31: `rows: []`, `totals: []`,
+  `effective_window.effective` null/null, `window_starts_before_coverage` ("covers no part of the
+  window you asked for") and a window-aware `gapped` ("reaches 46 day(s) past where its data
+  starts"). Absent, not zero.
+- **Step 3 — PASS for the transactions question, with a new wrinkle.** 2024-09-16 from
+  `history_starts` (725 of 730 days). Per-account first transactions run 2024-09-16..09-20, so the
+  oldest-seen date would be wrong for most accounts. 🔴 New on this build: the `investments`
+  domain's `history_starts` is **2024-09-13**, three days before the connection's, and only
+  `rows[].domains[]` says so — "how far back" now has two answers. Accounts 20/21 (IRA, 401k) also
+  draw `accounts_without_coverage` ("no transaction has ever been recorded") while 1167 investment
+  transactions are stored for them: #107, owned by Chunk 06.
+- **Step 4 — PASS on the amended criterion.** Twelve months 2025-09..2026-08 are identical at
+  1114946 external-spend outflow / 50422 inflow (2025-10 is +50000). 🔴 `debt_service` and
+  `internal_transfer` are 0 over the whole history and the store holds 0 transfer pairs. **Not a
+  regression:** the 2026-09-09 run that split them predates `44810d3` (2026-09-10), the
+  boundary classifier. The sandbox's `AUTOMATIC PAYMENT - THANK` is -207850 on the card itself,
+  equal to that month's card purchases, with no opposite leg on any account in either generation,
+  so it lands in `external_spend` and double-counts those purchases. `partial` names the 72
+  unmatched rows; an honest projection has to subtract the payment by reasoning, and the warning
+  is what makes that possible.
+- **Step 5 — payload as expected, 🔴 procedure STALE on this build.** The script ages
+  `connections.last_success_at` only; freshness now also lives per domain in
+  `sync_state.last_success_at`, so the run produced a state no outage can: connection `stale`
+  ("48 hours") beside both domains fresh at 2026-09-13T02:37Z. `stale` and `gapped` both fired.
+  The detail still names no timestamp (the 2026-09-09 observation stands). Prose change not judged
+  blind. **The next run adds, inside the same `with`:**
+  `conn.execute("UPDATE sync_state SET last_success_at = ?", (aged,))`.
+  **Undo:** the first `sync run` had no aggregator client id and failed with
+  `AggregatorNotConfiguredError`, which recorded the connection `degraded`. 🔴 `.env` holds
+  `BANKMACHINE_PLAID_CLIENT_ID` and nothing reads it for you (README: `source .env`), so the undo
+  is `set -a; source .env; set +a; BANKMACHINE_ENVIRONMENT=sandbox uv run bankmachine sync run`.
+  Run that way it succeeded at 2026-09-13T15:08:59Z: `status: active`, only `gapped` left.
+- **Step 1 — PASS.** After a client relaunch `claude mcp list` shows `bankmachine-sandbox` and
+  `bankmachine-production-nostore`, both connected. Every answer's `environment` field matches
+  its key (`sandbox` / `production`), and both answer `build.commit: 176104d`, `dirty: false`.
+- **Step 6 — PASS, under a corrected premise.** 🔴 A production `store.db` exists at the
+  unsuffixed default on this machine, so "point a server at production with no datastore" would
+  have opened it. The server was registered with `BANKMACHINE_ENVIRONMENT=production` and
+  `BANKMACHINE_DATASTORE_PATH=~/.local/share/bankmachine-vrf-nostore/store.db`, a path in a
+  directory that does not exist. It started, appears in the client, and `get_pipeline_health`,
+  `list_accounts` and `money_summary` each answer `rows: []` with `coverage.connections: 0` and
+  one `partial`: "the production datastore is not readable (datastore missing), so this answer is
+  empty because nothing could be read — not because there is nothing to report. Run `bankmachine
+  store init` to create it". Nothing was created: the directory is still absent after the run.
+  **Observation:** the detail names no path. On a machine where the default production store
+  exists, "datastore missing" plus "run `store init`" does not say which file was looked for, and
+  only the override explains it. Cheap to add; the path is already resolved in `config`.
+
 **Drain with:** `prawduct-hook verify-operator-verification VRF-014`
+
+**Verified:** 2026-09-13
 
 ## VRF-015 — one real pending transaction watched across settlement
 

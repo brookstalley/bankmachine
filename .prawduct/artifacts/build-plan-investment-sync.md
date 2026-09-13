@@ -514,6 +514,13 @@ Tests are the floor, and three things here are not testable from a fixture:
     refuses, and it would also make the absence unreadable to a consumer
   - the row carries its security's identity from `securities` rather than restating it, so a
     position and an investment transaction in the same instrument agree about what it is
+  - 🔴 **what the server says it cannot answer moves with the tool, and only half of that is
+    forced.** Registering `list_holdings` fails `tests/test_mcp_resources.py` until the name
+    leaves `mcp_resources.UNBUILT_TOOLS`; nothing forces the rest. The primer in
+    `mcp._instructions()` names "holdings or positions" as unanswerable in typed prose — drop
+    it there, keeping `INSTRUCTIONS_BUDGET` — and check the investments bullet in
+    `mcp_resources._CANNOT_ANSWER`, which was written ahead for the finished surface, against
+    what shipped, deleting its transitional comment
 - **Tests:** unit — the strict-row guard sees the new definition (a deliberately optional
   field is a startup failure); a position whose cost basis is unknown comes back null rather
   than missing; quantity round-trips as exact decimal text with no float anywhere on the
@@ -610,6 +617,9 @@ Tests are the floor, and three things here are not testable from a fixture:
     selection cost was accepted and what buys it back (the tool description is the lever)
   - a gap in the series reported rather than interpolated — a day with no capture is a day
     nobody looked, and drawing a line through it invents a balance
+  - the same unforced half as for `list_holdings`: drop "balance history or net worth over
+    time" from the primer in `mcp._instructions()` and the balance-history bullet from
+    `mcp_resources._CANNOT_ANSWER` — the test only moves `UNBUILT_TOOLS`
 - **Tests:** unit — `net = assets - liabilities` at both levels over generated series; a
   single account's degenerate split (a balance is either an asset or a liability, never
   both); the strict-row guard sees the definition. Integration — the aggregate row and the

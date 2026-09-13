@@ -665,8 +665,19 @@ _CANNOT_ANSWER = (
     "🔴 **Say so rather than deriving it.** Each of these is a question this surface has no "
     "data path for, and every one of them can be given a plausible-looking answer by "
     "improvising over the tools that do exist.\n\n"
-    "- **Holdings or positions.** No security, quantity or cost basis is stored. An "
-    "investment account's balance is a balance, not a portfolio.\n"
+    # 🔴 Written for the finished investments surface, so it names `list_holdings` as
+    # serving positions while `UNBUILT_TOOLS` below still lists it: the two agree once
+    # the tool registers, and neither ships to an operator before then. What stays
+    # true after it lands is the part a model would otherwise improvise -- a lot no
+    # table extracts, and trades stored but read by no query. Tests hold both claims
+    # against the code.
+    "- **Tax lots, and the trades behind a position.** Positions are served by "
+    "`list_holdings` as they stood on the day they were captured: quantity, market value, "
+    "and cost basis where the institution supplied one. What sits behind a position is not "
+    "served. Its tax lots are not extracted: the aggregator sends them and only the verbatim "
+    "response archive keeps them, so anything asked per lot has no data path. Its buys, "
+    "sells, dividends and fees are stored and read by no tool; `query_transactions` does "
+    "not return them, so an investment account with no rows there may still have traded.\n"
     "- **Balance history, or net worth over time.** Only the LATEST recorded balance per "
     "account is served. Summing transactions backwards from it is not a balance series: it "
     "misses everything outside the granted history window, and the store says so with "

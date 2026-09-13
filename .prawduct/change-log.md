@@ -34,6 +34,30 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-13: Stop telling every agent that holdings are not stored
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** the envelope reference's "what this server cannot answer" said "No security, quantity or
+cost basis is stored" — true before wave 1, false after it, and served to every agent that reads
+the reference. Found while running VRF-014 against the build under test.
+
+**What changed:** the bullet is rewritten for the finished investments surface, at the owner's
+direction, since nothing ships to an operator before `list_holdings` does. It names what stays
+unanswerable once positions are served: tax lots, which the aggregator sends and only the verbatim
+response archive keeps, and the buys, sells, dividends and fees behind a position, which are stored
+and read by no tool — so an investment account empty in `query_transactions` may still have traded. Until the tool
+registers, the bullet names `list_holdings` while `UNBUILT_TOOLS` still lists it; a comment at the
+site says so. Two tests hold the claims to the code in both directions: the tax-lot sentence against
+every table and column name, the unserved-trades sentence against the SQL every registered tool
+actually executes over a seeded store.
+
+**Plan:** chunks 05 and 07 each gained the half of the wire text no test forces — the primer's
+hand-typed "cannot answer" phrases, and the matching `_CANNOT_ANSWER` bullets.
+
+**Also:** VRF-014 verified on 2026-09-13 across all six steps, with the grader caveat on steps 2-4
+and the corrected step 5 and 6 procedures recorded in the entry.
+
 ## 2026-09-12: Wave 1 verified against the real sandbox, and what that found
 
 <!-- prawduct: scope=investments-v1 -->
