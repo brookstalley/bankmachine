@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from sqlalchemy import insert, select, update
+from sqlalchemy import func, insert, select, update
 
 from bankmachine import envelope, mcp, query
 from bankmachine.config import Config
@@ -39,6 +39,7 @@ FIXTURES = Path(__file__).parent / "connector" / "fixtures"
 
 CAPTURED = utc_instant(datetime(2026, 9, 10, 14, 0, tzinfo=UTC))
 CAPTURED_LATER = utc_instant(datetime(2026, 9, 12, 14, 0, tzinfo=UTC))
+CAPTURED_SAME_DAY = utc_instant(datetime(2026, 9, 10, 20, 0, tzinfo=UTC))
 
 #: The keys every row must carry, read off the published schema rather than
 #: listed here, so a field added to the definition is a field this checks.
@@ -537,6 +538,124 @@ def test_a_closed_account_holding_no_position_is_not_this_answers_to_name(
     _close(enrolled, idle[0])
 
     assert _warnings(enrolled, "account_no_longer_active") == []
+
+
+def _refusing_first_position(payload: dict[str, Any]) -> dict[str, Any]:
+    """The capture with its first position in a unit this build cannot denominate."""
+    payload["holdings"][0]["iso_currency_code"] = None
+    payload["holdings"][0]["unofficial_currency_code"] = "ZZZ"
+    return payload
+
+
+def _the_disputed_key(config: Config) -> tuple[int, int]:
+    """The one refused key, asserted to be held by BOTH tables -- the state under test."""
+    with reader_connection(config) as conn:
+        account_id, security_id = conn.execute(
+            select(refused_holdings.c.account_id, refused_holdings.c.security_id)
+        ).one()
+        held = conn.execute(
+            select(func.count())
+            .select_from(holdings)
+            .where(holdings.c.account_id == account_id, holdings.c.security_id == security_id)
+        ).scalar_one()
+    assert held == 1, "the captures did not leave the key in both tables, so nothing is under test"
+    return int(account_id), int(security_id)
+
+
+def test_a_days_first_capture_refusing_a_position_keeps_it_out_of_the_rows(
+    enrolled: Config,
+) -> None:
+    """🔴 Two captures on one day disagree about a position's unit; the FIRST decides.
+
+    The deriver leaves a row in each table -- each keeps its own first capture --
+    so this is the state the real producer leaves. The answer must not serve the
+    position while its disclosure says the position is absent.
+    """
+    _seed(enrolled, _refusing_first_position(_priced(recorded(), CAPTURED.date())))
+    _seed(enrolled, _priced(recorded(), CAPTURED.date()), CAPTURED_SAME_DAY)
+    account_id, security_id = _the_disputed_key(enrolled)
+
+    answer = query.list_holdings(enrolled)
+
+    assert not any(
+        (row["account_id"], row["security_id"]) == (account_id, security_id) for row in answer.rows
+    ), "a position the day's first capture refused was served as a row"
+    details = [w.detail for w in answer.warnings if w.kind == "rule-applied"]
+    assert len(details) == 1
+    assert f"account {account_id}: security {security_id} (ZZZ)" in details[0]
+
+
+def test_a_days_first_capture_recording_a_position_is_not_named_absent(enrolled: Config) -> None:
+    """The other arrival order: recorded first, refused later the same day."""
+    _seed(enrolled, _priced(recorded(), CAPTURED.date()))
+    _seed(
+        enrolled, _refusing_first_position(_priced(recorded(), CAPTURED.date())), CAPTURED_SAME_DAY
+    )
+    account_id, security_id = _the_disputed_key(enrolled)
+
+    answer = query.list_holdings(enrolled)
+
+    assert any(
+        (row["account_id"], row["security_id"]) == (account_id, security_id) for row in answer.rows
+    ), "a position the day's first capture recorded was dropped"
+    assert [w.detail for w in answer.warnings if w.kind == "rule-applied"] == [], (
+        "the answer named a position absent while serving it"
+    )
+
+
+def _left_behind_by_a_newer_capture(config: Config) -> set[int]:
+    """Two captures of one connection, the newer listing only one account's positions.
+
+    Prices are fresh on both days and the transactions land with the newer
+    capture, so the only thing old about the other account is that the newer
+    capture listed nothing for it. Returns that account's ids.
+    """
+    earlier = _priced(recorded(), CAPTURED.date())
+    _seed(config, earlier)
+    moved = earlier["holdings"][0]["account_id"]
+    later = _priced(copy.deepcopy(earlier), CAPTURED_LATER.date())
+    later["holdings"] = [h for h in later["holdings"] if h["account_id"] == moved]
+    _seed(config, later, CAPTURED_LATER)
+    _transactions_landed(config, CAPTURED_LATER)
+    left = {
+        row["account_id"]
+        for row in query.list_holdings(config).rows
+        if row["as_of_date"] == CAPTURED.date().isoformat()
+    }
+    assert left, "the capture needs a second account for the newer capture to leave out"
+    return left
+
+
+def test_an_account_left_out_of_a_newer_capture_is_not_blamed_on_the_feed(
+    enrolled: Config,
+) -> None:
+    """🔴 The connection's newer capture listed no position for it, and its feed works.
+
+    The account may simply hold nothing now. Naming that as a stopped feed sends a
+    reader to repair a sync that is working.
+    """
+    left = _left_behind_by_a_newer_capture(enrolled)
+
+    details = _warnings(enrolled, "positions_not_current")
+
+    assert len(details) == 1
+    for account_id in left:
+        assert (
+            f"{account_id} (positions from {CAPTURED.date().isoformat()}; its connection's newest "
+            f"capture, {CAPTURED_LATER.date().isoformat()}, listed none for it)"
+        ) in details[0]
+    assert "stopped arriving" not in details[0], "a working feed was named as a stopped one"
+
+
+def test_a_closed_account_left_out_of_a_newer_capture_is_named_only_as_inactive(
+    enrolled: Config,
+) -> None:
+    """Its captures stopped because it closed, which `account_no_longer_active` already says."""
+    for account_id in _left_behind_by_a_newer_capture(enrolled):
+        _close(enrolled, account_id)
+
+    assert _warnings(enrolled, "positions_not_current") == []
+    assert _warnings(enrolled, "account_no_longer_active"), "the closure itself went unsaid"
 
 
 # --------------------------------------------------------------------------

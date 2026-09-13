@@ -302,8 +302,10 @@ _GUIDANCE: dict[str, _Guidance] = {
         means=(
             "a position in this answer is not a current value, and `detail` keeps the reasons "
             "apart: its price is more than four calendar days older than the day it was "
-            "captured; its price date is UNKNOWN; or its account was last captured before its "
-            "connection's transactions last landed, so its investments have stopped arriving"
+            "captured; its price date is UNKNOWN; a newer capture of its connection listed no "
+            "position for its account, which may hold none of it now; or the connection's "
+            "newest capture is older than the day its transactions last landed, so its "
+            "investments have stopped arriving"
         ),
         for_this_answer=(
             "`market_value_minor_units` on those rows is the price as of `price_as_of` times "
@@ -312,9 +314,10 @@ _GUIDANCE: dict[str, _Guidance] = {
         ),
         act=(
             "report each such value with its `as_of_date` and `price_as_of` beside it, and never "
-            "call it today's value. Where an account's capture is behind its transactions, say "
-            "its positions may have changed since, and read that connection's "
-            "`rows[].domains[]` in `get_pipeline_health` for why its investments stopped."
+            "call it today's value. Where a newer capture listed nothing for an account, say it "
+            "may hold none of those positions now -- its feed is working. Only where the "
+            "investments have stopped arriving, read that connection's `rows[].domains[]` in "
+            "`get_pipeline_health` for why."
         ),
     ),
     "roster_observed_empty": _Guidance(

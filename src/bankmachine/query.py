@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Text, and_, case, cast, func, or_, select
+from sqlalchemy import Text, and_, case, cast, func, or_, select, union_all
 from sqlalchemy.engine import Connection as SAConnection
 from sqlalchemy.sql import ColumnElement
 
@@ -2081,28 +2081,36 @@ def _positions_not_current_caveat(
     *,
     old_prices: dict[int, tuple[int, CalendarDate]],
     unknown_prices: dict[int, int],
+    left_behind: dict[int, tuple[CalendarDate, CalendarDate]],
     captured_behind: dict[int, tuple[CalendarDate, CalendarDate]],
 ) -> list[Caveat]:
     """The warning that a well-formed position is not a current value.
 
-    🔴 **Three conditions, kept apart in `detail`, because each asks something
+    🔴 **Four conditions, kept apart in `detail`, because each asks something
     different of the reader.** A price older than its capture day is the
     commonest: the aggregator's sandbox values every position at a 2021 price on
     a capture taken today, and nothing about the row looks wrong. A price date the
     store does not have is named UNKNOWN rather than passed over as fresh -- the
     row predates the column, or the institution sent none, and either way the
-    value cannot be vouched for. And a capture older than the day the
-    connection's TRANSACTIONS last landed means the investments pull stopped
-    while the rest of the connection carried on: these are the last positions
-    seen, and trades since are missing from them.
+    value cannot be vouched for.
+
+    🔴 **The two capture conditions blame different things, and telling them
+    apart is the point.** The aggregator's holdings reply covers the whole
+    connection, so an account behind its OWN connection's newest capture was
+    listed with no position in it: it may hold nothing now, and the feed is
+    working. Only when the connection's newest capture is itself older than the
+    day its TRANSACTIONS last landed has the investments pull stopped while the
+    rest carried on. Naming the first as the second sends a reader to repair a
+    sync that works. A non-active account is in neither -- the caller leaves it
+    to `account_no_longer_active`, which already says why its captures stopped.
 
     Request-scoped: it names only accounts this answer's rows or refusals are
     about, so its absence says every position here was priced within the
     threshold of a capture no older than its connection's other data.
 
-    🔴 The capture comparison is in calendar days, the unit the append rule keeps
-    a position in, so a sync straddling midnight UTC can name an account once
-    when its transactions land on the next day. The next capture clears it.
+    🔴 The capture comparisons are in calendar days, the unit the append rule
+    keeps a position in, so a sync straddling midnight UTC can name an account
+    once when its transactions land on the next day. The next capture clears it.
     """
     parts: list[str] = []
     if old_prices:
@@ -2125,6 +2133,17 @@ def _positions_not_current_caveat(
             f"account(s) {named} hold positions whose price date is UNKNOWN -- the rows predate "
             f"the column and the store has not been rebuilt, or the institution sent none -- so "
             f"their values cannot be called current either"
+        )
+    if left_behind:
+        named = ", ".join(
+            f"{account_id} (positions from {captured.isoformat()}; its connection's newest "
+            f"capture, {newest.isoformat()}, listed none for it)"
+            for account_id, (captured, newest) in sorted(left_behind.items())
+        )
+        parts.append(
+            f"account(s) {named} were left out of a newer capture of their own connection, so "
+            f"these rows are what each held on that earlier day and it may hold none of them "
+            f"now. The feed is working; the positions may be gone"
         )
     if captured_behind:
         named = ", ".join(
@@ -2208,7 +2227,14 @@ def list_holdings(config: Config) -> Answer:
     an account whose newest capture refused every position it held would
     otherwise answer from an OLDER day's rows -- positions it may no longer hold,
     served as its latest. Reading the day across both tables makes that account
-    answer with no rows and a `rule-applied` naming what was refused.
+    answer with no rows and a `rule-applied` naming what was refused. The day is
+    found in SQL and both reads join it, so the answer reads one day per account
+    rather than every day the append-only series has kept.
+
+    🔴 **Where two captures on one day disagree, the day's FIRST capture decides.**
+    Each table keeps its own first capture, so a capture refusing a position and
+    another recording it the same day leave a row in both. The answer shows
+    whichever came first, and never serves a position while naming it absent.
 
     🔴 **`price_as_of` is served as stored and never coalesced.** A null means the
     row predates the column and has not been rebuilt, or the institution sent no
@@ -2229,15 +2255,24 @@ def list_holdings(config: Config) -> Answer:
     if problem is not None:
         return _unusable(config, problem, requested_window=None, truncation=None)
     with reader_connection(config) as conn:
-        latest: dict[int, CalendarDate] = {}
-        for table in (holdings, refused_holdings):
+        captured_days = union_all(
+            select(holdings.c.account_id, holdings.c.as_of_date),
+            select(refused_holdings.c.account_id, refused_holdings.c.as_of_date),
+        ).subquery()
+        newest = (
+            select(
+                captured_days.c.account_id,
+                func.max(captured_days.c.as_of_date).label("as_of_date"),
+            )
+            .group_by(captured_days.c.account_id)
+            .subquery()
+        )
+        latest = {
+            int(account_id): calendar_date(day)
             for account_id, day in conn.execute(
-                select(table.c.account_id, func.max(table.c.as_of_date)).group_by(
-                    table.c.account_id
-                )
-            ).all():
-                captured = calendar_date(day)
-                latest[int(account_id)] = max(captured, latest.get(int(account_id), captured))
+                select(newest.c.account_id, newest.c.as_of_date)
+            ).all()
+        }
         result = conn.execute(
             select(
                 holdings.c.account_id,
@@ -2252,9 +2287,16 @@ def list_holdings(config: Config) -> Answer:
                 holdings.c.currency,
                 holdings.c.as_of_date,
                 holdings.c.price_as_of,
+                holdings.c.captured_at,
+                holdings.c.raw_response_id,
             )
             .select_from(
-                holdings.join(accounts, accounts.c.account_id == holdings.c.account_id)
+                holdings.join(
+                    newest,
+                    (newest.c.account_id == holdings.c.account_id)
+                    & (newest.c.as_of_date == holdings.c.as_of_date),
+                )
+                .join(accounts, accounts.c.account_id == holdings.c.account_id)
                 .join(securities, securities.c.security_id == holdings.c.security_id)
                 .join(institutions, institutions.c.institution_id == accounts.c.institution_id)
             )
@@ -2266,15 +2308,43 @@ def list_holdings(config: Config) -> Answer:
                 holdings.c.security_id,
             )
         ).all()
+        refusals = conn.execute(
+            select(
+                refused_holdings.c.account_id,
+                refused_holdings.c.security_id,
+                refused_holdings.c.currency,
+                refused_holdings.c.captured_at,
+                refused_holdings.c.raw_response_id,
+            ).select_from(
+                refused_holdings.join(
+                    newest,
+                    (newest.c.account_id == refused_holdings.c.account_id)
+                    & (newest.c.as_of_date == refused_holdings.c.as_of_date),
+                )
+            )
+        ).all()
+        # Compared the way `_claim_capture_day` compares, so "first" means the
+        # same thing on the read as it did when each row was claimed.
+        held_first = {(int(r[0]), int(r[2])): (r[12], int(r[13] or 0)) for r in result}
+        overruled: set[tuple[int, int]] = set()
+        refused: list[tuple[int, int, str | None]] = []
+        for account_id, security_id, currency, captured_at, raw_response_id in refusals:
+            key = (int(account_id), int(security_id))
+            held = held_first.get(key)
+            if held is not None and held < (captured_at, int(raw_response_id)):
+                continue
+            if held is not None:
+                overruled.add(key)
+            refused.append((key[0], key[1], currency))
         lifecycle = _account_lifecycle(conn)
         rows: list[dict[str, Any]] = []
         old_prices: dict[int, tuple[int, CalendarDate]] = {}
         unknown_prices: dict[int, int] = {}
         for r in result:
             account_id = int(r[0])
-            captured, priced = calendar_date(r[10]), r[11]
-            if captured != latest[account_id]:
+            if (account_id, int(r[2])) in overruled:
                 continue
+            captured, priced = calendar_date(r[10]), r[11]
             if priced is None:
                 unknown_prices[account_id] = unknown_prices.get(account_id, 0) + 1
             elif captured - calendar_date(priced) > POSITION_PRICE_STALE_AFTER:
@@ -2305,20 +2375,8 @@ def list_holdings(config: Config) -> Answer:
                     **lifecycle[account_id].to_wire(),
                 }
             )
-        refused = [
-            (int(account_id), int(security_id), currency)
-            for account_id, security_id, day, currency in conn.execute(
-                select(
-                    refused_holdings.c.account_id,
-                    refused_holdings.c.security_id,
-                    refused_holdings.c.as_of_date,
-                    refused_holdings.c.currency,
-                )
-            ).all()
-            if calendar_date(day) == latest[int(account_id)]
-        ]
-        # The day each connection's TRANSACTIONS last landed. A capture older than
-        # it is the investments pull having stopped while the rest carried on.
+        # The day each connection's TRANSACTIONS last landed, and its own newest
+        # holdings capture across every account it holds.
         landed = {
             int(connection_id): calendar_date(utc_instant(success).date())
             for connection_id, success in conn.execute(
@@ -2328,11 +2386,24 @@ def list_holdings(config: Config) -> Answer:
                 )
             ).all()
         }
-        captured_behind: dict[int, tuple[CalendarDate, CalendarDate]] = {}
+        connection_newest: dict[int, CalendarDate] = {}
         for account_id, captured in latest.items():
             connection_id = lifecycle[account_id].connection_id
-            if connection_id is not None and captured < landed.get(connection_id, captured):
-                captured_behind[account_id] = (captured, landed[connection_id])
+            if connection_id is not None:
+                connection_newest[connection_id] = max(
+                    captured, connection_newest.get(connection_id, captured)
+                )
+        left_behind: dict[int, tuple[CalendarDate, CalendarDate]] = {}
+        captured_behind: dict[int, tuple[CalendarDate, CalendarDate]] = {}
+        for account_id, captured in latest.items():
+            entry = lifecycle[account_id]
+            if entry.connection_id is None or not entry.active:
+                continue
+            newest_capture = connection_newest[entry.connection_id]
+            if captured < newest_capture:
+                left_behind[account_id] = (captured, newest_capture)
+            elif captured < landed.get(entry.connection_id, captured):
+                captured_behind[account_id] = (captured, landed[entry.connection_id])
         not_active = [lifecycle[a] for a in sorted(latest) if not lifecycle[a].active]
         return _answer(
             config,
@@ -2345,6 +2416,7 @@ def list_holdings(config: Config) -> Answer:
                 + _positions_not_current_caveat(
                     old_prices=old_prices,
                     unknown_prices=unknown_prices,
+                    left_behind=left_behind,
                     captured_behind=captured_behind,
                 )
                 + _not_active_caveat(not_active, consequence=_POSITIONS_FROZE)

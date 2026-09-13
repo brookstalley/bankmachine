@@ -552,7 +552,10 @@ Tests are the floor, and three things here are not testable from a fixture:
     2021 price on a 2026 capture, and a capture date alone can never show it
     `[ASSUMPTION: 4 calendar days, enough to clear a long weekend | MED impact | owner can
     override]`. Second: the latest holdings capture is older than the connection's transactions
-    freshness, which Chunk 03's independent domain failure can produce. A null `price_as_of`
+    freshness, which Chunk 03's independent domain failure can produce. *(Split after the cumulative
+    review, 2026-09-13: an account behind its OWN connection's newest capture was listed with no
+    position and may hold none now -- a working feed, named apart from a stopped one -- and a
+    non-active account is left to `account_no_longer_active`.)* A null `price_as_of`
     is named as unknown, not treated as fresh
   - `rule-applied` naming every position refused at derivation because its currency has no
     known exponent **or states none** — account, security and currency — on the capture day

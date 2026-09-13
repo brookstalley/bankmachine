@@ -1682,8 +1682,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # from an older day, serving what it may no longer hold as its latest.
         "a refusal counts as a capture when finding an account's latest day",
         QUERY,
-        "            if captured != latest[account_id]:\n                continue",
-        "            if False:\n                continue",
+        "            select(refused_holdings.c.account_id, refused_holdings.c.as_of_date),",
+        "            select(holdings.c.account_id, holdings.c.as_of_date),",
         f"{HOLDINGS_TESTS}::"
         "test_an_account_whose_newest_capture_refused_every_position_answers_from_that_day",
     ),
@@ -1706,9 +1706,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "positions_not_current: a capture behind its connection's transactions is named",
         QUERY,
-        "            if connection_id is not None and "
-        "captured < landed.get(connection_id, captured):",
-        "            if False:",
+        "            elif captured < landed.get(entry.connection_id, captured):",
+        "            elif False:",
         f"{HOLDINGS_TESTS}::test_a_capture_older_than_its_connections_transactions_is_named",
     ),
     (
@@ -1717,6 +1716,40 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "        not_active = [lifecycle[a] for a in sorted(latest) if not lifecycle[a].active]",
         "        not_active: list[AccountLifecycle] = []",
         f"{HOLDINGS_TESTS}::test_a_position_on_a_closed_account_says_its_positions_froze",
+    ),
+    (
+        # An account a newer capture of its own connection listed nothing for is not
+        # a stopped feed; blaming the feed sends a reader to repair a working sync.
+        "positions_not_current: a capture behind its own connection's newest is not a stopped feed",
+        QUERY,
+        "            if captured < newest_capture:\n                left_behind[account_id]",
+        "            if False:\n                left_behind[account_id]",
+        f"{HOLDINGS_TESTS}::test_an_account_left_out_of_a_newer_capture_is_not_blamed_on_the_feed",
+    ),
+    (
+        "positions_not_current: a non-active account is left to account_no_longer_active",
+        QUERY,
+        "            if entry.connection_id is None or not entry.active:",
+        "            if entry.connection_id is None:",
+        f"{HOLDINGS_TESTS}::"
+        "test_a_closed_account_left_out_of_a_newer_capture_is_named_only_as_inactive",
+    ),
+    (
+        # Two captures on one day disagreeing leave a row in both tables; the day's
+        # first capture decides, from both directions.
+        "a day's first capture decides a position both tables hold (recorded first)",
+        QUERY,
+        "            if held is not None and held < (captured_at, int(raw_response_id)):\n"
+        "                continue",
+        "            if False:\n                continue",
+        f"{HOLDINGS_TESTS}::test_a_days_first_capture_recording_a_position_is_not_named_absent",
+    ),
+    (
+        "a day's first capture decides a position both tables hold (refused first)",
+        QUERY,
+        "                overruled.add(key)",
+        "                pass",
+        f"{HOLDINGS_TESTS}::test_a_days_first_capture_refusing_a_position_keeps_it_out_of_the_rows",
     ),
 ]
 

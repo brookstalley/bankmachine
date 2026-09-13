@@ -311,9 +311,10 @@ boundary it names — so the *absence* of one is information too:
   balances *include* it and say by how much, so quote that magnitude beside the total — the reader
   can subtract it and you cannot.
 - `positions_not_current` — a position in the answer is **not a current value**: its price is more
-  than four calendar days older than the day it was captured, its price date is unknown, or its
-  account was last captured before its connection's transactions last landed. `detail` keeps the
-  three apart. Quote `as_of_date` and `price_as_of` beside any value you report; a null price date
+  than four calendar days older than the day it was captured, its price date is unknown, a newer
+  capture of its connection listed nothing for its account (it may hold none of it now), or the
+  connection's investments stopped arriving while its transactions did not. `detail` keeps the
+  four apart. Quote `as_of_date` and `price_as_of` beside any value you report; a null price date
   is unknown, never recent.
 - `includes_pending_rows` — some contributing rows are authorisation holds that have not settled, so
   the figure can change **with no new activity at all**. Quote settled and pending separately; never

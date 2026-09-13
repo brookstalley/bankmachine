@@ -34,6 +34,49 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-13: A holdings answer says what it cannot vouch for, and names the positions it refused
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** `list_holdings` served three well-formed answers that were quietly wrong. It presented a
+2021 price on a 2026 capture as a current value. It dropped any position in a unit this build
+cannot denominate and left only a log line nobody calling a tool can see, so the account read as
+a smaller portfolio than it was. And it said nothing about a position on an account that had
+stopped being reported. Separately, the coverage surface counts the transactions feed alone, so it
+reported an investment account holding positions as having no data. Nothing said which feed it
+counted.
+
+**What changed (Chunk 06):** a new request-scoped warning, `positions_not_current`, names every
+account holding a position that is not a current value. It keeps three reasons apart: a price more
+than four calendar days older than the day it was captured, a price date the store does not have,
+and a capture older than the day the connection's transactions last landed. The four days are an
+assumption the owner can override. Migration 011 adds `refused_holdings`, so a position refused
+for its unit (or for stating none) is recorded where a read can see it. `DERIVATION_VERSION` 9 → 10
+lets `store rebuild` fill it from the archive. `list_holdings` names each refusal under
+`rule-applied` by account, security and unit, and reads an account's latest capture day across both
+tables, so an account whose newest capture refused everything answers from that day. The answer
+also carries `account_no_longer_active` and `roster_observed_empty` for positions on accounts in its
+scope. `transaction_count`, `accounts_without_coverage`, their guidance and the client guide now say
+they speak for the transactions feed; the fix that changes those row shapes stays open as #107. The
+new kind reached the scope tuple, the guidance map, the contract table and the client guide
+together. The new table is declared in `LATER_TABLES` beside FR-6's thirteen. The populated-store
+upgrade tests track 011 and keep 010's fixture. The go-red harness has a case for each new guard,
+and all 183 go red.
+
+**Verified against the sandbox:** migrated to schema 11 and rebuilt (content changed as expected at
+derivation version 10). `list_holdings` returned all 13 positions, captured 2026-09-13 at a
+2021-05-25 price, and `positions_not_current` named both investment accounts with their position
+counts. No `rule-applied` fired, which is correct: every sandbox position is in USD.
+
+**Fixed after the cumulative review:** `list_holdings` read every day of holdings history and
+filtered to each account's latest in Python; the latest day is now a union of both tables in SQL,
+and both reads join it. The capture clause of `positions_not_current` blamed a stopped investments
+feed for an account a newer capture of its own connection simply listed no position for, and for a
+closed account; it now names the first as positions the account may no longer hold and leaves the
+second to `account_no_longer_active`. And when two captures on one day disagreed about a
+position's unit, the answer could serve the position while naming it absent; the day's first
+capture now decides.
+
 ## 2026-09-13: `list_holdings` serves positions, with the date of the price each is valued at
 
 <!-- prawduct: scope=investments-v1 -->
