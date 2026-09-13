@@ -34,6 +34,76 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-12: Wave 1 verified against the real sandbox, and what that found
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** three operator-verification entries (VRF-017, VRF-018, VRF-019) stood between wave 1
+and its PR, and each names a claim no test in this repo can make: that the whole path works
+when the parts are joined by the real command, against the payload the aggregator actually
+sends. They were drained end to end. The pass found one defect, and it was in the surface the
+entries exist to read through rather than in anything the tests cover.
+
+**What changed:**
+
+- 🔴 **`sync shell` was masking every high-precision position, and now is not.**
+  `holdings.quantity` and `investment_transactions.quantity` are exact decimal TEXT — a
+  fractional share carries more precision than a scaled integer could hold — and the shell's
+  account-number rule blanks any run of eight digits, so a sandbox Bitcoin holding of
+  `0.00293644` rendered `0.****3644` and a sale of `-430.80867509953123` rendered
+  `-430.****3123`. Nothing was wrong with the stored value; the operator simply could not read
+  the number the column exists to state, which is the one reading VRF-017 asks for. A cell
+  that is wholly digits-point-digits is now rendered verbatim. **The decimal point is the
+  entire exemption**: an account number, a digest and a token are each one unbroken run, so
+  none can match it, and a quantity spelled without a fractional part is still masked. The
+  premise this corrects — that every arithmetic quantity here is an INTEGER, so redacting text
+  protects account numbers and costs nothing — was true until investments added a column that
+  is both. `boundary-patterns.md` carries it as a fourth boundary.
+- **Both investments report lines moved out of the healthy branch.** `_pull_investments` runs
+  before the page loop, so a completed window sits behind a connection the pager then reports
+  as degraded or as still materializing — and appended to the pages sentence, `positions
+  recorded` and the retired-transaction count said nothing at all in exactly those runs. For
+  the retired count that is the invisibility it exists to end: a soft delete leaves no trace
+  in a page count.
+- **A re-link no longer leaves a success stamp beside the domain rows it cleared.**
+  `cli/enroll.py` deletes every `sync_state` row when an item is replaced; the health surface
+  publishes an empty domain list as *nothing has ever been attempted* and published
+  `connections.last_success_at` beside it, so a client told to prefer the domain stamps found
+  none, fell back to the connection's, and read a history being refetched from zero as
+  current. The stamp goes with the rows.
+- **One statement of the three conditions the connection caveats fire on.** `_domain_caveats`
+  says a thing only where the connection has not already said it, and both passes now read a
+  `_ConnectionFreshness` record built once. Matching on the caveats actually emitted would not
+  have been faithful — `partial` carries three unrelated connection-level meanings, so a
+  connection whose granted window is merely unmeasured would have suppressed a domain that has
+  genuinely never landed.
+- **`store rebuild`'s refusal names its third cause.** It named an impure deriver and a pruned
+  archive, and neither fits an investments run that archived a complete window and stopped
+  before concluding its removals — which leaves the replay retiring rows at an instant the
+  live store never recorded. That failure is permanent and its only escape was
+  `--accept-content-change`, a flag documented for something else. The message now names the
+  case and says which columns to compare. **The divergence itself is filed, not fixed** (#113):
+  closing it is a choice between three shapes with different lock-in, and the cheap one is
+  blocked by `apply_response`'s deliberate archive-then-derive split.
+
+**Filed rather than answered:** #113 (the reconciliation's atomicity, above), #111 (a sync
+prints 157 log lines to 2 of report, 150 of them two rounding notices repeated per row — a
+documented decision whose volume against a cursorless feed was never measured), #112 (an
+all-digit CUSIP will render masked; unmeasured, the sandbox sends null). #93 was updated
+rather than answered: the same `type(exc).__name__` now reaches a newly published contract
+field, and which vocabulary that field carries is the owner's call.
+
+**Not drainable, and the recorded blocker was wrong:** VRF-014 needs an MCP server on the
+build under test, and an MCP server outlives `/clear` — the reachable one answers
+`build.commit: efd64ad` where this checkout answers `7985a3b`. The merge it was said to wait
+on never bore on it. Only relaunching the client moves it.
+
+**Verified:** VRF-017/018/019 recorded verbatim with their readings, including the step that
+failed and its re-read after the fix. Reviewed by `rev-20260913T021056Z-81d120ad` (0 blocking,
+5 warning, 8 note — four fixed, one filed, the rest accepted), verified clean across three
+`verify-resolutions` rounds, the last of which caught a new test that was passing off the
+run-level summary rather than the connection line it named.
+
 ## 2026-09-12: A rebuild stops resurrecting the transactions the source dropped
 
 <!-- prawduct: scope=investments-v1 -->

@@ -883,7 +883,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-1.3a: an unmeasured window is not reported as no shortfall",
         QUERY,
-        "        if granted is None and last_success is not None:",
+        "        if granted is None and not said.never_succeeded:",
         "        if False:",
         f"{MCP_TESTS}::test_an_unmeasured_window_is_reported_differently_from_no_shortfall",
     ),
@@ -1207,12 +1207,12 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "                    institution=name,\n"
         "                )\n"
         "            )\n"
-        "        if last_success is None:",
+        "        if said.never_succeeded:",
         "                    connection_id=connection_id,\n"
         '                    institution="First Platypus Bank",\n'
         "                )\n"
         "            )\n"
-        "        if last_success is None:",
+        "        if said.never_succeeded:",
         f"{MCP_TESTS}::test_two_connections_in_the_same_state_are_still_told_apart",
     ),
     (

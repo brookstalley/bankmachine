@@ -790,8 +790,9 @@ because the connection was already enrolled):
 
 ```
 $ BANKMACHINE_ENVIRONMENT=sandbox bankmachine sync run --no-wait
-  1  Tartan Bank: 1 page applied, positions recorded
+  1  Tartan Bank: 1 page applied
        🔴 725 days of history granted against what was requested — a gap of 5 days. It cannot be widened without re-linking (AC-1.2)
+       investments: positions recorded
 
 bankmachine> SELECT s.ticker, s.name, h.quantity, h.market_value_minor, h.currency, h.as_of_date
          ...>   FROM holdings h JOIN securities s USING (security_id)
@@ -825,7 +826,17 @@ operator's roster names, which `check-no-personal-data.sh` refuses to let this r
 and one was too wide for the column. Every number is as printed.)*
 
 **Step 1 — one half observed live, the other closed in-process and NOT by omission.** The report
-says `positions recorded` for the capable connection. The negative half cannot be observed here:
+says `positions recorded` for the capable connection, on its own continuation line.
+
+*(It was appended to the pages sentence when this entry first ran, and a review of the same wave
+moved it out: `_pull_investments` runs before the page loop, so a connection the pager then reports
+as degraded or as still materializing was told nothing about its positions at all. The transcript
+above is a RE-RUN made after that move rather than the first run's output edited to match — the
+command was executed again at 02:37:35 UTC, which is the `investments` stamp in this store's
+`sync_state`, and the first run's 01:34 stamps are the ones the steps below still quote. The shape
+of those two lines is now pinned by
+`test_a_retired_investment_transaction_is_reported_whatever_branch_the_pager_takes`, so it cannot
+move again without a test saying so.)* The negative half cannot be observed here:
 the sandbox holds one enrolled connection and it is investments-capable, and the only non-browser
 way to mint a second Item (`/sandbox/public_token/create`) bypasses `bankmachine enroll` — a
 connection that never went through the product's own path is not evidence about the product's

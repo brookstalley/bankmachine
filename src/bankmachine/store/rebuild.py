@@ -123,10 +123,17 @@ class UnhashableValueError(StoreError):
 class RebuildNotReproducibleError(StoreError):
     """The rebuild produced different content at an unchanged derivation version.
 
-    Rolled back rather than committed. Either a deriver is not a pure function
-    of its response -- a clock call is the usual one -- or the archive no longer
-    holds every response the rows were built from. Both are conditions to
-    investigate before the old rows are gone.
+    Rolled back rather than committed. Three causes reach this, and the third is
+    the one that looks like neither: a deriver is not a pure function of its
+    response (a clock call is the usual one); the archive no longer holds every
+    response the rows were built from; or an investments run archived a complete
+    window and stopped before concluding the removals from it, so the replay
+    retires rows at the closing page's instant while the live store retired them
+    at a later run's -- or not at all. All three are conditions to investigate
+    before the old rows are gone, and the third is not fixed by accepting the
+    change: accepting it writes the replay's instant over the store's, which is
+    the reproducible answer, but it also accepts whatever else moved in the same
+    digest.
     """
 
 
@@ -402,10 +409,15 @@ def rebuild(
                     raise RebuildNotReproducibleError(
                         f"the rebuild produced different content at an unchanged derivation "
                         f"version ({version}): {digest_before} became {digest_after}. "
-                        f"Rolled back. Either a deriver is not a pure function of its response -- "
-                        f"a call to the clock is the usual cause -- or the archive no longer holds "
-                        f"every response those rows came from. If responses were deliberately "
-                        f"pruned, re-run with --accept-content-change"
+                        f"Rolled back. A deriver may not be a pure function of its response -- "
+                        f"a call to the clock is the usual cause -- or the archive may no longer "
+                        f"hold every response those rows came from. Third cause, easy to mistake "
+                        f"for either: an investments run that archived a complete window and "
+                        f"stopped before concluding its removals leaves the replay retiring rows "
+                        f"the live store retired later or not at all. Compare `removed_at` on "
+                        f"`investment_transactions` against the page instants in `raw_responses` "
+                        f"before deciding. If responses were deliberately pruned, re-run with "
+                        f"--accept-content-change"
                     )
                 logger.warning(
                     "committing a rebuild whose content changed at derivation version %d, "

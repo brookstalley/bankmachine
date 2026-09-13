@@ -130,6 +130,40 @@ def _unstamped_ledger_date_caveat(conn: SAConnection) -> list[Caveat]:
     ]
 
 
+@dataclass(frozen=True, slots=True)
+class _ConnectionFreshness:
+    """The three conditions the connection-level caveats fired on, for one connection.
+
+    🔴 **One owner for a decision two passes read.** The domain caveats say a
+    thing only where the connection has not already said it, and each of those
+    conditions used to be re-derived beside the domain rows from the same
+    columns. The copies agreed, and nothing held them there: a change to the
+    connection rule -- a grace period before stale, a second status value, a
+    standing complaint counting as degraded -- moves one and leaves the other,
+    and both directions of that drift are defects the code already names. Two
+    caveats describing one condition teaches a reader to skip the pair; a
+    suppressed one that should have fired is silent staleness.
+
+    Matching on the caveats actually emitted would be the other way to do it and
+    is not faithful: `partial` carries three unrelated connection-level meanings,
+    so a connection whose granted window is merely unmeasured would suppress a
+    domain that has genuinely never landed.
+
+    🔴 **Both passes read it, the connection pass included.** Building this and
+    then re-writing the same three predicates at the connection caveats' own
+    emit sites would leave the copy this record exists to remove -- a few lines
+    further from its twin, and no easier to change together. The predicates live
+    here; the sentences live at the sites.
+    """
+
+    #: `status` says so. The aggregator's STANDING complaint deliberately does
+    #: not: an Item can be unwell while its last poll succeeded, so a domain
+    #: failure beside one is a second fact and not a repetition.
+    degraded: bool
+    never_succeeded: bool
+    stale: bool
+
+
 def _pipeline_warnings(
     conn: SAConnection, now: UtcInstant, window: Window | None = None
 ) -> list[Caveat]:
@@ -192,10 +226,17 @@ def _pipeline_warnings(
             )
         )
 
+    freshness: dict[int, _ConnectionFreshness] = {}
     for row in rows:
         connection_id, name = int(row[0]), str(row[1])
         status, last_success = str(row[2]), row[3]
         requested, granted = row[5], row[6]
+        said = _ConnectionFreshness(
+            degraded=status == "degraded",
+            never_succeeded=last_success is None,
+            stale=last_success is not None and now - last_success > STALE_AFTER,
+        )
+        freshness[connection_id] = said
 
         # 🔴 The aggregator's STANDING complaint about the Item, which is not
         # the same fact as a failed sync attempt. An Item can be unwell while
@@ -223,7 +264,7 @@ def _pipeline_warnings(
                 now=now,
             )
         )
-        if status == "degraded":
+        if said.degraded:
             warnings.append(
                 Caveat(
                     kind="degraded",
@@ -235,7 +276,7 @@ def _pipeline_warnings(
                     institution=name,
                 )
             )
-        if last_success is None:
+        if said.never_succeeded:
             warnings.append(
                 Caveat(
                     kind="partial",
@@ -244,7 +285,7 @@ def _pipeline_warnings(
                     institution=name,
                 )
             )
-        elif now - last_success > STALE_AFTER:
+        elif said.stale:
             hours = int((now - last_success).total_seconds() // 3600)
             warnings.append(
                 Caveat(
@@ -258,7 +299,7 @@ def _pipeline_warnings(
         # shortfall -- it is not yet known -- and the two are reported
         # differently, because reading the first as the second is the exact
         # inference AC-1.3a forbids.
-        if granted is None and last_success is not None:
+        if granted is None and not said.never_succeeded:
             warnings.append(
                 Caveat(
                     kind="partial",
@@ -286,11 +327,13 @@ def _pipeline_warnings(
                     institution=name,
                 )
             )
-    warnings.extend(_domain_caveats(conn, now))
+    warnings.extend(_domain_caveats(conn, now, freshness))
     return warnings
 
 
-def _domain_caveats(conn: SAConnection, now: UtcInstant) -> list[Caveat]:
+def _domain_caveats(
+    conn: SAConnection, now: UtcInstant, freshness: dict[int, _ConnectionFreshness]
+) -> list[Caveat]:
     """What one sync DOMAIN is missing that the connection beside it is not.
 
     🔴 **The failure this exists to refuse.** `sync_state` is keyed on
@@ -313,6 +356,15 @@ def _domain_caveats(conn: SAConnection, now: UtcInstant) -> list[Caveat]:
     when it adds something the caveats already emitted do not, so a third domain
     needs no new exemption and none can be forgotten.
 
+    What "already said" means is READ rather than recomputed: `freshness` carries
+    the conditions the connection pass fired on (`_ConnectionFreshness`), which
+    is the one statement of each -- the connection caveats are emitted from the
+    same record, so neither pass can drift from the other. A
+    connection missing from the map is a programming error rather than a case --
+    both passes select the same unretired connections -- and it is left to raise
+    instead of taking a default, because either default silently answers one of
+    the two questions wrongly.
+
     A domain with no row at all has never been attempted and raises nothing: the
     connection either cannot serve it or has not reached it, and both are the
     connection's own story rather than a hole in this one's history (AC-4.5's
@@ -324,8 +376,6 @@ def _domain_caveats(conn: SAConnection, now: UtcInstant) -> list[Caveat]:
         select(
             connections.c.connection_id,
             institutions.c.name,
-            connections.c.status,
-            connections.c.last_success_at,
             sync_state.c.domain,
             sync_state.c.last_success_at,
             sync_state.c.last_error_code,
@@ -336,10 +386,9 @@ def _domain_caveats(conn: SAConnection, now: UtcInstant) -> list[Caveat]:
     ).all()
     for row in rows:
         connection_id, name = int(row[0]), str(row[1])
-        connection_degraded = str(row[2]) == "degraded"
-        connection_success = row[3]
-        domain, domain_success, domain_error = str(row[4]), row[5], row[6]
-        if domain_error is not None and not connection_degraded:
+        domain, domain_success, domain_error = str(row[2]), row[3], row[4]
+        said = freshness[connection_id]
+        if domain_error is not None and not said.degraded:
             caveats.append(
                 Caveat(
                     kind="degraded",
@@ -365,7 +414,7 @@ def _domain_caveats(conn: SAConnection, now: UtcInstant) -> list[Caveat]:
             # and two caveats describing one condition, riding every answer, is
             # what teaches a reader to skip the pair. The failing case says it
             # more usefully anyway: it names the error.
-            if connection_success is not None and domain_error is None:
+            if not said.never_succeeded and domain_error is None:
                 caveats.append(
                     Caveat(
                         kind="partial",
@@ -379,9 +428,7 @@ def _domain_caveats(conn: SAConnection, now: UtcInstant) -> list[Caveat]:
                 )
             continue
         behind = now - utc_instant(domain_success)
-        if behind > STALE_AFTER and not (
-            connection_success is not None and now - utc_instant(connection_success) > STALE_AFTER
-        ):
+        if behind > STALE_AFTER and not said.stale:
             caveats.append(
                 Caveat(
                     kind="stale",

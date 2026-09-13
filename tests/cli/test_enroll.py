@@ -258,7 +258,7 @@ def _seed_item_scoped_state(config: Config, *, connection_id: int) -> None:
         conn.execute(
             update(connections)
             .where(connections.c.connection_id == connection_id)
-            .values(granted_history_days=180, updated_at=now)
+            .values(granted_history_days=180, last_success_at=now, updated_at=now)
         )
 
 
@@ -907,6 +907,32 @@ def test_re_linking_to_a_new_item_clears_the_cursor_and_the_granted_window(
     assert row["granted_history_days"] is None, (
         "the recorded window belongs to the item that was replaced"
     )
+
+
+def test_a_re_link_leaves_no_success_stamp_beside_the_domain_rows_it_cleared(
+    cli_env: Config, offline_client: type[FakeClient]
+) -> None:
+    """🔴 The two ways to ask "has this connection synced" must not disagree.
+
+    `sync_state` rows are cleared above because the new item issued none of that
+    progress. The health surface publishes an empty domain list as *nothing has
+    ever been attempted*, and it publishes the connection's own
+    `last_success_at` beside it -- so a stamp inherited from the replaced item
+    would describe a connection whose history is being refetched from zero as
+    one that succeeded, to exactly the client that was told to read the domain
+    stamps first and found none.
+    """
+    assert run(["enroll", "--yes"]) == 0
+    _seed_item_scoped_state(cli_env, connection_id=1)
+    assert _rows(cli_env, connections)[0]._mapping["last_success_at"] is not None, (
+        "the stamp has to be there before its clearing can be asserted"
+    )
+
+    FakeClient.item_id = "item-relinked"
+    assert run(["enroll", "--yes", "--relink"]) == 0
+
+    assert _rows(cli_env, sync_state) == []
+    assert _rows(cli_env, connections)[0]._mapping["last_success_at"] is None
 
 
 def test_re_linking_to_a_new_item_says_so_in_the_log(

@@ -1153,19 +1153,9 @@ def _report(run: RunOutcome) -> None:
                 if (outcome.stopped_short)
                 else ""
             )
-            positions = ", positions recorded" if outcome.investments_pulled else ""
-            # A soft delete leaves no trace in a page count -- the rows simply
-            # stop appearing in every total. Named here so a run that retired
-            # history says so at the moment the operator could still ask why.
-            retired = (
-                f", {outcome.investment_transactions_removed} investment "
-                f"transaction(s) no longer reported"
-                if outcome.investment_transactions_removed
-                else ""
-            )
             print(
                 f"  {outcome.connection_id}  {outcome.institution_name}: "
-                f"{outcome.pages} {pages} applied{positions}{retired}{more}"
+                f"{outcome.pages} {pages} applied{more}"
             )
             if not outcome.historical_complete:
                 # 🔴 A bare "N pages applied" reads as finished, and at
@@ -1194,6 +1184,21 @@ def _report(run: RunOutcome) -> None:
                     f"{outcome.history_shortfall_days} days. It cannot be widened "
                     f"without re-linking (AC-1.2)"
                 )
+        # 🔴 Both at the loop's level rather than inside the healthy branch,
+        # like the two investments lines below and for the same reason:
+        # `_pull_investments` runs BEFORE the page loop, so a completed window
+        # sits behind a connection the pager then reports as degraded or as still
+        # materializing. Appended to the pages sentence, each said nothing at all
+        # in exactly those runs -- and for the retired count that is the
+        # invisibility it exists to end, since a soft delete leaves no trace in a
+        # page count: the rows simply stop appearing in every total.
+        if outcome.investments_pulled:
+            print("       investments: positions recorded")
+        if outcome.investment_transactions_removed:
+            print(
+                f"       investments: {outcome.investment_transactions_removed} "
+                f"transaction(s) are no longer reported and have been retired"
+            )
         if outcome.investments_window_short:
             # 🔴 Its own line rather than the pager's, which says "stopped at the
             # page ceiling" -- a ceiling this window may never have reached. The

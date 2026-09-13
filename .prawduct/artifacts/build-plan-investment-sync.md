@@ -196,8 +196,13 @@ fourth boundary, and the premise it corrects — that every arithmetic quantity 
 integer — is the one investments invalidated. VRF-014 is NOT drainable from a session: the MCP
 server outlives `/clear`, so the reachable one answers on whatever build the client launched
 (measured `efd64ad` against HEAD `7985a3b`), and only relaunching the client moves it.
-Next: `/prawduct:critic cumulative`, then wave 1's PR, then the mandatory re-read of chunks
-05-08 against what was built.
+Wave 1's `cumulative` review is done (`rev-20260913T021056Z-81d120ad`): 0 blocking, 5 warning,
+8 note — four warnings fixed, R-1 filed as #113 (a window archived but never reconciled leaves
+`store rebuild` refusing permanently; the refusal now names that cause even though the divergence
+is unfixed), R-9 accepted to #93. Three `verify-resolutions` rounds returned clean.
+Next: wave 1's PR — blocked only by the operator-verification queue, where VRF-014 needs the
+client relaunched and VRF-015/016 need production — then the mandatory re-read of chunks 05-08
+against what was built.
 
 ## The Program
 
@@ -454,6 +459,13 @@ Tests are the floor, and three things here are not testable from a fixture:
     reproduces a soft delete rather than undoing it
   - property tests: rebuild losslessness over generated holdings and investment
     transactions; money arithmetic over valuations at the rounding boundary
+    — 🔴 **generated for the window sequences and the rounding boundary; pinned by
+    named cases for holdings, deliberately.** A holdings capture's whole ordering
+    space is two-valued (the day's first capture is the one kept, and a replay
+    either meets it first or does not), so generating sequences over it ranges
+    over the same two orderings the two named cases already state, and states them
+    less legibly. If a later chunk gives holdings a second within-day rule, that
+    argument stops holding and the generator is owed.
   - an entry in `.prawduct/operator-verification.md` for the real-connection run, which is
     the operator's and cannot be done here
   - `docs/system-requirements.md` and `api-contract.md` updated to say build step 5 is

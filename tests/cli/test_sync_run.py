@@ -1532,6 +1532,39 @@ def test_until_ready_waits_the_configured_delay_between_attempts(cli_env: Config
 # --------------------------------------------------------------------------
 
 
+#: One connection's heading in the run report: two spaces, its id, two spaces,
+#: the institution. Matched rather than sliced at a fixed width, which a
+#: two-digit id already outgrows.
+_CONNECTION_HEADING = re.compile(r"^ {2}(\d+) {2}\S")
+
+
+def _per_connection(report: str) -> dict[str, str]:
+    """The report split into one block per connection, continuations included.
+
+    Every investments line is a continuation under the connection it belongs to,
+    so a test that read only the numbered line would pass whatever those said.
+
+    🔴 **The run-level summary belongs to no connection, and dropping it is what
+    makes a block's contents attributable.** It prints at column 0 and OPENS
+    WITH A COUNT -- "2 of 2 connections could not be synced" -- so a splitter
+    that took any leading digit would file it under connection 2 whenever two
+    connections ran, and an assertion written about that connection's own line
+    would be satisfied by a sentence about the run. Continuations are the lines
+    the renderer indents past the heading; anything less indented ends the block.
+    """
+    blocks: dict[str, str] = {}
+    current = ""
+    for line in report.splitlines():
+        heading = _CONNECTION_HEADING.match(line)
+        if heading:
+            current = heading.group(1)
+        elif not line.startswith("   "):
+            current = ""
+        if current:
+            blocks[current] = blocks.get(current, "") + line + "\n"
+    return blocks
+
+
 def _capable_connection(config: Config) -> str:
     """A second connection that reports it can serve investments."""
     return _enroll_a_second_connection(config, capabilities='["investments", "transactions"]')
@@ -1620,13 +1653,9 @@ def test_a_connection_that_cannot_serve_investments_is_not_said_to_have_recorded
 
     assert run(["sync", "run", "--no-wait"]) == 0
 
-    lines = {
-        line.split()[0]: line
-        for line in capsys.readouterr().out.splitlines()
-        if line.startswith("  ")
-    }
-    assert "positions recorded" not in lines["1"]
-    assert "positions recorded" in lines["2"]
+    reported = _per_connection(capsys.readouterr().out)
+    assert "positions recorded" not in reported["1"]
+    assert "positions recorded" in reported["2"]
 
 
 def test_a_second_run_the_same_day_leaves_the_positions_alone(cli_env: Config) -> None:
@@ -2743,4 +2772,53 @@ def test_a_complete_and_empty_window_retires_the_whole_window_and_says_so(
     assert all(row["removed_at"] is not None for row in rows), (
         "a window that came back complete and empty says every row in it has gone"
     )
-    assert "2 investment transaction(s) no longer reported" in capsys.readouterr().out
+    assert (
+        "2 transaction(s) are no longer reported" in _per_connection(capsys.readouterr().out)["2"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("branch", "marker", "code"),
+    [
+        ("materializing", "still being prepared", 75),
+        ("degraded", "the aggregator is unreachable", 1),
+    ],
+)
+def test_a_retired_investment_transaction_is_reported_whatever_branch_the_pager_takes(
+    cli_env: Config, capsys: pytest.CaptureFixture[str], branch: str, marker: str, code: int
+) -> None:
+    """🔴 The count has to survive the branch the pager takes afterwards.
+
+    `_pull_investments` runs BEFORE the page loop, so a window that reconciled
+    cleanly sits behind a connection the pager then reports as still preparing
+    its history, or as degraded. A soft delete leaves no trace in any total, so a
+    report that dropped the count in exactly those runs would leave the one
+    surface that names it silent whenever something else about the connection
+    also went wrong.
+
+    Both branches, because one of them passes against a report that suppresses
+    the other: the lines sit at the loop's level and nothing in the code
+    distinguishes the two, which is a claim a single case cannot make.
+    """
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page()]
+    FakeClient.investment_transaction_pages = [
+        _investment_transactions_body([_investment_txn("inv-1"), _investment_txn("inv-2")])
+    ]
+    assert run(["sync", "run", "--no-wait"]) == 0
+    capsys.readouterr()
+
+    FakeClient.investment_transaction_pages = [_investment_transactions_body([], total=0)]
+    if branch == "materializing":
+        FakeClient.pages = [_page(status="NOT_READY")]
+    else:
+        FakeClient.fail_with = TransportError(
+            "the aggregator is unreachable", endpoint=TRANSACTIONS_SYNC
+        )
+
+    assert run(["sync", "run", "--no-wait"]) == code
+
+    reported = _per_connection(capsys.readouterr().out)
+    assert marker in reported["2"], "the branch this test needs was not taken"
+    assert "2 transaction(s) are no longer reported" in reported["2"]
+    assert "positions recorded" in reported["2"]

@@ -480,7 +480,7 @@ pattern must change, change the claim, not the pattern, and say why here.
 
 `balance_history`, `net_worth`, `find_recurring` and `list_holdings` stay unbuilt — the owner's
 2026-09-08 ruling on #19/#20 excludes them, three are "analysis conveniences whose data is
-already in the datastore" and `list_holdings` waits on build step 5. **Nothing here moves
+already in the datastore" and `list_holdings` waits on the investments read tools. **Nothing here moves
 `mcp-production-readiness.md`'s go/no-go**: #22 (pending settlement), #23 (sign convention on a
 real inflow), multi-currency and closed accounts are the gate on real money, and this plan
 finishes the answer-scope cluster rather than that gate.

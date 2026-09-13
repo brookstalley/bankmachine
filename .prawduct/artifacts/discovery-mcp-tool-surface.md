@@ -104,7 +104,7 @@ property instead of on "relatedness", which is not checkable by anything.
 | transaction | `query_transactions` | alone | only windowed **and** capped tool |
 | group aggregate | `spending_summary`, `cashflow_summary` | **MERGE** | one strict row shape exists |
 | time-series point | `balance_history`, `net_worth` | **MERGE** | one strict row shape exists |
-| position | `list_holdings` | alone | blocked on build step 5 regardless |
+| position | `list_holdings` | alone | waits on the investments read tools regardless |
 | recurrence | `find_recurring` | alone | no other tool shares the shape |
 
 **Ten specified tools land at eight, with zero `outputSchema` loss** and both near-twin pairs
@@ -231,7 +231,7 @@ rule was stress-tested until it refused a merge that looked obvious.
 has not been written against the actual `balances_daily` read path, and the naming question is
 open.
 
-**Out of scope, unchanged:** `list_holdings` still waits on build step 5 (investment sync), and
+**Out of scope, unchanged:** `list_holdings` still waits on the investments read tools, and
 nothing here moves `mcp-production-readiness.md`'s go/no-go blockers (#22, #23, and the
 multi-currency, pending-settlement and closed-account preconditions). This norm orders the work; it
 does not change the verdict on real accounts.

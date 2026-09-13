@@ -787,6 +787,16 @@ def _record_connection(
         }
         if replaced_the_item:
             rewritten["granted_history_days"] = None
+            # 🔴 The connection's own success stamp goes with the domain rows
+            # below, because the health surface reads the two together and each
+            # alone would then say something the other denies. An empty
+            # `domains` array is published as NOTHING EVER ATTEMPTED, which is
+            # true of the new item -- and beside a `last_success_at` inherited
+            # from the item that was replaced, a client told to prefer the
+            # domain stamps finds none, falls back to the connection's, and
+            # reports figures as current for a history that is being refetched
+            # from zero.
+            rewritten["last_success_at"] = None
         conn.execute(
             update(connections)
             .where(connections.c.connection_id == connection_id)
