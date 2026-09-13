@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import delete, func, insert, select, update
 
 from bankmachine import envelope, mcp, query
 from bankmachine.config import Config
@@ -333,33 +333,30 @@ def _priced(payload: dict[str, Any], day: date) -> dict[str, Any]:
     return payload
 
 
-def _transactions_landed(config: Config, at: UtcInstant) -> None:
-    """The connection's TRANSACTIONS domain, last landed at `at`."""
+def _investments_attempted(
+    config: Config, at: UtcInstant, *, succeeded: bool = True, error: str | None = None
+) -> None:
+    """The connection's INVESTMENTS domain, last attempted at `at`, as one sync stamps it.
+
+    A succeeding attempt is stamped a moment after it began; a failing one keeps no
+    new success and carries `error`. The holdings reply is archived separately, by
+    `_seed`, at whatever instant the test gives it.
+    """
     with writer_connection(config) as conn:
         conn.execute(
-            insert(sync_state).values(
-                connection_id=1,
-                domain=TRANSACTIONS_DOMAIN,
-                last_attempt_at=at,
-                last_success_at=at,
-                updated_at=at,
+            delete(sync_state).where(
+                sync_state.c.connection_id == 1, sync_state.c.domain == INVESTMENTS_DOMAIN
             )
         )
-
-
-def _investments_landed(config: Config, at: UtcInstant | None, *, error: str | None = None) -> None:
-    """The connection's INVESTMENTS domain: last succeeded at `at`, last failed with `error`."""
-    attempted = CAPTURED if at is None else at
-    with writer_connection(config) as conn:
         conn.execute(
             insert(sync_state).values(
                 connection_id=1,
                 domain=INVESTMENTS_DOMAIN,
-                last_attempt_at=attempted,
-                last_success_at=at,
+                last_attempt_at=at,
+                last_success_at=utc_instant(at + timedelta(seconds=5)) if succeeded else None,
                 last_error_code=error,
-                last_error_at=None if error is None else attempted,
-                updated_at=attempted,
+                last_error_at=None if error is None else at,
+                updated_at=at,
             )
         )
 
@@ -440,63 +437,68 @@ def test_an_unknown_price_date_is_named_unknown_rather_than_treated_as_fresh(
 
 
 @pytest.mark.parametrize(
-    ("landed", "named"),
-    [(utc_instant(CAPTURED + timedelta(seconds=1)), False), (CAPTURED_LATER, True)],
+    ("attempted", "named"),
+    [(utc_instant(CAPTURED - timedelta(seconds=1)), False), (CAPTURED_LATER, True)],
 )
-def test_an_investments_feed_that_last_succeeded_before_its_transactions_landed_is_named(
-    enrolled: Config, landed: UtcInstant, named: bool
+def test_an_investments_attempt_that_brought_no_positions_back_is_named_a_stopped_feed(
+    enrolled: Config, attempted: UtcInstant, named: bool
 ) -> None:
-    """🔴 The investments feed stopped while the rest of the connection carried on.
+    """🔴 The feed stopped: its last attempt archived no holdings reply.
 
-    Read from the investments domain's own `sync_state` row. Prices are fresh
-    here, so only the feed can raise the warning. The control lands the
-    transactions a second AFTER the investments succeeded, which is how one sync
-    stamps the two domains on the real store: a comparison of instants rather
-    than days would name every healthy connection as stopped.
+    One sync attempts investments and archives the holdings reply a moment later,
+    so the control -- attempted a second before the reply -- is a working feed.
+    An attempt with nothing archived after it brought no positions back, and the
+    rows are the last ones seen.
     """
     _seed(enrolled, _priced(recorded(), CAPTURED.date()))
-    _investments_landed(enrolled, CAPTURED)
-    _transactions_landed(enrolled, landed)
+    _investments_attempted(enrolled, attempted, succeeded=not named)
 
     details = _warnings(enrolled, "positions_not_current")
 
     assert bool(details) is named
     if named:
         assert (
-            f"its connection's investments feed last succeeded {CAPTURED.date().isoformat()}, "
-            f"its transactions landed {CAPTURED_LATER.date().isoformat()})"
+            f"its connection's last investments attempt, {CAPTURED_LATER.date().isoformat()}, "
+            f"brought no positions back; the newest came {CAPTURED.date().isoformat()})"
         ) in details[0]
 
 
-def test_a_failed_investments_pull_is_named_as_a_stopped_feed_with_its_code(
-    enrolled: Config,
+@pytest.mark.parametrize(("failed_after_the_reply", "named"), [(True, False), (False, True)])
+def test_a_failed_investments_attempt_is_a_stopped_feed_only_when_it_brought_no_positions(
+    enrolled: Config, failed_after_the_reply: bool, named: bool
 ) -> None:
-    """A pull whose last attempt failed has stopped, whatever day it last succeeded."""
+    """A failure after the holdings reply landed is the trades' window, not the positions.
+
+    The positions that reply carried are the attempt's own, so they are current;
+    a failure before any reply leaves the rows as the last positions seen.
+    """
+    attempted = (
+        utc_instant(CAPTURED - timedelta(seconds=1)) if failed_after_the_reply else CAPTURED_LATER
+    )
     _seed(enrolled, _priced(recorded(), CAPTURED.date()))
-    _investments_landed(enrolled, CAPTURED, error="PRODUCT_NOT_READY")
-    _transactions_landed(enrolled, CAPTURED)
+    _investments_attempted(enrolled, attempted, succeeded=False, error="PRODUCT_NOT_READY")
 
     details = _warnings(enrolled, "positions_not_current")
 
-    assert len(details) == 1
-    assert (
-        f"its connection's last investments pull failed with PRODUCT_NOT_READY; it last "
-        f"succeeded {CAPTURED.date().isoformat()})"
-    ) in details[0]
+    assert bool(details) is named
+    if named:
+        assert "brought no positions back (it failed with PRODUCT_NOT_READY)" in details[0]
 
 
-def test_a_successful_pull_that_listed_no_position_is_not_called_a_stopped_feed(
+def test_a_pull_whose_reply_listed_no_position_is_not_called_a_stopped_feed(
     enrolled: Config,
 ) -> None:
-    """🔴 A pull that succeeds and lists nothing writes no row, and its feed is working.
+    """🔴 A reply that lists nothing writes no row, and its feed is working.
 
-    By capture dates alone, the account's newest capture sits behind the day its
-    transactions landed and the feed reads as stopped. Its own domain says the
-    pull succeeded that day, so the positions are named as possibly gone instead.
+    By capture dates alone the account's newest capture sits behind a later sync
+    and the feed reads as stopped. The archived reply says the pull came back,
+    listing nothing, so the positions are named as possibly gone instead.
     """
     _seed(enrolled, _priced(recorded(), CAPTURED.date()))
-    _investments_landed(enrolled, CAPTURED_LATER)
-    _transactions_landed(enrolled, CAPTURED_LATER)
+    listing_nothing = _priced(recorded(), CAPTURED_LATER.date())
+    listing_nothing["holdings"] = []
+    _investments_attempted(enrolled, utc_instant(CAPTURED_LATER - timedelta(seconds=1)))
+    _seed(enrolled, listing_nothing, CAPTURED_LATER)
 
     details = _warnings(enrolled, "positions_not_current")
 
@@ -506,6 +508,50 @@ def test_a_successful_pull_that_listed_no_position_is_not_called_a_stopped_feed(
         f"its connection's newest investments pull, {CAPTURED_LATER.date().isoformat()}, "
         f"listed none for it)"
     ) in details[0], "the pull that listed nothing went unsaid"
+
+
+MIDNIGHT = utc_instant(datetime(2026, 9, 11, 0, 0, tzinfo=UTC))
+
+
+@pytest.mark.parametrize(
+    "offsets",
+    [
+        # The holdings reply before midnight, the investments stamp after it.
+        (-3, -2, 1, 2, 3),
+        # The reply and the investments stamp before it, the transactions after.
+        (-4, -3, -2, 1, 2),
+    ],
+)
+def test_a_sync_that_crosses_midnight_utc_names_no_position_as_not_current(
+    enrolled: Config, offsets: tuple[int, int, int, int, int]
+) -> None:
+    """🔴 Any two instants of one sync can fall on different UTC days.
+
+    One sync attempts investments, archives the holdings reply, stamps the domain,
+    then attempts and stamps transactions -- seconds apart, in that order. Days
+    taken from two of those instants named a working feed stopped, or every
+    account left out of a newer pull, until the next sync.
+    """
+    attempted, replied, succeeded, tx_attempted, tx_succeeded = (
+        utc_instant(MIDNIGHT + timedelta(seconds=offset)) for offset in offsets
+    )
+    _seed(enrolled, _priced(recorded(), replied.date()), replied)
+    with writer_connection(enrolled) as conn:
+        for domain, tried, landed in (
+            (INVESTMENTS_DOMAIN, attempted, succeeded),
+            (TRANSACTIONS_DOMAIN, tx_attempted, tx_succeeded),
+        ):
+            conn.execute(
+                insert(sync_state).values(
+                    connection_id=1,
+                    domain=domain,
+                    last_attempt_at=tried,
+                    last_success_at=landed,
+                    updated_at=landed,
+                )
+            )
+
+    assert _warnings(enrolled, "positions_not_current") == []
 
 
 def test_a_refused_position_is_named_under_rule_applied_and_absent_from_the_rows(
@@ -692,22 +738,24 @@ def test_a_days_first_capture_recording_a_position_is_not_named_absent(enrolled:
 
 
 def _left_behind_by_a_newer_capture(
-    config: Config, *, transactions_landed: UtcInstant = CAPTURED_LATER
+    config: Config, *, attempted_again: UtcInstant | None = None
 ) -> set[int]:
     """Two captures of one connection, the newer listing only one account's positions.
 
-    Prices are fresh on both days and, by default, the transactions land with the
-    newer capture, so the only thing old about the other account is that the
-    newer capture listed nothing for it. Returns that account's ids.
+    Prices are fresh on both days and the newer capture's attempt archived its
+    reply, so the only thing old about the other account is that the newer capture
+    listed nothing for it. `attempted_again` adds a later attempt that brought no
+    reply back. Returns the left-out account's ids.
     """
     earlier = _priced(recorded(), CAPTURED.date())
     _seed(config, earlier)
     moved = earlier["holdings"][0]["account_id"]
     later = _priced(copy.deepcopy(earlier), CAPTURED_LATER.date())
     later["holdings"] = [h for h in later["holdings"] if h["account_id"] == moved]
+    _investments_attempted(config, utc_instant(CAPTURED_LATER - timedelta(seconds=1)))
     _seed(config, later, CAPTURED_LATER)
-    _investments_landed(config, CAPTURED_LATER)
-    _transactions_landed(config, transactions_landed)
+    if attempted_again is not None:
+        _investments_attempted(config, attempted_again, succeeded=False)
     left = {
         row["account_id"]
         for row in query.list_holdings(config).rows
@@ -741,15 +789,14 @@ def test_an_account_left_out_of_a_newer_capture_is_not_blamed_on_the_feed(
 def test_an_account_left_out_of_a_newer_capture_that_is_itself_behind_is_named_for_both(
     enrolled: Config,
 ) -> None:
-    """🔴 Left out of a newer capture, on a connection whose newest capture is ITSELF behind.
+    """🔴 Left out of a newer capture, on a connection whose feed has since stopped.
 
     Both facts hold. Saying only that a newer capture listed nothing for it --
-    "the feed is working" -- is false here: the transactions landed after every
-    capture, so the investments feed has stopped as well, and the account's
-    positions may be gone OR merely unseen.
+    "the feed is working" -- is false here: a later attempt brought no reply back,
+    so the account's positions may be gone OR merely unseen.
     """
-    landed = utc_instant(CAPTURED_LATER + timedelta(days=2))
-    left = _left_behind_by_a_newer_capture(enrolled, transactions_landed=landed)
+    again = utc_instant(CAPTURED_LATER + timedelta(days=2))
+    left = _left_behind_by_a_newer_capture(enrolled, attempted_again=again)
 
     details = _warnings(enrolled, "positions_not_current")
 
@@ -760,9 +807,9 @@ def test_an_account_left_out_of_a_newer_capture_that_is_itself_behind_is_named_f
             f"investments pull, {CAPTURED_LATER.date().isoformat()}, listed none for it)"
         ) in details[0]
         assert (
-            f"{account_id} (captured {CAPTURED.date().isoformat()}; its connection's investments "
-            f"feed last succeeded {CAPTURED_LATER.date().isoformat()}, its transactions landed "
-            f"{landed.date().isoformat()})"
+            f"{account_id} (captured {CAPTURED.date().isoformat()}; its connection's last "
+            f"investments attempt, {again.date().isoformat()}, brought no positions back; the "
+            f"newest came {CAPTURED_LATER.date().isoformat()})"
         ) in details[0], "the stopped feed went unsaid for an account a newer capture left out"
     assert "The feed is working" not in details[0], "a stopped feed was called a working one"
 

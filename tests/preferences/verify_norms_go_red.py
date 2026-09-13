@@ -1703,13 +1703,12 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "test_an_unknown_price_date_is_named_unknown_rather_than_treated_as_fresh",
     ),
     (
-        "positions_not_current: a feed that last succeeded before its transactions is stopped",
+        "positions_not_current: an attempt that brought no reply back is a stopped feed",
         QUERY,
-        "        return self.landed is not None and "
-        "(self.pulled is None or self.pulled < self.landed)",
-        "        return self.landed is not None",
+        "self.replied is None or self.replied < self.attempted",
+        "self.replied is None",
         f"{HOLDINGS_TESTS}::"
-        "test_an_investments_feed_that_last_succeeded_before_its_transactions_landed_is_named",
+        "test_an_investments_attempt_that_brought_no_positions_back_is_named_a_stopped_feed",
     ),
     (
         # The property and its call site are the two halves; each needs its own break.
@@ -1718,34 +1717,40 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "            if feed is not None and feed.stopped:",
         "            if False:",
         f"{HOLDINGS_TESTS}::"
-        "test_an_investments_feed_that_last_succeeded_before_its_transactions_landed_is_named",
+        "test_an_investments_attempt_that_brought_no_positions_back_is_named_a_stopped_feed",
     ),
     (
-        # One sync stamps investments a moment before transactions; instants would
-        # name every healthy connection stopped.
-        "positions_not_current: the feeds are compared in calendar days, never instants",
+        # A failure after the reply landed is the trades' window, not the positions.
+        "positions_not_current: a failure after the reply landed is not a stopped feed",
         QUERY,
-        "        return None if success is None else calendar_date(utc_instant(success).date())",
-        "        return None if success is None else utc_instant(success)",
+        "        return self.attempted is not None and (",
+        "        if self.error is not None:\n"
+        "            return True\n"
+        "        return self.attempted is not None and (",
         f"{HOLDINGS_TESTS}::"
-        "test_an_investments_feed_that_last_succeeded_before_its_transactions_landed_is_named",
+        "test_a_failed_investments_attempt_is_a_stopped_feed_only_when_it_brought_no_positions",
     ),
     (
-        "positions_not_current: a failed investments pull is a stopped feed",
+        # Any two instants of one sync can straddle midnight UTC; a capture day is
+        # compared with the reply's own day, never with the domain's success stamp.
+        "positions_not_current: a capture is compared with the reply's own day",
         QUERY,
-        "        if self.error is not None:\n            return True",
-        "        if False:\n            return True",
-        f"{HOLDINGS_TESTS}::test_a_failed_investments_pull_is_named_as_a_stopped_feed_with_its_code",
+        "                replied = None if feed is None else feed.replied_day\n",
+        "                replied = (\n"
+        "                    None\n"
+        "                    if feed is None or feed.succeeded is None\n"
+        "                    else calendar_date(feed.succeeded.date())\n"
+        "                )\n",
+        f"{HOLDINGS_TESTS}::test_a_sync_that_crosses_midnight_utc_names_no_position_as_not_current",
     ),
     (
-        # A successful pull listing no position writes no row; read from capture
-        # dates it looked like a stopped feed.
-        "positions_not_current: a successful pull that listed nothing is a newer capture",
+        # A reply listing no position writes no row; it is still a newer capture.
+        "positions_not_current: a reply that listed nothing is a newer capture",
         QUERY,
-        "captured if pulled is None else pulled,",
+        "captured if replied is None else replied,",
         "captured,",
         f"{HOLDINGS_TESTS}::"
-        "test_a_successful_pull_that_listed_no_position_is_not_called_a_stopped_feed",
+        "test_a_pull_whose_reply_listed_no_position_is_not_called_a_stopped_feed",
     ),
     (
         # Whether the feed stopped is the connection's fact, so an account a newer

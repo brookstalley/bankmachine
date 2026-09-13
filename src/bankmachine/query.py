@@ -35,6 +35,7 @@ from sqlalchemy.sql import ColumnElement
 
 from bankmachine import signs
 from bankmachine.config import Config
+from bankmachine.connector import INVESTMENTS_HOLDINGS_GET
 from bankmachine.envelope import (
     MAX_ROWS,
     STALE_AFTER,
@@ -68,6 +69,7 @@ from bankmachine.store.schema import (
     connections,
     holdings,
     institutions,
+    raw_responses,
     refused_holdings,
     securities,
     sync_state,
@@ -2107,59 +2109,84 @@ POSITION_PRICE_STALE_AFTER = timedelta(days=4)
 
 @dataclass(frozen=True, slots=True)
 class InvestmentFeed:
-    """One connection's investments domain, as its own `sync_state` row records it.
+    """One connection's investments feed: its domain's own record and its newest reply.
 
-    Calendar days, the unit the holdings append rule keeps a position in: within
-    one sync the investments domain is stamped a fraction of a second BEFORE the
-    transactions domain (measured on the sandbox store), so comparing instants
-    would name every healthy connection as stopped.
+    🔴 **Every comparison is between facts one pull wrote about itself, never
+    between the calendar days of separate stamps.** One sync attempts investments,
+    archives the holdings reply, stamps the domain, and only then attempts and
+    stamps transactions (the order `sync run` takes, measured on the sandbox
+    store). Any two of those instants can straddle midnight UTC, and days taken
+    from two of them named a working feed stopped, or every account left out of a
+    newer pull, until the next sync.
     """
 
-    pulled: CalendarDate | None
-    landed: CalendarDate | None
+    attempted: UtcInstant | None
+    succeeded: UtcInstant | None
+    replied: UtcInstant | None
     error: str | None
 
     @property
     def stopped(self) -> bool:
-        """Its last attempt failed, or it last succeeded before the transactions last landed."""
-        if self.error is not None:
-            return True
-        return self.landed is not None and (self.pulled is None or self.pulled < self.landed)
+        """Its last attempt brought no holdings reply back.
+
+        A reply archived after the attempt began IS that attempt's positions, so
+        a failure after it -- the trades' window, not the positions -- and a
+        window that merely came back short are not a stopped feed.
+        """
+        return self.attempted is not None and (
+            self.replied is None or self.replied < self.attempted
+        )
+
+    @property
+    def replied_day(self) -> CalendarDate | None:
+        """The newest reply's day, on the clock `holdings.as_of_date` keys a capture by."""
+        return None if self.replied is None else calendar_date(self.replied.date())
 
 
 def _investment_feeds(conn: SAConnection) -> dict[int, InvestmentFeed]:
-    """Every connection with an investments domain, keyed by connection.
+    """Every connection with an investments domain row or an archived holdings reply.
 
-    🔴 **Whether a feed stopped is read from the domain's own record, never from
-    capture dates.** A successful pull that lists no position writes no holdings
-    row, so a connection's newest capture can sit days behind a feed that works;
-    reading the capture date would name it stopped. `last_success_at` and
-    `last_error_code` are what the sync writes about the pull itself.
+    🔴 **A reply is read from the archive, not inferred from positions.** A pull
+    that lists no position writes no holdings row, so the newest capture can sit
+    days behind a feed that works; the archived reply is there either way, and
+    its `received_at` is the instant the capture day is taken from.
     """
-    domains: dict[tuple[int, str], tuple[Any, str | None]] = {
-        (int(connection_id), str(domain)): (success, error)
-        for connection_id, domain, success, error in conn.execute(
+    domains: dict[int, tuple[Any, Any, str | None]] = {
+        int(connection_id): (attempted, succeeded, error)
+        for connection_id, attempted, succeeded, error in conn.execute(
             select(
                 sync_state.c.connection_id,
-                sync_state.c.domain,
+                sync_state.c.last_attempt_at,
                 sync_state.c.last_success_at,
                 sync_state.c.last_error_code,
-            ).where(sync_state.c.domain.in_((INVESTMENTS_DOMAIN, TRANSACTIONS_DOMAIN)))
+            ).where(sync_state.c.domain == INVESTMENTS_DOMAIN)
+        ).all()
+    }
+    replies: dict[int, Any] = {
+        int(connection_id): received
+        for connection_id, received in conn.execute(
+            select(raw_responses.c.connection_id, func.max(raw_responses.c.received_at))
+            .where(
+                raw_responses.c.endpoint == INVESTMENTS_HOLDINGS_GET.path,
+                raw_responses.c.connection_id.is_not(None),
+            )
+            .group_by(raw_responses.c.connection_id)
         ).all()
     }
 
-    def day(success: Any) -> CalendarDate | None:
-        return None if success is None else calendar_date(utc_instant(success).date())
+    def instant(value: Any) -> UtcInstant | None:
+        return None if value is None else utc_instant(value)
 
-    return {
-        connection_id: InvestmentFeed(
-            pulled=day(success),
-            landed=day(domains.get((connection_id, TRANSACTIONS_DOMAIN), (None, None))[0]),
+    feeds: dict[int, InvestmentFeed] = {}
+    for connection_id in domains.keys() | replies.keys():
+        attempted, succeeded, error = domains.get(connection_id, (None, None, None))
+        feeds[connection_id] = InvestmentFeed(
+            attempted=instant(attempted),
+            succeeded=instant(succeeded),
+            replied=instant(replies.get(connection_id)),
             error=error,
         )
-        for (connection_id, domain), (success, error) in domains.items()
-        if domain == INVESTMENTS_DOMAIN
-    }
+    return feeds
 
 
 def _holdings_totals(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2222,8 +2249,8 @@ def _positions_not_current_caveat(
     apart is the point.** The aggregator's holdings reply covers the whole
     connection, so an account behind its OWN connection's newest pull was listed
     with no position in it: it may hold nothing now, and the feed is working.
-    Only when the connection's investments DOMAIN last failed, or last succeeded
-    before its transactions last landed, has the investments feed stopped. Naming
+    Only when the connection's last investments attempt brought no holdings reply
+    back has the investments feed stopped. Naming
     the first as the second sends a reader to repair a sync that works. A
     non-active account is in neither -- the caller leaves it to
     `account_no_longer_active`, which already says why its captures stopped.
@@ -2232,9 +2259,9 @@ def _positions_not_current_caveat(
     about, so its absence says every position here was priced within the
     threshold of a capture no older than its connection's other data.
 
-    🔴 The capture comparisons are in calendar days, the unit the append rule
-    keeps a position in, so a sync straddling midnight UTC can name an account
-    once when its transactions land on the next day. The next capture clears it.
+    🔴 A capture day is compared only with the day of an archived holdings reply,
+    the clock `as_of_date` is keyed on, and a stopped feed only with its own
+    domain's last attempt, so a sync straddling midnight UTC names nothing.
     """
     parts: list[str] = []
     if old_prices:
@@ -2287,16 +2314,12 @@ def _positions_not_current_caveat(
     if stopped_feed:
 
         def why(feed: InvestmentFeed) -> str:
-            pulled = "never" if feed.pulled is None else feed.pulled.isoformat()
-            if feed.error is not None:
-                return (
-                    f"its connection's last investments pull failed with {feed.error}; it last "
-                    f"succeeded {pulled}"
-                )
-            landed = "never" if feed.landed is None else feed.landed.isoformat()
+            attempted = "never" if feed.attempted is None else feed.attempted.date().isoformat()
+            replied = "never" if feed.replied_day is None else feed.replied_day.isoformat()
+            failed = "" if feed.error is None else f" (it failed with {feed.error})"
             return (
-                f"its connection's investments feed last succeeded {pulled}, its transactions "
-                f"landed {landed}"
+                f"its connection's last investments attempt, {attempted}, brought no positions "
+                f"back{failed}; the newest came {replied}"
             )
 
         named = ", ".join(
@@ -2419,12 +2442,6 @@ def list_holdings(config: Config) -> Answer:
             .group_by(captured_days.c.account_id)
             .subquery()
         )
-        latest = {
-            int(account_id): calendar_date(day)
-            for account_id, day in conn.execute(
-                select(newest.c.account_id, newest.c.as_of_date)
-            ).all()
-        }
         result = conn.execute(
             select(
                 holdings.c.account_id,
@@ -2458,22 +2475,29 @@ def list_holdings(config: Config) -> Answer:
                 holdings.c.security_id,
             )
         ).all()
+        refusals = conn.execute(
+            select(
+                refused_holdings.c.account_id,
+                refused_holdings.c.security_id,
+                refused_holdings.c.currency,
+                refused_holdings.c.as_of_date,
+            ).select_from(
+                refused_holdings.join(
+                    newest,
+                    (newest.c.account_id == refused_holdings.c.account_id)
+                    & (newest.c.as_of_date == refused_holdings.c.as_of_date),
+                )
+            )
+        ).all()
         refused: list[tuple[int, int, str | None]] = [
             (int(account_id), int(security_id), currency)
-            for account_id, security_id, currency in conn.execute(
-                select(
-                    refused_holdings.c.account_id,
-                    refused_holdings.c.security_id,
-                    refused_holdings.c.currency,
-                ).select_from(
-                    refused_holdings.join(
-                        newest,
-                        (newest.c.account_id == refused_holdings.c.account_id)
-                        & (newest.c.as_of_date == refused_holdings.c.as_of_date),
-                    )
-                )
-            ).all()
+            for account_id, security_id, currency, _ in refusals
         ]
+        # 🔴 Each account's newest day, from the rows and refusals this answer
+        # serves rather than a read of its own: a sync landing between two reads
+        # would leave the warnings judging a different day than the rows.
+        latest: dict[int, CalendarDate] = {int(r[0]): calendar_date(r[10]) for r in result}
+        latest |= {int(account_id): calendar_date(day) for account_id, _, _, day in refusals}
         lifecycle = _account_lifecycle(conn)
         rows: list[dict[str, Any]] = []
         old_prices: dict[int, tuple[int, CalendarDate]] = {}
@@ -2513,18 +2537,20 @@ def list_holdings(config: Config) -> Answer:
             )
         feeds = _investment_feeds(conn)
         # Each connection's newest holdings capture across every account it holds,
-        # or the day its investments pull last succeeded if that is later: a
-        # successful pull that listed no position for an account writes no row,
-        # and is still a newer capture that left the account out.
+        # or the day of its newest archived holdings reply if that is later: a
+        # reply that listed no position for an account writes no row, and is still
+        # a newer capture that left the account out. Both days come from a reply's
+        # own `received_at`, so they cannot straddle midnight against each other.
         connection_newest: dict[int, CalendarDate] = {}
         for account_id, captured in latest.items():
             connection_id = lifecycle[account_id].connection_id
             if connection_id is not None:
-                pulled = feeds[connection_id].pulled if connection_id in feeds else None
+                feed = feeds.get(connection_id)
+                replied = None if feed is None else feed.replied_day
                 connection_newest[connection_id] = max(
                     captured,
                     connection_newest.get(connection_id, captured),
-                    captured if pulled is None else pulled,
+                    captured if replied is None else replied,
                 )
         left_behind: dict[int, tuple[CalendarDate, CalendarDate]] = {}
         stopped_feed: dict[int, tuple[CalendarDate, InvestmentFeed]] = {}
@@ -2910,7 +2936,7 @@ def balance_history(
             None
             if last is None
             else SeriesCursor.issued_for(
-                day=date.fromordinal(-last[0][0]),
+                day=date.fromisoformat(last[1]["date"]),
                 row_account_id=last[1]["account_id"],
                 currency=last[1]["currency"],
                 since=since,

@@ -29,10 +29,10 @@ obeys reduces to that one column. `store rebuild` classifies the table as
 rebuildable by that foreign key, with nothing to register.
 
 **The holdings append rule applies unchanged**: one record per account, security
-and capture day, and the first capture of the day keeps it. A capture later the
-same day that DOES record the position writes its holding beside this record
-rather than removing it -- each table keeps its own first capture, which is what
-lets a replay land on the same rows in either order.
+and capture day, and the first capture of the day keeps it. That day is ONE key
+across this table and `holdings` -- the deriver claims it in both at once
+(`derivers._position_keys`), so a day records a position or its refusal, never
+both, whichever order a replay meets the captures in.
 
 🔴 **Empty on arrival, with no backfill.** A migration cannot know which archived
 positions a build refused, so `bankmachine store rebuild` fills the table from

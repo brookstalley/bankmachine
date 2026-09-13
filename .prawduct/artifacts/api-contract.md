@@ -377,8 +377,9 @@ Every tool is safe and idempotent, trivially — nothing writes.
 > holdings total DECOMPOSES the balances net worth already counts and is never added to them.**
 > Net worth reads the balance series alone, and a test holds it unmoved by any positions. A
 > position's day is claimed across `holdings` and `refused_holdings` at write time, so the two
-> tables never share a key. `positions_not_current` now reads "stopped" from the investments
-> domain's own `sync_state`, never from capture dates.
+> tables never share a key. `positions_not_current` reads "stopped" from the investments
+> domain's last attempt and its newest archived holdings reply, never from calendar days of separate
+> stamps, which a sync crossing midnight UTC splits.
 
 🔴 **Two of these eight are the verification surface, not the analysis surface.** `get_pipeline_health`
 and `get_coverage_report` exist so the analyst agent can **establish completeness *before* answering**.
@@ -1213,7 +1214,7 @@ three-week-old hole in the data and answer confidently.
 | `counted_during_change` | A write landed between the row read and the count read, so the two describe moments a fraction apart |
 | `accounts_without_coverage` | An account in the scope of THIS request has never had a transaction recorded, so its empty result means data not present, never no activity. It speaks for the TRANSACTIONS feed only: an investment account's trades and positions are not counted, so an account holding positions can carry it |
 | `account_no_longer_active` | An account in the scope of THIS request is closed or is no longer listed by its institution, so its balance is frozen as of the date beside it and is not a fact about today |
-| `positions_not_current` | A position in THIS answer is not a current value: its price is more than four calendar days older than the day it was captured, its price date is unknown, a newer investments pull of its connection listed no position for its account (which may hold none of it now), or the connection's investments feed has stopped: its own `sync_state` shows a failed last pull, or a last success on a day before its transactions landed. `detail` keeps the four apart and names the accounts; a null price date is unknown, never recent |
+| `positions_not_current` | A position in THIS answer is not a current value: its price is more than four calendar days older than the day it was captured, its price date is unknown, a newer investments pull of its connection listed no position for its account (which may hold none of it now), or the connection's investments feed has stopped: its last investments attempt brought no holdings reply back. `detail` keeps the four apart and names the accounts; a null price date is unknown, never recent |
 | `includes_pending_rows` | This answer's rows include authorisation holds that have not settled, so a figure computed from it may change without any new activity |
 | `roster_observed_empty` | A connection contributing to THIS request had its roster read successfully and it listed no accounts at all. Every account on that connection is separately marked `no_longer_reported`; this kind is the connection-level anomaly beside that account-level truth, and it is what distinguishes a whole household closing its accounts from a feed that returns success and no rows |
 | `sign_convention_unverified` | This answer draws on a connection whose stored sign distribution was measured and found INVERTED relative to the operator-signed convention, so its amounts run the wrong way. 🔴 It does not fire for a merely unconfirmed connection — see the note below the table |

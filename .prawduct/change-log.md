@@ -64,7 +64,9 @@ figure.
 - **Five review findings carried from Chunk 07:**
   - **R-1:** the balance-history cursor is walked through the MCP boundary, with cross-tool refusal.
   - **R-2:** completeness is judged for every currency on every captured day.
-  - **R-3:** "stopped" is read from the investments domain's own `sync_state`, in calendar days.
+  - **R-3:** "stopped" means the last investments attempt archived no holdings reply, and a
+    left-out account is judged against the newest archived reply's own day, so a sync crossing
+    midnight UTC names nothing.
   - **R-4:** a position's day is claimed across `holdings` and `refused_holdings` at write time
     (`DERIVATION_VERSION` 11), so `list_holdings` no longer tie-breaks two tables.
   - **R-5:** `SeriesCursor.position()` delegates to `series_position`.

@@ -742,7 +742,7 @@ Tests are the floor, and three things here are not testable from a fixture:
 - **Deliverables:**
   - 🔴 **the double-count guard, and it is the finding this plan most wants on the record.**
     The contract says the series has "investments included" — and an investment account's
-    value is **already in `balances_daily`**, because `/accounts/get` reports a brokerage
+    value is **already in `balances_daily`**, because the aggregator's accounts-get endpoint reports a brokerage
     account's `current` balance like any other account's (wave 1 measured a sandbox 401k at
     23631.9805 there). `holdings` **decomposes** that balance; it does not add to it. Summing
     both counts the same money twice. This project has already shipped an exactly-2× total
@@ -812,6 +812,16 @@ Tests are the floor, and three things here are not testable from a fixture:
       is a wrong number with no signal; and refused positions, which have no minor units to add and are
       already named under `rule-applied`. `mcp._output_schema`'s existing `totals` flag carries it, so
       no fourth conditional envelope key arrives. R-4 is what lets the block read one table
+    - `[DECISION: a stopped investments feed is one whose last attempt archived no holdings reply, and a
+      left-out account is judged against the newest archived reply's day | taken in the cumulative
+      review's fix pass, 2026-09-13 | refines R-3's wording above | user can veto]`. The review found
+      that R-3 as worded compared the calendar days of separate stamps of one sync, and any two of
+      them can straddle midnight UTC. That named a working feed stopped, or every account left out,
+      until the next sync. `sync run` attempts investments, archives the holdings reply, stamps the
+      domain, then attempts transactions (measured on the sandbox store), so a reply archived after
+      the attempt began is that attempt's positions. That makes the rule exact, with no calendar days.
+      Two refinements follow: a failure after the reply landed is the trades' problem, not the
+      positions', and a window that merely came back short is not a stopped feed.
 - **Tests:** integration — a store holding a closed brokerage account reports the total, the
   count and the contributed magnitude, and the guard is seen red **with the magnitude
   removed**, not merely with the flag flipped (that is the condition the norm set for its own

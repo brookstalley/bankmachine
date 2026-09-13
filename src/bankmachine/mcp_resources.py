@@ -312,8 +312,7 @@ _GUIDANCE: dict[str, _Guidance] = {
             "apart: its price is more than four calendar days older than the day it was "
             "captured; its price date is UNKNOWN; a newer capture of its connection listed no "
             "position for its account, which may hold none of it now; or the connection's "
-            "investments feed has stopped: its last pull failed, or last succeeded on a day "
-            "before its transactions landed"
+            "investments feed has stopped: its last attempt brought no holdings reply back"
         ),
         for_this_answer=(
             "`market_value_minor_units` on those rows is the price as of `price_as_of` times "
