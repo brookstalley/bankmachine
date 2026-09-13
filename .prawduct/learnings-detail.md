@@ -225,3 +225,68 @@ now asserts no transaction landed, which is only true if the loop really did ret
 When a test's setup names a string, a token or a status the production code branches on, spell
 it from the constant (`sync_run.NOT_READY`) rather than by hand; a near-miss spelling is a
 fixture that silently covers a different path.
+
+---
+
+## A refactor is judged by what the old code stopped doing, not by what the new code does: enumerate the branches the replaced expression had, and name where each one went
+
+**When you replace an expression with a call to a shared helper, list every branch the old
+expression could take and say where each one lands in the new one — because a helper that
+answers the same question for a different purpose will silently swallow a case, and the tell is
+that you checked the new code's behaviour rather than the old code's coverage.**
+
+The two shapes that hide it: a predicate that returns the same value for two *different reasons*
+(so folding a case into it loses the case while keeping the answer), and a default argument
+added for convenience (so an omitted argument reads as a choice nobody made).
+
+**Instances:**
+
+- *2026-09-12, the investments page loop.* The exit was
+  `page_rows == 0 or stated_total is None or rows_seen >= stated_total`. Routing it through the
+  new shared `window_is_exhausted(rows_seen, stated_total)` dropped the middle clause, because
+  that function answers False for a null total *for its own good reason*: nothing can be
+  concluded about what is missing from an unmeasured window. But "nothing can be concluded" and
+  "keep fetching" are opposite instructions. A single reply carrying one row and no
+  `total_investment_transactions` was then fetched to the 500-page ceiling — measured at 4.4
+  seconds of fake calls in a test that had asserted only the exit code and stayed green. The
+  existing test could not see it: it asserted the outcome, and every extra call produced the
+  same outcome. The guard that sees it asserts the *offsets*.
+- *Same day, `rebuild(replay_passes=...)`.* Shipped with a default so the eleven existing test
+  call sites would not have to change. `boundary-patterns.md` already records `derivers` losing
+  its default for this exact reason, and the Critic found the entry I had walked past — omitting
+  `derivers` fails loudly, while omitting the passes fails *silently*: the rebuild runs, clears
+  every soft delete, and reports success. **The convenience I was buying was not having to touch
+  eleven call sites, and the thing it bought instead was eleven call sites exercising a
+  configuration production never runs.**
+
+**How to apply:** when a diff replaces a boolean expression, write the old clauses down and tick
+them off against the new one. When it adds a defaulted parameter, ask what happens to a caller
+that omits it — and if the answer is "silently wrong", it is not a default, it is a trap.
+
+---
+
+## A fixture built from the mechanism you are reasoning about cannot tell apart the worlds your reasoning separates: reproduce the state the real producer leaves, not the state your helper leaves
+
+**When a design decision rests on "state X would differ from state Y", build the guard from what
+the PRODUCER of that state actually writes — because a test helper written from your own
+reasoning writes the state your reasoning assumes, and the mutation you run to check the guard
+then comes back green in both worlds.**
+
+This is the sibling of "a fixture that cannot reach the subject": there the fixture never gets
+to the branch, here it gets there and carries inputs that make the two branches agree.
+
+**Instances:**
+
+- *2026-09-12, moving `record_domain_history_start` out of `store.investments`.* The argument
+  was that a rebuild re-running the window reconciliation must not restate a domain's progress,
+  because the sync stamps `last_success_at` from the clock *after* the window concludes — so a
+  replay would rewind `sync_state.updated_at` to the archive's instant and the content digest
+  would refuse a rebuild that had reproduced every row correctly. Mutating the write back into
+  the store function left the entire store-level suite green. The fixture recorded the range at
+  the same instant the reconciliation concluded, so replaying it wrote a byte-identical row: the
+  helper had never produced the divergence the argument was about. Only a test that ran
+  `sync run` — the real producer of that state — reddened, and three of them now do.
+
+**How to apply:** when the reasoning names a producer ("the sync stamps this", "the scheduler
+writes that"), the guard runs the producer. A helper that stands in for it is fine for the
+*neighbouring* assertions and is worthless for the one the reasoning is about.
