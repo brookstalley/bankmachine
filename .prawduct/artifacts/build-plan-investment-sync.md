@@ -46,7 +46,7 @@ governed_by:
       - "No filesystem path is hardcoded → conforms"
       - "A backup destination is never created implicitly and never overwritten → inapplicable because this plan touches no backup path"
       - "🔴 `bankmachine store rebuild` after step 5 if any connection is not syncing (§ the operational note this plan discharges) → conforms and is the reason Chunk 04 exists. The spec already warns that a rebuild is owed once investments land; this plan makes the replay a tested property rather than an instruction the operator has to remember"
-partition: serial, and examined per wave rather than once. Wave 1 (01–04): every chunk writes into `connector/plaid/derivers.py` and `cli/sync_run.py`, and 03 widens the same `query.py` domain filters that 01 and 02 create rows behind — two delegates collide in all three files on their first commit. Waves 2–3 (05–08) look parallelizable and are not: 05 and 07 both add a definition to the one `_tool_definitions()` function, 06 and 08 both touch the warning vocabulary and the instructions primer that a budget test holds, and every wave depends on the one before it for its fixtures. The wall-clock saving is smaller than the merge in all three cases
+partition: serial, and examined per wave rather than once. Wave 1 (01–04): every chunk writes into `connector/plaid/derivers.py` and `cli/sync_run.py`, and 03 widens the same `query.py` domain filters that 01 and 02 create rows behind — two delegates collide in all three files on their first commit. Waves 2–3 (05–08) look parallelizable and are not: 05 and 07 both add a definition to the one `_tool_definitions()` function, 06 and 08 both touch the warning vocabulary and the instructions primer that a budget test holds, and every wave depends on the one before it for its fixtures. The wall-clock saving is smaller than the merge in all three cases. Chunks 09–10: serial — 10 edits `query.py`, whose shape 09 changes, and both re-point cases in `verify_norms_go_red.py`, which must run alone
 last_validated: 2026-09-12
 ---
 
@@ -175,6 +175,8 @@ waves 2–3 that is **not** Medium: it was derived and argued in
 - [x] Chunk 06: What a holdings answer must disclose about itself
 - [x] Chunk 07: `balance_history` — one series, read two ways
 - [x] Chunk 08: Net worth, and the two ways it can be quietly wrong
+- [ ] Chunk 09: Holdings and the balance series leave `query.py` (a pure move, #115)
+- [ ] Chunk 10: An investment account's activity counts as coverage (#107)
 
 Context: Wave 1 (chunks 01-04) merged to `develop` as PR #114 on 2026-09-13; the branch
 continues. VRF-020/021 (production-only) are re-raised and pending, and with VRF-022 (the holdings
@@ -223,6 +225,13 @@ at 1583, and the PR coverage gate is satisfied. All eight chunks are done. The P
 and 3, or two) is the owner's call. It blocks on VRF-020/021 (production-only), VRF-022 and VRF-023.
 🔴 A wave 2 PR opened before wave 3 lands is cut from `1320344`.
 
+**Reopened 2026-09-13 with chunks 09 and 10, on the owner's decision.** Waves 2 and 3 ship as ONE
+PR, and #115 and #107 land on this branch before it opens. #115 goes here because `list_holdings`
+and `balance_history` have never been on `develop`: moved now, the PR shows them arriving in their
+own modules, and nobody reviews a 900-line move. #107 goes here because it edits the coverage code
+beside that move, and the VRF-022/023 client session can read its answer in the same sitting. The
+PR still blocks on VRF-020/021, VRF-022 and VRF-023, and chunk 10 adds its own client reading.
+
 ## The Program
 
 This plan covers all three things the owner asked for — investment sync, `list_holdings`,
@@ -234,6 +243,13 @@ and `balance_history` — in three waves, drawn in full here on the owner's deci
 | 1 | 01–04 | Investment sync: capability-gated pulls, derivation, per-domain sync state, health visibility | its own PR |
 | 2 | 05–06 | `list_holdings` — current positions, one new tool, one new row shape | its own PR |
 | 3 | 07–08 | `balance_history` — value over time per account and as net worth | its own PR |
+| — | 09–10 | #115's move out of `query.py`, and #107's investment coverage | with waves 2 and 3 |
+
+🔴 **Amended 2026-09-13 (owner): waves 2 and 3 ship as one PR, and chunks 09–10 ride in it.** The
+three-PR shape below held for wave 1 (PR #114). Wave 3 was committed before wave 2's PR opened, so
+a separate wave 2 PR would now be cut from an old commit for no review benefit. Chunk 10 closes
+with a `final` review over 09 and 10. That review composes with Chunk 08's cumulative to cover the
+PR, and the PR gate is re-run to confirm it rather than assumed.
 
 🔴 **One branch, three PRs — not one PR at the end.** `project-preferences.md` sets the
 merge strategy to merge commit precisely so a reused branch's merge-base stays correct, so
@@ -852,6 +868,144 @@ Tests are the floor, and three things here are not testable from a fixture:
   2. Committed, then `/prawduct:critic cumulative` run and blocking findings resolved
   3. Chunk marked `[x]` in Status, and the plan archived once the release carries it
 
+### Chunk 09: Holdings and the balance series leave `query.py` (a pure move, #115)
+
+- **Description:** `query.py` holds every tool's assembly. The two tools this plan added reach the
+  rest of it only through a narrow shared core, and they are what pushed the file past twice the
+  size that prompted the envelope extraction (#39). Move each cluster into its own module, and
+  change nothing a client, a test assertion or a stored row can see. It follows the envelope
+  precedent (`build-plan-envelope-module.md`), including that plan's two recorded traps.
+- **Depends on:** Chunk 08
+- **Backlog:** `brookstalley/bankmachine#115`
+- **Requirements confidence:** High. The boundary is named in #115, and the precedent measured how a
+  move like this fails.
+- **The boundary:**
+  - **Moves to new `src/bankmachine/query_holdings.py`:** `POSITION_PRICE_STALE_AFTER`,
+    `InvestmentFeed`, `_investment_feeds`, `_holdings_totals`, `_positions_not_current_caveat`,
+    `_refused_positions_caveat`, `list_holdings`.
+  - **Moves to new `src/bankmachine/query_balances.py`:** `_BALANCE_ROWS`, `_series_ends`,
+    `BalanceCapture`, `WithheldNetWorth`, `_split`, `compose_balance_series`, `_series_row`,
+    `_withheld_net_worth_caveat`, `balance_history`.
+  - **Stays in `query.py`:** the shared core both clusters import (`_readable`, `_unusable`,
+    `_answer`, `_account_lifecycle`, `_not_active_caveat`, `_roster_observed_empty_caveat`,
+    `_account_exists`, the `_undenominable_*` family) and every other tool. A name used by a moved
+    cluster AND by something that stays, stays.
+  - 🔴 **No re-export from `query.py`.** The new modules import the core from `query.py`, so
+    `query.py` importing them back is a cycle. Every caller is re-pointed instead: `mcp.py`'s
+    dispatch, and the tests that import or monkeypatch a moved name.
+- **Open assumptions:**
+  - `[ASSUMPTION: the modules are named query_holdings.py and query_balances.py | LOW impact | user
+    can correct; it is a rename away until the chunk commits]`. The `query_` prefix keeps them read
+    as the query layer, not as `store/investments.py`'s write path.
+  - ~~`[ASSUMPTION: importing the core's underscore names across modules is acceptable | LOW impact]`~~
+    — **checked 2026-09-13:** `[tool.ruff.lint] select` is `E, F, I, N, UP, B, SIM`, which has no
+    private-import rule. The core keeps its names; renaming it inside a pure move would stop the
+    move being pure.
+- **Deliverables:**
+  - the two modules, and `query.py` without the moved definitions
+  - `mcp.py` and every test re-pointed. 🔴 **Monkeypatch targets move with the reads.** The envelope
+    move found a test that patched the old module while the code read the new one. It stayed green
+    while asserting nothing, and only failed loudly by luck. Grep `setattr` targets and
+    `"bankmachine.query.` strings, not just imports
+  - every `verify_norms_go_red.py` case whose anchor lies in the moved code re-pointed to a new path
+    constant. Recount them at build from the anchors themselves; do not copy a planning figure.
+    Assert each mutation lands, then run the harness ALONE and see each case go RED
+  - artifact and docstring references to the moved names re-pointed where they name a file
+  - 🔴 **Not in this chunk, said so rather than dropped:** #115 also observes that
+    `mcp._tool_definitions` has "the same shape". Its Expected section asks only for the two
+    clusters, so that extraction is not done here. #115's close-out names it, and it is filed only
+    if the owner wants it
+- **Tests:** no assertion changes. `git diff` over `tests/` shows only import lines, monkeypatch
+  targets and the harness's path constants and file fields, and the Critic is pointed at that diff.
+  The suite is green, and the harness catches every case it caught at `68566f2`.
+- **Acceptance criteria:** the published surface is byte-identical. `_tool_definitions()`
+  serialised with sorted keys, and `mcp_resources.documents()` over it, match a dump from `68566f2`
+  byte for byte. The result is recorded here, as the envelope plan recorded its own.
+- **Type:** code
+- **Critic mode:** chunk
+- **Done when:**
+  1. Acceptance criteria met, the harness run alone, then the full gate green
+  2. Committed, then `/prawduct:critic` run and blocking findings resolved
+  3. Chunk marked `[x]` in Status
+
+### Chunk 10: An investment account's activity counts as coverage (#107)
+
+- **Description:** An account whose only activity is investment trades and positions reads
+  `transaction_count` 0 on `list_accounts` and `get_coverage_report`. Both listings then raise
+  `accounts_without_coverage`, which tells an agent to distrust an account whose data IS in the
+  store. Chunk 06 labelled the field; this chunk fixes what the listings say.
+- **Depends on:** Chunk 09
+- **Backlog:** `brookstalley/bankmachine#107`
+- **Artifacts consumed:** `api-contract.md` § *Coverage is reported per account*, the `list_accounts`
+  and `get_coverage_report` field tables, and the `accounts_without_coverage` row and its scoping
+  paragraph
+- **Requirements confidence:** High on behaviour; field names are assumptions.
+- **Decisions:**
+  - `[DECISION: add per-account investment facts beside transaction_count, and narrow the LISTINGS'
+    warning to accounts neither feed holds anything for | owner, 2026-09-13 | chosen over widening
+    transaction_count, and over narrowing the predicate with no new field]`. Widening would silently
+    change what a documented field counts, and would count trades as if `query_transactions` could
+    return them, which it cannot. Narrowing alone would leave an agent reading 0 with no field
+    saying where the activity is.
+  - `[DECISION: query_transactions(account_id=N) and money_summary keep the transactions-feed
+    predicate | taken in this plan | user can veto]`. Both answer from the transactions feed, so an
+    empty answer from either about an investment-only account really is "no data for this tool".
+    The warning stays true there and keeps pointing at `list_holdings`. Only the two listings, which
+    describe the account itself, change.
+- **Open assumptions:**
+  - `[ASSUMPTION: the fields are investment_transaction_count (integer, 0 not null, soft-deleted
+    trades excluded) and holdings_as_of (the newest captured holdings day, nullable) | LOW impact |
+    user can rename before commit]`. `holdings_as_of` follows `balance_as_of` on the same row.
+  - `[ASSUMPTION: a position refused for its unit does not count as a capture for holdings_as_of |
+    LOW impact | user can override]`. It is named under `rule-applied` on `list_holdings`, so an
+    account whose EVERY position was refused would read as having no data. Rare, and saying "no
+    positions" there is closer to what can be served than naming a day with nothing on it.
+- **Deliverables:**
+  - `AccountCoverage` gains both facts and a predicate for "neither feed holds anything". `uncovered`
+    keeps its current meaning, because four callers read it and two of them keep it.
+  - 🔴 **The two facts come from grouped subqueries joined per account, never from widening the
+    existing outer join.** Joining `investment_transactions` beside `transactions` multiplies each
+    count by the other, and the join-site comment already records that failure for `sync_state`.
+    That comment's "what this DOES leave unsaid" paragraph is rewritten to say what is now said.
+  - `list_accounts` and `get_coverage_report` raise `accounts_without_coverage` only for accounts
+    with no data in either feed, with detail naming what each account lacks.
+    `query_transactions(account_id=N)` and `money_summary` are unchanged.
+  - `mcp._coverage_row_fields` is the one schema fragment both tools publish. It gains both fields,
+    required and present, and `transaction_count`'s description points at the new count rather than
+    only at `list_holdings`.
+  - every surface that says what `accounts_without_coverage` means on a listing:
+    - both tool descriptions in `mcp.py`
+    - `mcp_resources.py`'s guidance for the kind
+    - `api-contract.md`: both field tables, the vocabulary row, the paragraph on where the kind
+      fires, and the § Operations note that leaves #107 open
+    - `docs/connecting-an-mcp-client.md`
+- **Tests** (`tests/test_account_coverage.py`, beside the cases they refine):
+  - an investment-only account reports its trade count and holdings day. Neither listing names it,
+    and `query_transactions(account_id=N)` still warns about it
+  - an account with both feeds reports each count exactly, not their product
+  - a soft-deleted trade is not counted
+  - an account with positions and no trades is not "no data"
+  - an account with neither feed is still named by both listings
+  - the existing "two tools never disagree" case extends to the new fields
+  - go-red cases, each seen RED: the listing predicate reverted to `uncovered`; the count taken
+    through the widened join; the soft-delete filter removed
+- **Acceptance criteria:** on the sandbox store, `list_accounts` shows each investment account's
+  trade count and holdings day, and neither listing raises `accounts_without_coverage` for it.
+  `query_transactions(account_id=` one of them `)` still does. An account with no data in either
+  feed is still named.
+- **Visual change:** yes — the wording an agent reads to decide whether an account is empty. The
+  operator verification entry is added at chunk close, to be read in the same client session as
+  VRF-022/023.
+- **Type:** code
+- **Critic mode:** final
+  <!-- Reviews 09 and 10 together. Chunk 08's cumulative covers the branch to 68566f2, and the PR
+       gate composes the two, re-run to confirm. -->
+- **Done when:**
+  1. Acceptance criteria met on the sandbox store, the harness run alone, then the full gate green
+  2. Committed, then `/prawduct:critic` run and blocking findings resolved
+  3. #107 and #115 marked shipped through `/prawduct:backlog` once the PR merges, and the chunk
+     marked `[x]` in Status
+
 ## Early Feedback Milestone
 
 **Milestone chunk:** 01
@@ -894,3 +1048,6 @@ supports and which squash would break.
   attention to two things: whether any artifact still claims investments or the two tools are
   unbuilt, and whether the double-count guard actually holds a test that fails when the guard
   is removed.
+- **Chunk 10 (final, over 09 and 10)** — two things in particular. Did the move leave any test
+  asserting through a patch aimed at the old module? And does any surface still say a listing's
+  `accounts_without_coverage` counts the transactions feed alone?
