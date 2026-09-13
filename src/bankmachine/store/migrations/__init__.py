@@ -30,6 +30,7 @@ from bankmachine.store.migrations.ledger_date import apply_ledger_date
 from bankmachine.store.migrations.nullable_account_currency import (
     apply_nullable_account_currency,
 )
+from bankmachine.store.migrations.refused_holdings import apply_refused_holdings
 from bankmachine.store.migrations.roster_observed import apply_roster_observed
 from bankmachine.store.migrations.transaction_lineage import apply_transaction_lineage
 from bankmachine.store.migrations.transfer_pairs import apply_transfer_pairs
@@ -109,6 +110,11 @@ MIGRATIONS: Sequence[Migration] = (
         version=10,
         name="record the date of the price a position is valued at",
         apply=apply_holdings_price_as_of,
+    ),
+    Migration(
+        version=11,
+        name="record the positions a capture listed and this build could not denominate",
+        apply=apply_refused_holdings,
     ),
 )
 

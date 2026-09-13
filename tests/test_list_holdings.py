@@ -16,15 +16,23 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from sqlalchemy import insert, update
+from sqlalchemy import insert, select, update
 
-from bankmachine import mcp, query
+from bankmachine import envelope, mcp, query
 from bankmachine.config import Config
 from bankmachine.connector import ACCOUNTS_GET, INVESTMENTS_HOLDINGS_GET
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.store.derivation import apply_response
-from bankmachine.store.engine import writer_connection
-from bankmachine.store.schema import connections, holdings, institutions
+from bankmachine.store.engine import reader_connection, writer_connection
+from bankmachine.store.schema import (
+    TRANSACTIONS_DOMAIN,
+    connections,
+    holdings,
+    institutions,
+    refused_holdings,
+    sync_state,
+)
+from bankmachine.store.schema import accounts as accounts_table
 from bankmachine.store.types import UtcInstant, utc_instant
 
 FIXTURES = Path(__file__).parent / "connector" / "fixtures"
@@ -303,6 +311,232 @@ def test_a_capture_day_before_today_is_served_rather_than_nothing(enrolled: Conf
     assert rows
     assert {row["as_of_date"] for row in rows} == {long_ago.date().isoformat()}
     assert date.fromisoformat(rows[0]["as_of_date"]) < datetime.now(UTC).date()
+
+
+# --------------------------------------------------------------------------
+# What an answer discloses about itself
+# --------------------------------------------------------------------------
+
+
+def _warnings(config: Config, kind: str) -> list[str]:
+    """The `detail` of every warning of one kind on a `list_holdings` answer."""
+    return [w.detail for w in query.list_holdings(config).warnings if w.kind == kind]
+
+
+def _priced(payload: dict[str, Any], day: date) -> dict[str, Any]:
+    """The capture with every position priced as of `day`."""
+    for entry in payload["holdings"]:
+        entry["institution_price_as_of"] = day.isoformat()
+    return payload
+
+
+def _transactions_landed(config: Config, at: UtcInstant) -> None:
+    """The connection's TRANSACTIONS domain, last landed at `at`."""
+    with writer_connection(config) as conn:
+        conn.execute(
+            insert(sync_state).values(
+                connection_id=1,
+                domain=TRANSACTIONS_DOMAIN,
+                last_attempt_at=at,
+                last_success_at=at,
+                updated_at=at,
+            )
+        )
+
+
+def _close(config: Config, account_id: int) -> None:
+    """The operator's own closure, recorded the way the lifecycle tests record one."""
+    with writer_connection(config) as conn:
+        first_seen = conn.execute(
+            select(accounts_table.c.first_seen_date).where(
+                accounts_table.c.account_id == account_id
+            )
+        ).scalar_one()
+        conn.execute(
+            update(accounts_table)
+            .where(accounts_table.c.account_id == account_id)
+            .values(lifecycle_status="inactive", closed_date=first_seen)
+        )
+
+
+def test_the_new_kind_is_about_this_request_and_not_the_pipeline() -> None:
+    """Its absence has to read as information, and only a request-scoped kind's does."""
+    assert "positions_not_current" in envelope.REQUEST_SCOPED_KINDS
+    assert "positions_not_current" not in envelope.CONNECTION_SCOPED_KINDS
+
+
+def test_the_recorded_capture_says_its_prices_are_older_than_the_day_it_was_captured(
+    enrolled: Config,
+) -> None:
+    """🔴 The sandbox's own shape: a 2021 price on a capture taken years later.
+
+    Every field on those rows is well-formed, so the warning is the only thing in
+    the answer saying the values are not current -- and the rows still come back.
+    """
+    payload = recorded()
+    _seed(enrolled, payload)
+
+    answer = query.list_holdings(enrolled)
+
+    assert answer.rows, "the warning replaced the answer rather than qualifying it"
+    details = [w.detail for w in answer.warnings if w.kind == "positions_not_current"]
+    assert len(details) == 1
+    counts: dict[int, int] = {}
+    for row in answer.rows:
+        counts[row["account_id"]] = counts.get(row["account_id"], 0) + 1
+    for account_id, count in counts.items():
+        assert f"{account_id} ({count} position(s), priced as early as" in details[0]
+    oldest = min(h["institution_price_as_of"] for h in payload["holdings"])
+    assert f"priced as early as {oldest}" in details[0]
+
+
+@pytest.mark.parametrize(("days_before", "named"), [(4, False), (5, True)])
+def test_the_price_threshold_is_more_than_four_calendar_days(
+    enrolled: Config, days_before: int, named: bool
+) -> None:
+    """The boundary from both sides: four days clears a long weekend, five does not.
+
+    The four-day side is also the kind's absence meaning something: a fresh
+    capture raises nothing at all.
+    """
+    _seed(enrolled, _priced(recorded(), CAPTURED.date() - timedelta(days=days_before)))
+
+    assert bool(_warnings(enrolled, "positions_not_current")) is named
+
+
+def test_an_unknown_price_date_is_named_unknown_rather_than_treated_as_fresh(
+    enrolled: Config,
+) -> None:
+    """🔴 A null price date is not a recent one: nothing vouches for the value."""
+    _seed(enrolled, recorded())
+    with writer_connection(enrolled) as conn:
+        conn.execute(update(holdings).values(price_as_of=None))
+
+    details = _warnings(enrolled, "positions_not_current")
+
+    assert len(details) == 1
+    assert "UNKNOWN" in details[0]
+    assert "priced as early as" not in details[0], "an unknown date was read as a known one"
+
+
+@pytest.mark.parametrize(("landed", "named"), [(CAPTURED, False), (CAPTURED_LATER, True)])
+def test_a_capture_older_than_its_connections_transactions_is_named(
+    enrolled: Config, landed: UtcInstant, named: bool
+) -> None:
+    """🔴 The investments pull stopped while the rest of the connection carried on.
+
+    Prices are fresh here, so only the capture's age can raise the warning. The
+    same-day case is the control: a capture on the day the transactions landed is
+    as current as the connection is.
+    """
+    _seed(enrolled, _priced(recorded(), CAPTURED.date()))
+    _transactions_landed(enrolled, landed)
+
+    details = _warnings(enrolled, "positions_not_current")
+
+    assert bool(details) is named
+    if named:
+        assert f"landed {CAPTURED_LATER.date().isoformat()}" in details[0]
+
+
+def test_a_refused_position_is_named_under_rule_applied_and_absent_from_the_rows(
+    enrolled: Config,
+) -> None:
+    """🔴 The account holds more than its rows show, and the answer says which position.
+
+    Constructed rather than recorded: every position in the live capture is USD.
+    """
+    payload = _priced(recorded(), CAPTURED.date())
+    odd = payload["holdings"][0]
+    odd["iso_currency_code"] = None
+    odd["unofficial_currency_code"] = "ZZZ"
+    _seed(enrolled, payload)
+
+    answer = query.list_holdings(enrolled)
+
+    assert len(answer.rows) == len(payload["holdings"]) - 1
+    with reader_connection(enrolled) as conn:
+        account_id, security_id = conn.execute(
+            select(refused_holdings.c.account_id, refused_holdings.c.security_id)
+        ).one()
+    assert not any(
+        (row["account_id"], row["security_id"]) == (account_id, security_id) for row in answer.rows
+    )
+    details = [w.detail for w in answer.warnings if w.kind == "rule-applied"]
+    assert len(details) == 1
+    assert f"account {account_id}: security {security_id} (ZZZ)" in details[0]
+
+
+def test_a_capture_with_nothing_refused_carries_no_rule_applied(enrolled: Config) -> None:
+    """The absence is the information: every position the capture listed is a row."""
+    _seed(enrolled, recorded())
+
+    assert _warnings(enrolled, "rule-applied") == []
+
+
+def test_an_account_whose_newest_capture_refused_every_position_answers_from_that_day(
+    enrolled: Config,
+) -> None:
+    """🔴 Not from the day before, which would serve what it may no longer hold as current.
+
+    The later capture lists one account's positions, every one in a unit this
+    build cannot denominate. That account answers with no rows and names the
+    refusals; every other account still answers from the earlier day.
+    """
+    earlier = recorded()
+    _seed(enrolled, earlier)
+    moved = earlier["holdings"][0]["account_id"]
+    later = copy.deepcopy(earlier)
+    later["holdings"] = [h for h in later["holdings"] if h["account_id"] == moved]
+    for entry in later["holdings"]:
+        entry["iso_currency_code"] = None
+        entry["unofficial_currency_code"] = "ZZZ"
+    _seed(enrolled, later, CAPTURED_LATER)
+
+    answer = query.list_holdings(enrolled)
+
+    with reader_connection(enrolled) as conn:
+        moved_id = conn.execute(
+            select(accounts_table.c.account_id).where(accounts_table.c.source_account_id == moved)
+        ).scalar_one()
+    assert all(row["account_id"] != moved_id for row in answer.rows), (
+        "the account answered from a capture older than its newest one"
+    )
+    assert len(answer.rows) == sum(1 for h in earlier["holdings"] if h["account_id"] != moved)
+    details = [w.detail for w in answer.warnings if w.kind == "rule-applied"]
+    assert len(details) == 1
+    assert f"account {moved_id}:" in details[0]
+
+
+def test_a_position_on_a_closed_account_says_its_positions_froze(enrolled: Config) -> None:
+    """The existing kind, emitted here: a position on a closed account is not today's."""
+    _seed(enrolled, recorded())
+    held = query.list_holdings(enrolled).rows[0]["account_id"]
+    _close(enrolled, held)
+
+    details = _warnings(enrolled, "account_no_longer_active")
+
+    assert len(details) == 1
+    assert f"account(s) {held} are declared closed" in details[0]
+    assert "positions froze" in details[0]
+
+
+def test_a_closed_account_holding_no_position_is_not_this_answers_to_name(
+    enrolled: Config,
+) -> None:
+    """Request-scoped: an account this answer is not about raises nothing on it."""
+    _seed(enrolled, recorded())
+    held = {row["account_id"] for row in query.list_holdings(enrolled).rows}
+    with reader_connection(enrolled) as conn:
+        idle = [
+            int(account_id)
+            for account_id in conn.execute(select(accounts_table.c.account_id)).scalars()
+            if int(account_id) not in held
+        ]
+    assert idle, "the capture needs an account that holds no position"
+    _close(enrolled, idle[0])
+
+    assert _warnings(enrolled, "account_no_longer_active") == []
 
 
 # --------------------------------------------------------------------------

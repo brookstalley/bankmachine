@@ -66,6 +66,7 @@ from bankmachine.store.schema import (
     holdings,
     institutions,
     investment_transactions,
+    refused_holdings,
     securities,
     transactions,
 )
@@ -1726,27 +1727,14 @@ def derive_investments_holdings(
 
     known_accounts = _account_ids(conn, response.connection_id)
     for entry in _entries(payload, "holdings", response):
-        try:
-            _write_holding(
-                conn,
-                response=response,
-                context=context,
-                entry=entry,
-                known_accounts=known_accounts,
-                local_security=local_security,
-            )
-        except UndenominableAmountError as exc:
-            # 🔴 One position's currency costs that position, never the account's
-            # other holdings. A portfolio holding one instrument in a unit this
-            # build has no exponent for would otherwise report nothing at all,
-            # and the rest of it is perfectly denominable.
-            _log.warning(
-                "raw response %s: a position is held in a unit this build cannot express in "
-                "minor units, so it is not recorded and the rest of the account's positions "
-                "are kept -- %s",
-                response.raw_response_id,
-                exc,
-            )
+        _write_holding(
+            conn,
+            response=response,
+            context=context,
+            entry=entry,
+            known_accounts=known_accounts,
+            local_security=local_security,
+        )
 
 
 def _upsert_security(
@@ -1921,17 +1909,30 @@ def _write_holding(
             f"carry. The instrument a position is in is not something this system can "
             f"supply for it"
         )
+    account_id = known_accounts[source_account_id]
+    security_id = local_security[source_security_id]
+    as_of = _as_of(response.received_at)
     currency = _stated_currency(entry)
     if currency is None:
         # 🔴 `holdings.currency` is NOT NULL, and for the same reason
         # `balances_daily.currency` is: one amount with no unit is unusable, and
         # a unit borrowed from another response is how a total silently mixes
-        # two. The position is not recorded; the archive keeps it, so a later
+        # two. The position is not recorded -- its refusal is, so a read can say
+        # which position is missing -- and the archive keeps the body, so a later
         # capture that states a currency derives it.
         _log.warning(
             "raw response %s: a position in security %s states no currency, so it is not recorded",
             response.raw_response_id,
             source_security_id,
+        )
+        _record_refused_holding(
+            conn,
+            response=response,
+            context=context,
+            account_id=account_id,
+            security_id=security_id,
+            as_of=as_of,
+            currency=None,
         )
         return
     market_value = entry.get("institution_value")
@@ -1942,18 +1943,44 @@ def _write_holding(
             f"is NOT NULL and a position of unstated value is not a zero"
         )
     cost_basis = entry.get("cost_basis")
+    quantity = _exact_quantity(entry.get("quantity"), response)
+    try:
+        market_value_minor = to_minor(market_value, currency, "a position value", response)
+        cost_basis_minor = (
+            None
+            if cost_basis is None
+            else to_minor(cost_basis, currency, "a position cost basis", response)
+        )
+    except UndenominableAmountError as exc:
+        # 🔴 One position's currency costs that position, never the account's
+        # other holdings. A portfolio holding one instrument in a unit this
+        # build has no exponent for would otherwise report nothing at all,
+        # and the rest of it is perfectly denominable.
+        _log.warning(
+            "raw response %s: a position is held in a unit this build cannot express in "
+            "minor units, so it is not recorded and the rest of the account's positions "
+            "are kept -- %s",
+            response.raw_response_id,
+            exc,
+        )
+        _record_refused_holding(
+            conn,
+            response=response,
+            context=context,
+            account_id=account_id,
+            security_id=security_id,
+            as_of=as_of,
+            currency=currency,
+        )
+        return
     # 🔴 The price's date, not the position's: a capture today can value a
     # position at a price years old *(§22)*. Absent stays absent -- never the
     # capture day, which is the one reading this column exists to refuse.
     price_as_of = _optional(entry.get("institution_price_as_of"))
     values: dict[str, Any] = {
-        "quantity": _exact_quantity(entry.get("quantity"), response),
-        "market_value_minor": to_minor(market_value, currency, "a position value", response),
-        "cost_basis_minor": (
-            None
-            if cost_basis is None
-            else to_minor(cost_basis, currency, "a position cost basis", response)
-        ),
+        "quantity": quantity,
+        "market_value_minor": market_value_minor,
+        "cost_basis_minor": cost_basis_minor,
         "currency": currency,
         "captured_at": response.received_at,
         "source": "aggregator",
@@ -1966,9 +1993,6 @@ def _write_holding(
             else _parse_calendar(price_as_of, "a position price date", response)
         ),
     }
-    account_id = known_accounts[source_account_id]
-    security_id = local_security[source_security_id]
-    as_of = _as_of(response.received_at)
     if not _claim_capture_day(
         conn,
         table=holdings,
@@ -1983,6 +2007,54 @@ def _write_holding(
     conn.execute(
         insert(holdings).values(
             account_id=account_id, security_id=security_id, as_of_date=as_of, **values
+        )
+    )
+
+
+def _record_refused_holding(
+    conn: SAConnection,
+    *,
+    response: RawResponse,
+    context: DerivationContext,
+    account_id: int,
+    security_id: int,
+    as_of: CalendarDate,
+    currency: str | None,
+) -> None:
+    """A position this build refused, kept where a read can name it.
+
+    🔴 **The refusal, not the position.** Skipping the row keeps an unexpressible
+    value out of `holdings`, and until this record existed the only trace was a
+    log line no caller of any surface ever sees -- so `list_holdings` served the
+    account's other positions as if they were all of them. `data-model.md`'s
+    valuation norm requires the refusal NAMED under `rule-applied`, and a read
+    can only name what the store records.
+
+    The same first-capture-of-the-day rule the position would have obeyed,
+    through the same `_claim_capture_day`, so a rebuild lands on the same record
+    whatever order it replays the day's captures in. `currency` is None where
+    the aggregator stated none.
+    """
+    if not _claim_capture_day(
+        conn,
+        table=refused_holdings,
+        where=(
+            refused_holdings.c.account_id == account_id,
+            refused_holdings.c.security_id == security_id,
+            refused_holdings.c.as_of_date == as_of,
+        ),
+        response=response,
+    ):
+        return
+    conn.execute(
+        insert(refused_holdings).values(
+            account_id=account_id,
+            security_id=security_id,
+            as_of_date=as_of,
+            currency=currency,
+            captured_at=response.received_at,
+            raw_response_id=response.raw_response_id,
+            derivation_version_id=context.derivation_version_id,
         )
     )
 

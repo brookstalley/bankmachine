@@ -332,6 +332,11 @@ Every tool is safe and idempotent, trivially — nothing writes.
 > the day it was captured -- the aggregator's sandbox values every position at a 2021 price, so a
 > capture date alone would present a years-old value as current. No total is emitted: a total over
 > holdings owes the same lifecycle treatment a total over balances does, and is not built.
+> **What a holdings answer cannot vouch for rides the success path:** `positions_not_current` when a
+> price or a capture is old, `rule-applied` naming a position the store could not record (migration
+> 011's `refused_holdings`), and `account_no_longer_active` for a position on an account that has
+> stopped being reported. The coverage surface's counts are the TRANSACTIONS feed's and now say so;
+> an investment-only account reading uncovered there remains open as #107.
 
 🔴 **Two of these eight are the verification surface, not the analysis surface.** `get_pipeline_health`
 and `get_coverage_report` exist so the analyst agent can **establish completeness *before* answering**.
@@ -922,7 +927,7 @@ here.
 | `consent_expires_at` | string, nullable | When the operator's authorisation for this connection lapses. 🔴 After it does, data stops arriving with **no failure to notice** — the pipeline is poll-only, so expiry otherwise surfaces as a failed run rather than in advance. A `partial` warning fires within 14 days of it and a `degraded` one once it has passed. Null means the connection has not been polled since this was recorded — never that consent does not expire |
 | `source_error_code` | string, nullable | The aggregator's STANDING complaint about this connection. 🔴 Not `last_error_code`, which records the last sync *attempt* failing: a connection can be unwell while the most recent poll succeeded, and folding the two together would let one success bury a complaint nobody resolved. Non-null raises `degraded` |
 | `last_transaction_date` | string, nullable | the newest transaction recorded for this account, `YYYY-MM-DD`; null on the same condition |
-| `transaction_count` | integer | how many transactions this store holds for the account. `0` rather than null, because a null here would be a second spelling of the same fact |
+| `transaction_count` | integer | how many transactions this store holds for the account. `0` rather than null, because a null here would be a second spelling of the same fact. 🔴 Counted from the TRANSACTIONS feed alone: investment trades are not in it, so an investment account holding positions can read `0` — `list_holdings` answers what it holds |
 | `lifecycle` | string | `active`, `closed`, or `no_longer_reported` — see § *A classifying tool carries `totals`* and FR-9. `no_longer_reported` names an OBSERVATION and not a closure; `closed` is the operator's own declaration and is the only value that asserts one |
 | `closed_date` | string, nullable | when the operator recorded this account as closed; null when none has been recorded, **including** for an account that is merely no longer reported |
 | `last_seen_in_roster` | string, nullable | the date this account was last listed by its institution; null when there is no roster observation behind this account: an import-only account (FR-7) has no connection, and an aggregator account's connection has none until its first sync after migration 004. 🔴 A null is silence, never a statement that the account is import-only — read `lifecycle` and the row's own provenance for that. A DIFFERENT fact from `last_transaction_date` and often a much later one — neither may be derived from the other |
@@ -1129,13 +1134,14 @@ three-week-old hole in the data and answer confidently.
 | `degraded` | A contributing connection is in error, or ONE SYNC DOMAIN of an otherwise healthy connection is. `detail` says which. 🔴 At domain scope the connection's own `status` is `active` and its `last_error_code` is null — the code lives in `rows[].domains[]`, and `connections reauth` repairs nothing |
 | `gapped` | A known coverage hole in the queried window |
 | `partial` | A contributing account has bounded history, no connection is enrolled, or ONE SYNC DOMAIN of a healthy connection has never landed in full. `detail` says which |
-| `rule-applied` | Rows were excluded from this aggregate ON PURPOSE, so the figure will not reconcile against a raw sum over the same window. `detail` names which rows and why |
+| `rule-applied` | Rows were excluded from this aggregate ON PURPOSE, so the figure will not reconcile against a raw sum over the same window. `detail` names which rows and why. On `list_holdings`, which computes no total, a position the store could not record is ABSENT from the rows, and `detail` names its account, security and unit |
 | `window_starts_before_coverage` | The window asked for reaches back past the first covered date |
 | `window_extends_past_coverage` | The window asked for reaches past the covered end — today, or the last transaction when that is later |
 | `rows_truncated` | The request matched more rows than the cap returned, and the answer holds only the newest of them |
 | `counted_during_change` | A write landed between the row read and the count read, so the two describe moments a fraction apart |
-| `accounts_without_coverage` | An account in the scope of THIS request has never had a transaction recorded, so its empty result means data not present, never no activity |
+| `accounts_without_coverage` | An account in the scope of THIS request has never had a transaction recorded, so its empty result means data not present, never no activity. It speaks for the TRANSACTIONS feed only: an investment account's trades and positions are not counted, so an account holding positions can carry it |
 | `account_no_longer_active` | An account in the scope of THIS request is closed or is no longer listed by its institution, so its balance is frozen as of the date beside it and is not a fact about today |
+| `positions_not_current` | A position in THIS answer is not a current value: its price is more than four calendar days older than the day it was captured, its price date is unknown, or its account was last captured before its connection's transactions last landed. `detail` keeps the three apart and names the accounts; a null price date is unknown, never recent |
 | `includes_pending_rows` | This answer's rows include authorisation holds that have not settled, so a figure computed from it may change without any new activity |
 | `roster_observed_empty` | A connection contributing to THIS request had its roster read successfully and it listed no accounts at all. Every account on that connection is separately marked `no_longer_reported`; this kind is the connection-level anomaly beside that account-level truth, and it is what distinguishes a whole household closing its accounts from a feed that returns success and no rows |
 | `sign_convention_unverified` | This answer draws on a connection whose stored sign distribution was measured and found INVERTED relative to the operator-signed convention, so its amounts run the wrong way. 🔴 It does not fire for a merely unconfirmed connection — see the note below the table |

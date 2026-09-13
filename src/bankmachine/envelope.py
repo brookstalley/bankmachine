@@ -115,6 +115,14 @@ REQUEST_SCOPED_KINDS: tuple[str, ...] = (
     # reported and is not a fact about today, which is a wrong number with no
     # signal unless the answer carries one.
     "account_no_longer_active",
+    # 🔴 A position in THIS answer is not a current value: its price is older than
+    # the day it was captured by more than the threshold, its price date is
+    # unknown, or its account's investments stopped landing while the rest of the
+    # connection carried on. Request-scoped because it is about the rows this
+    # answer returned: the aggregator's sandbox values every position at a
+    # years-old price, and that belongs on the answer holding those positions --
+    # riding every answer would be the "true and useless" failure above.
+    "positions_not_current",
     # A hold is not a settled amount, and a total that mixes the two changes
     # without any new activity. Request-scoped because it is a property of the
     # rows THIS answer drew on, not of the pipeline.

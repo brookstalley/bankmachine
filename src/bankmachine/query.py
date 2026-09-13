@@ -64,6 +64,7 @@ from bankmachine.store.schema import (
     connections,
     holdings,
     institutions,
+    refused_holdings,
     securities,
     sync_state,
     transactions,
@@ -1278,7 +1279,26 @@ def _connections_with_an_empty_roster(
     return {connection_id for connection_id in observed if connection_id not in matched}
 
 
-def _not_active_caveat(lifecycle: list[AccountLifecycle]) -> list[Caveat]:
+#: What a non-active account means for an answer over BALANCES: the figure froze,
+#: and any total includes it and states what it contributed.
+_BALANCES_FROZE = (
+    "Their balances froze on the date each row names and are not facts about today. Any total "
+    "over balances INCLUDES them on purpose -- `coverage.accounts_not_active` and "
+    "`coverage.not_active_balance_minor_units` are what they contributed, so quote that "
+    "magnitude beside the total rather than presenting the total alone"
+)
+
+#: The same freeze on an answer over POSITIONS, which computes no total to qualify.
+_POSITIONS_FROZE = (
+    "Their positions froze on the day each row was captured and are not facts about today. "
+    "This answer computes no total; a sum over these rows includes them, so name those "
+    "accounts beside any such figure"
+)
+
+
+def _not_active_caveat(
+    lifecycle: list[AccountLifecycle], *, consequence: str = _BALANCES_FROZE
+) -> list[Caveat]:
     """The warning that names the accounts whose balances stopped being facts.
 
     🔴 Request-scoped, and deliberately not connection-scoped even though "this
@@ -1294,6 +1314,11 @@ def _not_active_caveat(lifecycle: list[AccountLifecycle]) -> list[Caveat]:
     declaration, and `no_longer_reported` is only the institution having stopped
     listing the account, which is equally consistent with de-selection from
     sharing. A caller told "some accounts are inactive" can act on neither.
+
+    `consequence` says what the freeze means for THIS answer's figures: an answer
+    over balances includes such accounts in its totals and says what they
+    contributed, while one over positions computes no total and says the
+    positions froze instead.
     """
     if not lifecycle:
         return []
@@ -1319,13 +1344,7 @@ def _not_active_caveat(lifecycle: list[AccountLifecycle]) -> list[Caveat]:
     return [
         Caveat(
             kind="account_no_longer_active",
-            detail=(
-                "; ".join(parts) + ". Their balances froze on the date each row names and are "
-                "not facts about today. Any total over balances INCLUDES them on purpose -- "
-                "`coverage.accounts_not_active` and "
-                "`coverage.not_active_balance_minor_units` are what they contributed, so quote "
-                "that magnitude beside the total rather than presenting the total alone"
-            ),
+            detail="; ".join(parts) + ". " + consequence,
         )
     ]
 
@@ -1352,7 +1371,9 @@ def _uncovered_caveat(uncovered: list[AccountCoverage]) -> list[Caveat]:
             kind="accounts_without_coverage",
             detail=(
                 f"no transaction has ever been recorded for account(s) {ids}; an empty or "
-                f"absent result for them means DATA NOT PRESENT, never no activity"
+                f"absent result for them means DATA NOT PRESENT, never no activity. This counts "
+                f"the TRANSACTIONS feed alone -- investment trades and positions are recorded "
+                f"apart from it, so for an investment account `list_holdings` says what it holds"
             ),
         )
     ]
@@ -2048,6 +2069,130 @@ def list_accounts(config: Config) -> Answer:
         )
 
 
+#: How far a position's price may trail the day it was captured before the answer
+#: says so. Four calendar days clears a long weekend of closed markets -- a Friday
+#: close read on a Tuesday after a holiday Monday is ordinary -- and anything older
+#: is a price nobody refreshed. 🔴 An assumption rather than a measurement, and the
+#: owner's to override; the investment-sync build plan records it as one.
+POSITION_PRICE_STALE_AFTER = timedelta(days=4)
+
+
+def _positions_not_current_caveat(
+    *,
+    old_prices: dict[int, tuple[int, CalendarDate]],
+    unknown_prices: dict[int, int],
+    captured_behind: dict[int, tuple[CalendarDate, CalendarDate]],
+) -> list[Caveat]:
+    """The warning that a well-formed position is not a current value.
+
+    🔴 **Three conditions, kept apart in `detail`, because each asks something
+    different of the reader.** A price older than its capture day is the
+    commonest: the aggregator's sandbox values every position at a 2021 price on
+    a capture taken today, and nothing about the row looks wrong. A price date the
+    store does not have is named UNKNOWN rather than passed over as fresh -- the
+    row predates the column, or the institution sent none, and either way the
+    value cannot be vouched for. And a capture older than the day the
+    connection's TRANSACTIONS last landed means the investments pull stopped
+    while the rest of the connection carried on: these are the last positions
+    seen, and trades since are missing from them.
+
+    Request-scoped: it names only accounts this answer's rows or refusals are
+    about, so its absence says every position here was priced within the
+    threshold of a capture no older than its connection's other data.
+
+    🔴 The capture comparison is in calendar days, the unit the append rule keeps
+    a position in, so a sync straddling midnight UTC can name an account once
+    when its transactions land on the next day. The next capture clears it.
+    """
+    parts: list[str] = []
+    if old_prices:
+        named = ", ".join(
+            f"{account_id} ({count} position(s), priced as early as {oldest.isoformat()})"
+            for account_id, (count, oldest) in sorted(old_prices.items())
+        )
+        parts.append(
+            f"account(s) {named} hold positions valued at a price more than "
+            f"{POSITION_PRICE_STALE_AFTER.days} days older than the day they were captured, so "
+            f"`market_value_minor_units` is that old price times the quantity held, not today's "
+            f"value"
+        )
+    if unknown_prices:
+        named = ", ".join(
+            f"{account_id} ({count} position(s))"
+            for account_id, count in sorted(unknown_prices.items())
+        )
+        parts.append(
+            f"account(s) {named} hold positions whose price date is UNKNOWN -- the rows predate "
+            f"the column and the store has not been rebuilt, or the institution sent none -- so "
+            f"their values cannot be called current either"
+        )
+    if captured_behind:
+        named = ", ".join(
+            f"{account_id} (captured {captured.isoformat()}, its connection's transactions "
+            f"landed {landed.isoformat()})"
+            for account_id, (captured, landed) in sorted(captured_behind.items())
+        )
+        parts.append(
+            f"account(s) {named} were last captured before their connection's transactions "
+            f"last landed, so their investments have stopped arriving while the rest of the "
+            f"connection has not: these are the last positions seen, and trades since are "
+            f"missing from them"
+        )
+    if not parts:
+        return []
+    return [
+        Caveat(
+            kind="positions_not_current",
+            detail=(
+                "; ".join(parts) + ". Quote `as_of_date` and `price_as_of` beside any value "
+                "you report from those rows, and do not present it as current"
+            ),
+        )
+    ]
+
+
+def _refused_positions_caveat(refused: list[tuple[int, int, str | None]]) -> list[Caveat]:
+    """🔴 The disclosure that an account holds more than its rows show.
+
+    A position whose currency has no minor-unit exponent this build knows, or
+    that states none, is refused when its capture is derived, and recorded in
+    `refused_holdings`. It is not among the rows, so without this the account
+    reads as a smaller portfolio than it is and nothing in the answer says so.
+
+    `rule-applied`, because the position was left out ON PURPOSE: a value at an
+    unknown scale cannot be expressed in minor units, and rounding it to a
+    guessed one is the wrong number `data-model.md`'s valuation norm refuses.
+    This answer computes no total, so the exclusion is from the rows themselves.
+
+    Names account, security and unit -- the reader's next move is to look at that
+    account -- and ids rather than the security's name, because a name is text
+    the institution chose and this detail is the server's own.
+    """
+    if not refused:
+        return []
+    by_account: dict[int, list[str]] = {}
+    for account_id, security_id, currency in sorted(refused, key=lambda r: (r[0], r[1])):
+        unit = "no currency stated" if currency is None else currency
+        by_account.setdefault(account_id, []).append(f"security {security_id} ({unit})")
+    named = "; ".join(
+        f"account {account_id}: {', '.join(held)}" for account_id, held in by_account.items()
+    )
+    return [
+        Caveat(
+            kind="rule-applied",
+            detail=(
+                f"{named}. Each is a position its capture listed and this build could not "
+                f"record, because its currency has no minor-unit exponent this build knows or "
+                f"states none. They are ABSENT from these rows ON PURPOSE -- a value at an "
+                f"unknown scale cannot be expressed in minor units, and rounding it to a guessed "
+                f"one would be a wrong number -- so each named account holds more than its rows "
+                f"show. Say so beside anything you report about it; the capture is archived, and "
+                f"a build that knows the unit derives the position exactly"
+            ),
+        )
+    ]
+
+
 def list_holdings(config: Config) -> Answer:
     """Every position, as its account's latest holdings capture recorded it.
 
@@ -2058,10 +2203,23 @@ def list_holdings(config: Config) -> Answer:
     older than another's, reading as "holds nothing" rather than as "not seen
     since". `as_of_date` on each row says which day it is.
 
+    🔴 **A refusal counts as a capture when finding that day.** A position this
+    build could not record lands in `refused_holdings` rather than `holdings`, so
+    an account whose newest capture refused every position it held would
+    otherwise answer from an OLDER day's rows -- positions it may no longer hold,
+    served as its latest. Reading the day across both tables makes that account
+    answer with no rows and a `rule-applied` naming what was refused.
+
     🔴 **`price_as_of` is served as stored and never coalesced.** A null means the
     row predates the column and has not been rebuilt, or the institution sent no
     price date -- filling it with `as_of_date` would state that the price is as
     recent as the capture, which is exactly what it cannot be assumed to be.
+
+    🔴 **What the answer cannot vouch for rides the success path**, request-scoped
+    to the accounts it is about: `positions_not_current` for a price or a capture
+    that is old, `rule-applied` for a refused position, and
+    `account_no_longer_active` beside `roster_observed_empty` for a position on an
+    account that has stopped being reported.
 
     No total is emitted: a sum over positions is not the account's balance (the
     institution reports the two separately and they do not reconcile), and a total
@@ -2071,14 +2229,15 @@ def list_holdings(config: Config) -> Answer:
     if problem is not None:
         return _unusable(config, problem, requested_window=None, truncation=None)
     with reader_connection(config) as conn:
-        latest = (
-            select(
-                holdings.c.account_id,
-                func.max(holdings.c.as_of_date).label("as_of_date"),
-            )
-            .group_by(holdings.c.account_id)
-            .subquery()
-        )
+        latest: dict[int, CalendarDate] = {}
+        for table in (holdings, refused_holdings):
+            for account_id, day in conn.execute(
+                select(table.c.account_id, func.max(table.c.as_of_date)).group_by(
+                    table.c.account_id
+                )
+            ).all():
+                captured = calendar_date(day)
+                latest[int(account_id)] = max(captured, latest.get(int(account_id), captured))
         result = conn.execute(
             select(
                 holdings.c.account_id,
@@ -2095,13 +2254,8 @@ def list_holdings(config: Config) -> Answer:
                 holdings.c.price_as_of,
             )
             .select_from(
-                holdings.join(
-                    latest,
-                    (latest.c.account_id == holdings.c.account_id)
-                    & (latest.c.as_of_date == holdings.c.as_of_date),
-                )
+                holdings.join(accounts, accounts.c.account_id == holdings.c.account_id)
                 .join(securities, securities.c.security_id == holdings.c.security_id)
-                .join(accounts, accounts.c.account_id == holdings.c.account_id)
                 .join(institutions, institutions.c.institution_id == accounts.c.institution_id)
             )
             .order_by(
@@ -2113,38 +2267,89 @@ def list_holdings(config: Config) -> Answer:
             )
         ).all()
         lifecycle = _account_lifecycle(conn)
-        rows = [
-            {
-                "account_id": int(r[0]),
-                "account": r[1],
-                "security_id": int(r[2]),
-                "security_name": r[3],
-                "ticker": r[4],
-                "security_type": r[5],
-                # 🔴 The stored TEXT, untouched. A quantity is not money and is
-                # never a float: `0.00293644` of a coin survives only as text.
-                "quantity": str(r[6]),
-                "market_value_minor_units": int(r[7]),
-                # Present and null when the institution supplied none -- never
-                # dropped, and never a zero.
-                "cost_basis_minor_units": None if r[8] is None else int(r[8]),
-                "currency": r[9],
-                "as_of_date": str(r[10]),
-                "price_as_of": iso_or_none(r[11]),
-                # 🔴 On EVERY row, for the reason `list_accounts` carries it: a
-                # position in an account that is no longer active froze on the
-                # day it was captured, and a caller who has to opt in to learning
-                # that is a caller who sums it anyway.
-                **lifecycle[int(r[0])].to_wire(),
-            }
-            for r in result
+        rows: list[dict[str, Any]] = []
+        old_prices: dict[int, tuple[int, CalendarDate]] = {}
+        unknown_prices: dict[int, int] = {}
+        for r in result:
+            account_id = int(r[0])
+            captured, priced = calendar_date(r[10]), r[11]
+            if captured != latest[account_id]:
+                continue
+            if priced is None:
+                unknown_prices[account_id] = unknown_prices.get(account_id, 0) + 1
+            elif captured - calendar_date(priced) > POSITION_PRICE_STALE_AFTER:
+                count, oldest = old_prices.get(account_id, (0, calendar_date(priced)))
+                old_prices[account_id] = (count + 1, min(oldest, calendar_date(priced)))
+            rows.append(
+                {
+                    "account_id": account_id,
+                    "account": r[1],
+                    "security_id": int(r[2]),
+                    "security_name": r[3],
+                    "ticker": r[4],
+                    "security_type": r[5],
+                    # 🔴 The stored TEXT, untouched. A quantity is not money and is
+                    # never a float: `0.00293644` of a coin survives only as text.
+                    "quantity": str(r[6]),
+                    "market_value_minor_units": int(r[7]),
+                    # Present and null when the institution supplied none -- never
+                    # dropped, and never a zero.
+                    "cost_basis_minor_units": None if r[8] is None else int(r[8]),
+                    "currency": r[9],
+                    "as_of_date": str(captured),
+                    "price_as_of": iso_or_none(priced),
+                    # 🔴 On EVERY row, for the reason `list_accounts` carries it: a
+                    # position in an account that is no longer active froze on the
+                    # day it was captured, and a caller who has to opt in to learning
+                    # that is a caller who sums it anyway.
+                    **lifecycle[account_id].to_wire(),
+                }
+            )
+        refused = [
+            (int(account_id), int(security_id), currency)
+            for account_id, security_id, day, currency in conn.execute(
+                select(
+                    refused_holdings.c.account_id,
+                    refused_holdings.c.security_id,
+                    refused_holdings.c.as_of_date,
+                    refused_holdings.c.currency,
+                )
+            ).all()
+            if calendar_date(day) == latest[int(account_id)]
         ]
+        # The day each connection's TRANSACTIONS last landed. A capture older than
+        # it is the investments pull having stopped while the rest carried on.
+        landed = {
+            int(connection_id): calendar_date(utc_instant(success).date())
+            for connection_id, success in conn.execute(
+                select(sync_state.c.connection_id, sync_state.c.last_success_at).where(
+                    sync_state.c.domain == TRANSACTIONS_DOMAIN,
+                    sync_state.c.last_success_at.is_not(None),
+                )
+            ).all()
+        }
+        captured_behind: dict[int, tuple[CalendarDate, CalendarDate]] = {}
+        for account_id, captured in latest.items():
+            connection_id = lifecycle[account_id].connection_id
+            if connection_id is not None and captured < landed.get(connection_id, captured):
+                captured_behind[account_id] = (captured, landed[connection_id])
+        not_active = [lifecycle[a] for a in sorted(latest) if not lifecycle[a].active]
         return _answer(
             config,
             conn,
             rows,
             requested_window=None,
             truncation=None,
+            extra_caveats=(
+                _refused_positions_caveat(refused)
+                + _positions_not_current_caveat(
+                    old_prices=old_prices,
+                    unknown_prices=unknown_prices,
+                    captured_behind=captured_behind,
+                )
+                + _not_active_caveat(not_active, consequence=_POSITIONS_FROZE)
+                + _roster_observed_empty_caveat(not_active)
+            ),
             lifecycle=lifecycle,
         )
 

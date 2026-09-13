@@ -548,7 +548,11 @@ def _coverage_row_fields() -> dict[str, dict[str, Any]]:
         "last_transaction_date": {"type": ["string", "null"]},
         "transaction_count": {
             "type": "integer",
-            "description": "0 is a real answer: the account has no transaction data at all",
+            "description": (
+                "0 is a real answer: the account has no data in the TRANSACTIONS feed at all. "
+                "Investment trades and positions are not counted -- `list_holdings` answers "
+                "what an investment account holds"
+            ),
         },
         "history_starts": {
             "type": ["string", "null"],
@@ -798,7 +802,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "never sum the two into a net worth. Summing one account's positions does not "
                 "reproduce its balance either; the institution reports them separately. No "
                 "total is computed. Every row carries `lifecycle`: a position on an account "
-                "that is not `active` froze on the day it was captured."
+                "that is not `active` froze on the day it was captured. 🔴 Read `warnings`: "
+                "`positions_not_current` names values that are not current, and `rule-applied` "
+                "names positions the store could not record, which are ABSENT from the rows."
             ),
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
             "outputSchema": _output_schema(
@@ -1293,7 +1299,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "Call this before concluding an account has no activity -- a "
                 "`transaction_count` of 0 means NO DATA WAS EVER RECORDED for it, which is a "
                 "different answer from 'nothing happened' and the two are indistinguishable "
-                "anywhere else. `silence_ratio` above 1 means a full posting cycle has been "
+                "anywhere else. It counts the TRANSACTIONS feed alone; what an investment "
+                "account holds is `list_holdings`'s to answer. "
+                "`silence_ratio` above 1 means a full posting cycle has been "
                 "missed; a ratio near 1 is worth a second look even when the flag is false. "
                 "🔴 A non-active account's trailing silence is CLOSURE, not a hole: the flag "
                 "stays false for it and `lifecycle` on the row is what says why."

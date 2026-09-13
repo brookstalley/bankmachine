@@ -13,20 +13,20 @@ governed_by:
   - artifact: data-model
     dispositions:
       - "Every stored amount is signed from the operator's point of view → conforms, and this plan is the second feed's worth of evidence the norm's own Scope (2026-09-09) says it does not have. Holdings carry a market value and investment transactions carry an amount; both go through the connector's existing normalization rather than a second one written beside it. 🔴 The norm's amendment about VALUATIONS is the clause that actually binds here: an investment `institution_value` is price times quantity and arrives at whatever precision that arithmetic produced (measured: a sandbox 401k at 23631.9805 USD), so it is rounded half-even and logged, while a ledger amount is still converted exactly or refused"
-      - "A valuation is rounded to a minor unit this build KNOWS, else refused per ROW (amendment 2026-09-10) → conforms and is exercised for the first time by a table other than balances. `securities.close_price_minor`, `holdings.market_value_minor` and `holdings.cost_basis_minor` all pass through `store/types.py::minor_digits`; a security denominated in an `unofficial_currency_code` this build has no exponent for is refused ROW-WISE, keeping the rest of the account's positions"
+      - "A valuation is rounded to a minor unit this build KNOWS, else refused per ROW (amendment 2026-09-10) → conforms and is exercised for the first time by a table other than balances. `securities.close_price_minor`, `holdings.market_value_minor` and `holdings.cost_basis_minor` all pass through `store/types.py::minor_digits`; a security denominated in an `unofficial_currency_code` this build has no exponent for is refused ROW-WISE, keeping the rest of the account's positions. 🔴 The norm's other half -- the refusal NAMED under `rule-applied` -- was unbuilt for holdings through wave 1: a refused position reached a log line and nothing a read can see. Chunk 06 records it (migration 011, `refused_holdings`) so `list_holdings` can name it"
       - "All monetary values are integer minor units, no floats → conforms. 🔴 And the counterpart the schema already draws is the one to hold onto: a QUANTITY is not money. `holdings.quantity` and `investment_transactions.quantity` are exact decimal TEXT, parsed to `Decimal` and never through a float, because fractional shares are routine and a scaled integer's scale would be a guess"
       - "Calendar dates and UTC instants are distinct and never mix → conforms. `as_of_date`, `trade_date`, `settlement_date` and `close_price_as_of` are calendar dates; `captured_at`, `first_seen_at`, `updated_at` are UTC instants"
       - "Every silver row carries exclusive provenance and its derivation version → conforms. Every row this plan writes is `source='aggregator'` with a `raw_response_id` and no `manual_import_id`, which the tables' own CHECK constraints already enforce. The derivation version is bumped when the derivation changes, per the norm"
       - "🔴 The daily balance and HOLDINGS series are append-only → this plan is the first code that writes the holdings half, so the norm stops being partly hypothetical here. The composite PK is the structural half; the behavioural half is the rule `_write_balance` already implements and holdings must reuse rather than reimplement — FIRST capture of the day wins, decided by COMPARING captures rather than by arrival order, and a row with no `raw_response_id` (a manual import) is never replaced. Copying that logic into a second deriver is how the two drift; the plan factors it (Chunk 01)"
       - "A source value is never overwritten in place → conforms; this plan adds no override column and writes no interpretation over a source field"
       - "A transaction is never hard-deleted; removal is a soft delete → conforms in SHAPE, and by a different mechanism than `transactions`. `investment_transactions.removed_at` carries the same column and the same never-a-DELETE rule, but 🔴 the feed sends **no removal signal of any kind** — measured, `api-notes-plaid.md` §26: `/investments/transactions/get` is a windowed read, not a delta, so there is no `removed` array to read and `cancel_transaction_id` is a cancellation reference rather than a tombstone. What makes the norm satisfiable anyway is that the window comes back WHOLE: a stored row inside the requested window whose id did not return has gone away, and that is the removal signal. It is only trustworthy when the run actually exhausted the window, so the reconciliation is guarded on exhaustion and a partial run marks nothing — an unguarded one would soft-delete every row it merely had not reached yet"
-      - "A migration's DDL is frozen once written → conforms. Wave 1 added no migration: `securities`, `holdings` and `investment_transactions` were created in `core_schema.py` at build step 1 and are untouched. The one column the real API shape turned out to need, `holdings.price_as_of`, is migration 010 in its own module -- a new migration and a recorded decision (the trajectory checkpoint's, built in Chunk 05), never an edit to the frozen DDL"
+      - "A migration's DDL is frozen once written → conforms. Wave 1 added no migration: `securities`, `holdings` and `investment_transactions` were created in `core_schema.py` at build step 1 and are untouched. The one column the real API shape turned out to need, `holdings.price_as_of`, is migration 010 in its own module -- a new migration and a recorded decision (the trajectory checkpoint's, built in Chunk 05), never an edit to the frozen DDL. Migration 011 (`refused_holdings`, Chunk 06, owner's decision 2026-09-13) is the second, in its own module on the same rule"
   - artifact: architecture
     dispositions:
       - "Every writable handle comes from the one writer factory, which takes the exclusive lock before it returns → conforms; the investments pull persists through the same `_persist` path every other endpoint uses and opens no handle of its own"
       - "Read-role handles are `mode=ro`, hold no snapshot beyond the statement, never fall back → conforms. The health-surface work in Chunk 03 is read-only and goes through the existing reader"
       - "No component creates the datastore implicitly → conforms; nothing here opens a datastore path"
-      - "A process that does not recognize the schema version refuses to serve → conforms; migration 010 moves the served schema version to 10, and a store still at 9 is refused until `bankmachine store init` migrates it"
+      - "A process that does not recognize the schema version refuses to serve → conforms; migrations 010 and 011 move the served schema version to 11, and a store behind it is refused until `bankmachine store init` migrates it"
   - artifact: api-contract
     dispositions:
       - "The MCP surface is read-only, and the one permitted write class is agent-authored rows in a declared sidecar table → conforms. Both new tools are reads. No handle in the server process becomes writable, and neither tool reaches a table carrying `raw_response_id` or `derivation_version_id` — `holdings` and `balances_daily` carry both and are read-only to this surface whatever the column"
@@ -546,7 +546,7 @@ Tests are the floor, and three things here are not testable from a fixture:
 - **Artifacts consumed:** `api-contract.md` § Direction (freshness stamp and warnings;
   balance lifecycle), `.prawduct/artifacts/api-contract.md` § warning vocabulary
 - **Deliverables:**
-  - a request-scoped warning kind for **a stale position**, raised on two triggers kept distinct
+  - a request-scoped warning kind for **a stale position** (`positions_not_current`), raised on two triggers kept distinct
     in its detail. *(Amended at the trajectory checkpoint, 2026-09-13.)* First and commonest:
     `price_as_of` more than 4 calendar days before the row's `as_of_date` — the sandbox serves a
     2021 price on a 2026 capture, and a capture date alone can never show it
@@ -554,10 +554,30 @@ Tests are the floor, and three things here are not testable from a fixture:
     override]`. Second: the latest holdings capture is older than the connection's transactions
     freshness, which Chunk 03's independent domain failure can produce. A null `price_as_of`
     is named as unknown, not treated as fresh
-  - `rule-applied` carrying any security excluded from a minor-units figure because its
-    currency has no known exponent — the per-row refusal wave 1 built, made visible here
+  - `rule-applied` naming every position refused at derivation because its currency has no
+    known exponent **or states none** — account, security and currency — on the capture day
+    the answer reads. *(Amended while building, 2026-09-13.)* 🔴 The refusal wave 1 built was
+    visible nowhere: `derive_investments_holdings` skips the row and logs it, and
+    `holdings.market_value_minor` is NOT NULL, so nothing a read can see recorded it. And
+    `list_holdings` emits no total, so "excluded from the total" has no figure to apply to —
+    the position is absent from the ROWS, and that is what is named
+  - 🔴 **the refusal recorded, so it can be named.** `[DECISION: migration 011 adds
+    `refused_holdings` — (account, security, capture day, currency, provenance) — derived from
+    the archived bodies | owner, 2026-09-13 | chosen over inferring refusals from
+    `securities.currency` (names the instrument, not the account, and misfires on a security
+    seen only in investment transactions) and over descoping with the norm departure recorded]`.
+    The table obeys the holdings append rule through the shared `_claim_capture_day`, carries a
+    raw response as its only provenance (nothing but a sync can refuse a position), and is
+    rebuildable by the classification `store.rebuild` already derives. It is not one of FR-6's
+    thirteen, which are a minimum: it is declared beside them as a later table, so the metadata
+    guard still refuses a table nobody declared. `DERIVATION_VERSION` moves to 10. The latest
+    capture day per account is read across BOTH tables, so an account whose only position was
+    refused is named rather than read as holding nothing. The populated-store upgrade module
+    re-points at 011, keeping 010's fixture and rewind
   - `account_no_longer_active` reaching holdings, not only balances: the existing kind
-    already means what is needed, so this is an emitter, not a new kind
+    already means what is needed, so this is an emitter, not a new kind. It rides beside
+    `roster_observed_empty`, as on every other answer surface, and its detail says a POSITION
+    froze rather than a balance
   - 🔴 **say on the coverage surface that its measurements are the TRANSACTIONS domain's.**
     `query._account_coverage` is pinned to that domain, so a brokerage account whose only
     activity is investment transactions reports `transaction_count` 0 and draws
@@ -567,7 +587,8 @@ Tests are the floor, and three things here are not testable from a fixture:
     positions, and indefensible the moment `list_holdings` ships. So either the
     `get_coverage_report` field table and `accounts_without_coverage`'s guidance say which
     domain they speak for, or #107 is resolved here; what is not available any more is
-    silence
+    silence. **Route taken (2026-09-13): the domain is named, and #107 stays open** for the fix
+    that changes two published row shapes
   - 🔴 **the new kind landed across every surface in ONE commit.** A warning kind is a shared
     closed set, and the surfaces are: `envelope.REQUEST_SCOPED_KINDS`; the guidance map in
     `src/bankmachine/mcp_resources.py` (a kind with no section fails
@@ -579,8 +600,12 @@ Tests are the floor, and three things here are not testable from a fixture:
 - **Tests:** unit — the kind is in the request-scoped tuple and not the connection-scoped
   one, and its absence is information (a fresh capture raises nothing); the guidance map
   covers every kind in the vocabulary. Integration — a store whose last holdings capture is
-  old answers with the warning and still returns the rows; an unpriceable security is named
-  under `rule-applied` and excluded from the total rather than silently rounded.
+  old answers with the warning and still returns the rows; an unpriceable position is named
+  under `rule-applied` — account, security and currency — and is absent from the rows rather than
+  silently rounded (the tool emits no total, so there is none to exclude it from); an account whose
+  only position was refused still names it. Migration 011 — a populated store upgrades with the
+  table empty and `store rebuild` fills it from the archive; a refusal obeys the append rule as a
+  position does. Schema and rebuild both change, so the norm tests are re-proven red.
 - **Acceptance criteria:** every degraded holdings answer says so on the success path; no
   answer raises an exception for incompleteness; the primer is within budget.
 - **Critic mode:** cumulative

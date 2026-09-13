@@ -34,13 +34,15 @@ alternative is a module that quietly stops testing the migration anyone is about
 to run. It was first written against migration 004 and has moved with each one
 since; the constants below name the one it points at.
 
-🔴 **A column a migration adds must come out EMPTY on the rows that predate it,
-and the newest one shows why.** 010 adds `holdings.price_as_of`, and the read
+🔴 **Whatever a migration adds must come out EMPTY on the store that predates
+it, and the two newest show why.** 010 adds `holdings.price_as_of`, and the read
 path serves a null there as *the price date is unknown* -- never as *priced on
-the capture day*. No `ALTER TABLE ... ADD COLUMN` can know the date of the price
-a position was valued at, so a migration that put anything there would make that
-reading false. The remedy is `store rebuild`, and the tests at the bottom are
-what say each remedy works rather than merely being prescribed.
+the capture day*; no `ALTER TABLE ... ADD COLUMN` can know the date of the price
+a position was valued at. 011 creates `refused_holdings`, and no migration can
+know which archived positions a build refused, so the table arrives with no
+rows. Anything else in either place would make its reading false. The remedy
+for both is `store rebuild`, and the tests at the bottom are what say each
+remedy works rather than merely being prescribed.
 
 🔴 **006's fixture is KEPT rather than retired with the re-point, and that is
 deliberate.** It is the only TABLE REBUILD in this store's history: it creates a
@@ -82,14 +84,15 @@ from bankmachine.store.schema import (
     derivation_versions,
     holdings,
     institutions,
+    refused_holdings,
     securities,
     transactions,
 )
 from bankmachine.store.types import UtcInstant, utc_instant
 
-#: The schema version the seeded store stops at, and the derivation version the
-#: build that served it stamped its rows with -- one migration behind this build,
-#: which is the upgrade an operator's own datastore performs next.
+#: The schema version the store before migration 010 stops at, and the derivation
+#: version the build that served it stamped its rows with -- two migrations behind
+#: this build since the module re-pointed at 011.
 #:
 #: 🔴 Fixed historical numbers, deliberately NOT written as
 #: `SUPPORTED_SCHEMA_VERSION - 1`. Written relatively they move with the
@@ -118,11 +121,31 @@ DESCRIPTION_BEFORE_THE_HOLDINGS_PRICE_DATE = (
     "counted as money leaving the household"
 )
 
-#: The migration the seeded store is missing, the table it adds columns to, and
-#: the columns themselves -- a tuple, because a migration may add more than one.
-THE_PENDING_MIGRATION = SCHEMA_BEFORE_THE_HOLDINGS_PRICE_DATE + 1
-THE_TABLE_IT_EXTENDS = holdings.name
-THE_COLUMNS_IT_ADDS = ("price_as_of",)
+#: 🔴 Kept rather than retired when this module re-pointed at 011: migration 010,
+#: the table it adds a column to, and the column -- a tuple, because a migration
+#: may add more than one. Its fixture is `populated_before_the_holdings_price_date`,
+#: and the tests at the bottom that prove its remedy ride it.
+THE_PRICE_DATE_MIGRATION = SCHEMA_BEFORE_THE_HOLDINGS_PRICE_DATE + 1
+THE_TABLE_THE_PRICE_DATE_MIGRATION_EXTENDS = holdings.name
+THE_COLUMNS_THE_PRICE_DATE_MIGRATION_ADDS = ("price_as_of",)
+
+#: The schema version the newest fixture stops at, and the derivation version the
+#: build serving it stamped -- one migration behind this build, which is the
+#: upgrade an operator's own datastore performs next. Fixed historical numbers,
+#: for the reason the pair above is.
+SCHEMA_BEFORE_THE_REFUSED_HOLDINGS = 10
+DERIVATION_BEFORE_THE_REFUSED_HOLDINGS = 9
+
+#: What that derivation version meant: the one before it, and the price date.
+DESCRIPTION_BEFORE_THE_REFUSED_HOLDINGS = DESCRIPTION_BEFORE_THE_HOLDINGS_PRICE_DATE + (
+    "; and each position stamped with the date of the price the institution valued it at "
+    "(`holdings.price_as_of`)"
+)
+
+#: The migration the newest fixture is missing, and the table it creates. It adds
+#: no column to any table that already exists.
+THE_PENDING_MIGRATION = SCHEMA_BEFORE_THE_REFUSED_HOLDINGS + 1
+THE_TABLE_IT_CREATES = refused_holdings.name
 
 #: The migrations BETWEEN the older fixture and this build, each named with the
 #: version it IS rather than as an offset from the newest.
@@ -166,6 +189,7 @@ THE_PENDING_MIGRATIONS = [
     THE_LINEAGE_MIGRATION,
     THE_ITEM_STANDING_MIGRATION,
     THE_TRANSFER_PAIRS_MIGRATION,
+    THE_PRICE_DATE_MIGRATION,
     THE_PENDING_MIGRATION,
 ]
 THE_COLUMN_IT_WIDENS = "currency"
@@ -220,6 +244,12 @@ AUTHORIZED_DATE = date(2026, 9, 6)
 #: from the one the body sent.
 PRICE_DATE = date(2026, 9, 2)
 SOURCE_SECURITY = "sec-under-upgrade"
+
+#: A second position, in a unit this build has no minor-unit exponent for. The
+#: build that derived it recorded nothing a read could see; migration 011's table
+#: and `store rebuild` are what name it.
+UNPRICEABLE_SECURITY = "sec-unpriceable"
+UNPRICEABLE_CURRENCY = "ZZZ"
 
 
 # --------------------------------------------------------------------------
@@ -299,7 +329,10 @@ def _sync_body() -> bytes:
 
 
 def _holdings_body() -> bytes:
-    """One position, in the shape `/investments/holdings/get` sends it.
+    """Two positions, in the shape `/investments/holdings/get` sends them.
+
+    The second is in a unit this build cannot denominate, so it is refused -- and
+    recorded as refused by the build that knows to.
 
     It lists the same account the sync body does, because a holdings reply carries
     the Item's accounts too and the deriver derives them.
@@ -318,7 +351,18 @@ def _holdings_body() -> bytes:
                     "institution_price_as_of": PRICE_DATE.isoformat(),
                     "iso_currency_code": "USD",
                     "unofficial_currency_code": None,
-                }
+                },
+                {
+                    "account_id": SOURCE_ACCOUNT,
+                    "security_id": UNPRICEABLE_SECURITY,
+                    "quantity": "0.5",
+                    "institution_price": "3.00",
+                    "institution_value": "1.50",
+                    "cost_basis": None,
+                    "institution_price_as_of": PRICE_DATE.isoformat(),
+                    "iso_currency_code": None,
+                    "unofficial_currency_code": UNPRICEABLE_CURRENCY,
+                },
             ],
             "securities": [
                 {
@@ -329,7 +373,16 @@ def _holdings_body() -> bytes:
                     "iso_currency_code": "USD",
                     "unofficial_currency_code": None,
                     "close_price": None,
-                }
+                },
+                {
+                    "security_id": UNPRICEABLE_SECURITY,
+                    "name": "Platypus Coin",
+                    "ticker_symbol": None,
+                    "type": "cryptocurrency",
+                    "iso_currency_code": None,
+                    "unofficial_currency_code": UNPRICEABLE_CURRENCY,
+                    "close_price": None,
+                },
             ],
             "item": {"item_id": SOURCE_CONNECTION},
             "request_id": "req-holdings",
@@ -407,13 +460,46 @@ def populated_at_the_previous_version(config: Config, monkeypatch: pytest.Monkey
     _seed(
         config,
         monkeypatch,
+        DERIVATION_BEFORE_THE_REFUSED_HOLDINGS,
+        DESCRIPTION_BEFORE_THE_REFUSED_HOLDINGS,
+    )
+    _rewind_past_the_refused_holdings(config)
+
+    _refuse_a_fixture_with_nothing_in_it(config)
+    assert THE_TABLE_IT_CREATES not in dump_every_table(config), (
+        "the rewind left the table already there, so the migration under test has nothing to "
+        "create and every assertion below would hold against a store that never moved"
+    )
+    return config
+
+
+@pytest.fixture
+def populated_before_the_holdings_price_date(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> Config:
+    """The same store, two migrations short -- the one 010's price date lands on.
+
+    🔴 **Kept when this module re-pointed at 011.** A store at schema 10 already
+    holds the price date its seeding wrote, so the assertions that 010's column
+    arrives empty and that the rebuild fills it need a store from before it. Its
+    rows carry the derivation version the build serving schema 9 stamped, two
+    behind this one, so a single reverted version bump is the newer fixture's to
+    catch rather than this one's.
+    """
+    _seed(
+        config,
+        monkeypatch,
         DERIVATION_BEFORE_THE_HOLDINGS_PRICE_DATE,
         DESCRIPTION_BEFORE_THE_HOLDINGS_PRICE_DATE,
     )
+    # Oldest undone first, for the reason `populated_before_the_nullable_currency`
+    # gives: the step that makes the file unsupported is the last one taken.
     _rewind_past_the_holdings_price_date(config)
+    _rewind_past_the_refused_holdings(config)
 
     _refuse_a_fixture_with_nothing_in_it(config)
-    assert not set(THE_COLUMNS_IT_ADDS) & set(dump_every_table(config)[THE_TABLE_IT_EXTENDS][0]), (
+    columns = dump_every_table(config)[THE_TABLE_THE_PRICE_DATE_MIGRATION_EXTENDS][0]
+    assert not set(THE_COLUMNS_THE_PRICE_DATE_MIGRATION_ADDS) & set(columns), (
         "the rewind left the column already there, so the migration under test has nothing to "
         "add and every assertion below would hold against a store that never moved"
     )
@@ -452,6 +538,7 @@ def populated_before_the_nullable_currency(
     _rewind_past_the_item_standing(config)
     _rewind_past_the_transfer_pairs(config)
     _rewind_past_the_holdings_price_date(config)
+    _rewind_past_the_refused_holdings(config)
 
     _refuse_a_fixture_with_nothing_in_it(config)
     assert required_columns(config, THE_TABLE_IT_REBUILDS) >= {THE_COLUMN_IT_WIDENS}, (
@@ -487,12 +574,31 @@ def _refuse_a_fixture_with_nothing_in_it(config: Config) -> None:
     assert not empty, f"the derivers wrote nothing into {empty}, so nothing here is under test"
 
 
-def _rewind_past_the_holdings_price_date(config: Config) -> None:
+def _rewind_past_the_refused_holdings(config: Config) -> None:
     """Take the seeded store back to the version before this build's last migration.
 
-    Undoes exactly what migration 010 did -- one column on `holdings`, and its
-    row in `schema_version` -- so the file reports the older version and a
-    reader of it cannot tell it from a store that never crossed the migration.
+    Undoes exactly what migration 011 did -- one table, and its row in
+    `schema_version` -- so the file reports the older version and a reader of it
+    cannot tell it from a store that never crossed the migration. The record the
+    seeding's refusal wrote goes with the table, which is the shape of a store the
+    previous build left: that build recorded no refusal anywhere.
+
+    🔴 **`DROP TABLE`, written out rather than derived from the shipped DDL**, for
+    the reason the column rewind below gives. It is the last rewind in every chain
+    that calls it, because its version row is what makes the file one this build
+    will not open with an ordinary writer.
+    """
+    with writer(config) as conn:
+        conn.execute(f"DROP TABLE {THE_TABLE_IT_CREATES}")
+        conn.execute("DELETE FROM schema_version WHERE version = ?", (THE_PENDING_MIGRATION,))
+
+
+def _rewind_past_the_holdings_price_date(config: Config) -> None:
+    """Take a store back past 010, the migration that added the price date.
+
+    🔴 Kept when the module re-pointed at 011, for the reason the older rewinds
+    below are. Undoes exactly what migration 010 did -- one column on `holdings`,
+    and its row in `schema_version`.
 
     🔴 **`DROP COLUMN`, deliberately not the inverse of the shipped statement.**
     The migration adds the column with `ALTER TABLE ... ADD COLUMN`; reusing that
@@ -500,14 +606,15 @@ def _rewind_past_the_holdings_price_date(config: Config) -> None:
     implementation, and a mistake in the column's declaration would be made
     twice and compared against itself.
 
-    🔴 The store is still at the current version while this runs, which is why an
-    ordinary writer may open it. The rewind is what makes it unsupported, so the
-    version row goes last.
+    It runs before `_rewind_past_the_refused_holdings` in every chain, while the
+    file still reports a version this build serves.
     """
     with writer(config) as conn:
-        for column in THE_COLUMNS_IT_ADDS:
-            conn.execute(f"ALTER TABLE {THE_TABLE_IT_EXTENDS} DROP COLUMN {column}")
-        conn.execute("DELETE FROM schema_version WHERE version = ?", (THE_PENDING_MIGRATION,))
+        for column in THE_COLUMNS_THE_PRICE_DATE_MIGRATION_ADDS:
+            conn.execute(
+                f"ALTER TABLE {THE_TABLE_THE_PRICE_DATE_MIGRATION_EXTENDS} DROP COLUMN {column}"
+            )
+        conn.execute("DELETE FROM schema_version WHERE version = ?", (THE_PRICE_DATE_MIGRATION,))
 
 
 def _rewind_past_the_transfer_pairs(config: Config) -> None:
@@ -698,12 +805,13 @@ def required_columns(config: Config, table_name: str) -> set[str]:
 # --------------------------------------------------------------------------
 
 
-def _assert_only_the_new_column_moved(
+def _assert_only_what_the_migrations_add_moved(
     before: dict[str, TableDump],
     after: dict[str, TableDump],
     added: dict[str, tuple[str, ...]] | None = None,
+    created: tuple[str, ...] = (THE_TABLE_IT_CREATES,),
 ) -> None:
-    """Every table came through unchanged, but for the columns the migrations append.
+    """Every table came through unchanged, but for the columns and tables the migrations add.
 
     🔴 The extended table is compared value by value rather than skipped. A
     migration that reached past its own DDL is exactly what this module exists to
@@ -713,13 +821,22 @@ def _assert_only_the_new_column_moved(
     COLUMN` cannot compute a per-row value, so anything else there came from
     somewhere that had no business writing it.
     """
-    # 🔴 Named per test rather than read off one module constant. A fixture that
-    # crosses ONE migration widens one table; the older fixture crosses several and
-    # widens more than one, and a helper that assumed the newest migration's table would
-    # have exempted `transactions` from comparison entirely on that run -- which
-    # is the one table those extra migrations could have damaged.
-    widened = {THE_TABLE_IT_EXTENDS: THE_COLUMNS_IT_ADDS} if added is None else added
-    assert set(after) == set(before), "the migration added or removed a table"
+    # 🔴 Named per test rather than read off one module constant. The newest
+    # migration widens no table and the older fixtures cross several that do, and a
+    # helper that assumed one migration's table would have exempted `transactions`
+    # from comparison entirely on the oldest run -- which is the one table those
+    # extra migrations could have damaged.
+    widened = {} if added is None else added
+    assert set(after) == set(before) | set(created), (
+        "the migrations added or removed a table other than the ones declared for them"
+    )
+    for name in created:
+        assert name not in before, f"{name} was already there, so no migration created it"
+        assert after[name][1] == [], (
+            f"{name} arrived holding rows, which no CREATE TABLE can do -- so its emptiness "
+            f"does not mean 'nothing recorded yet' and the remedy the upgrade prescribes is "
+            f"unproven"
+        )
     for name in sorted(set(before) - {SCHEMA_VERSION_TABLE} - set(widened)):
         assert after[name] == before[name], f"{name} did not survive the upgrade unchanged"
 
@@ -750,11 +867,11 @@ def test_migrating_a_populated_store_forward_keeps_every_row_it_already_held(
     nothing in it. Here the whole file is read before and after, so a step that
     reached past its own DDL has nowhere to hide.
 
-    🔴 **The new column comes out EMPTY on every row, and that is the assertion
-    the read path depends on.** `price_as_of` is nullable because no `ALTER TABLE
-    ... ADD COLUMN` can know the date of the price a position was valued at, and
-    the read path serves a null as *unknown* -- never as *priced on the capture
-    day*. A migration that put anything there would make that reading false.
+    🔴 **The new table comes out EMPTY, and that is the assertion the remedy
+    depends on.** No migration can know which archived positions a build
+    refused, so an upgraded store names no refusal until `store rebuild` replays
+    the captures -- and a migration that put rows there would be claiming a
+    derivation it never ran.
     """
     before = dump_every_table(populated_at_the_previous_version)
 
@@ -762,11 +879,37 @@ def test_migrating_a_populated_store_forward_keeps_every_row_it_already_held(
 
     assert applied == [THE_PENDING_MIGRATION]
     after = dump_every_table(populated_at_the_previous_version)
-    _assert_only_the_new_column_moved(before, after)
+    _assert_only_what_the_migrations_add_moved(before, after)
     # The highest version, not the last row: the dump sorts by `repr`, and
     # `(10, …)` sorts before `(9, …)`.
     assert max(row[0] for row in after[SCHEMA_VERSION_TABLE][1]) == THE_PENDING_MIGRATION
     assert len(after[SCHEMA_VERSION_TABLE][1]) == len(before[SCHEMA_VERSION_TABLE][1]) + 1
+
+
+def test_migrating_a_store_from_before_the_price_date_leaves_the_new_column_empty(
+    populated_before_the_holdings_price_date: Config,
+) -> None:
+    """🔴 010's own assertion, kept when the module re-pointed at 011.
+
+    `price_as_of` is nullable because no `ALTER TABLE ... ADD COLUMN` can know the
+    date of the price a position was valued at, and the read path serves a null as
+    *unknown* -- never as *priced on the capture day*. A migration that put
+    anything there would make that reading false.
+    """
+    before = dump_every_table(populated_before_the_holdings_price_date)
+
+    applied = migrate(populated_before_the_holdings_price_date)
+
+    assert applied == [THE_PRICE_DATE_MIGRATION, THE_PENDING_MIGRATION]
+    after = dump_every_table(populated_before_the_holdings_price_date)
+    _assert_only_what_the_migrations_add_moved(
+        before,
+        after,
+        added={
+            THE_TABLE_THE_PRICE_DATE_MIGRATION_EXTENDS: THE_COLUMNS_THE_PRICE_DATE_MIGRATION_ADDS
+        },
+    )
+    assert max(row[0] for row in after[SCHEMA_VERSION_TABLE][1]) == THE_PENDING_MIGRATION
 
 
 # --------------------------------------------------------------------------
@@ -793,7 +936,7 @@ def test_migrating_a_populated_store_across_the_table_rebuild_keeps_every_row(
 
     assert applied == THE_PENDING_MIGRATIONS
     after = dump_every_table(populated_before_the_nullable_currency)
-    _assert_only_the_new_column_moved(
+    _assert_only_what_the_migrations_add_moved(
         before,
         after,
         added={
@@ -802,7 +945,7 @@ def test_migrating_a_populated_store_across_the_table_rebuild_keeps_every_row(
                 *THE_COLUMNS_THE_TRANSFER_PAIRS_MIGRATION_ADDS,
             ),
             connections.name: THE_COLUMNS_THE_ITEM_MIGRATION_ADDS,
-            holdings.name: THE_COLUMNS_IT_ADDS,
+            holdings.name: THE_COLUMNS_THE_PRICE_DATE_MIGRATION_ADDS,
         },
     )
     # The highest version, not the last row: the dump sorts by `repr`, and
@@ -982,7 +1125,7 @@ def test_an_upgraded_store_serves_the_values_its_derivers_wrote(
     assert account.last_seen_date is None, (
         "a sync body is not a roster read, so it must not leave a record that one happened"
     )
-    assert stamped == [DERIVATION_BEFORE_THE_HOLDINGS_PRICE_DATE], (
+    assert stamped == [DERIVATION_BEFORE_THE_REFUSED_HOLDINGS], (
         "the upgrade restamped rows it did not re-derive, so their provenance is now a claim "
         "about logic that never touched them"
     )
@@ -1019,7 +1162,7 @@ def test_the_prescribed_rebuild_runs_on_the_store_the_upgrade_produced(
         populated_at_the_previous_version, derivers=ALL_DERIVERS, replay_passes=all_replay_passes
     )
 
-    assert report.previous_derivation_versions == (DERIVATION_BEFORE_THE_HOLDINGS_PRICE_DATE,)
+    assert report.previous_derivation_versions == (DERIVATION_BEFORE_THE_REFUSED_HOLDINGS,)
     assert report.content_changed, (
         "the replay reproduced the upgraded store byte for byte, so the guard this test exists "
         "to exercise was never consulted"
@@ -1224,7 +1367,7 @@ def test_the_rebuild_does_not_invent_the_roster_observation_the_migration_left_e
 
 
 def test_an_upgraded_store_serves_an_unknown_price_date_rather_than_the_capture_day(
-    populated_at_the_previous_version: Config,
+    populated_before_the_holdings_price_date: Config,
 ) -> None:
     """🔴 Between the migration and the rebuild, `list_holdings` must not fill the gap.
 
@@ -1234,9 +1377,9 @@ def test_an_upgraded_store_serves_an_unknown_price_date_rather_than_the_capture_
     store where it is least true. Its rows carry the derivation version the
     previous build stamped, which is the real shape of that store.
     """
-    migrate(populated_at_the_previous_version)
+    migrate(populated_before_the_holdings_price_date)
 
-    rows = query.list_holdings(populated_at_the_previous_version).rows
+    rows = query.list_holdings(populated_before_the_holdings_price_date).rows
 
     assert rows, "the upgraded store served no position, so nothing here is under test"
     assert all(row["price_as_of"] is None for row in rows), (
@@ -1246,7 +1389,7 @@ def test_an_upgraded_store_serves_an_unknown_price_date_rather_than_the_capture_
 
 
 def test_the_rebuild_fills_the_price_dates_migration_010_could_only_leave_empty(
-    populated_at_the_previous_version: Config,
+    populated_before_the_holdings_price_date: Config,
 ) -> None:
     """🔴 The remedy `holdings.price_as_of` is owed, asserted rather than prescribed.
 
@@ -1255,13 +1398,12 @@ def test_the_rebuild_fills_the_price_dates_migration_010_could_only_leave_empty(
     archived capture. So the rebuild is what this asserts, against the date the
     capture SENT rather than whatever came back.
 
-    🔴 **The rows carry a fixed historical derivation version, one behind this
-    build.** Reverting the bump that ships with the column makes the replay's
-    content change unexpected, and the rebuild refuses here rather than on an
-    operator's store.
+    Its rows carry a fixed historical derivation version two behind this build,
+    so a single reverted bump is not this test's to catch: that is the refusal
+    record's rebuild test below, on the store one version back.
     """
-    migrate(populated_at_the_previous_version)
-    with reader_connection(populated_at_the_previous_version) as conn:
+    migrate(populated_before_the_holdings_price_date)
+    with reader_connection(populated_before_the_holdings_price_date) as conn:
         before = conn.execute(select(holdings.c.price_as_of)).scalars().all()
     assert before and all(value is None for value in before), (
         "the fixture holds no position with an empty price date, so the rebuild below has "
@@ -1269,13 +1411,69 @@ def test_the_rebuild_fills_the_price_dates_migration_010_could_only_leave_empty(
     )
 
     report = rebuild(
-        populated_at_the_previous_version, derivers=ALL_DERIVERS, replay_passes=all_replay_passes
+        populated_before_the_holdings_price_date,
+        derivers=ALL_DERIVERS,
+        replay_passes=all_replay_passes,
     )
 
     assert report.change_was_expected, (
         "`store rebuild` would refuse on a store that just gained the price date column. Bump "
         "DERIVATION_VERSION in the commit that populates a new column"
     )
-    with reader_connection(populated_at_the_previous_version) as conn:
+    with reader_connection(populated_before_the_holdings_price_date) as conn:
         after = conn.execute(select(holdings.c.price_as_of)).scalars().all()
     assert after == [PRICE_DATE], "the rebuild did not recover the price date the capture states"
+
+
+# --------------------------------------------------------------------------
+# The refusals migration 011 leaves unrecorded, and the remedy that records them.
+# --------------------------------------------------------------------------
+
+
+def test_the_rebuild_records_the_refusals_migration_011_could_only_leave_empty(
+    populated_at_the_previous_version: Config,
+) -> None:
+    """🔴 The remedy `refused_holdings` is owed, asserted rather than prescribed.
+
+    The archived capture holds a position in a unit this build has no exponent
+    for. The build that derived it recorded nothing but a log line, and the
+    migration creates the table empty -- so until `store rebuild` replays the
+    capture, `list_holdings` cannot name the position it is missing.
+
+    🔴 **The rows carry a fixed historical derivation version, one behind this
+    build.** Reverting the bump that ships with the table makes the replay's
+    content change unexpected, and the rebuild refuses here rather than on an
+    operator's store.
+    """
+    migrate(populated_at_the_previous_version)
+    with reader_connection(populated_at_the_previous_version) as conn:
+        before = conn.execute(select(refused_holdings)).all()
+    assert before == [], "the upgraded store already names a refusal, so nothing below is proved"
+
+    report = rebuild(
+        populated_at_the_previous_version, derivers=ALL_DERIVERS, replay_passes=all_replay_passes
+    )
+
+    assert report.change_was_expected, (
+        "`store rebuild` would refuse on a store that just gained the refusal table. Bump "
+        "DERIVATION_VERSION in the commit that populates a new table"
+    )
+    with reader_connection(populated_at_the_previous_version) as conn:
+        after = conn.execute(
+            select(securities.c.source_security_id, refused_holdings.c.currency).select_from(
+                refused_holdings.join(
+                    securities, securities.c.security_id == refused_holdings.c.security_id
+                )
+            )
+        ).all()
+    assert [tuple(row) for row in after] == [(UNPRICEABLE_SECURITY, UNPRICEABLE_CURRENCY)], (
+        "the rebuild did not record the position the archived capture could not denominate"
+    )
+    named = [
+        warning.detail
+        for warning in query.list_holdings(populated_at_the_previous_version).warnings
+        if warning.kind == "rule-applied"
+    ]
+    assert len(named) == 1 and UNPRICEABLE_CURRENCY in named[0], (
+        "the rebuild recorded the refusal and `list_holdings` still does not name it"
+    )

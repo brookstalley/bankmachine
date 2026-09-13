@@ -1150,3 +1150,31 @@ not evidence about another, so this needs a second real institution enrolled and
 The obligation is **#23**, and it blocks production.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-021`
+
+## VRF-022 — the holdings warnings, read by a model in a real client
+
+**Status:** pending
+
+**Chunk:** investment sync, Chunk 06 · **Raised:** 2026-09-13
+
+**Why a human:** `list_holdings` now carries `positions_not_current`, `rule-applied` for a refused
+position, and `account_no_longer_active` on the success path. Tests assert that each fires and that
+its absence means something; none can say whether a model reading the answer reports a 2021 price as
+a 2021 price, or tells the operator an account holds more than its rows show. That is a reading
+judgement, and it is the whole reason the warnings exist.
+
+**Where to verify:** the sandbox store, migrated to schema 11 and rebuilt, with the sandbox MCP
+server RELAUNCHED on this build first. A server started before the migration refuses the store or
+serves the old surface, which is what left VRF-011 unverifiable three times.
+
+**Verify:**
+
+1. Ask a real client what is in the investment accounts and what it is worth. The answer quotes each
+   value with its price date beside it and does not present a 2021 price as current.
+2. The answer says in plain words that the prices are years older than the capture — not merely that
+   "some data may be stale".
+3. Ask which accounts have no activity. If an investment account is reported uncovered, the answer
+   says the count is the transactions feed's and points at the account's positions rather than
+   calling the account empty.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-022`

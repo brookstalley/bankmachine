@@ -289,7 +289,9 @@ boundary it names — so the *absence* of one is information too:
   reasons are **not a closed list** — read it rather than matching on one you know. Today they
   include a currency this store was never told, an amount it cannot represent exactly in minor
   units, and history from a connection that was linked again and superseded by a newer one. Say
-  the exclusion out loud when you report the total.
+  the exclusion out loud when you report the total. On `list_holdings`, which computes no total, a
+  position the store could not record is **absent from the rows**, and `detail` names its account,
+  security and unit.
 
 - `window_starts_before_coverage` — the window you asked for reaches back past the first covered
   date. Anything before it is *absent rather than zero*.
@@ -302,11 +304,17 @@ boundary it names — so the *absence* of one is information too:
   describe moments a fraction apart. The rows are accurate as of the `as_of` stamp.
 - `accounts_without_coverage` — an account in scope has **never** had a transaction recorded. Its
   empty result means *data not present*, never *no activity*; call `get_coverage_report` for the
-  per-account picture.
+  per-account picture. It speaks for the transactions feed only — an investment account's trades and
+  positions are not counted, so call `list_holdings` for what such an account holds.
 - `account_no_longer_active` — an account in scope is closed, or its institution stopped listing it.
   Its balance froze on the date the row carries and is **not a fact about today**. Totals over
   balances *include* it and say by how much, so quote that magnitude beside the total — the reader
   can subtract it and you cannot.
+- `positions_not_current` — a position in the answer is **not a current value**: its price is more
+  than four calendar days older than the day it was captured, its price date is unknown, or its
+  account was last captured before its connection's transactions last landed. `detail` keeps the
+  three apart. Quote `as_of_date` and `price_as_of` beside any value you report; a null price date
+  is unknown, never recent.
 - `includes_pending_rows` — some contributing rows are authorisation holds that have not settled, so
   the figure can change **with no new activity at all**. Quote settled and pending separately; never
   present their sum as money spent.

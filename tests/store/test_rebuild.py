@@ -400,6 +400,7 @@ def test_the_rebuildable_tables_are_the_ones_carrying_raw_provenance() -> None:
         "transactions",
         "balances_daily",
         "holdings",
+        "refused_holdings",
         "investment_transactions",
     }
 

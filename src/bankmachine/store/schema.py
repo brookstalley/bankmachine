@@ -410,6 +410,34 @@ holdings = Table(
     Column("price_as_of", CalendarDateColumn, nullable=True),
 )
 
+#: Migration 011. A position a capture listed that this build could not record,
+#: because its currency has no known minor-unit exponent or states none. A
+#: refusal is not a position with its value missing -- it lives apart from
+#: `holdings` so a holdings total never meets a row with no figure. A raw
+#: response is its only possible provenance, so the link is NOT NULL and there is
+#: no `source`. Null `currency` means the aggregator stated none.
+refused_holdings = Table(
+    "refused_holdings",
+    metadata,
+    Column("account_id", Integer, ForeignKey("accounts.account_id"), primary_key=True),
+    Column("security_id", Integer, ForeignKey("securities.security_id"), primary_key=True),
+    Column("as_of_date", CalendarDateColumn, primary_key=True),
+    Column("currency", Text, nullable=True),
+    Column("captured_at", UtcInstantColumn, nullable=False),
+    Column(
+        "raw_response_id",
+        Integer,
+        ForeignKey("raw_responses.raw_response_id"),
+        nullable=False,
+    ),
+    Column(
+        "derivation_version_id",
+        Integer,
+        ForeignKey("derivation_versions.derivation_version_id"),
+        nullable=False,
+    ),
+)
+
 investment_transactions = Table(
     "investment_transactions",
     metadata,
@@ -580,3 +608,9 @@ CORE_TABLES = (
     "sync_state",
     "account_rules",
 )
+
+#: The tables a migration after 002 created. Not FR-6's -- that list is a
+#: minimum, and these extend it rather than amend it -- and kept as a literal
+#: beside it for the same reason: a table in the metadata that neither list
+#: names is a contract widened without anyone having decided to widen it.
+LATER_TABLES = ("refused_holdings",)

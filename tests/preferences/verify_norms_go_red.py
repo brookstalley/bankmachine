@@ -90,6 +90,8 @@ WINDOW_TESTS = "tests/test_query_window.py"
 AGGREGATE_TESTS = "tests/test_money_summary.py"
 COVERAGE_TESTS = "tests/test_account_coverage.py"
 LIFECYCLE_TESTS = "tests/test_account_lifecycle.py"
+HOLDINGS_TESTS = "tests/test_list_holdings.py"
+INVESTMENT_DERIVER_TESTS = "tests/connector/test_investment_derivers.py"
 PENDING_TESTS = "tests/test_pending_semantics.py"
 BACKUP = pathlib.Path("src/bankmachine/store/backup.py")
 BACKUP_TESTS = "tests/store/test_backup.py"
@@ -1388,8 +1390,8 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # again, so the documented fix would fail on the store it is for.
         "AC-5.3: a newly-populated column bumps the derivation version",
         pathlib.Path("src/bankmachine/store/derivation.py"),
+        "DERIVATION_VERSION = 10",
         "DERIVATION_VERSION = 9",
-        "DERIVATION_VERSION = 8",
         # 🔴 Pinned to the UPGRADE test, not the lifecycle one. The lifecycle
         # test's store is stamped two versions back, so `change_was_expected`
         # stays true under a single reverted bump and the mutation passes -- the
@@ -1397,7 +1399,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # rows at exactly one version back, which is the operator's real
         # situation and the only gap a single reverted bump closes.
         "tests/store/test_upgrading_a_populated_store.py::"
-        "test_the_rebuild_fills_the_price_dates_migration_010_could_only_leave_empty",
+        "test_the_rebuild_records_the_refusals_migration_011_could_only_leave_empty",
     ),
     (
         "AC-12.7: a non-active account's silence is closure, not a coverage finding",
@@ -1511,8 +1513,12 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # call sites and the harness replaces only the first.
         "AC-12.5a: the answer that draws on an empty roster says so (call site)",
         QUERY,
+        # Widened by the line before it once `list_holdings` gained the same
+        # closing lines with a different `_not_active_caveat` call above them.
+        "                + _not_active_caveat(not_active)\n"
         "                + _roster_observed_empty_caveat(not_active)\n"
         "            ),\n            lifecycle=lifecycle,",
+        "                + _not_active_caveat(not_active)\n"
         "                + []\n            ),\n            lifecycle=lifecycle,",
         f"{LIFECYCLE_TESTS}::test_an_empty_roster_says_which_connection_and_which_accounts",
     ),
@@ -1651,6 +1657,66 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "                        active=True,",
         f"{PENDING_TESTS}::"
         "test_a_stranded_hold_on_a_non_active_account_is_counted_but_not_asked_about",
+    ),
+    (
+        # A position refused for its unit reached a log line and nothing else until
+        # the refusal was recorded, so this is the half of the valuation norm that
+        # names what was refused rather than the half that refuses it.
+        "valuation norm: a refused position is recorded, not only logged",
+        CONNECTOR_DERIVERS,
+        "    conn.execute(\n        insert(refused_holdings).values(",
+        "    return\n    conn.execute(\n        insert(refused_holdings).values(",
+        f"{INVESTMENT_DERIVER_TESTS}::"
+        "test_a_position_in_an_unknown_unit_costs_that_position_and_no_other",
+    ),
+    (
+        "valuation norm: a refused position is named under rule-applied",
+        QUERY,
+        "                _refused_positions_caveat(refused)\n"
+        "                + _positions_not_current_caveat(",
+        "                []\n                + _positions_not_current_caveat(",
+        f"{HOLDINGS_TESTS}::test_a_refused_position_is_named_under_rule_applied_and_absent_from_the_rows",
+    ),
+    (
+        # Without it an account whose newest capture refused every position answers
+        # from an older day, serving what it may no longer hold as its latest.
+        "a refusal counts as a capture when finding an account's latest day",
+        QUERY,
+        "            if captured != latest[account_id]:\n                continue",
+        "            if False:\n                continue",
+        f"{HOLDINGS_TESTS}::"
+        "test_an_account_whose_newest_capture_refused_every_position_answers_from_that_day",
+    ),
+    (
+        "positions_not_current: a price older than its capture is named",
+        QUERY,
+        "            elif captured - calendar_date(priced) > POSITION_PRICE_STALE_AFTER:",
+        "            elif False:",
+        f"{HOLDINGS_TESTS}::"
+        "test_the_recorded_capture_says_its_prices_are_older_than_the_day_it_was_captured",
+    ),
+    (
+        "positions_not_current: an unknown price date is named, never read as fresh",
+        QUERY,
+        "                unknown_prices[account_id] = unknown_prices.get(account_id, 0) + 1",
+        "                pass",
+        f"{HOLDINGS_TESTS}::"
+        "test_an_unknown_price_date_is_named_unknown_rather_than_treated_as_fresh",
+    ),
+    (
+        "positions_not_current: a capture behind its connection's transactions is named",
+        QUERY,
+        "            if connection_id is not None and "
+        "captured < landed.get(connection_id, captured):",
+        "            if False:",
+        f"{HOLDINGS_TESTS}::test_a_capture_older_than_its_connections_transactions_is_named",
+    ),
+    (
+        "lifecycle norm: a position on a non-active account says so",
+        QUERY,
+        "        not_active = [lifecycle[a] for a in sorted(latest) if not lifecycle[a].active]",
+        "        not_active: list[AccountLifecycle] = []",
+        f"{HOLDINGS_TESTS}::test_a_position_on_a_closed_account_says_its_positions_froze",
     ),
 ]
 

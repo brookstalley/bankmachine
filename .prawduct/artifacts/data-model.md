@@ -11,7 +11,8 @@ last_validated: null
 
 # Data Model — bankmachine
 
-**Scope:** the thirteen tables of `docs/system-requirements.md` FR-6, their relationships, their
+**Scope:** the thirteen tables of `docs/system-requirements.md` FR-6 and the one a later migration added
+beside them (`refused_holdings`), their relationships, their
 lifecycles, and the invariants that hold across them. This artifact is the home of §4's data-model
 criteria (AC-5.1 through AC-8.5) at the level a reader needs before touching a query.
 
@@ -127,7 +128,9 @@ nothing to migrate or grandfather.
   > defaulting; `has_minor_digits` is the same question asked without an exception, and is what the
   > read path uses to exclude such an account from a minor-units aggregate and name it under
   > `rule-applied`. Adding a currency's exponent to that table is the whole remedy: the amount then
-  > derives exactly and nothing is refused or warned about.
+  > derives exactly and nothing is refused or warned about. A refused POSITION is also RECORDED, in
+  > `refused_holdings` (migration 011), because a skipped holding leaves nothing else a read can see;
+  > `list_holdings` names it under `rule-applied`.
   Status: steady-state.
 
 - **All monetary values are stored as integer minor units. No floats anywhere in the schema or in
@@ -533,6 +536,18 @@ price. Nullable, and last in column order because `ALTER TABLE` put it there. Nu
 the row predates the column and has not been rebuilt, or the institution sent none — and is never read
 as the capture day.
 
+🔴 **`refused_holdings` (migration 011) records the positions a capture listed and this build could
+not.** A position whose currency has no minor-unit exponent this build knows, or states none, is
+refused per row (the valuation norm above), and a skipped holding leaves nothing else a read can see —
+so the refusal is recorded: keyed `(account_id, security_id, as_of_date)` like a position, `currency`
+null where none was stated, and a NOT NULL `raw_response_id`, because only deriving an archived capture
+refuses one. It obeys the holdings append rule, is rebuildable like every table pointing at a raw
+response, and is filled from the archive by `store rebuild`. It is kept apart from `holdings` so a total
+over positions never meets a row with no figure. It is not one of FR-6's thirteen, which are a minimum:
+`store/schema.py` declares it in `LATER_TABLES`, so the metadata guard still refuses a table nobody
+named. `list_holdings` reads an account's latest capture day across both tables and names each refusal
+under `rule-applied`.
+
 `investment_transactions` carries the same identity, provenance, and soft-delete shape as
 `transactions`, keyed on `trade_date`.
 
@@ -596,6 +611,7 @@ derivation_versions ──(stamps every silver row)──┐
 institutions ──1:N──> connections ──1:N──> accounts ──1:N──> transactions
       │                     │                   │      └───> balances_daily      (1:N, one per day)
       └────────1:N──────────┼───────────────────┤      └───> holdings            (1:N, one per security per day)
+                            │                   │      └───> refused_holdings    (1:N, one per security per day)
                             │                   │      └───> investment_transactions
                             │                   └───> account_rules              (1:N, ≤1 per rule_type)
                             │                   └───> manual_imports             (1:N)
@@ -603,6 +619,7 @@ institutions ──1:N──> connections ──1:N──> accounts ──1:N─
                             └──1:N──> sync_state   (exactly one per domain)
 
 securities ──1:N──> holdings
+           ──1:N──> refused_holdings
            ──1:N──> investment_transactions
 ```
 

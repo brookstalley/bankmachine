@@ -177,12 +177,15 @@ _GUIDANCE: dict[str, _Guidance] = {
             "rows were deliberately excluded from an aggregate, so the total excludes them. "
             "🔴 `detail` names which rows and why, and the reasons are NOT a closed list -- read "
             "it rather than matching on one you know. Today they include a currency this store "
-            "was never told, an amount it cannot represent exactly, and history from a "
-            "connection that was linked again and superseded by a newer one"
+            "was never told, an amount it cannot represent exactly, history from a "
+            "connection that was linked again and superseded by a newer one, and -- on "
+            "`list_holdings`, which computes no total -- a position the store could not record"
         ),
         for_this_answer=(
             "the figure is smaller than the raw sum over the same window, and deliberately so; "
-            "it will not reconcile against a total computed without the rule"
+            "it will not reconcile against a total computed without the rule. On "
+            "`list_holdings` the named positions are ABSENT from `rows`, so each named account "
+            "holds more than its rows show"
         ),
         act=(
             "🔴 say the exclusion out loud when you report the total. An exclusion silently "
@@ -239,7 +242,8 @@ _GUIDANCE: dict[str, _Guidance] = {
     "accounts_without_coverage": _Guidance(
         means=(
             "an account inside the scope of this request has NEVER had a transaction "
-            "recorded -- not none in this window, none at all, ever"
+            "recorded -- not none in this window, none at all, ever. It speaks for the "
+            "TRANSACTIONS feed only: investment trades and positions are recorded apart from it"
         ),
         for_this_answer=(
             "any row count, total or empty result touching that account describes ABSENT "
@@ -251,7 +255,9 @@ _GUIDANCE: dict[str, _Guidance] = {
             "never report zero activity for a named account carrying this warning. Say the "
             "account has no transaction data at all, and call `get_coverage_report` for the "
             "per-account picture -- `transaction_count`, the first and last transaction, and "
-            "how long it has been silent against its own cadence."
+            "how long it has been silent against its own cadence. For an investment account, "
+            "call `list_holdings` for what it holds -- `transaction_count` does not count its "
+            "trades."
         ),
     ),
     "counted_during_change": _Guidance(
@@ -279,7 +285,8 @@ _GUIDANCE: dict[str, _Guidance] = {
             "today. A liability that was paid off still reads as debt owed; an asset that was "
             "emptied into another enrolled account still reads as money held, and is counted "
             "twice. Any total over balances carrying this warning states how much of itself "
-            "came from such accounts"
+            "came from such accounts. On `list_holdings`, that account's positions froze on the "
+            "day they were captured in the same way"
         ),
         act=(
             "quote the total as given AND quote the flagged magnitude beside it -- the total "
@@ -289,6 +296,25 @@ _GUIDANCE: dict[str, _Guidance] = {
             "the row to see which it is: `closed` is the operator's own declaration, while "
             "`no_longer_reported` only means the institution stopped listing it, which is "
             "equally consistent with the account being de-selected from sharing."
+        ),
+    ),
+    "positions_not_current": _Guidance(
+        means=(
+            "a position in this answer is not a current value, and `detail` keeps the reasons "
+            "apart: its price is more than four calendar days older than the day it was "
+            "captured; its price date is UNKNOWN; or its account was last captured before its "
+            "connection's transactions last landed, so its investments have stopped arriving"
+        ),
+        for_this_answer=(
+            "`market_value_minor_units` on those rows is the price as of `price_as_of` times "
+            "the quantity held on `as_of_date` -- a figure that can be years old while every "
+            "field on the row is well-formed. A null `price_as_of` is unknown, never recent"
+        ),
+        act=(
+            "report each such value with its `as_of_date` and `price_as_of` beside it, and never "
+            "call it today's value. Where an account's capture is behind its transactions, say "
+            "its positions may have changed since, and read that connection's "
+            "`rows[].domains[]` in `get_pipeline_health` for why its investments stopped."
         ),
     ),
     "roster_observed_empty": _Guidance(

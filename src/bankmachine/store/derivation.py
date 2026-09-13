@@ -68,7 +68,7 @@ logger = get_logger("store.derivation")
 #: column. AC-5.3 exists because losslessness is only well-defined against a
 #: recorded version: without one, an upstream taxonomy change and a rebuild bug
 #: are indistinguishable, since both simply produce different rows than before.
-DERIVATION_VERSION = 9
+DERIVATION_VERSION = 10
 
 #: What that version means, recorded beside it so a datastore carrying rows from
 #: an old version says something useful about them years later.
@@ -86,7 +86,9 @@ DERIVATION_DESCRIPTION = (
     "expiry and its standing error recorded on the connection; and the two legs of a "
     "transfer between enrolled accounts paired, so a movement between them is not "
     "counted as money leaving the household; and each position stamped with the date of "
-    "the price the institution valued it at (`holdings.price_as_of`)"
+    "the price the institution valued it at (`holdings.price_as_of`); and a position refused for "
+    "a currency with no known minor-unit exponent, or none stated, recorded where a read can "
+    "name it (`refused_holdings`)"
 )
 
 

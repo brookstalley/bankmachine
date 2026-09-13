@@ -35,6 +35,7 @@ from bankmachine.store.schema import (
     holdings,
     institutions,
     manual_imports,
+    refused_holdings,
     securities,
     sync_state,
 )
@@ -168,6 +169,40 @@ def stored_row(config: Config, entry: dict[str, Any]) -> dict[str, Any]:
     matched = stored_rows(config, entry)
     assert len(matched) == 1, f"expected one stored position, found {len(matched)}"
     return matched[0]
+
+
+def refusals(config: Config) -> list[tuple[Any, ...]]:
+    """Every recorded refusal, named by the capture's own ids rather than local ones.
+
+    `(account, security, currency, capture day, captured_at)` -- the capture's ids,
+    so an assertion compares against the payload entry it altered rather than
+    against whatever local id the store happened to allocate.
+    """
+    with reader_connection(config) as conn:
+        result = conn.execute(
+            select(
+                accounts.c.source_account_id,
+                securities.c.source_security_id,
+                refused_holdings.c.currency,
+                refused_holdings.c.as_of_date,
+                refused_holdings.c.captured_at,
+            )
+            .select_from(
+                refused_holdings.join(
+                    accounts, accounts.c.account_id == refused_holdings.c.account_id
+                ).join(securities, securities.c.security_id == refused_holdings.c.security_id)
+            )
+            .order_by(accounts.c.source_account_id, securities.c.source_security_id)
+        )
+        return [tuple(row) for row in result.all()]
+
+
+def _in_unit(code: str) -> dict[str, Any]:
+    """The recorded capture with its first position moved into `code`."""
+    payload = recorded()
+    payload["holdings"][0]["iso_currency_code"] = None
+    payload["holdings"][0]["unofficial_currency_code"] = code
+    return payload
 
 
 # --------------------------------------------------------------------------
@@ -388,6 +423,12 @@ def test_a_position_in_an_unknown_unit_costs_that_position_and_no_other(
     assert len(rows(enrolled, holdings)) == len(payload["holdings"]) - 1
     assert stored_rows(enrolled, odd) == []
     assert any("cannot express in minor units" in r.getMessage() for r in caplog.records)
+    # 🔴 And the refusal is recorded where a read can name it. A log line is seen
+    # by nobody who calls a tool, so without this the account's other positions
+    # are served as though they were all of them.
+    assert refusals(enrolled) == [
+        (odd["account_id"], odd["security_id"], "ZZZ", calendar_date(RECEIVED.date()), RECEIVED)
+    ], "the refused position left no record a read could name it from"
 
 
 def test_a_position_with_no_stated_currency_is_not_recorded_under_a_borrowed_one(
@@ -405,6 +446,54 @@ def test_a_position_with_no_stated_currency_is_not_recorded_under_a_borrowed_one
 
     assert len(rows(enrolled, holdings)) == len(payload["holdings"]) - 1
     assert any("states no currency" in r.getMessage() for r in caplog.records)
+    assert refusals(enrolled) == [
+        (entry["account_id"], entry["security_id"], None, calendar_date(RECEIVED.date()), RECEIVED)
+    ], "a position with no stated unit left no record, or recorded a unit nobody stated"
+
+
+def test_a_capture_whose_every_position_derives_records_no_refusal(enrolled: Config) -> None:
+    """The record's ABSENCE is what a read takes to mean nothing was left out."""
+    _apply(enrolled, INVESTMENTS_HOLDINGS_GET.path, _holdings_body(recorded()))
+
+    assert refusals(enrolled) == []
+
+
+def test_a_refusal_keeps_the_first_capture_of_its_day_as_a_position_does(enrolled: Config) -> None:
+    """🔴 The append rule a position obeys, applied to the record standing in for one.
+
+    A later capture the same day leaves the day's record alone, so what a read
+    names does not depend on what time anyone happened to sync.
+    """
+    _apply(enrolled, INVESTMENTS_HOLDINGS_GET.path, _holdings_body(_in_unit("ZZZ")))
+    _apply(
+        enrolled,
+        INVESTMENTS_HOLDINGS_GET.path,
+        _holdings_body(_in_unit("QQQ")),
+        received_at=SAME_DAY_LATER,
+    )
+
+    assert [(r[2], r[4]) for r in refusals(enrolled)] == [("ZZZ", RECEIVED)]
+
+
+def test_an_earlier_archived_refusal_replaces_the_record_a_later_capture_wrote(
+    enrolled: Config,
+) -> None:
+    """Replay order must not decide which refusal a day keeps, or a rebuild
+    reports content it could not reproduce."""
+    _apply(
+        enrolled,
+        INVESTMENTS_HOLDINGS_GET.path,
+        _holdings_body(_in_unit("QQQ")),
+        received_at=SAME_DAY_LATER,
+    )
+    _apply(
+        enrolled,
+        INVESTMENTS_HOLDINGS_GET.path,
+        _holdings_body(_in_unit("ZZZ")),
+        received_at=SAME_DAY_EARLIER,
+    )
+
+    assert [(r[2], r[4]) for r in refusals(enrolled)] == [("ZZZ", SAME_DAY_EARLIER)]
 
 
 def test_a_position_of_unstated_value_is_refused_rather_than_zeroed(enrolled: Config) -> None:
