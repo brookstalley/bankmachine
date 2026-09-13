@@ -25,11 +25,13 @@ from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
 from bankmachine.store.schema import (
+    INVESTMENTS_DOMAIN,
     TRANSACTIONS_DOMAIN,
     connections,
     holdings,
     institutions,
     refused_holdings,
+    securities,
     sync_state,
 )
 from bankmachine.store.schema import accounts as accounts_table
@@ -345,6 +347,23 @@ def _transactions_landed(config: Config, at: UtcInstant) -> None:
         )
 
 
+def _investments_landed(config: Config, at: UtcInstant | None, *, error: str | None = None) -> None:
+    """The connection's INVESTMENTS domain: last succeeded at `at`, last failed with `error`."""
+    attempted = CAPTURED if at is None else at
+    with writer_connection(config) as conn:
+        conn.execute(
+            insert(sync_state).values(
+                connection_id=1,
+                domain=INVESTMENTS_DOMAIN,
+                last_attempt_at=attempted,
+                last_success_at=at,
+                last_error_code=error,
+                last_error_at=None if error is None else attempted,
+                updated_at=attempted,
+            )
+        )
+
+
 def _close(config: Config, account_id: int) -> None:
     """The operator's own closure, recorded the way the lifecycle tests record one."""
     with writer_connection(config) as conn:
@@ -420,24 +439,73 @@ def test_an_unknown_price_date_is_named_unknown_rather_than_treated_as_fresh(
     assert "priced as early as" not in details[0], "an unknown date was read as a known one"
 
 
-@pytest.mark.parametrize(("landed", "named"), [(CAPTURED, False), (CAPTURED_LATER, True)])
-def test_a_capture_older_than_its_connections_transactions_is_named(
+@pytest.mark.parametrize(
+    ("landed", "named"),
+    [(utc_instant(CAPTURED + timedelta(seconds=1)), False), (CAPTURED_LATER, True)],
+)
+def test_an_investments_feed_that_last_succeeded_before_its_transactions_landed_is_named(
     enrolled: Config, landed: UtcInstant, named: bool
 ) -> None:
-    """🔴 The investments pull stopped while the rest of the connection carried on.
+    """🔴 The investments feed stopped while the rest of the connection carried on.
 
-    Prices are fresh here, so only the capture's age can raise the warning. The
-    same-day case is the control: a capture on the day the transactions landed is
-    as current as the connection is.
+    Read from the investments domain's own `sync_state` row. Prices are fresh
+    here, so only the feed can raise the warning. The control lands the
+    transactions a second AFTER the investments succeeded, which is how one sync
+    stamps the two domains on the real store: a comparison of instants rather
+    than days would name every healthy connection as stopped.
     """
     _seed(enrolled, _priced(recorded(), CAPTURED.date()))
+    _investments_landed(enrolled, CAPTURED)
     _transactions_landed(enrolled, landed)
 
     details = _warnings(enrolled, "positions_not_current")
 
     assert bool(details) is named
     if named:
-        assert f"landed {CAPTURED_LATER.date().isoformat()}" in details[0]
+        assert (
+            f"its connection's investments feed last succeeded {CAPTURED.date().isoformat()}, "
+            f"its transactions landed {CAPTURED_LATER.date().isoformat()})"
+        ) in details[0]
+
+
+def test_a_failed_investments_pull_is_named_as_a_stopped_feed_with_its_code(
+    enrolled: Config,
+) -> None:
+    """A pull whose last attempt failed has stopped, whatever day it last succeeded."""
+    _seed(enrolled, _priced(recorded(), CAPTURED.date()))
+    _investments_landed(enrolled, CAPTURED, error="PRODUCT_NOT_READY")
+    _transactions_landed(enrolled, CAPTURED)
+
+    details = _warnings(enrolled, "positions_not_current")
+
+    assert len(details) == 1
+    assert (
+        f"its connection's last investments pull failed with PRODUCT_NOT_READY; it last "
+        f"succeeded {CAPTURED.date().isoformat()})"
+    ) in details[0]
+
+
+def test_a_successful_pull_that_listed_no_position_is_not_called_a_stopped_feed(
+    enrolled: Config,
+) -> None:
+    """🔴 A pull that succeeds and lists nothing writes no row, and its feed is working.
+
+    By capture dates alone, the account's newest capture sits behind the day its
+    transactions landed and the feed reads as stopped. Its own domain says the
+    pull succeeded that day, so the positions are named as possibly gone instead.
+    """
+    _seed(enrolled, _priced(recorded(), CAPTURED.date()))
+    _investments_landed(enrolled, CAPTURED_LATER)
+    _transactions_landed(enrolled, CAPTURED_LATER)
+
+    details = _warnings(enrolled, "positions_not_current")
+
+    assert len(details) == 1
+    assert "stopped" not in details[0], "a working feed was named as a stopped one"
+    assert (
+        f"its connection's newest investments pull, {CAPTURED_LATER.date().isoformat()}, "
+        f"listed none for it)"
+    ) in details[0], "the pull that listed nothing went unsaid"
 
 
 def test_a_refused_position_is_named_under_rule_applied_and_absent_from_the_rows(
@@ -547,19 +615,40 @@ def _refusing_first_position(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def _the_disputed_key(config: Config) -> tuple[int, int]:
-    """The one refused key, asserted to be held by BOTH tables -- the state under test."""
+def _the_disputed_key(config: Config, expected: str) -> tuple[int, int]:
+    """The first position's key, asserted to be recorded by the ONE table `expected` names.
+
+    🔴 The state the real producer leaves: the deriver claims a position's day
+    across both tables, so two captures disagreeing about its unit leave exactly
+    one record, and a read never has to choose between a row and its refusal.
+    """
+    entry = recorded()["holdings"][0]
     with reader_connection(config) as conn:
-        account_id, security_id = conn.execute(
-            select(refused_holdings.c.account_id, refused_holdings.c.security_id)
-        ).one()
-        held = conn.execute(
-            select(func.count())
-            .select_from(holdings)
-            .where(holdings.c.account_id == account_id, holdings.c.security_id == security_id)
-        ).scalar_one()
-    assert held == 1, "the captures did not leave the key in both tables, so nothing is under test"
-    return int(account_id), int(security_id)
+        account_id = int(
+            conn.execute(
+                select(accounts_table.c.account_id).where(
+                    accounts_table.c.source_account_id == entry["account_id"]
+                )
+            ).scalar_one()
+        )
+        security_id = int(
+            conn.execute(
+                select(securities.c.security_id).where(
+                    securities.c.source_security_id == entry["security_id"]
+                )
+            ).scalar_one()
+        )
+        held = {
+            table.name
+            for table in (holdings, refused_holdings)
+            if conn.execute(
+                select(func.count())
+                .select_from(table)
+                .where(table.c.account_id == account_id, table.c.security_id == security_id)
+            ).scalar_one()
+        }
+    assert held == {expected}, f"the day recorded the position in {sorted(held)}"
+    return account_id, security_id
 
 
 def test_a_days_first_capture_refusing_a_position_keeps_it_out_of_the_rows(
@@ -567,13 +656,12 @@ def test_a_days_first_capture_refusing_a_position_keeps_it_out_of_the_rows(
 ) -> None:
     """🔴 Two captures on one day disagree about a position's unit; the FIRST decides.
 
-    The deriver leaves a row in each table -- each keeps its own first capture --
-    so this is the state the real producer leaves. The answer must not serve the
-    position while its disclosure says the position is absent.
+    The answer must not serve the position while its disclosure says the
+    position is absent.
     """
     _seed(enrolled, _refusing_first_position(_priced(recorded(), CAPTURED.date())))
     _seed(enrolled, _priced(recorded(), CAPTURED.date()), CAPTURED_SAME_DAY)
-    account_id, security_id = _the_disputed_key(enrolled)
+    account_id, security_id = _the_disputed_key(enrolled, "refused_holdings")
 
     answer = query.list_holdings(enrolled)
 
@@ -591,7 +679,7 @@ def test_a_days_first_capture_recording_a_position_is_not_named_absent(enrolled:
     _seed(
         enrolled, _refusing_first_position(_priced(recorded(), CAPTURED.date())), CAPTURED_SAME_DAY
     )
-    account_id, security_id = _the_disputed_key(enrolled)
+    account_id, security_id = _the_disputed_key(enrolled, "holdings")
 
     answer = query.list_holdings(enrolled)
 
@@ -618,6 +706,7 @@ def _left_behind_by_a_newer_capture(
     later = _priced(copy.deepcopy(earlier), CAPTURED_LATER.date())
     later["holdings"] = [h for h in later["holdings"] if h["account_id"] == moved]
     _seed(config, later, CAPTURED_LATER)
+    _investments_landed(config, CAPTURED_LATER)
     _transactions_landed(config, transactions_landed)
     left = {
         row["account_id"]
@@ -644,9 +733,9 @@ def test_an_account_left_out_of_a_newer_capture_is_not_blamed_on_the_feed(
     for account_id in left:
         assert (
             f"{account_id} (positions from {CAPTURED.date().isoformat()}; its connection's newest "
-            f"capture, {CAPTURED_LATER.date().isoformat()}, listed none for it)"
+            f"investments pull, {CAPTURED_LATER.date().isoformat()}, listed none for it)"
         ) in details[0]
-    assert "stopped arriving" not in details[0], "a working feed was named as a stopped one"
+    assert "stopped" not in details[0], "a working feed was named as a stopped one"
 
 
 def test_an_account_left_out_of_a_newer_capture_that_is_itself_behind_is_named_for_both(
@@ -668,11 +757,12 @@ def test_an_account_left_out_of_a_newer_capture_that_is_itself_behind_is_named_f
     for account_id in left:
         assert (
             f"{account_id} (positions from {CAPTURED.date().isoformat()}; its connection's newest "
-            f"capture, {CAPTURED_LATER.date().isoformat()}, listed none for it)"
+            f"investments pull, {CAPTURED_LATER.date().isoformat()}, listed none for it)"
         ) in details[0]
         assert (
-            f"{account_id} (captured {CAPTURED.date().isoformat()}, its connection's transactions "
-            f"landed {landed.date().isoformat()})"
+            f"{account_id} (captured {CAPTURED.date().isoformat()}; its connection's investments "
+            f"feed last succeeded {CAPTURED_LATER.date().isoformat()}, its transactions landed "
+            f"{landed.date().isoformat()})"
         ) in details[0], "the stopped feed went unsaid for an account a newer capture left out"
     assert "The feed is working" not in details[0], "a stopped feed was called a working one"
 
@@ -691,6 +781,93 @@ def test_a_closed_account_left_out_of_a_newer_capture_is_named_only_as_inactive(
 # --------------------------------------------------------------------------
 # The surface around the tool
 # --------------------------------------------------------------------------
+
+
+def _totals(answer: envelope.Answer) -> dict[str, dict[str, Any]]:
+    assert answer.totals is not None, "list_holdings carried no totals block"
+    return {str(entry["currency"]): entry for entry in answer.totals}
+
+
+def test_the_totals_add_up_the_rows_per_currency(enrolled: Config) -> None:
+    """Summed from the rows beside them, and equal to what the capture itself states."""
+    _seed(enrolled, recorded())
+
+    answer = query.list_holdings(enrolled)
+
+    assert answer.rows, "no rows, so the totals summed nothing"
+    by_currency: dict[str, tuple[int, int]] = {}
+    for row in answer.rows:
+        count, value = by_currency.get(row["currency"], (0, 0))
+        by_currency[row["currency"]] = (count + 1, value + row["market_value_minor_units"])
+    totals = _totals(answer)
+    assert {c: (e["positions"], e["market_value_minor_units"]) for c, e in totals.items()} == (
+        by_currency
+    )
+    assert sum(e["market_value_minor_units"] for e in totals.values()) == sum(
+        _cents(entry["institution_value"]) for entry in recorded()["holdings"]
+    ), "the totals disagree with the values the capture sent"
+
+
+def test_a_position_on_a_closed_account_stays_in_the_total_and_its_part_is_stated(
+    enrolled: Config,
+) -> None:
+    """🔴 Include and flag, WITH the magnitude: the lifecycle norm's treatment of a total.
+
+    Excluding the frozen positions would shrink the total with nothing pointing
+    at what left it; including them with only a flag leaves a reader unable to
+    subtract them. So they stay in, and their count and value ride beside.
+    """
+    _seed(enrolled, recorded())
+    before = _totals(query.list_holdings(enrolled))
+    closed = query.list_holdings(enrolled).rows[0]["account_id"]
+    _close(enrolled, closed)
+
+    answer = query.list_holdings(enrolled)
+
+    frozen = [row for row in answer.rows if row["account_id"] == closed]
+    entry = _totals(answer)[frozen[0]["currency"]]
+    assert (
+        entry["market_value_minor_units"]
+        == (before[frozen[0]["currency"]]["market_value_minor_units"])
+    ), "closing the account took its positions out of the total"
+    assert entry["not_active_positions"] == len(frozen)
+    assert entry["not_active_market_value_minor_units"] == sum(
+        row["market_value_minor_units"] for row in frozen
+    )
+    assert entry["not_active_market_value_minor_units"] != 0, (
+        "the closed account's positions are worth nothing, so the magnitude checked nothing"
+    )
+
+
+def test_the_non_active_part_of_the_totals_is_present_and_zero_when_nothing_qualifies(
+    enrolled: Config,
+) -> None:
+    _seed(enrolled, recorded())
+
+    totals = _totals(query.list_holdings(enrolled))
+
+    assert totals, "no totals entry, so nothing was checked"
+    for entry in totals.values():
+        assert entry["not_active_positions"] == 0
+        assert entry["not_active_market_value_minor_units"] == 0
+
+
+def test_a_store_holding_no_positions_carries_an_empty_totals_block(enrolled: Config) -> None:
+    assert query.list_holdings(enrolled).totals == []
+
+
+def test_a_missing_datastore_still_carries_an_empty_totals_block(config: Config) -> None:
+    assert query.list_holdings(config).totals == []
+
+
+def test_a_refused_position_is_not_in_the_totals(enrolled: Config) -> None:
+    """It has no minor units to add, and `rule-applied` already names it absent."""
+    _seed(enrolled, _refusing_first_position(recorded()))
+
+    answer = query.list_holdings(enrolled)
+
+    assert len(answer.rows) == len(recorded()["holdings"]) - 1
+    assert sum(e["positions"] for e in _totals(answer).values()) == len(answer.rows)
 
 
 def test_the_strict_row_guard_refuses_an_optional_field_on_list_holdings() -> None:

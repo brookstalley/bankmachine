@@ -238,6 +238,19 @@ the balance-lifecycle norm names one unmigrated emitter it does not grandfather.
   removed**, not merely with the flag flipped. Those are two cases in `verify_norms_go_red.py`
   deliberately, because a flag with no figure passes the norm's letter and fails the reason it was
   born: a consumer told something is included and handed nothing to subtract.
+  **Ruling (2026-09-13, owner): net worth over TIME sits at this norm's edge, not inside it.**
+  `balance_history` counts an account no longer active through its last capture and not after,
+  rather than carrying its last balance forward into later days. The why that chose include over
+  exclude does not reach a series: an exclusion was rejected as invisible, since no field can point
+  at what is not there. In a series the account's own rows end on its last day, and the answer names
+  that day, its signed last balance, and the per-currency count and sum that stopped counting
+  (`account_no_longer_active`, beside `coverage.not_active_balance_minor_units`). What refusing
+  would cost was measured first. On the sandbox store, 14 relinked accounts' last balances equal
+  their 14 replacements' to the cent, so carrying them forward serves every later net worth at
+  exactly 2×. That is a wrong figure with its correction beside it; the ruling serves the right
+  figure with its exclusion named. **The magnitude stays load-bearing**: `verify_norms_go_red.py`
+  removes it from the detail and the guard goes red. A total at one instant is untouched and still
+  includes and flags, and `list_holdings`' `totals` does exactly that.
 
 ---
 
@@ -282,7 +295,7 @@ Raw-row access exists but is paginated and hard-capped.
 | `list_accounts` | Accounts with type, institution, mask, current balance, lifecycle state | yes |
 | `query_transactions` | Filtered rows (date range, account, category, amount range, merchant search). **Paginated, capped** | yes |
 | `money_summary` | Money in and out over a period, grouped by category / merchant / account / month / flow class, per currency, and split by flow class under every grouping | yes |
-| `balance_history` | Value over time, per account or aggregated as net worth, investments included | yes |
+| `balance_history` | Value over time, per account or aggregated as net worth, investments included through their balances and never by adding positions | yes |
 | `list_holdings` | Current investment positions with cost basis where available | yes |
 | `find_recurring` | Detected recurring charges with cadence, amount drift, last-seen | yes |
 | `get_coverage_report` | Per account: first and last transaction, posting cadence, and trailing silence measured against it | yes |
@@ -354,6 +367,18 @@ Every tool is safe and idempotent, trivially — nothing writes.
 > treatment the fifth norm requires of a total over balances -- include and flag, with the
 > magnitude -- is the plan's Chunk 08; until then a non-active account's exclusion is stated rather
 > than quantified.
+
+> **Amendment (2026-09-13, investment sync, Chunk 08).** 🔴 **The lifecycle treatment is paid on
+> both new tools.** For each account no longer active, `balance_history` names the last day it
+> counted in net worth and its signed last balance. It also gives the per-currency count and sum
+> that stopped counting, on the ruling under § Direction's lifecycle norm. `list_holdings` now
+> carries `totals`: per currency, the positions and their market value, with the part on accounts
+> that are not `active` counted and valued beside it (§ *The published field shapes*). 🔴 **A
+> holdings total DECOMPOSES the balances net worth already counts and is never added to them.**
+> Net worth reads the balance series alone, and a test holds it unmoved by any positions. A
+> position's day is claimed across `holdings` and `refused_holdings` at write time, so the two
+> tables never share a key. `positions_not_current` now reads "stopped" from the investments
+> domain's own `sync_state`, never from capture dates.
 
 🔴 **Two of these eight are the verification surface, not the analysis surface.** `get_pipeline_health`
 and `get_coverage_report` exist so the analyst agent can **establish completeness *before* answering**.
@@ -866,9 +891,9 @@ here.
 | `warnings` | array of object | 🔴 every reason this answer is less complete than it looks. **Read before drawing a conclusion:** an answer can be perfectly well-formed and still be computed over incomplete data, which is the failure this whole surface exists to make impossible to miss. Empty is a real and common answer |
 | `coverage` | object | what the store HOLDS, which is how an empty answer is told from an empty world |
 | `rows` | array of object | the answer itself. One shape per tool, tabled below |
-| `effective_window` | object | windowed tools only (`query_transactions`, `money_summary`) |
-| `truncation` | object | capped tools only (`query_transactions`) |
-| `totals` | array of object | `money_summary` only |
+| `effective_window` | object | windowed tools only (`query_transactions`, `money_summary`, `balance_history`) |
+| `truncation` | object | capped tools only (`query_transactions`, `money_summary`, `balance_history`) |
+| `totals` | array of object | `money_summary` and `list_holdings` only — two different blocks, tabled apart below |
 
 **Fields — `build`.**
 
@@ -976,6 +1001,18 @@ here.
 | `closed_date` | string, nullable | as on `list_accounts` |
 | `last_seen_in_roster` | string, nullable | as on `list_accounts` |
 | `roster_last_observed` | string, nullable | as on `list_accounts` |
+
+**Fields — `totals[]`** *(`list_holdings`)*. One entry per currency, summed from `rows`. Every key
+is present and zero where nothing qualifies, and the block is present and empty when there are no
+rows.
+
+| Field | Type | Means |
+|---|---|---|
+| `currency` | string | the currency this entry's figures are in. One entry per currency, never one integer across currencies |
+| `positions` | integer | how many rows are in this currency |
+| `market_value_minor_units` | integer | the sum of those rows' `market_value_minor_units`, in MINOR UNITS. 🔴 It DECOMPOSES the investment accounts' balances, which `balance_history` and `list_accounts` already count: never add it to a balance or a net worth, and do not expect it to equal those balances. It INCLUDES positions on accounts that are not `active`. A position named under `rule-applied` is not in it, and cost basis is not totalled, since a sum over the positions that state one is a wrong figure with no signal |
+| `not_active_positions` | integer | how many of those positions are on an account that is not `active`. `0` is a real answer |
+| `not_active_market_value_minor_units` | integer | what those positions are worth, SIGNED, in MINOR UNITS: the part of `market_value_minor_units` that froze with its account, stated so a reader can subtract it |
 
 **Fields — `rows[]`** *(`balance_history`)*. One strict shape at both levels, every field present on
 every row.
@@ -1169,14 +1206,14 @@ three-week-old hole in the data and answer confidently.
 | `degraded` | A contributing connection is in error, or ONE SYNC DOMAIN of an otherwise healthy connection is. `detail` says which. 🔴 At domain scope the connection's own `status` is `active` and its `last_error_code` is null — the code lives in `rows[].domains[]`, and `connections reauth` repairs nothing |
 | `gapped` | A known coverage hole in the queried window |
 | `partial` | A contributing account has bounded history, no connection is enrolled, or ONE SYNC DOMAIN of a healthy connection has never landed in full. `detail` says which |
-| `rule-applied` | Rows were excluded from this aggregate ON PURPOSE, so the figure will not reconcile against a raw sum over the same window. `detail` names which rows and why. On `list_holdings`, which computes no total, a position the store could not record is ABSENT from the rows, and `detail` names its account, security and unit |
+| `rule-applied` | Rows were excluded from this aggregate ON PURPOSE, so the figure will not reconcile against a raw sum over the same window. `detail` names which rows and why. On `list_holdings`, a position the store could not record is ABSENT from the rows and so from `totals`, and `detail` names its account, security and unit |
 | `window_starts_before_coverage` | The window asked for reaches back past the first covered date |
 | `window_extends_past_coverage` | The window asked for reaches past the covered end — today, or the last transaction when that is later |
 | `rows_truncated` | The request matched more rows than the cap returned, and the answer holds only the newest of them |
 | `counted_during_change` | A write landed between the row read and the count read, so the two describe moments a fraction apart |
 | `accounts_without_coverage` | An account in the scope of THIS request has never had a transaction recorded, so its empty result means data not present, never no activity. It speaks for the TRANSACTIONS feed only: an investment account's trades and positions are not counted, so an account holding positions can carry it |
 | `account_no_longer_active` | An account in the scope of THIS request is closed or is no longer listed by its institution, so its balance is frozen as of the date beside it and is not a fact about today |
-| `positions_not_current` | A position in THIS answer is not a current value: its price is more than four calendar days older than the day it was captured, its price date is unknown, a newer capture of its connection listed no position for its account (which may hold none of it now), or the connection's newest capture is older than the day its transactions last landed (its investments stopped arriving). `detail` keeps the four apart and names the accounts; a null price date is unknown, never recent |
+| `positions_not_current` | A position in THIS answer is not a current value: its price is more than four calendar days older than the day it was captured, its price date is unknown, a newer investments pull of its connection listed no position for its account (which may hold none of it now), or the connection's investments feed has stopped: its own `sync_state` shows a failed last pull, or a last success on a day before its transactions landed. `detail` keeps the four apart and names the accounts; a null price date is unknown, never recent |
 | `includes_pending_rows` | This answer's rows include authorisation holds that have not settled, so a figure computed from it may change without any new activity |
 | `roster_observed_empty` | A connection contributing to THIS request had its roster read successfully and it listed no accounts at all. Every account on that connection is separately marked `no_longer_reported`; this kind is the connection-level anomaly beside that account-level truth, and it is what distinguishes a whole household closing its accounts from a feed that returns success and no rows |
 | `sign_convention_unverified` | This answer draws on a connection whose stored sign distribution was measured and found INVERTED relative to the operator-signed convention, so its amounts run the wrong way. 🔴 It does not fire for a merely unconfirmed connection — see the note below the table |

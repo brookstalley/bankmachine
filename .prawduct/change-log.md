@@ -34,6 +34,44 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-13: Net worth that says what stopped counting, and a holdings total that is not a second balance
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** a net-worth total is the most believable wrong number this product can emit, and it goes
+wrong silently in two ways. It can count an investment account twice, once as its balance and again
+as its positions. And a non-active account's frozen balance can enter or leave the figure with
+nothing said. Chunk 07 stated that exclusion without the figure, and the lifecycle norm requires the
+figure.
+
+**What changed (Chunk 08):**
+
+- **Net worth over time, on the owner's ruling.** An account no longer active counts through its last
+  capture and not after. `account_no_longer_active` names each such account's last day and signed last
+  balance, plus the per-currency count and sum that stopped counting. The alternative, carrying the last
+  balance forward, was measured first: on the sandbox store, 14 relinked accounts' last balances
+  equal their replacements', so every later net worth would read exactly 2×. The ruling is recorded
+  at the edge of the lifecycle norm in `api-contract.md` and under AC-12.8.
+- **`list_holdings` carries `totals`**, the owner's choice over settling the ruling with no total. It
+  has one entry per currency (`positions`, `market_value_minor_units`, `not_active_positions`,
+  `not_active_market_value_minor_units`), every key present and zero where nothing qualifies.
+  Positions on non-active accounts stay in the total, with their count and value stated beside it.
+  The total decomposes balances that net worth already counts, and the schema, the tool description
+  and the contract all say never to add it to one. `_output_schema` now takes each tool's own totals
+  schema under one shared `totals` description.
+- **The double-count guard.** Net worth reads the balance series alone. A test and a property hold it
+  unmoved by any positions, and a go-red case that adds the positions in goes red.
+- **Five review findings carried from Chunk 07:**
+  - **R-1:** the balance-history cursor is walked through the MCP boundary, with cross-tool refusal.
+  - **R-2:** completeness is judged for every currency on every captured day.
+  - **R-3:** "stopped" is read from the investments domain's own `sync_state`, in calendar days.
+  - **R-4:** a position's day is claimed across `holdings` and `refused_holdings` at write time
+    (`DERIVATION_VERSION` 11), so `list_holdings` no longer tie-breaks two tables.
+  - **R-5:** `SeriesCursor.position()` delegates to `series_position`.
+
+Run `bankmachine store rebuild` after pulling this, so rows derived at version 10 converge on one
+record per position per day.
+
 ## 2026-09-13: Net worth over time, and each account's balance history, from one series
 
 <!-- prawduct: scope=investments-v1 -->

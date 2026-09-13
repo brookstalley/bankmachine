@@ -546,8 +546,9 @@ response, and is filled from the archive by `store rebuild`. It is kept apart fr
 over positions never meets a row with no figure. It is not one of FR-6's thirteen, which are a minimum:
 `store/schema.py` declares it in `LATER_TABLES`, so the metadata guard still refuses a table nobody
 named. `list_holdings` reads an account's latest capture day across both tables and names each refusal
-under `rule-applied`. Where two captures on one day disagree and both tables hold the key, the day's
-first capture decides which the answer shows.
+under `rule-applied`. 🔴 A position's day is ONE key across both tables: the deriver claims it in
+both at once (`DERIVATION_VERSION` 11), so the day's first capture decides whether it records the
+position or its refusal, and the two tables never share a key.
 
 `investment_transactions` carries the same identity, provenance, and soft-delete shape as
 `transactions`, keyed on `trade_date`.

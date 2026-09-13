@@ -738,8 +738,14 @@ class SeriesCursor:
         )
 
     def position(self) -> tuple[int, int, str]:
-        """The sort key of the row this cursor names; the next page sorts strictly after it."""
-        return (-self.day.toordinal(), self.account_key, self.currency)
+        """The sort key of the row this cursor names; the next page sorts strictly after it.
+
+        🔴 Asks `series_position` rather than spelling the tuple again, so the order
+        the query sorts by and the order a resumed walk compares against cannot drift.
+        """
+        return series_position(
+            self.day, None if self.account_key == 0 else self.account_key, self.currency
+        )
 
     def encode(self) -> str:
         """The wire form, URL-safe and unpadded for `Cursor.encode`'s reason."""

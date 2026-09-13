@@ -13,21 +13,28 @@ from __future__ import annotations
 import copy
 import json
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import pytest
-from hypothesis import given
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
-from sqlalchemy import insert, select, update
+from sqlalchemy import func, insert, select, update
 
 from bankmachine import envelope, mcp, query
 from bankmachine.config import Config
-from bankmachine.connector import ACCOUNTS_GET
+from bankmachine.connector import ACCOUNTS_GET, INVESTMENTS_HOLDINGS_GET
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
-from bankmachine.store.schema import accounts, balances_daily, connections, institutions
+from bankmachine.store.schema import (
+    accounts,
+    balances_daily,
+    connections,
+    holdings,
+    institutions,
+)
 from bankmachine.store.types import CalendarDate, UtcInstant, calendar_date, utc_instant
 
 FIXTURES = Path(__file__).parent / "connector" / "fixtures"
@@ -303,6 +310,39 @@ def test_a_connection_that_stopped_syncing_withholds_every_net_worth_since(
         ) in details[0]
 
 
+def _in_cad(entry: dict[str, Any]) -> dict[str, Any]:
+    entry["balances"]["iso_currency_code"] = "CAD"
+    entry["balances"]["unofficial_currency_code"] = None
+    return entry
+
+
+def test_a_currency_whose_every_account_missed_a_day_is_withheld_and_named(
+    two_connections: Config,
+) -> None:
+    """🔴 Completeness is judged for every currency net worth counts, on every captured day.
+
+    Connection 2 holds the only CAD account and missed day 1 while connection 1's
+    USD accounts were captured. Judging only the (day, currency) pairs that hold a
+    capture finds no CAD pair on day 1, and its net worth goes silently absent.
+    """
+    _capture(two_connections, 1, _day(0), _first_connection())
+    _capture(two_connections, 2, _day(0), [_in_cad(_account("savings", 210.0, suffix="c2"))])
+    _capture(two_connections, 1, _day(1), _first_connection())
+
+    answer = query.balance_history(two_connections)
+
+    first, second = _day(0).date().isoformat(), _day(1).date().isoformat()
+    assert sorted((r["date"], r["currency"]) for r in answer.rows if r["account_id"] is None) == [
+        (first, "CAD"),
+        (first, "USD"),
+        (second, "USD"),
+    ]
+    details = _details(answer, "rule-applied")
+    assert len(details) == 1, "the CAD net worth for the day it missed was not named"
+    (cad,) = _ids_on(two_connections, 2)
+    assert f"account {cad} on 1 day(s) between {second} and {second}" in details[0]
+
+
 def test_an_account_first_captured_later_does_not_withhold_the_days_before_it(
     two_connections: Config,
 ) -> None:
@@ -344,6 +384,17 @@ def test_an_account_no_longer_listed_counts_only_through_its_last_capture_and_is
     assert _details(answer, "rule-applied") == []
     named = _details(answer, "account_no_longer_active")
     assert len(named) == 1 and f"account(s) {dropped} " in named[0]
+    # 🔴 The magnitude, not only the flag: the day it stopped counting and the
+    # balance that stopped, read back from what the deriver stored.
+    first = _day(0).date().isoformat()
+    (last,) = [minor for held, day, minor, _, _ in _stored(two_connections) if held == dropped]
+    assert f"account {dropped} through {first}, last balance {last} USD" in named[0]
+    assert f"1 account(s) whose last balances sum to {last} USD" in named[0], (
+        "what stopped counting went unstated"
+    )
+    assert answer.coverage["not_active_balance_minor_units"] == [
+        {"currency": "USD", "current_minor_units": last}
+    ], "the figure the warning names and the envelope's figure disagree"
 
 
 # --------------------------------------------------------------------------
@@ -551,6 +602,130 @@ def test_a_long_series_pages_to_every_row_exactly_once(two_connections: Config) 
     assert newest["date"] == _day(4).date().isoformat() and newest["account_id"] is None, (
         "the newest day's net-worth row does not lead"
     )
+
+
+def test_a_two_currency_series_pages_to_every_row_exactly_once(two_connections: Config) -> None:
+    """The cursor resumes on the ONE order the query sorts by, currency included.
+
+    Two net-worth rows share each day and differ only by currency, so a page
+    boundary falls between them -- the case a single-currency walk never reaches.
+    """
+    for n in range(3):
+        _capture(two_connections, 1, _day(n), _first_connection(checking=100.0 + n))
+        _capture(
+            two_connections, 2, _day(n), [_in_cad(_account("savings", 210.0 + n, suffix="c2"))]
+        )
+    whole = query.balance_history(two_connections, limit=500)
+    assert {r["currency"] for r in whole.rows if r["account_id"] is None} == {"CAD", "USD"}
+
+    for limit in (1, 2, 3):
+        walked: list[dict[str, Any]] = []
+        after: envelope.SeriesCursor | None = None
+        for _ in range(len(whole.rows) + 1):
+            page = query.balance_history(two_connections, limit=limit, after=after)
+            assert page.truncation is not None
+            walked.extend(page.rows)
+            if page.truncation.next_cursor is None:
+                break
+            after = envelope.parse_series_cursor(
+                page.truncation.next_cursor, since=None, until=None, account_id=None
+            )
+        assert walked == whole.rows, f"a walk at limit {limit} did not reassemble the series"
+
+
+# --------------------------------------------------------------------------
+# Net worth never adds the positions that decompose a balance
+# --------------------------------------------------------------------------
+
+
+def _holdings_capture() -> dict[str, Any]:
+    """The recorded holdings capture, with its accounts, numbers kept as text."""
+    capture: dict[str, Any] = json.loads(
+        (FIXTURES / "investments_holdings_get.json").read_bytes(), parse_float=str
+    )
+    return capture
+
+
+def _positions_land(config: Config, capture: dict[str, Any], at: UtcInstant) -> None:
+    with writer_connection(config) as conn:
+        apply_response(
+            conn,
+            connection_id=1,
+            endpoint=INVESTMENTS_HOLDINGS_GET.path,
+            body=json.dumps(capture).encode(),
+            received_at=at,
+            derivers=ALL_DERIVERS,
+        )
+
+
+def _positions_stored(config: Config) -> int:
+    with reader_connection(config) as conn:
+        return int(conn.execute(select(func.count()).select_from(holdings)).scalar_one())
+
+
+def test_net_worth_reads_the_balance_series_and_never_adds_the_positions_that_decompose_it(
+    two_connections: Config,
+) -> None:
+    """🔴 The double-count guard.
+
+    An investment account's value is already in its balance: the institution
+    reports a brokerage account's `current` like any other account's. Positions
+    DECOMPOSE that balance. This project once shipped an exactly-2x total with
+    nothing in the payload naming it, so net worth over a store holding both is
+    held to the signed sum of the balances alone, and unmoved by the positions.
+    """
+    capture = _holdings_capture()
+    _capture(two_connections, 1, _day(0), capture["accounts"])
+    before = query.balance_history(two_connections).rows
+    _positions_land(two_connections, capture, _day(0))
+    assert _positions_stored(two_connections) == len(capture["holdings"]), (
+        "the positions did not land, so nothing is under test"
+    )
+
+    after = query.balance_history(two_connections).rows
+
+    assert after == before, "positions moved a balance series they only decompose"
+    (net,) = _net_worth(after).values()
+    assert net["net_minor_units"] == sum(minor for _, _, minor, _, _ in _stored(two_connections))
+
+
+@settings(
+    max_examples=15, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
+@given(
+    values=st.lists(
+        st.decimals(min_value=0, max_value=10_000_000, places=2), min_size=1, max_size=13
+    ),
+    offset=st.integers(min_value=0, max_value=30),
+)
+def test_net_worth_is_the_sum_of_balances_however_many_positions_decompose_them(
+    two_connections: Config, values: list[Decimal], offset: int
+) -> None:
+    """Each day's net worth is the signed sum of that day's balances, over any positions.
+
+    The store accumulates across examples: positions on many days, at any values,
+    for any number of securities. A holdings capture carries its accounts'
+    balances as well, and those land in the series like any capture's -- so a
+    capture on a new day adds that day's net worth. What must never land in it
+    is the positions: every net-worth row is held to the balances stored for its
+    own day, read back independently.
+    """
+    capture = _holdings_capture()
+    with reader_connection(two_connections) as conn:
+        captured = conn.execute(select(func.count()).select_from(balances_daily)).scalar_one()
+    if not captured:
+        _capture(two_connections, 1, _day(0), capture["accounts"])
+    capture["holdings"] = capture["holdings"][: len(values)]
+    for entry, value in zip(capture["holdings"], values, strict=True):
+        entry["institution_value"] = str(value)
+
+    _positions_land(two_connections, capture, _day(offset))
+
+    stored = _stored(two_connections)
+    net = _net_worth(query.balance_history(two_connections).rows)
+    assert net, "no net worth was served, so nothing was checked"
+    for day, row in net.items():
+        assert row["net_minor_units"] == sum(m for _, on, m, _, _ in stored if on == day), day
 
 
 def test_a_cursor_from_the_other_series_or_another_request_is_refused() -> None:

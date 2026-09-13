@@ -1178,3 +1178,29 @@ serves the old surface, which is what left VRF-011 unverifiable three times.
    calling the account empty.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-022`
+
+## VRF-023 — net worth and the holdings total, read by a model in a real client
+
+**Status:** pending
+
+**Chunk:** investment sync, Chunk 08 · **Raised:** 2026-09-13
+
+**Why a human:** an operator reads a net-worth answer more literally than any other. Tests assert
+that net worth reads the balance series alone, and that a non-active account's end is named with its
+last balance. They also assert that `list_holdings`' `totals` states its non-active part. None can
+say whether a model quotes a holdings total beside a net worth without adding the two, or names the
+accounts that stopped counting when it reports a later day's net worth.
+
+**Where to verify:** the sandbox store, rebuilt at `DERIVATION_VERSION` 11. Relaunch the sandbox MCP
+server on this build first, for VRF-022's reason.
+
+**Verify:**
+
+1. Ask a real client for net worth over the last week. The answer quotes net-worth rows rather than a
+   sum of account rows. If a day has no net-worth row, it says that day was withheld and why.
+2. Ask what the investment accounts hold and what net worth is. The answer gives the holdings total
+   and the net worth separately and never adds one to the other.
+3. The sandbox's 14 relinked accounts stopped counting after 2026-09-09. When quoting a later day's
+   net worth, the answer names those accounts or the figure that stopped counting.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-023`

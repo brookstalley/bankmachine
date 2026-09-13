@@ -180,7 +180,8 @@ _GUIDANCE: dict[str, _Guidance] = {
             "was never told, an amount it cannot represent exactly, history from a "
             "connection that was linked again and superseded by a newer one, a net-worth row "
             "on `balance_history` for a day an account it counts was not captured on, and -- on "
-            "`list_holdings`, which computes no total -- a position the store could not record"
+            "`list_holdings` -- a position the store could not record, which its `totals` "
+            "cannot include"
         ),
         for_this_answer=(
             "the figure is smaller than the raw sum over the same window, and deliberately so; "
@@ -290,8 +291,10 @@ _GUIDANCE: dict[str, _Guidance] = {
             "emptied into another enrolled account still reads as money held, and is counted "
             "twice. Any total over balances carrying this warning states how much of itself "
             "came from such accounts. On `list_holdings`, that account's positions froze on the "
-            "day they were captured in the same way. On `balance_history`, it counts in a "
-            "net-worth row only through its last capture, so a later net worth leaves it out"
+            "day they were captured in the same way, and `totals` states how many there are and "
+            "what they are worth. On `balance_history`, it counts in a net-worth row only "
+            "through its last capture, so a later net worth leaves it out, and `detail` names "
+            "that day and the last balance that stopped counting"
         ),
         act=(
             "quote the total as given AND quote the flagged magnitude beside it -- the total "
@@ -309,8 +312,8 @@ _GUIDANCE: dict[str, _Guidance] = {
             "apart: its price is more than four calendar days older than the day it was "
             "captured; its price date is UNKNOWN; a newer capture of its connection listed no "
             "position for its account, which may hold none of it now; or the connection's "
-            "newest capture is older than the day its transactions last landed, so its "
-            "investments have stopped arriving"
+            "investments feed has stopped: its last pull failed, or last succeeded on a day "
+            "before its transactions landed"
         ),
         for_this_answer=(
             "`market_value_minor_units` on those rows is the price as of `price_as_of` times "
@@ -676,11 +679,11 @@ _ENVELOPE_ALWAYS = (
 _ENVELOPE_SOMETIMES = (
     "## Carried only where they are true of the tool\n\n"
     "🔴 Absence is information. No `effective_window` means that tool takes no window; no "
-    "`truncation` means it returns every row it found; no `totals` means it does not classify "
-    "the money it reports. A key is never omitted because the "
+    "`truncation` means it returns every row it found; no `totals` means it computes no total "
+    "over what it reports. A key is never omitted because the "
     "answer was empty — a windowed tool that could read nothing still carries the key, with "
     "null effective bounds, because 'your window and this store do not overlap' is the true "
-    "statement about a store that cannot be read, and a classifying tool that could read "
+    "statement about a store that cannot be read, and a totalling tool that could read "
     "nothing still carries an empty `totals` for the same reason. The list under this heading "
     "is derived from what the tools publish; this sentence names the cases that exist today "
     "and the list is the authority on which they are."

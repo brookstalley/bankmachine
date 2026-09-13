@@ -1596,10 +1596,14 @@ def _write_balance(
 
     if not _claim_capture_day(
         conn,
-        table=balances_daily,
-        where=(
-            balances_daily.c.account_id == account_id,
-            balances_daily.c.as_of_date == as_of,
+        keys=(
+            (
+                balances_daily,
+                (
+                    balances_daily.c.account_id == account_id,
+                    balances_daily.c.as_of_date == as_of,
+                ),
+            ),
         ),
         response=response,
     ):
@@ -1607,13 +1611,44 @@ def _write_balance(
     conn.execute(insert(balances_daily).values(account_id=account_id, as_of_date=as_of, **values))
 
 
+def _position_keys(
+    *tables: Table, account_id: int, security_id: int, as_of: CalendarDate
+) -> tuple[tuple[Table, tuple[Any, ...]], ...]:
+    """One position's day, as a key in each table that can record it.
+
+    🔴 A position's day is ONE key across `holdings` and `refused_holdings`: a
+    capture either records the position or refuses it, and the day's first
+    capture decides which. Claimed per table, each would keep its own first
+    capture, and two captures disagreeing about a unit would leave a row in
+    both -- a position served beside a disclosure calling it absent, and a
+    total over positions left to guess which one counts. The caller names its
+    own table first and the rival after it.
+    """
+    return tuple(
+        (
+            table,
+            (
+                table.c.account_id == account_id,
+                table.c.security_id == security_id,
+                table.c.as_of_date == as_of,
+            ),
+        )
+        for table in tables
+    )
+
+
 def _claim_capture_day(
-    conn: SAConnection, *, table: Table, where: Sequence[Any], response: RawResponse
+    conn: SAConnection,
+    *,
+    keys: Sequence[tuple[Table, Sequence[Any]]],
+    response: RawResponse,
 ) -> bool:
     """Whether this response is the capture an append-only day-keyed row keeps.
 
-    True once the day is this response's to write -- a row belonging to a later
-    capture having been removed first. False when what is already there stands.
+    True once the day is this response's to write -- any row belonging to a
+    later capture having been removed first. False when what is already there
+    stands. `keys` is every (table, key) the one day can be recorded under: one
+    for a balance, and both holdings tables for a position.
 
     🔴 **One capture per key per day, and the first one wins.** `data-model.md`
     says it of the daily balance series and of the holdings series in one breath,
@@ -1642,28 +1677,32 @@ def _claim_capture_day(
     turn it into an aggregator row that the next rebuild deletes, since a rebuild
     empties exactly the rows carrying a `raw_response_id`.
     """
-    existing = conn.execute(
-        select(table.c.captured_at, table.c.raw_response_id).where(*where)
-    ).one_or_none()
-    if existing is None:
-        return True
-    captured_at, raw_response_id = existing
-    if (captured_at, raw_response_id or 0) <= (response.received_at, response.raw_response_id):
-        return False
-    if raw_response_id is None:
-        # 🔴 A row this deriver did not write, and must not remove.
-        # `manual_import_id` rows come from FR-7's import path -- the operator's
-        # own statement -- and a rebuild deletes exactly the rows carrying a
-        # `raw_response_id`. Replacing one with an aggregator row would make it
-        # disappear a rebuild later, with nothing connecting the loss to the sync
-        # that caused it. The comparison above already covers ties and later
-        # captures; this covers the *earlier* archived response, which is the
-        # case the comparison would otherwise let through.
-        return False
-    # The archive holds an earlier capture for this day than the row that is
+    held = [
+        (table, where)
+        for table, where in keys
+        if conn.execute(select(table.c.captured_at).where(*where)).one_or_none() is not None
+    ]
+    for table, where in held:
+        captured_at, raw_response_id = conn.execute(
+            select(table.c.captured_at, table.c.raw_response_id).where(*where)
+        ).one()
+        if (captured_at, raw_response_id or 0) <= (response.received_at, response.raw_response_id):
+            return False
+        if raw_response_id is None:
+            # 🔴 A row this deriver did not write, and must not remove.
+            # `manual_import_id` rows come from FR-7's import path -- the operator's
+            # own statement -- and a rebuild deletes exactly the rows carrying a
+            # `raw_response_id`. Replacing one with an aggregator row would make it
+            # disappear a rebuild later, with nothing connecting the loss to the sync
+            # that caused it. The comparison above already covers ties and later
+            # captures; this covers the *earlier* archived response, which is the
+            # case the comparison would otherwise let through.
+            return False
+    # The archive holds an earlier capture for this day than every row that is
     # here. Replaying it must still land on the earliest, or a rebuild would
     # depend on the order rows happened to be written in the first place.
-    conn.execute(delete(table).where(*where))
+    for table, where in held:
+        conn.execute(delete(table).where(*where))
     return True
 
 
@@ -1995,11 +2034,12 @@ def _write_holding(
     }
     if not _claim_capture_day(
         conn,
-        table=holdings,
-        where=(
-            holdings.c.account_id == account_id,
-            holdings.c.security_id == security_id,
-            holdings.c.as_of_date == as_of,
+        keys=_position_keys(
+            holdings,
+            refused_holdings,
+            account_id=account_id,
+            security_id=security_id,
+            as_of=as_of,
         ),
         response=response,
     ):
@@ -2030,18 +2070,21 @@ def _record_refused_holding(
     valuation norm requires the refusal NAMED under `rule-applied`, and a read
     can only name what the store records.
 
-    The same first-capture-of-the-day rule the position would have obeyed,
-    through the same `_claim_capture_day`, so a rebuild lands on the same record
+    The same first-capture-of-the-day rule the position would have obeyed, and
+    over the SAME key: the day is claimed across both tables, so a capture that
+    refuses a position the day already recorded changes nothing, and an earlier
+    one replaces the row it disagrees with. A rebuild lands on the same record
     whatever order it replays the day's captures in. `currency` is None where
     the aggregator stated none.
     """
     if not _claim_capture_day(
         conn,
-        table=refused_holdings,
-        where=(
-            refused_holdings.c.account_id == account_id,
-            refused_holdings.c.security_id == security_id,
-            refused_holdings.c.as_of_date == as_of,
+        keys=_position_keys(
+            refused_holdings,
+            holdings,
+            account_id=account_id,
+            security_id=security_id,
+            as_of=as_of,
         ),
         response=response,
     ):

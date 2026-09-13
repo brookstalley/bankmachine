@@ -1398,9 +1398,9 @@ def test_the_rebuild_fills_the_price_dates_migration_010_could_only_leave_empty(
     archived capture. So the rebuild is what this asserts, against the date the
     capture SENT rather than whatever came back.
 
-    Its rows carry a fixed historical derivation version two behind this build,
-    so a single reverted bump is not this test's to catch: that is the refusal
-    record's rebuild test below, on the store one version back.
+    Its rows carry a fixed historical derivation version older than this build's last
+    bump, so a single reverted bump is not this test's to catch: that is the rebuild
+    test for the rows that bump changed.
     """
     migrate(populated_before_the_holdings_price_date)
     with reader_connection(populated_before_the_holdings_price_date) as conn:
@@ -1440,10 +1440,10 @@ def test_the_rebuild_records_the_refusals_migration_011_could_only_leave_empty(
     migration creates the table empty -- so until `store rebuild` replays the
     capture, `list_holdings` cannot name the position it is missing.
 
-    🔴 **The rows carry a fixed historical derivation version, one behind this
-    build.** Reverting the bump that ships with the table makes the replay's
-    content change unexpected, and the rebuild refuses here rather than on an
-    operator's store.
+    🔴 **The rows carry a fixed historical derivation version, the one before the
+    table shipped**, so the replay's content change is expected. A single
+    reverted bump in a LATER build is guarded where that build changed the rows:
+    this fixture sits more than one version back and cannot see one.
     """
     migrate(populated_at_the_previous_version)
     with reader_connection(populated_at_the_previous_version) as conn:

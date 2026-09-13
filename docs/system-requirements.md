@@ -535,6 +535,13 @@ and gains the non-active figure beside it.
 excluding one is a net worth that drops with no visible cause, which is #18's ruling arriving from
 the other side. Stating the treatment is what both rulings have in common, and it is why this
 criterion can be ratified before the ruling is.
+🔴 *Ruling at the edge (owner, 2026-09-13): net worth over time.* A series counts a non-active
+account through its last capture and not after. It names that day, the account's signed last
+balance, and the per-currency count and signed sum that stopped counting. Carrying a frozen balance
+forward puts balances on days nobody captured and counts a relinked account's money twice; on the
+sandbox store that doubles every later net worth. A total at one instant (`coverage`,
+`money_summary`, `list_holdings`' `totals`) still includes and flags. Recorded in `api-contract.md`
+§ Direction.
 
 **AC-12.9 · The transition is exercised by a fixture in which a roster shrinks, and the assertion is
 seen red.** A test replays two archived roster observations for one connection, the second listing

@@ -186,7 +186,7 @@ def _output_schema(
     *,
     window: envelope.WindowSeries | None,
     capped: bool,
-    totals: bool,
+    totals: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """One tool's answer, published as a schema so the shape outlives the prose.
 
@@ -208,9 +208,10 @@ def _output_schema(
     `coverage.transactions_in_effective_window` rides only a window over
     TRANSACTIONS, because `query` keys it off the same condition and a count of
     transactions beside a balance series would read as a count of its rows.
-    `totals` is the third such flag and
-    has no default for the same reason the other two do not: a tool acquires the
-    key by saying so, never by a writer forgetting to say otherwise.
+    `totals` is the third such key, given as the block's own schema because each
+    tool that carries one totals something different. It has no default for the
+    same reason the other two do not: a tool acquires the key by saying so, never
+    by a writer forgetting to say otherwise.
 
     🔴 **Every level is closed and every unconditional key required**, and the
     strictness is the mechanism rather than a preference: a key that reaches the
@@ -412,124 +413,8 @@ def _output_schema(
             "additionalProperties": False,
         }
         required.append("truncation")
-    if totals:
-        properties["totals"] = {
-            "type": "array",
-            "description": (
-                "🔴 READ THIS BEFORE QUOTING A MONEY FIGURE. One entry per currency, "
-                "carrying the whole window's `inflow_minor_units` and "
-                "`outflow_minor_units` and then the outflow split three ways by how the "
-                "AGGREGATOR categorised each row. Quote `outflow_minor_units` for 'how much "
-                "went out' and `external_spend_outflow_minor_units` for external spend, and "
-                "name the other two classes beside it rather than dropping them: the split "
-                "is a description of the outflow, not a filter on it. The three classes add "
-                "up to `outflow_minor_units` in that currency, which is how you can check "
-                "them"
-            ),
-            "items": {
-                "type": "object",
-                "properties": {
-                    "currency": {"type": "string"},
-                    "inflow_minor_units": {
-                        "type": "integer",
-                        "description": (
-                            "everything that came IN over the whole window, a positive "
-                            "magnitude. 🔴 Inflow is not income: a refund is an inflow, and a "
-                            "paycheque can arrive categorised as a transfer"
-                        ),
-                    },
-                    "outflow_minor_units": {
-                        "type": "integer",
-                        "description": (
-                            "everything that went OUT over the whole window, a positive "
-                            "magnitude, before any classification. This is the figure to "
-                            "quote for 'how much went out'"
-                        ),
-                    },
-                    # The vocabulary itself rather than a copy of it, exactly as
-                    # the warning `enum` above takes `WARNING_KINDS`: a class
-                    # retyped here would start refusing answers this server sends
-                    # the first time a fourth one is classified.
-                    **{
-                        f"{flow}_outflow_minor_units": {
-                            "type": "integer",
-                            "description": (
-                                f"a positive magnitude, in minor units: the part of "
-                                f"`outflow_minor_units` classed `{flow}`, which is "
-                                f"{mcp_resources.flow_class_meaning(flow)}"
-                            ),
-                        }
-                        for flow in query.FLOW_CLASSES
-                    },
-                    # 🔴 AC-13.1: how much of the figures above is not settled
-                    # money. ALWAYS PRESENT, zero when nothing is pending -- a
-                    # key that appeared only when it was non-zero would leave a
-                    # reader unable to tell "no holds" from "this tool does not
-                    # say", and the whole reason the field exists is that a total
-                    # mixing holds with settled amounts changes without any new
-                    # activity.
-                    "pending_transactions": {
-                        "type": "integer",
-                        "description": (
-                            "how many of the rows behind these totals are authorisation "
-                            "holds that have not settled. 0 is a real answer"
-                        ),
-                    },
-                    "pending_net_minor_units": {
-                        "type": "integer",
-                        "description": (
-                            "what those holds come to, SIGNED from the account holder's "
-                            "point of view -- the amount these totals could move by when "
-                            "the holds settle or expire, with no new activity at all"
-                        ),
-                    },
-                    # 🔴 AC-13.4: the two ways a figure over this window moves
-                    # with no new activity, so a consumer watching one drift can
-                    # attribute the change instead of doubting the data. Neither
-                    # is part of the three-class outflow identity above, and
-                    # neither may be added to it.
-                    "expired_holds": {
-                        "type": "integer",
-                        "description": (
-                            "holds in this window that were withdrawn without ever posting. "
-                            "They are EXCLUDED from every figure here, so a total that "
-                            "shrank against an earlier answer is explained by this rather "
-                            "than by missing data"
-                        ),
-                    },
-                    "expired_holds_net_minor_units": {
-                        "type": "integer",
-                        "description": (
-                            "what those withdrawn holds came to, signed -- the amount that "
-                            "left these totals by expiring"
-                        ),
-                    },
-                    "settled_from_hold": {
-                        "type": "integer",
-                        "description": (
-                            "rows in this window whose amount arrived by settling an "
-                            "earlier hold. A settlement may differ from the hold, so these "
-                            "are the rows whose contribution changed rather than appeared"
-                        ),
-                    },
-                    "settled_from_hold_net_minor_units": {
-                        "type": "integer",
-                        "description": "what those settled rows come to, signed",
-                    },
-                },
-                "required": ["currency", "inflow_minor_units", "outflow_minor_units"]
-                + [f"{flow}_outflow_minor_units" for flow in query.FLOW_CLASSES]
-                + [
-                    "pending_transactions",
-                    "pending_net_minor_units",
-                    "expired_holds",
-                    "expired_holds_net_minor_units",
-                    "settled_from_hold",
-                    "settled_from_hold_net_minor_units",
-                ],
-                "additionalProperties": False,
-            },
-        }
+    if totals is not None:
+        properties["totals"] = totals
         required.append("totals")
     return {
         "type": "object",
@@ -646,6 +531,185 @@ class ToolRegistrationError(RuntimeError):
     rejects -- discovered by whoever asked the unlucky question, in production,
     with nothing pointing at the definition that caused it.
     """
+
+
+#: The ONE description of `totals`, whichever tool carries it. The envelope
+#: reference renders a key once, so two tools describing it two ways would have
+#: one account silently hide the other; what each tool's block holds is said by
+#: its item fields.
+_TOTALS_DESCRIPTION = (
+    "🔴 READ THIS BEFORE QUOTING A MONEY FIGURE. One entry per currency, never one integer "
+    "across currencies. On `money_summary` it carries the whole window's `inflow_minor_units` "
+    "and `outflow_minor_units` and then the outflow split three ways by how the AGGREGATOR "
+    "categorised each row. Quote `outflow_minor_units` for 'how much went out' and "
+    "`external_spend_outflow_minor_units` for external spend, and name the other two classes "
+    "beside it rather than dropping them: the split is a description of the outflow, not a "
+    "filter on it. The three classes add up to `outflow_minor_units` in that currency, which is "
+    "how you can check them. On `list_holdings` it is the rows summed: `positions` and their "
+    "market value. That DECOMPOSES investment account balances `balance_history` and "
+    "`list_accounts` already count, so never add it to a balance or a net worth, and do not "
+    "expect it to equal them. It INCLUDES positions on accounts that are not `active` and says "
+    "how many and what they are worth; positions named under `rule-applied` are not in it, and "
+    "cost basis is not totalled"
+)
+
+
+def _holdings_totals() -> dict[str, Any]:
+    """`list_holdings`' `totals` block: what its rows add up to, per currency."""
+    return {
+        "type": "array",
+        "description": _TOTALS_DESCRIPTION,
+        "items": {
+            "type": "object",
+            "properties": {
+                "currency": {"type": "string"},
+                "positions": {
+                    "type": "integer",
+                    "description": "how many rows are in this currency",
+                },
+                "market_value_minor_units": {
+                    "type": "integer",
+                    "description": (
+                        "the sum of those rows' `market_value_minor_units`, positions on "
+                        "accounts that are not `active` included"
+                    ),
+                },
+                "not_active_positions": {
+                    "type": "integer",
+                    "description": (
+                        "how many of those positions are on an account that is not `active`. "
+                        "0 is a real answer"
+                    ),
+                },
+                "not_active_market_value_minor_units": {
+                    "type": "integer",
+                    "description": (
+                        "what those positions are worth, SIGNED, in MINOR UNITS: the part of "
+                        "`market_value_minor_units` that froze with its account"
+                    ),
+                },
+            },
+            "required": [
+                "currency",
+                "positions",
+                "market_value_minor_units",
+                "not_active_positions",
+                "not_active_market_value_minor_units",
+            ],
+            "additionalProperties": False,
+        },
+    }
+
+
+def _money_summary_totals() -> dict[str, Any]:
+    """`money_summary`'s `totals` block: the window's money in and out, split by flow class."""
+    return {
+        "type": "array",
+        "description": _TOTALS_DESCRIPTION,
+        "items": {
+            "type": "object",
+            "properties": {
+                "currency": {"type": "string"},
+                "inflow_minor_units": {
+                    "type": "integer",
+                    "description": (
+                        "everything that came IN over the whole window, a positive "
+                        "magnitude. 🔴 Inflow is not income: a refund is an inflow, and a "
+                        "paycheque can arrive categorised as a transfer"
+                    ),
+                },
+                "outflow_minor_units": {
+                    "type": "integer",
+                    "description": (
+                        "everything that went OUT over the whole window, a positive "
+                        "magnitude, before any classification. This is the figure to "
+                        "quote for 'how much went out'"
+                    ),
+                },
+                # The vocabulary itself rather than a copy of it, exactly as
+                # the warning `enum` above takes `WARNING_KINDS`: a class
+                # retyped here would start refusing answers this server sends
+                # the first time a fourth one is classified.
+                **{
+                    f"{flow}_outflow_minor_units": {
+                        "type": "integer",
+                        "description": (
+                            f"a positive magnitude, in minor units: the part of "
+                            f"`outflow_minor_units` classed `{flow}`, which is "
+                            f"{mcp_resources.flow_class_meaning(flow)}"
+                        ),
+                    }
+                    for flow in query.FLOW_CLASSES
+                },
+                # 🔴 AC-13.1: how much of the figures above is not settled
+                # money. ALWAYS PRESENT, zero when nothing is pending -- a
+                # key that appeared only when it was non-zero would leave a
+                # reader unable to tell "no holds" from "this tool does not
+                # say", and the whole reason the field exists is that a total
+                # mixing holds with settled amounts changes without any new
+                # activity.
+                "pending_transactions": {
+                    "type": "integer",
+                    "description": (
+                        "how many of the rows behind these totals are authorisation "
+                        "holds that have not settled. 0 is a real answer"
+                    ),
+                },
+                "pending_net_minor_units": {
+                    "type": "integer",
+                    "description": (
+                        "what those holds come to, SIGNED from the account holder's "
+                        "point of view -- the amount these totals could move by when "
+                        "the holds settle or expire, with no new activity at all"
+                    ),
+                },
+                # 🔴 AC-13.4: the two ways a figure over this window moves
+                # with no new activity, so a consumer watching one drift can
+                # attribute the change instead of doubting the data. Neither
+                # is part of the three-class outflow identity above, and
+                # neither may be added to it.
+                "expired_holds": {
+                    "type": "integer",
+                    "description": (
+                        "holds in this window that were withdrawn without ever posting. "
+                        "They are EXCLUDED from every figure here, so a total that "
+                        "shrank against an earlier answer is explained by this rather "
+                        "than by missing data"
+                    ),
+                },
+                "expired_holds_net_minor_units": {
+                    "type": "integer",
+                    "description": (
+                        "what those withdrawn holds came to, signed -- the amount that "
+                        "left these totals by expiring"
+                    ),
+                },
+                "settled_from_hold": {
+                    "type": "integer",
+                    "description": (
+                        "rows in this window whose amount arrived by settling an "
+                        "earlier hold. A settlement may differ from the hold, so these "
+                        "are the rows whose contribution changed rather than appeared"
+                    ),
+                },
+                "settled_from_hold_net_minor_units": {
+                    "type": "integer",
+                    "description": "what those settled rows come to, signed",
+                },
+            },
+            "required": ["currency", "inflow_minor_units", "outflow_minor_units"]
+            + [f"{flow}_outflow_minor_units" for flow in query.FLOW_CLASSES]
+            + [
+                "pending_transactions",
+                "pending_net_minor_units",
+                "expired_holds",
+                "expired_holds_net_minor_units",
+                "settled_from_hold",
+                "settled_from_hold_net_minor_units",
+            ],
+            "additionalProperties": False,
+        },
+    }
 
 
 def _refuse_colliding_parameters(definitions: list[dict[str, Any]]) -> None:
@@ -791,7 +855,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 },
                 window=None,
                 capped=False,
-                totals=False,
+                totals=None,
             ),
         },
         {
@@ -807,8 +871,10 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "a value current. 🔴 Positions DECOMPOSE an investment account's balance and "
                 "do not add to it -- `list_accounts` already counts that account's value -- so "
                 "never sum the two into a net worth. Summing one account's positions does not "
-                "reproduce its balance either; the institution reports them separately. No "
-                "total is computed. Every row carries `lifecycle`: a position on an account "
+                "reproduce its balance either; the institution reports them separately. "
+                "`totals` sums the rows per currency and is a decomposition too -- never add it "
+                "to a balance -- and states the part on accounts that are not `active`. Every "
+                "row carries `lifecycle`: a position on an account "
                 "that is not `active` froze on the day it was captured. 🔴 Read `warnings`: "
                 "`positions_not_current` names values that are not current, and `rule-applied` "
                 "names positions the store could not record, which are ABSENT from the rows."
@@ -865,7 +931,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 },
                 window=None,
                 capped=False,
-                totals=False,
+                totals=_holdings_totals(),
             ),
         },
         {
@@ -884,7 +950,8 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "was captured; a day missing one has account rows and NO net-worth row, and "
                 "`rule-applied` names which account -- never add the account rows up into a "
                 "net worth for that day. An account no longer active counts only through its "
-                "last capture, and `account_no_longer_active` names it. Investment accounts "
+                "last capture, and `account_no_longer_active` names it with that day and the last "
+                "balance that stopped counting. Investment accounts "
                 "are already in these balances: never add `list_holdings` positions to them. "
                 "WINDOWED over the days balances were captured: `effective_window` says what "
                 "was answered over, and a window warning names a boundary crossed. "
@@ -962,7 +1029,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 },
                 window="balances",
                 capped=True,
-                totals=False,
+                totals=None,
             ),
         },
         {
@@ -1079,7 +1146,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 },
                 window="transactions",
                 capped=True,
-                totals=False,
+                totals=None,
             ),
         },
         {
@@ -1205,7 +1272,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 # only -- `totals` beside the rows is summed from every group,
                 # so a cut list never shrinks the window's figures.
                 capped=True,
-                totals=True,
+                totals=_money_summary_totals(),
             ),
         },
         {
@@ -1390,7 +1457,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 },
                 window=None,
                 capped=False,
-                totals=False,
+                totals=None,
             ),
         },
         {
@@ -1532,7 +1599,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 },
                 window=None,
                 capped=False,
-                totals=False,
+                totals=None,
             ),
         },
     ]

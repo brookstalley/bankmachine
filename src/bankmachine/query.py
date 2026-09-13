@@ -60,6 +60,7 @@ from bankmachine.store.connection import (
 from bankmachine.store.engine import reader_connection
 from bankmachine.store.lineage import SupersededSpan
 from bankmachine.store.schema import (
+    INVESTMENTS_DOMAIN,
     PROVENANCE_SOURCES,
     TRANSACTIONS_DOMAIN,
     accounts,
@@ -1291,11 +1292,11 @@ _BALANCES_FROZE = (
     "magnitude beside the total rather than presenting the total alone"
 )
 
-#: The same freeze on an answer over POSITIONS, which computes no total to qualify.
+#: The same freeze on an answer over POSITIONS, whose `totals` count and value them.
 _POSITIONS_FROZE = (
     "Their positions froze on the day each row was captured and are not facts about today. "
-    "This answer computes no total; a sum over these rows includes them, so name those "
-    "accounts beside any such figure"
+    "`totals` includes them and states how many there are and what they are worth, so quote "
+    "that beside any total you report and name those accounts"
 )
 
 
@@ -1320,8 +1321,9 @@ def _not_active_caveat(
 
     `consequence` says what the freeze means for THIS answer's figures: an answer
     over balances includes such accounts in its totals and says what they
-    contributed, while one over positions computes no total and says the
-    positions froze instead.
+    contributed, one over positions says the positions froze and that its
+    `totals` count and value them, and one over the balance series names what
+    stopped counting.
     """
     if not lifecycle:
         return []
@@ -2103,12 +2105,108 @@ def list_accounts(config: Config) -> Answer:
 POSITION_PRICE_STALE_AFTER = timedelta(days=4)
 
 
+@dataclass(frozen=True, slots=True)
+class InvestmentFeed:
+    """One connection's investments domain, as its own `sync_state` row records it.
+
+    Calendar days, the unit the holdings append rule keeps a position in: within
+    one sync the investments domain is stamped a fraction of a second BEFORE the
+    transactions domain (measured on the sandbox store), so comparing instants
+    would name every healthy connection as stopped.
+    """
+
+    pulled: CalendarDate | None
+    landed: CalendarDate | None
+    error: str | None
+
+    @property
+    def stopped(self) -> bool:
+        """Its last attempt failed, or it last succeeded before the transactions last landed."""
+        if self.error is not None:
+            return True
+        return self.landed is not None and (self.pulled is None or self.pulled < self.landed)
+
+
+def _investment_feeds(conn: SAConnection) -> dict[int, InvestmentFeed]:
+    """Every connection with an investments domain, keyed by connection.
+
+    🔴 **Whether a feed stopped is read from the domain's own record, never from
+    capture dates.** A successful pull that lists no position writes no holdings
+    row, so a connection's newest capture can sit days behind a feed that works;
+    reading the capture date would name it stopped. `last_success_at` and
+    `last_error_code` are what the sync writes about the pull itself.
+    """
+    domains: dict[tuple[int, str], tuple[Any, str | None]] = {
+        (int(connection_id), str(domain)): (success, error)
+        for connection_id, domain, success, error in conn.execute(
+            select(
+                sync_state.c.connection_id,
+                sync_state.c.domain,
+                sync_state.c.last_success_at,
+                sync_state.c.last_error_code,
+            ).where(sync_state.c.domain.in_((INVESTMENTS_DOMAIN, TRANSACTIONS_DOMAIN)))
+        ).all()
+    }
+
+    def day(success: Any) -> CalendarDate | None:
+        return None if success is None else calendar_date(utc_instant(success).date())
+
+    return {
+        connection_id: InvestmentFeed(
+            pulled=day(success),
+            landed=day(domains.get((connection_id, TRANSACTIONS_DOMAIN), (None, None))[0]),
+            error=error,
+        )
+        for (connection_id, domain), (success, error) in domains.items()
+        if domain == INVESTMENTS_DOMAIN
+    }
+
+
+def _holdings_totals(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """What `list_holdings`' rows add up to, per currency, with the non-active part stated.
+
+    🔴 **Summed from the rows this answer returns, never from a second read**, on
+    `_flow_class_totals`' reason: a total taken at another instant than the rows
+    beside it can contradict them, and a reader cannot tell which is wrong.
+    `list_holdings` is uncapped, so the rows are every position.
+
+    🔴 **Include and flag, with the magnitude** (`api-contract.md` § Direction's
+    lifecycle norm). A position on an account no longer active stays in
+    `market_value_minor_units`, and the count and signed value of those positions
+    ride beside it, zero rather than absent, so a reader can subtract what froze.
+
+    Not in it: cost basis, which is nullable per position, so a sum over the ones
+    that have it is a wrong figure with no signal; and a refused position, which
+    has no minor units to add and is named under `rule-applied`. Per currency,
+    never one integer across two.
+    """
+    totals: dict[str, dict[str, int]] = {}
+    for row in rows:
+        entry = totals.setdefault(
+            str(row["currency"]),
+            {
+                "positions": 0,
+                "market_value_minor_units": 0,
+                "not_active_positions": 0,
+                "not_active_market_value_minor_units": 0,
+            },
+        )
+        value = int(row["market_value_minor_units"])
+        entry["positions"] += 1
+        entry["market_value_minor_units"] += value
+        if row["lifecycle"] != "active":
+            entry["not_active_positions"] += 1
+            entry["not_active_market_value_minor_units"] += value
+    # Sorted so two identical stores answer identically.
+    return [{"currency": currency, **entry} for currency, entry in sorted(totals.items())]
+
+
 def _positions_not_current_caveat(
     *,
     old_prices: dict[int, tuple[int, CalendarDate]],
     unknown_prices: dict[int, int],
     left_behind: dict[int, tuple[CalendarDate, CalendarDate]],
-    captured_behind: dict[int, tuple[CalendarDate, CalendarDate]],
+    stopped_feed: dict[int, tuple[CalendarDate, InvestmentFeed]],
 ) -> list[Caveat]:
     """The warning that a well-formed position is not a current value.
 
@@ -2122,13 +2220,13 @@ def _positions_not_current_caveat(
 
     🔴 **The two capture conditions blame different things, and telling them
     apart is the point.** The aggregator's holdings reply covers the whole
-    connection, so an account behind its OWN connection's newest capture was
-    listed with no position in it: it may hold nothing now, and the feed is
-    working. Only when the connection's newest capture is itself older than the
-    day its TRANSACTIONS last landed has the investments pull stopped while the
-    rest carried on. Naming the first as the second sends a reader to repair a
-    sync that works. A non-active account is in neither -- the caller leaves it
-    to `account_no_longer_active`, which already says why its captures stopped.
+    connection, so an account behind its OWN connection's newest pull was listed
+    with no position in it: it may hold nothing now, and the feed is working.
+    Only when the connection's investments DOMAIN last failed, or last succeeded
+    before its transactions last landed, has the investments feed stopped. Naming
+    the first as the second sends a reader to repair a sync that works. A
+    non-active account is in neither -- the caller leaves it to
+    `account_no_longer_active`, which already says why its captures stopped.
 
     Request-scoped: it names only accounts this answer's rows or refusals are
     about, so its absence says every position here was priced within the
@@ -2163,44 +2261,52 @@ def _positions_not_current_caveat(
     if left_behind:
         named = ", ".join(
             f"{account_id} (positions from {captured.isoformat()}; its connection's newest "
-            f"capture, {newest.isoformat()}, listed none for it)"
+            f"investments pull, {newest.isoformat()}, listed none for it)"
             for account_id, (captured, newest) in sorted(left_behind.items())
         )
         # 🔴 "The feed is working" only for the accounts it is true of. One whose
-        # connection's newest capture is itself behind the transactions is named
-        # again below, and for it the positions may be gone OR merely unseen.
-        stalled = sorted(left_behind.keys() & captured_behind.keys())
-        working = sorted(left_behind.keys() - captured_behind.keys())
+        # connection's investments feed has stopped is named again below, and for
+        # it the positions may be gone OR merely unseen.
+        stalled = sorted(left_behind.keys() & stopped_feed.keys())
+        working = sorted(left_behind.keys() - stopped_feed.keys())
         if not stalled:
             feed = "The feed is working; the positions may be gone"
         elif not working:
-            feed = (
-                "That newer capture is itself older than the connection's transactions, as "
-                "named below, so the feed has stopped as well"
-            )
+            feed = "The connection's investments feed has since stopped as well, as named below"
         else:
             feed = (
                 f"For account(s) {', '.join(map(str, working))} the feed is working and the "
-                f"positions may be gone; for account(s) {', '.join(map(str, stalled))} that "
-                f"newer capture is itself older than the connection's transactions, as named "
-                f"below, so the feed has stopped as well"
+                f"positions may be gone; for account(s) {', '.join(map(str, stalled))} the "
+                f"connection's investments feed has since stopped as well, as named below"
             )
         parts.append(
             f"account(s) {named} were left out of a newer capture of their own connection, so "
             f"these rows are what each held on that earlier day and it may hold none of them "
             f"now. {feed}"
         )
-    if captured_behind:
+    if stopped_feed:
+
+        def why(feed: InvestmentFeed) -> str:
+            pulled = "never" if feed.pulled is None else feed.pulled.isoformat()
+            if feed.error is not None:
+                return (
+                    f"its connection's last investments pull failed with {feed.error}; it last "
+                    f"succeeded {pulled}"
+                )
+            landed = "never" if feed.landed is None else feed.landed.isoformat()
+            return (
+                f"its connection's investments feed last succeeded {pulled}, its transactions "
+                f"landed {landed}"
+            )
+
         named = ", ".join(
-            f"{account_id} (captured {captured.isoformat()}, its connection's transactions "
-            f"landed {landed.isoformat()})"
-            for account_id, (captured, landed) in sorted(captured_behind.items())
+            f"{account_id} (captured {captured.isoformat()}; {why(feed)})"
+            for account_id, (captured, feed) in sorted(stopped_feed.items())
         )
         parts.append(
-            f"account(s) {named} were last captured before their connection's transactions "
-            f"last landed, so their investments have stopped arriving while the rest of the "
-            f"connection has not: these are the last positions seen, and trades since are "
-            f"missing from them"
+            f"account(s) {named} are on a connection whose investments feed has stopped "
+            f"arriving: these are the last positions seen, and trades since may be missing "
+            f"from them"
         )
     if not parts:
         return []
@@ -2226,7 +2332,7 @@ def _refused_positions_caveat(refused: list[tuple[int, int, str | None]]) -> lis
     `rule-applied`, because the position was left out ON PURPOSE: a value at an
     unknown scale cannot be expressed in minor units, and rounding it to a
     guessed one is the wrong number `data-model.md`'s valuation norm refuses.
-    This answer computes no total, so the exclusion is from the rows themselves.
+    The exclusion is from the rows, and so from `totals`, which sums them.
 
     Names account, security and unit -- the reader's next move is to look at that
     account -- and ids rather than the security's name, because a name is text
@@ -2276,10 +2382,10 @@ def list_holdings(config: Config) -> Answer:
     found in SQL and both reads join it, so the answer reads one day per account
     rather than every day the append-only series has kept.
 
-    🔴 **Where two captures on one day disagree, the day's FIRST capture decides.**
-    Each table keeps its own first capture, so a capture refusing a position and
-    another recording it the same day leave a row in both. The answer shows
-    whichever came first, and never serves a position while naming it absent.
+    🔴 **A position's day is recorded in ONE of the two tables.** The deriver
+    claims the day across both, so where two captures disagree about a unit the
+    day's first capture decides at write time, and this read never chooses
+    between a row and a refusal of it.
 
     🔴 **`price_as_of` is served as stored and never coalesced.** A null means the
     row predates the column and has not been rebuilt, or the institution sent no
@@ -2292,13 +2398,14 @@ def list_holdings(config: Config) -> Answer:
     `account_no_longer_active` beside `roster_observed_empty` for a position on an
     account that has stopped being reported.
 
-    No total is emitted: a sum over positions is not the account's balance (the
-    institution reports the two separately and they do not reconcile), and a total
-    over holdings owes the lifecycle treatment a balance total does.
+    🔴 **`totals` sums the rows per currency, and is not a second balance.** A
+    position DECOMPOSES its account's balance, which `balance_history` and
+    `list_accounts` already count, and the two need not reconcile -- the
+    institution reports them separately. See `_holdings_totals`.
     """
     problem = _readable(config)
     if problem is not None:
-        return _unusable(config, problem, requested_window=None, truncation=None)
+        return _unusable(config, problem, requested_window=None, truncation=None, totals=[])
     with reader_connection(config) as conn:
         captured_days = union_all(
             select(holdings.c.account_id, holdings.c.as_of_date),
@@ -2332,8 +2439,6 @@ def list_holdings(config: Config) -> Answer:
                 holdings.c.currency,
                 holdings.c.as_of_date,
                 holdings.c.price_as_of,
-                holdings.c.captured_at,
-                holdings.c.raw_response_id,
             )
             .select_from(
                 holdings.join(
@@ -2353,42 +2458,28 @@ def list_holdings(config: Config) -> Answer:
                 holdings.c.security_id,
             )
         ).all()
-        refusals = conn.execute(
-            select(
-                refused_holdings.c.account_id,
-                refused_holdings.c.security_id,
-                refused_holdings.c.currency,
-                refused_holdings.c.captured_at,
-                refused_holdings.c.raw_response_id,
-            ).select_from(
-                refused_holdings.join(
-                    newest,
-                    (newest.c.account_id == refused_holdings.c.account_id)
-                    & (newest.c.as_of_date == refused_holdings.c.as_of_date),
+        refused: list[tuple[int, int, str | None]] = [
+            (int(account_id), int(security_id), currency)
+            for account_id, security_id, currency in conn.execute(
+                select(
+                    refused_holdings.c.account_id,
+                    refused_holdings.c.security_id,
+                    refused_holdings.c.currency,
+                ).select_from(
+                    refused_holdings.join(
+                        newest,
+                        (newest.c.account_id == refused_holdings.c.account_id)
+                        & (newest.c.as_of_date == refused_holdings.c.as_of_date),
+                    )
                 )
-            )
-        ).all()
-        # Compared the way `_claim_capture_day` compares, so "first" means the
-        # same thing on the read as it did when each row was claimed.
-        held_first = {(int(r[0]), int(r[2])): (r[12], int(r[13] or 0)) for r in result}
-        overruled: set[tuple[int, int]] = set()
-        refused: list[tuple[int, int, str | None]] = []
-        for account_id, security_id, currency, captured_at, raw_response_id in refusals:
-            key = (int(account_id), int(security_id))
-            held = held_first.get(key)
-            if held is not None and held < (captured_at, int(raw_response_id)):
-                continue
-            if held is not None:
-                overruled.add(key)
-            refused.append((key[0], key[1], currency))
+            ).all()
+        ]
         lifecycle = _account_lifecycle(conn)
         rows: list[dict[str, Any]] = []
         old_prices: dict[int, tuple[int, CalendarDate]] = {}
         unknown_prices: dict[int, int] = {}
         for r in result:
             account_id = int(r[0])
-            if (account_id, int(r[2])) in overruled:
-                continue
             captured, priced = calendar_date(r[10]), r[11]
             if priced is None:
                 unknown_prices[account_id] = unknown_prices.get(account_id, 0) + 1
@@ -2420,26 +2511,23 @@ def list_holdings(config: Config) -> Answer:
                     **lifecycle[account_id].to_wire(),
                 }
             )
-        # The day each connection's TRANSACTIONS last landed, and its own newest
-        # holdings capture across every account it holds.
-        landed = {
-            int(connection_id): calendar_date(utc_instant(success).date())
-            for connection_id, success in conn.execute(
-                select(sync_state.c.connection_id, sync_state.c.last_success_at).where(
-                    sync_state.c.domain == TRANSACTIONS_DOMAIN,
-                    sync_state.c.last_success_at.is_not(None),
-                )
-            ).all()
-        }
+        feeds = _investment_feeds(conn)
+        # Each connection's newest holdings capture across every account it holds,
+        # or the day its investments pull last succeeded if that is later: a
+        # successful pull that listed no position for an account writes no row,
+        # and is still a newer capture that left the account out.
         connection_newest: dict[int, CalendarDate] = {}
         for account_id, captured in latest.items():
             connection_id = lifecycle[account_id].connection_id
             if connection_id is not None:
+                pulled = feeds[connection_id].pulled if connection_id in feeds else None
                 connection_newest[connection_id] = max(
-                    captured, connection_newest.get(connection_id, captured)
+                    captured,
+                    connection_newest.get(connection_id, captured),
+                    captured if pulled is None else pulled,
                 )
         left_behind: dict[int, tuple[CalendarDate, CalendarDate]] = {}
-        captured_behind: dict[int, tuple[CalendarDate, CalendarDate]] = {}
+        stopped_feed: dict[int, tuple[CalendarDate, InvestmentFeed]] = {}
         for account_id, captured in latest.items():
             entry = lifecycle[account_id]
             if entry.connection_id is None or not entry.active:
@@ -2448,11 +2536,12 @@ def list_holdings(config: Config) -> Answer:
             if captured < newest_capture:
                 left_behind[account_id] = (captured, newest_capture)
             # 🔴 Not an `elif`. Whether the feed stopped is a fact about the
-            # CONNECTION's newest capture, so it holds for an account a newer
+            # CONNECTION's investments domain, so it holds for an account a newer
             # capture left out as much as for one it listed -- and for that
             # account "the feed is working" alone would be false.
-            if newest_capture < landed.get(entry.connection_id, newest_capture):
-                captured_behind[account_id] = (captured, landed[entry.connection_id])
+            feed = feeds.get(entry.connection_id)
+            if feed is not None and feed.stopped:
+                stopped_feed[account_id] = (captured, feed)
         not_active = [lifecycle[a] for a in sorted(latest) if not lifecycle[a].active]
         return _answer(
             config,
@@ -2460,13 +2549,14 @@ def list_holdings(config: Config) -> Answer:
             rows,
             requested_window=None,
             truncation=None,
+            totals=_holdings_totals(rows),
             extra_caveats=(
                 _refused_positions_caveat(refused)
                 + _positions_not_current_caveat(
                     old_prices=old_prices,
                     unknown_prices=unknown_prices,
                     left_behind=left_behind,
-                    captured_behind=captured_behind,
+                    stopped_feed=stopped_feed,
                 )
                 + _not_active_caveat(not_active, consequence=_POSITIONS_FROZE)
                 + _roster_observed_empty_caveat(not_active)
@@ -2478,13 +2568,44 @@ def list_holdings(config: Config) -> Answer:
 #: What a `balance_history` row is, where a sentence counts them.
 _BALANCE_ROWS = "balance series rows"
 
-#: What the lifecycle freeze means on an answer over the balance SERIES.
-_SERIES_ENDS = (
-    "Each one's balance series ends on the last day it was captured, and a net-worth row "
-    "(`account_id` null) counts it only through that day -- so a net worth read across that "
-    "day moves by the account's last balance with no activity behind it. Name those accounts "
-    "beside any net worth you quote from a later day"
-)
+
+def _series_ends(stopped: dict[tuple[int, str], tuple[CalendarDate, int]]) -> str:
+    """What the lifecycle freeze means on an answer over the balance SERIES, with the figure.
+
+    🔴 **A non-active account counts in net worth through its last capture and
+    not after** (owner's ruling at the edge of `api-contract.md` § Direction's
+    lifecycle norm). Carrying its last balance forward puts a balance on days
+    nobody captured, and a relinked account's old row carried beside its
+    replacement counts the same money twice -- measured on the sandbox store, where
+    that is exactly 2x on every later day.
+
+    🔴 **The magnitude is still the load-bearing half.** The norm chose include
+    over exclude because an exclusion is invisible; in a series it is visible only
+    if the answer says which account stopped counting, on which day, and at what
+    balance. So each is named with its last day and signed last balance, and the
+    per-currency count and signed sum follow. That sum is the figure
+    `coverage.not_active_balance_minor_units` carries present-and-zero on every
+    answer.
+    """
+    each = "; ".join(
+        f"account {account_id} through {day.isoformat()}, last balance {minor} {currency}"
+        for (account_id, currency), (day, minor) in sorted(stopped.items())
+    )
+    by_currency: dict[str, tuple[int, int]] = {}
+    for (_, currency), (_, minor) in stopped.items():
+        count, total = by_currency.get(currency, (0, 0))
+        by_currency[currency] = (count + 1, total + minor)
+    figure = "; ".join(
+        f"{count} account(s) whose last balances sum to {total} {currency}"
+        for currency, (count, total) in sorted(by_currency.items())
+    )
+    return (
+        f"Each one counts in a net-worth row (`account_id` null) through the last day it was "
+        f"captured and NOT after: {each} (MINOR UNITS, signed). What stopped counting after "
+        f"those days: {figure}. A net worth read across one of those days moves by that "
+        f"account's last balance with no activity behind it, so name those accounts and that "
+        f"figure beside any net worth you quote from a later day"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2574,12 +2695,22 @@ def compose_balance_series(
         by_day.setdefault((capture.day, capture.currency), {})[capture.account_id] = capture
     withheld: list[WithheldNetWorth] = []
     if aggregate:
-        for (day, currency), held in by_day.items():
+        # 🔴 Every day a capture landed, crossed with every currency net worth
+        # counts -- never only the (day, currency) pairs that hold a capture. A
+        # currency whose accounts ALL missed a day the sync ran has no such pair,
+        # so judging only those would leave its net-worth row silently absent
+        # rather than withheld and named.
+        days = {day for day, _ in by_day}
+        currencies = {currency for _, currency in counted}
+        for day, currency in sorted((d, c) for d in days for c in currencies):
+            held = by_day.get((day, currency), {})
             required = {
                 account_id
                 for (account_id, counted_in), (first, last) in counted.items()
                 if counted_in == currency and first <= day and (last is None or day <= last)
             }
+            if not required:
+                continue
             missing = tuple(sorted(required - held.keys()))
             if missing:
                 withheld.append(WithheldNetWorth(day=day, currency=currency, missing=missing))
@@ -2716,6 +2847,10 @@ def balance_history(
             spans = spans.where(balances_daily.c.account_id == account_id)
         span = spans.subquery()
         captured = balances_daily.alias("captured")
+        # The balance on each span's last day, read in the same statement, so the
+        # figure named for an account that stopped counting is the one its last
+        # row carries in this snapshot.
+        closing = balances_daily.alias("closing")
         inside = [
             captured.c.account_id == span.c.account_id,
             captured.c.currency == span.c.currency,
@@ -2730,22 +2865,31 @@ def balance_history(
                 span.c.currency,
                 span.c.first_day,
                 span.c.last_day,
+                closing.c.current_minor,
                 accounts.c.balance_class,
                 captured.c.as_of_date,
                 captured.c.current_minor,
             ).select_from(
-                span.join(accounts, accounts.c.account_id == span.c.account_id).outerjoin(
-                    captured, and_(*inside)
+                span.join(accounts, accounts.c.account_id == span.c.account_id)
+                .join(
+                    closing,
+                    (closing.c.account_id == span.c.account_id)
+                    & (closing.c.currency == span.c.currency)
+                    & (closing.c.as_of_date == span.c.last_day),
                 )
+                .outerjoin(captured, and_(*inside))
             )
         ).all()
         lifecycle = _account_lifecycle(conn)
         counted: dict[tuple[int, str], tuple[CalendarDate, CalendarDate | None]] = {}
+        stopped: dict[tuple[int, str], tuple[CalendarDate, int]] = {}
         captures: list[BalanceCapture] = []
-        for held, currency, first_day, last_day, balance_class, day, current in result:
+        for held, currency, first_day, last_day, last_minor, balance_class, day, current in result:
             key = (int(held), str(currency))
             active = lifecycle[key[0]].active
             counted[key] = (calendar_date(first_day), None if active else calendar_date(last_day))
+            if not active:
+                stopped[key] = (calendar_date(last_day), int(last_minor))
             if day is not None:
                 captures.append(
                     BalanceCapture(
@@ -2796,7 +2940,7 @@ def balance_history(
             extra_caveats=(
                 _withheld_net_worth_caveat(withheld)
                 + _undenominable_caveat(undenominable)
-                + _not_active_caveat(not_active, consequence=_SERIES_ENDS)
+                + _not_active_caveat(not_active, consequence=_series_ends(stopped))
                 + _roster_observed_empty_caveat(not_active)
             ),
             lifecycle=lifecycle,

@@ -496,6 +496,70 @@ def test_an_earlier_archived_refusal_replaces_the_record_a_later_capture_wrote(
     assert [(r[2], r[4]) for r in refusals(enrolled)] == [("ZZZ", SAME_DAY_EARLIER)]
 
 
+def test_a_refusal_after_the_day_recorded_the_position_changes_nothing(enrolled: Config) -> None:
+    """🔴 A position's day is ONE key across both tables, and its first capture holds it.
+
+    Claimed per table, the later refusal would keep its own first capture beside
+    the position's, and the day would record a position and its absence at once.
+    """
+    _apply(enrolled, INVESTMENTS_HOLDINGS_GET.path, _holdings_body(recorded()))
+    _apply(
+        enrolled,
+        INVESTMENTS_HOLDINGS_GET.path,
+        _holdings_body(_in_unit("ZZZ")),
+        received_at=SAME_DAY_LATER,
+    )
+
+    assert refusals(enrolled) == []
+    assert stored_row(enrolled, recorded()["holdings"][0])["captured_at"] == RECEIVED
+
+
+def test_a_position_after_the_day_refused_it_changes_nothing(enrolled: Config) -> None:
+    _apply(enrolled, INVESTMENTS_HOLDINGS_GET.path, _holdings_body(_in_unit("ZZZ")))
+    _apply(
+        enrolled,
+        INVESTMENTS_HOLDINGS_GET.path,
+        _holdings_body(recorded()),
+        received_at=SAME_DAY_LATER,
+    )
+
+    assert stored_rows(enrolled, recorded()["holdings"][0]) == []
+    assert [(r[2], r[4]) for r in refusals(enrolled)] == [("ZZZ", RECEIVED)]
+
+
+@pytest.mark.parametrize("earlier_first", [True, False])
+def test_an_earlier_refusal_decides_the_day_whatever_the_replay_order(
+    enrolled: Config, earlier_first: bool
+) -> None:
+    """Replay order must not decide whether a day records the position or its refusal.
+
+    The earlier capture refuses it and the later records it. Replayed either way
+    round, the day ends holding the refusal alone -- which is what a rebuild has
+    to reproduce from the same archive.
+    """
+    earlier = (_holdings_body(_in_unit("ZZZ")), SAME_DAY_EARLIER)
+    later = (_holdings_body(recorded()), SAME_DAY_LATER)
+    for body, at in (earlier, later) if earlier_first else (later, earlier):
+        _apply(enrolled, INVESTMENTS_HOLDINGS_GET.path, body, received_at=at)
+
+    assert stored_rows(enrolled, recorded()["holdings"][0]) == []
+    assert [(r[2], r[4]) for r in refusals(enrolled)] == [("ZZZ", SAME_DAY_EARLIER)]
+
+
+@pytest.mark.parametrize("earlier_first", [True, False])
+def test_an_earlier_position_decides_the_day_whatever_the_replay_order(
+    enrolled: Config, earlier_first: bool
+) -> None:
+    """The mirror: the earlier capture records the position and the later refuses it."""
+    earlier = (_holdings_body(recorded()), SAME_DAY_EARLIER)
+    later = (_holdings_body(_in_unit("ZZZ")), SAME_DAY_LATER)
+    for body, at in (earlier, later) if earlier_first else (later, earlier):
+        _apply(enrolled, INVESTMENTS_HOLDINGS_GET.path, body, received_at=at)
+
+    assert refusals(enrolled) == []
+    assert stored_row(enrolled, recorded()["holdings"][0])["captured_at"] == SAME_DAY_EARLIER
+
+
 def test_a_position_of_unstated_value_is_refused_rather_than_zeroed(enrolled: Config) -> None:
     payload = recorded()
     payload["holdings"][0]["institution_value"] = None
@@ -609,30 +673,50 @@ def test_an_earlier_archived_capture_replaces_the_row_a_later_one_wrote(
     assert stored["captured_at"] == SAME_DAY_EARLIER
 
 
-def test_a_row_the_operator_imported_is_never_replaced_by_a_capture(enrolled: Config) -> None:
-    """🔴 A rebuild deletes exactly the rows carrying a `raw_response_id`.
+def test_a_row_the_operator_imported_is_never_replaced_by_an_earlier_refusal(
+    enrolled: Config,
+) -> None:
+    """🔴 The manual-row rule holds across the two tables as well as within one.
 
-    Overwriting a manual row with an aggregator one would make the operator's own
-    statement disappear a rebuild later, with nothing connecting the loss to the
-    sync that caused it.
+    An earlier refusal replaces a later aggregator row for the same day. It must
+    not replace the operator's own statement, which no rebuild could restore.
+    """
+    account_id, security_id, as_of = _import_the_first_position_by_hand(enrolled)
+
+    _apply(enrolled, INVESTMENTS_HOLDINGS_GET.path, _holdings_body(_in_unit("ZZZ")))
+
+    assert refusals(enrolled) == []
+    with reader_connection(enrolled) as conn:
+        kept = conn.execute(
+            select(holdings.c.source).where(
+                holdings.c.account_id == account_id,
+                holdings.c.security_id == security_id,
+                holdings.c.as_of_date == as_of,
+            )
+        ).scalar_one()
+    assert kept == "manual"
+
+
+def _import_the_first_position_by_hand(config: Config) -> tuple[int, int, Any]:
+    """A manual-import row for the first position on RECEIVED's day, captured later that day.
+
+    A position references a security, so the imported row is seeded after a
+    capture on a DIFFERENT day -- which is also what gives the account and
+    security their local ids.
     """
     payload = recorded()
     entry = payload["holdings"][0]
-    # A position references a security, so the imported row is seeded after a
-    # capture on a DIFFERENT day -- which is also what gives the account and
-    # security their local ids.
     _apply(
-        enrolled,
+        config,
         INVESTMENTS_HOLDINGS_GET.path,
         _holdings_body(payload),
         received_at=utc_instant(datetime(2026, 9, 11, 9, 0, tzinfo=UTC)),
     )
-    seeded = stored_row(enrolled, entry)
+    seeded = stored_row(config, entry)
     account_id = seeded["account_id"]
     security_id = seeded["security_id"]
     as_of = calendar_date(RECEIVED.date())
-
-    with writer_connection(enrolled) as conn:
+    with writer_connection(config) as conn:
         import_key = conn.execute(
             insert(manual_imports).values(
                 account_id=account_id,
@@ -661,8 +745,21 @@ def test_a_row_the_operator_imported_is_never_replaced_by_a_capture(enrolled: Co
                 derivation_version_id=seeded["derivation_version_id"],
             )
         )
+    return account_id, security_id, as_of
 
-    _apply(enrolled, INVESTMENTS_HOLDINGS_GET.path, _holdings_body(payload), received_at=RECEIVED)
+
+def test_a_row_the_operator_imported_is_never_replaced_by_a_capture(enrolled: Config) -> None:
+    """🔴 A rebuild deletes exactly the rows carrying a `raw_response_id`.
+
+    Overwriting a manual row with an aggregator one would make the operator's own
+    statement disappear a rebuild later, with nothing connecting the loss to the
+    sync that caused it.
+    """
+    account_id, security_id, as_of = _import_the_first_position_by_hand(enrolled)
+
+    _apply(
+        enrolled, INVESTMENTS_HOLDINGS_GET.path, _holdings_body(recorded()), received_at=RECEIVED
+    )
 
     with reader_connection(enrolled) as conn:
         kept = conn.execute(

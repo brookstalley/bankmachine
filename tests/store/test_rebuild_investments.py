@@ -49,6 +49,7 @@ from bankmachine.connector.plaid.window import (
 )
 from bankmachine.derivers import ALL_DERIVERS, all_replay_passes
 from bankmachine.secrets import delete_datastore_key, generate_datastore_key, set_datastore_key
+from bankmachine.store import derivation
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, transaction, writer_connection
 from bankmachine.store.investments import record_investment_transaction_window
@@ -59,11 +60,13 @@ from bankmachine.store.schema import (
     INVESTMENTS_DOMAIN,
     accounts,
     connections,
+    derivation_versions,
     holdings,
     institutions,
     investment_transactions,
     manual_imports,
     raw_responses,
+    refused_holdings,
     securities,
 )
 from bankmachine.store.sync_domains import record_domain_history_start
@@ -489,6 +492,78 @@ def test_a_rebuild_keeps_the_first_capture_of_a_holdings_day_whatever_order_it_r
     assert not report.content_changed
     assert digest_of(enrolled) == before
     assert stored(enrolled, holdings) == kept
+
+
+#: The derivation version whose deriver claimed a position's day PER TABLE, so two
+#: captures disagreeing about a unit could leave a record in both. 🔴 A fixed
+#: historical fact, deliberately not `DERIVATION_VERSION - 1`: written relatively it
+#: moves with the constant, and a reverted bump would move the fixture with it.
+DERIVATION_THAT_CLAIMED_PER_TABLE = 10
+
+
+def test_a_position_held_in_both_tables_rebuilds_to_one_record_as_an_expected_change(
+    enrolled: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 AC-5.3 for the write-time claim: the same archive now derives different rows.
+
+    A store derived before a position's day was claimed across both tables can
+    hold that day in `holdings` AND `refused_holdings`. That is the state the
+    previous version's deriver left, reproduced here: the earlier capture refuses
+    the position, and the later capture's position is written with that
+    capture's own provenance and version, as that deriver wrote it. Replayed now,
+    the day keeps the earlier refusal alone -- a content change, which `store
+    rebuild` accepts only across a new derivation version and refuses otherwise.
+    """
+    earlier, later = instant(1), instant(2)
+    assert earlier.date() == later.date(), "the two captures must share a day to disagree"
+    refusing = json.loads(_holdings_body(quantity="4", value="100"))
+    refusing["holdings"][0]["iso_currency_code"] = None
+    refusing["holdings"][0]["unofficial_currency_code"] = "ZZZ"
+    with monkeypatch.context() as previous_build:
+        previous_build.setattr(derivation, "DERIVATION_VERSION", DERIVATION_THAT_CLAIMED_PER_TABLE)
+        previous_build.setattr(derivation, "DERIVATION_DESCRIPTION", "claimed per table")
+        _archive(enrolled, INVESTMENTS_HOLDINGS_GET.path, json.dumps(refusing).encode(), at=earlier)
+        recorded_by = _archive(
+            enrolled,
+            INVESTMENTS_HOLDINGS_GET.path,
+            _holdings_body(quantity="4", value="100"),
+            at=later,
+        )
+    (refusal,) = stored(enrolled, refused_holdings)
+    with writer_connection(enrolled) as conn:
+        version_id = conn.execute(
+            select(derivation_versions.c.derivation_version_id).where(
+                derivation_versions.c.version == DERIVATION_THAT_CLAIMED_PER_TABLE
+            )
+        ).scalar_one()
+        conn.execute(
+            insert(holdings).values(
+                account_id=refusal["account_id"],
+                security_id=refusal["security_id"],
+                as_of_date=refusal["as_of_date"],
+                quantity="4",
+                market_value_minor=10000,
+                cost_basis_minor=10050,
+                currency="USD",
+                captured_at=later,
+                source="aggregator",
+                raw_response_id=recorded_by,
+                manual_import_id=None,
+                derivation_version_id=version_id,
+                price_as_of=None,
+            )
+        )
+    assert len(stored(enrolled, holdings)) == 1, "the store does not hold the day in both tables"
+
+    report = rebuilt(enrolled)
+
+    assert report.content_changed, "the replay reproduced both records, so nothing moved"
+    assert report.change_was_expected, (
+        "`store rebuild` would refuse on a store derived before the claim spanned both tables. "
+        "Bump DERIVATION_VERSION in the commit that changes which rows an archive derives"
+    )
+    assert stored(enrolled, holdings) == []
+    assert [row["captured_at"] for row in stored(enrolled, refused_holdings)] == [earlier]
 
 
 def test_a_rebuild_leaves_a_manually_imported_investment_transaction_alone(

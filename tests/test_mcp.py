@@ -208,7 +208,7 @@ def _tools_requiring(key: str) -> tuple[str, ...]:
     🔴 Read from what each tool publishes, not listed here. `api-contract.md`
     fixes a key's absence as information — no `effective_window` means the tool
     takes no window, no `truncation` means it returns every row it found, no
-    `totals` means it does not classify money — and the tests below assert the
+    `totals` means it computes no total — and the tests below assert the
     WIRE against exactly that claim. Derived, they hold every tool to its own
     published contract and a new one is covered the day it registers; listed,
     they hold whichever tools someone remembered.
@@ -3008,6 +3008,70 @@ def test_a_cursor_from_a_different_question_is_refused_rather_than_answered(
 
     assert changed["isError"] is True, "a cursor from another question was answered"
     assert "cursor" in changed["content"][0]["text"]
+
+
+def _walk_the_series(config: Config, *, limit: int) -> tuple[list[dict[str, Any]], int]:
+    """Page `balance_history` over stdio until it stops offering a next page."""
+    rows: list[dict[str, Any]] = []
+    pages = 0
+    cursor: str | None = None
+    while True:
+        sent: dict[str, Any] = {"limit": limit}
+        if cursor is not None:
+            sent["cursor"] = cursor
+        result = _call(config, "balance_history", sent)
+        assert result["isError"] is False, result["content"][0]["text"]
+        wire = result["structuredContent"]
+        pages += 1
+        rows.extend(wire["rows"])
+        cursor = wire["truncation"].get("next_cursor")
+        if cursor is None:
+            break
+        # A cursor that fails to advance hangs the test rather than reddening it.
+        assert pages <= 40, "the walk did not terminate"
+    return rows, pages
+
+
+def test_a_balance_history_walk_over_the_wire_reaches_every_row_exactly_once(
+    initialized_config: Config,
+) -> None:
+    """🔴 The series cursor, sent back through the JSON-RPC boundary as a consumer sends it.
+
+    Every other paging test for this tool calls the query layer, so a dispatch
+    that decoded the cursor and never handed it on would leave them all green
+    while every caller re-read page one forever.
+    """
+    _seed(initialized_config)
+    _seed_investments(initialized_config)
+    whole = _call(initialized_config, "balance_history", {"limit": 500})["structuredContent"]
+    assert len(whole["rows"]) > 6, "too few rows to page, so the walk proves nothing"
+
+    rows, pages = _walk_the_series(initialized_config, limit=3)
+
+    assert rows == whole["rows"], "the walk did not reassemble the series, each row once"
+    assert pages == -(-len(whole["rows"]) // 3)
+
+
+def test_each_paged_tool_refuses_the_other_tools_cursor_at_the_boundary(
+    initialized_config: Config,
+) -> None:
+    """A page position from one series never resumes a walk over the other."""
+    _seed_many(initialized_config, 30)
+    _seed_investments(initialized_config)
+    issued = {
+        tool: _call(initialized_config, tool, {"limit": 1})["structuredContent"]["truncation"][
+            "next_cursor"
+        ]
+        for tool in ("query_transactions", "balance_history")
+    }
+
+    for tool, foreign in (
+        ("balance_history", issued["query_transactions"]),
+        ("query_transactions", issued["balance_history"]),
+    ):
+        result = _call(initialized_config, tool, {"limit": 1, "cursor": foreign})
+        assert result["isError"] is True, f"{tool} answered with the other tool's cursor"
+        assert "cursor" in result["content"][0]["text"], tool
 
 
 def test_the_cursor_is_advertised_on_the_capped_tool_and_nowhere_else() -> None:

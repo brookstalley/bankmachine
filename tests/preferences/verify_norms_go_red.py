@@ -1389,18 +1389,16 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # `store rebuild` refuse and roll back -- which is the remedy the
         # upgrade procedure prescribes for the connection that never syncs
         # again, so the documented fix would fail on the store it is for.
-        "AC-5.3: a newly-populated column bumps the derivation version",
+        "AC-5.3: a derivation that changes the rows bumps the version",
         pathlib.Path("src/bankmachine/store/derivation.py"),
+        "DERIVATION_VERSION = 11",
         "DERIVATION_VERSION = 10",
-        "DERIVATION_VERSION = 9",
-        # 🔴 Pinned to the UPGRADE test, not the lifecycle one. The lifecycle
-        # test's store is stamped two versions back, so `change_was_expected`
-        # stays true under a single reverted bump and the mutation passes -- the
-        # guard reads green while proving nothing. The upgrade fixture stamps its
-        # rows at exactly one version back, which is the operator's real
-        # situation and the only gap a single reverted bump closes.
-        "tests/store/test_upgrading_a_populated_store.py::"
-        "test_the_rebuild_records_the_refusals_migration_011_could_only_leave_empty",
+        # 🔴 Pinned to the test for the rows THIS bump changed, whose fixture is
+        # stamped at exactly one version back. A fixture further back keeps
+        # `change_was_expected` true under a single reverted bump, and the guard
+        # reads green while proving nothing -- which is how this case last survived.
+        "tests/store/test_rebuild_investments.py::"
+        "test_a_position_held_in_both_tables_rebuilds_to_one_record_as_an_expected_change",
     ),
     (
         "AC-12.7: a non-active account's silence is closure, not a coverage finding",
@@ -1705,19 +1703,58 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "test_an_unknown_price_date_is_named_unknown_rather_than_treated_as_fresh",
     ),
     (
-        "positions_not_current: a capture behind its connection's transactions is named",
+        "positions_not_current: a feed that last succeeded before its transactions is stopped",
         QUERY,
-        "            if newest_capture < landed.get(entry.connection_id, newest_capture):",
+        "        return self.landed is not None and "
+        "(self.pulled is None or self.pulled < self.landed)",
+        "        return self.landed is not None",
+        f"{HOLDINGS_TESTS}::"
+        "test_an_investments_feed_that_last_succeeded_before_its_transactions_landed_is_named",
+    ),
+    (
+        # The property and its call site are the two halves; each needs its own break.
+        "positions_not_current: an account on a stopped feed is named",
+        QUERY,
+        "            if feed is not None and feed.stopped:",
         "            if False:",
-        f"{HOLDINGS_TESTS}::test_a_capture_older_than_its_connections_transactions_is_named",
+        f"{HOLDINGS_TESTS}::"
+        "test_an_investments_feed_that_last_succeeded_before_its_transactions_landed_is_named",
+    ),
+    (
+        # One sync stamps investments a moment before transactions; instants would
+        # name every healthy connection stopped.
+        "positions_not_current: the feeds are compared in calendar days, never instants",
+        QUERY,
+        "        return None if success is None else calendar_date(utc_instant(success).date())",
+        "        return None if success is None else utc_instant(success)",
+        f"{HOLDINGS_TESTS}::"
+        "test_an_investments_feed_that_last_succeeded_before_its_transactions_landed_is_named",
+    ),
+    (
+        "positions_not_current: a failed investments pull is a stopped feed",
+        QUERY,
+        "        if self.error is not None:\n            return True",
+        "        if False:\n            return True",
+        f"{HOLDINGS_TESTS}::test_a_failed_investments_pull_is_named_as_a_stopped_feed_with_its_code",
+    ),
+    (
+        # A successful pull listing no position writes no row; read from capture
+        # dates it looked like a stopped feed.
+        "positions_not_current: a successful pull that listed nothing is a newer capture",
+        QUERY,
+        "captured if pulled is None else pulled,",
+        "captured,",
+        f"{HOLDINGS_TESTS}::"
+        "test_a_successful_pull_that_listed_no_position_is_not_called_a_stopped_feed",
     ),
     (
         # Whether the feed stopped is the connection's fact, so an account a newer
-        # capture left out still carries it; as an `elif` it was silently dropped.
+        # capture left out still carries it; skipping on to the next account drops it.
         "positions_not_current: a left-out account on a stopped feed is named for both",
         QUERY,
-        "            if newest_capture < landed.get(entry.connection_id, newest_capture):",
-        "            elif newest_capture < landed.get(entry.connection_id, newest_capture):",
+        "                left_behind[account_id] = (captured, newest_capture)\n",
+        "                left_behind[account_id] = (captured, newest_capture)\n"
+        "                continue\n",
         f"{HOLDINGS_TESTS}::"
         "test_an_account_left_out_of_a_newer_capture_that_is_itself_behind_is_named_for_both",
     ),
@@ -1821,21 +1858,106 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "test_a_closed_account_left_out_of_a_newer_capture_is_named_only_as_inactive",
     ),
     (
-        # Two captures on one day disagreeing leave a row in both tables; the day's
-        # first capture decides, from both directions.
-        "a day's first capture decides a position both tables hold (recorded first)",
-        QUERY,
-        "            if held is not None and held < (captured_at, int(raw_response_id)):\n"
-        "                continue",
-        "            if False:\n                continue",
-        f"{HOLDINGS_TESTS}::test_a_days_first_capture_recording_a_position_is_not_named_absent",
+        # A position's day is ONE key across both tables. Claimed per table, a day
+        # records a position and its refusal at once.
+        "a position's day is one key across both tables (a position sees the refusal)",
+        CONNECTOR_DERIVERS,
+        "        keys=_position_keys(\n            holdings,\n            refused_holdings,\n",
+        "        keys=_position_keys(\n            holdings,\n",
+        f"{INVESTMENT_DERIVER_TESTS}::test_a_position_after_the_day_refused_it_changes_nothing",
     ),
     (
-        "a day's first capture decides a position both tables hold (refused first)",
+        "a position's day is one key across both tables (a refusal sees the position)",
+        CONNECTOR_DERIVERS,
+        "        keys=_position_keys(\n            refused_holdings,\n            holdings,\n",
+        "        keys=_position_keys(\n            refused_holdings,\n",
+        f"{INVESTMENT_DERIVER_TESTS}::test_a_refusal_after_the_day_recorded_the_position_changes_nothing",
+    ),
+    (
+        # A currency whose every account missed a captured day has no (day, currency)
+        # pair holding a capture, so judging only those drops its net worth silently.
+        "balance_history: completeness is judged for every currency on every captured day",
         QUERY,
-        "                overruled.add(key)",
-        "                pass",
-        f"{HOLDINGS_TESTS}::test_a_days_first_capture_refusing_a_position_keeps_it_out_of_the_rows",
+        "        for day, currency in sorted((d, c) for d in days for c in currencies):\n"
+        "            held = by_day.get((day, currency), {})",
+        "        for (day, currency), held in sorted(by_day.items()):\n"
+        "            held = by_day.get((day, currency), {})",
+        f"{BALANCE_TESTS}::test_a_currency_whose_every_account_missed_a_day_is_withheld_and_named",
+    ),
+    (
+        # A cursor spelling its own order drifts from the query's where only a second
+        # currency can see it.
+        "balance_history: the cursor resumes on series_position's order, currency included",
+        ENVELOPE,
+        "            self.day, None if self.account_key == 0 else self.account_key, "
+        "self.currency\n",
+        "            self.day, None if self.account_key == 0 else self.account_key, "
+        "self.currency.lower()\n",
+        f"{BALANCE_TESTS}::test_a_two_currency_series_pages_to_every_row_exactly_once",
+    ),
+    (
+        # Decoded at the boundary and never handed on, every caller re-reads page one.
+        "balance_history: the MCP boundary hands the series cursor to the query",
+        MCP,
+        "            after=series_cursor,\n",
+        "",
+        f"{MCP_TESTS}::test_a_balance_history_walk_over_the_wire_reaches_every_row_exactly_once",
+    ),
+    (
+        # The lifecycle norm's condition: red with the MAGNITUDE removed, not only the flag.
+        "AC-12.8 ruling: net worth over time states the sum that stopped counting",
+        QUERY,
+        "{figure}",
+        "some accounts",
+        f"{BALANCE_TESTS}::"
+        "test_an_account_no_longer_listed_counts_only_through_its_last_capture_and_is_named",
+    ),
+    (
+        "AC-12.8 ruling: net worth over time names each account's last day and balance",
+        QUERY,
+        "{each}",
+        "some accounts",
+        f"{BALANCE_TESTS}::"
+        "test_an_account_no_longer_listed_counts_only_through_its_last_capture_and_is_named",
+    ),
+    (
+        # A total that counts frozen positions and says nothing of them passes the
+        # flag and fails the reason: the reader has nothing to subtract.
+        "AC-12.8: a holdings total states what its non-active positions are worth",
+        QUERY,
+        '            entry["not_active_market_value_minor_units"] += value',
+        "            pass",
+        f"{HOLDINGS_TESTS}::"
+        "test_a_position_on_a_closed_account_stays_in_the_total_and_its_part_is_stated",
+    ),
+    (
+        "AC-12.8: a holdings total includes the positions on non-active accounts",
+        QUERY,
+        '        entry["market_value_minor_units"] += value\n',
+        '        entry["market_value_minor_units"] += value '
+        'if row["lifecycle"] == "active" else 0\n',
+        f"{HOLDINGS_TESTS}::"
+        "test_a_position_on_a_closed_account_stays_in_the_total_and_its_part_is_stated",
+    ),
+    (
+        "list_holdings: an unreadable store still carries the totals key",
+        QUERY,
+        "requested_window=None, truncation=None, totals=[])",
+        "requested_window=None, truncation=None)",
+        f"{HOLDINGS_TESTS}::test_a_missing_datastore_still_carries_an_empty_totals_block",
+    ),
+    (
+        # The double-count guard: an investment account's value is already in its
+        # balance, and adding the positions that decompose it counts it twice.
+        "net worth never adds the positions that decompose a balance",
+        QUERY,
+        "                        current_minor=int(current),\n",
+        "                        current_minor=int(current) + "
+        "int(conn.execute(select(func.coalesce("
+        "func.sum(holdings.c.market_value_minor), 0)).where(holdings.c.account_id == key[0], "
+        "holdings.c.as_of_date == day)).scalar_one()),\n",
+        f"{BALANCE_TESTS}::"
+        "test_net_worth_reads_the_balance_series_and_never_adds_the_positions_that_decompose_it",
     ),
 ]
 

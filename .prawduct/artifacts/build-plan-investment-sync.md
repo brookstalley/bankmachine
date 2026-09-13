@@ -197,7 +197,18 @@ refinements recorded under its deliverables, plus the carried `list_holdings` fi
 (`rev-20260913T201311Z-35ac5f2c`) raised 0 blocking, 3 warnings and 4 notes. R-1 to R-5 are carried
 into Chunk 08's deliverables, R-6 is fixed in a doc-only commit, and R-7 is informational. Verified
 on the sandbox store. The gate passed; all 198 norm breaks are caught.
-Next: Chunk 08, carrying those five. 🔴 A wave 2 PR opened before wave 3 lands is cut from `1320344`.
+Chunk 08 is built on the owner's two decisions of 2026-09-13, recorded under its deliverables:
+- A non-active account stops counting in net worth after its last capture, and the answer names
+  what stopped counting, with the figure.
+- `list_holdings` carries a `totals` block.
+
+It also carries R-1 to R-5, the double-count guard and the magnitude go-red cases, and moves
+`DERIVATION_VERSION` to 11. Verified on the sandbox store rebuilt at 11: net worth is unchanged at
+-7716415 on four complete days, the 14 relinked accounts are named with that sum, and holdings
+total 2544640 over 13 positions. The go-red harness caught 210 of 211. The survivor was the
+version-bump case, which went blind because its fixture sat two versions back; it is retargeted at a
+rebuild test for this bump. Its cumulative review, the wave 3 PR gate, follows the commit.
+🔴 A wave 2 PR opened before wave 3 lands is cut from `1320344`.
 
 ## The Program
 
@@ -768,6 +779,39 @@ Tests are the floor, and three things here are not testable from a fixture:
       manual-row rule.
     - **R-5:** make `SeriesCursor.position()` delegate to `series_position`. Add a two-currency
       paging case.
+  - 🔴 **Decisions taken at this chunk's start (owner, 2026-09-13).** Both were put with the sandbox
+    store measured first:
+    - `[DECISION: in net worth over time, an account no longer active counts through its last capture
+      and not after; the answer states what stopped counting | owner | chosen over carrying its last
+      balance forward]`. The measurement decided it: the sandbox's 14 relinked accounts, last captured
+      2026-09-08/09, hold last balances summing to −7,716,415, identical to their 14 replacements', so
+      carrying them forward serves net worth at exactly 2× on every later day. That is the shape of the
+      2× `money_summary` total this chunk exists to prevent, and it also puts balances on days nobody
+      captured, which Chunk 07's no-smoothing rule refused. Recorded as a **ruling at the edge of**
+      `api-contract.md` § Direction's lifecycle norm, not an amendment. The norm chose include over
+      exclude because an exclusion is "invisible by construction — no field can point at what is not
+      there". In a series the exclusion is visible: the account's own rows end on its last day, and
+      the answer states it. The magnitude therefore stays load-bearing. `account_no_longer_active` on
+      `balance_history` names each account's last captured day and its signed last balance, plus the
+      per-currency count and signed sum. That sum is the figure `coverage.accounts_not_active` /
+      `not_active_balance_minor_units` already carries present-and-zero. A go-red case removes the
+      magnitude from the detail. The go-red case "an account no longer active counts only through its
+      last capture" stays, and the test it names gains the magnitude assertion
+    - `[DECISION: `list_holdings` gains a per-currency `totals` block | owner | chosen over settling
+      the lifecycle ruling with no total built, which the builder recommended]`. The recommendation's
+      cost, recorded so a reviewer can weigh it: a position sum is a SECOND value for money net worth
+      already counts through the balance series, and it does not reconcile to that balance (the sandbox
+      401k is 6% over). The block therefore carries the double-count warning in the tool description
+      and the contract row. Its shape: one entry per currency, every key present and zero where nothing
+      qualifies — `currency`, `positions`, `market_value_minor_units`, `not_active_positions`,
+      `not_active_market_value_minor_units` (signed). It is summed from the returned rows, never from a
+      second read, on `_flow_class_totals`' reason; `list_holdings` is uncapped, so the rows are every
+      position. The block is always present, and empty when there are no rows. Non-active positions
+      stay IN `market_value_minor_units` (include and flag, per the norm), with their count and value
+      beside it. Not in it: cost basis, which is nullable per position, so a sum over the known ones
+      is a wrong number with no signal; and refused positions, which have no minor units to add and are
+      already named under `rule-applied`. `mcp._output_schema`'s existing `totals` flag carries it, so
+      no fourth conditional envelope key arrives. R-4 is what lets the block read one table
 - **Tests:** integration — a store holding a closed brokerage account reports the total, the
   count and the contributed magnitude, and the guard is seen red **with the magnitude
   removed**, not merely with the flag flipped (that is the condition the norm set for its own

@@ -107,8 +107,8 @@ creates one, because an empty encrypted store would answer every question with a
 | Tool | Answers |
 |---|---|
 | `list_accounts` | every account with its latest recorded balance |
-| `list_holdings` | every investment position, as its account's latest capture recorded it, with the date of the price it was valued at |
-| `balance_history` | net worth over time and each account's balance on the days one was captured, paged newest first; a day not every account was captured on has no net-worth row, and says why |
+| `list_holdings` | every investment position, as its account's latest capture recorded it, with the date of the price it was valued at, and a per-currency totals block that decomposes balances rather than adding to them |
+| `balance_history` | net worth over time and each account's balance on the days one was captured, paged newest first; a day not every account was captured on has no net-worth row, and says why; an account no longer active counts only through its last capture, and the answer names that day and the balance that stopped counting |
 | `query_transactions` | transactions in a date window, newest first |
 | `money_summary` | money in and out over a window, grouped by category, merchant, account, month or flow class — split by flow class under every grouping, and carrying the totals block described below |
 | `get_pipeline_health` | every connection, when it last synced, what is wrong |
@@ -146,10 +146,15 @@ uncommitted changes, so the commit alone does not describe it.
 
 Every response carries `environment`, `as_of`, `build`, `coverage`, `warnings` and `rows`. A
 **windowed** tool also carries `effective_window`; a **capped** tool also carries `truncation`; a
-**classifying** tool also carries `totals`. Absence of a key means that tool takes no window,
-returns every row it finds, or does not classify the money it reports.
+**totalling** tool (`money_summary`, `list_holdings`) also carries `totals`. Absence of a key
+means that tool takes no window, returns every row it finds, or computes no total.
 
-🔴 **`totals` is the one to read before quoting a money figure.** Each entry carries the window's
+🔴 **`list_holdings`' `totals` is not a second balance.** One entry per currency: `positions`,
+`market_value_minor_units`, and the part on accounts that are not `active` (`not_active_positions`,
+`not_active_market_value_minor_units`), present and zero. Positions decompose an investment
+account's balance, which net worth already counts, so never add the two.
+
+🔴 **`money_summary`'s `totals` is the one to read before quoting a money figure.** Each entry carries the window's
 `inflow_minor_units` and `outflow_minor_units` for one currency, and then splits that outflow by
 `flow_class` — `external_spend`, `internal_transfer`, `debt_service`. Quote `outflow_minor_units`
 when asked how much went out and `external_spend_outflow_minor_units` when asked about external
@@ -193,7 +198,10 @@ authorisation lifetime, with `oldest_stranded_hold` naming the one to go look at
 are none, and null for a closed account, whose holds nobody can clear). **`get_pipeline_health` rows
 carry `sign_convention`** per connection, with the counts it was judged on. **Every account row
 carries `lifecycle`** with the dates behind it, and `coverage` states `accounts_not_active` and what
-those accounts contributed — totals **include** them, so quote that figure beside any net worth.
+those accounts contributed — totals **include** them, so quote that figure beside any total.
+`balance_history` is the exception, on the owner's ruling: a non-active account counts in net
+worth only through its last capture, and the answer names that day and the balance that stopped
+counting, because carrying a relinked account's old balance forward counts the same money twice.
 
 The server's own `instructions` **plus the two resources below** are the authority on that list — a
 test holds their union against every tool's live envelope and against the warning vocabulary, so
@@ -290,7 +298,7 @@ boundary it names — so the *absence* of one is information too:
   reasons are **not a closed list** — read it rather than matching on one you know. Today they
   include a currency this store was never told, an amount it cannot represent exactly in minor
   units, and history from a connection that was linked again and superseded by a newer one. Say
-  the exclusion out loud when you report the total. On `list_holdings`, which computes no total, a
+  the exclusion out loud when you report the total. On `list_holdings`, whose `totals` sum only the rows, a
   position the store could not record is **absent from the rows**, and `detail` names its account,
   security and unit.
 
