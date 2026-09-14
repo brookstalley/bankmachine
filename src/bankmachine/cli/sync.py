@@ -1,0 +1,556 @@
+"""`bankmachine sync shell` -- an authenticated SQL prompt on the encrypted datastore.
+
+Page encryption breaks every ad-hoc SQL tool: the pages are ciphertext, so
+stock `sqlite3` on this file reports it as corrupt rather than as encrypted.
+Without this command the operator has no way to look at their own data, which
+is why AC-ARCH.6 puts the shell in build step 1 rather than beside the rest of
+the CLI -- it is the debugging affordance every later step is built over.
+
+This is also the product's only surface that runs operator-supplied SQL, so the
+two read-role norms stop being theoretical here. Each is held as a *property*
+rather than as a list of statements to look for, because a list of forbidden
+statements is an enumeration wearing a predicate's clothes -- it looks correct
+the day it is written and fails silently the first time something reaches the
+mechanism from outside the list:
+
+* **The refusal to write lives in the file handle.** The shell asks
+  `store.connection` for a read-role handle and does nothing else about writes.
+  That handle is `mode=ro` at the file, so `PRAGMA query_only = OFF` -- which
+  this prompt is the exact surface that can type -- turns off a second layer
+  and reaches a first one that SQL cannot address.
+* **No snapshot survives an idle moment.** A shell left open overnight is open
+  during the nightly sync, and a read-role handle takes no writer lock, so
+  nothing else serialises the two. `_release_snapshot` ends any transaction the
+  last statement left open *before* the prompt comes back, and it decides that
+  by asking the connection whether a transaction is open rather than by reading
+  what was typed: `BEGIN` and `SAVEPOINT` both open one, and the next thing
+  that does would not have been in the list.
+
+There is no writer shell. The plan leaves one optional ("if offered at all"),
+and it is declined on three grounds: the product's headline commitment is
+read-only; a writer shell would hold the exclusive advisory lock for the whole
+session, so the overnight prompt above would block the nightly sync outright
+rather than merely starve its checkpointer; and rows typed in by hand have no
+raw response behind them, which is precisely what `store rebuild`'s content
+digest exists to catch. Nothing in build step 1 needs one. If one is ever
+added, it takes the lock through `store.connection`'s writer factory like any
+other writer -- there is no other way to obtain a handle that can write.
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import re
+import sys
+from collections.abc import Callable, Mapping
+from typing import Final, Protocol
+
+from bankmachine.cli import sync_run
+from bankmachine.cli.parser import AnyParser
+from bankmachine.config import Config
+from bankmachine.logging_setup import redact, redact_free_text
+from bankmachine.store import connection
+from bankmachine.store.schema import public_identifier_columns
+
+with contextlib.suppress(ImportError):  # readline is absent on some platforms
+    # Imported for the side effect: it backs `input()` with line editing and
+    # history, which is most of what makes the prompt usable by hand.
+    import readline  # noqa: F401
+
+
+#: A cell that is wholly a decimal *measurement*: digits, a point, digits.
+#:
+#: The point is the whole discriminator, and it is what makes sparing these
+#: safe. An account number, a digest and a token are each one unbroken run of
+#: characters, so none of them can match this -- while every exact decimal the
+#: store holds is written with the point that identifies it.
+_EXACT_DECIMAL: Final = re.compile(r"-?\d+\.\d+")
+
+#: Nine characters of the CUSIP alphabet: eight of the issue and issuer, then a
+#: check digit that is always a digit.
+_CUSIP_SHAPE: Final = re.compile(r"[0-9A-Z*@#]{8}[0-9]")
+
+
+def is_cusip(value: str) -> bool:
+    """Whether `value` is nine CUSIP characters whose ninth is their check digit.
+
+    The standard's modulus-10 "double add double": each of the first eight
+    characters takes a value (a digit its own, `A`-`Z` 10-35, `*` 36, `@` 37,
+    `#` 38), every second one is doubled, and the digits of each result are
+    summed. The check digit brings that sum to a multiple of ten. It catches
+    every single-character error, which is what lets it stand beside a column
+    name that an alias can forge.
+    """
+    if not _CUSIP_SHAPE.fullmatch(value):
+        return False
+    total = 0
+    for position, character in enumerate(value[:8]):
+        if character.isdigit():
+            worth = int(character)
+        elif character.isalpha():
+            worth = ord(character) - ord("A") + 10
+        else:
+            worth = 36 + "*@#".index(character)
+        if position % 2 == 1:
+            worth *= 2
+        total += worth // 10 + worth % 10
+    return (10 - total % 10) % 10 == int(value[8])
+
+
+#: The check behind each identifier `schema.py` can flag. A flagged column whose
+#: identifier has no entry here is never spared, and a test fails on it.
+PUBLIC_IDENTIFIER_SHAPES: Final[Mapping[str, Callable[[str], bool]]] = {"cusip": is_cusip}
+
+
+class InputStream(Protocol):
+    """What the shell needs from stdin, which is less than a file.
+
+    Stated as a protocol so a test can hold the shell at its prompt with an
+    object that blocks on demand -- the only way to observe the shell *between*
+    statements, which is the state the snapshot norm is about.
+    """
+
+    def isatty(self) -> bool: ...
+    def readline(self) -> str: ...
+
+
+class OutputStream(Protocol):
+    """What the shell needs from stdout, which is somewhere to write."""
+
+    def write(self, text: str, /) -> int: ...
+
+
+PROMPT: Final = "bankmachine> "
+CONTINUATION: Final = "         ...> "
+
+#: What a NULL renders as. Spelled out rather than left blank, so an empty
+#: string and a NULL are not the same thing on screen -- the shell exists to
+#: answer questions about data, and that is one of them.
+NULL_DISPLAY: Final = "NULL"
+
+#: 🔴 The read-only guarantee, in ONE place because the shell states it on three
+#: surfaces -- the banner, `--help`, and `.help` -- and a sweep that reaches two
+#: of them leaves the operator a surface that disagrees about what the handle
+#: can do. It reached exactly two once.
+#:
+#: It ends on "them" deliberately. The earlier wording closed on a demonstrative
+#: ("...and no PRAGMA changes that"), which parses as readily as a conjunction
+#: and left the sentence apparently waiting for a clause that never came.
+READ_ONLY_SENTENCE: Final = "writes are refused, and no PRAGMA re-enables them"
+
+_HELP: Final = f"""\
+  .tables            list the tables in this datastore
+  .schema [table]    show the DDL, for one table or all of them
+  .help              this list
+  .quit / .exit      leave the shell (Ctrl-D does too)
+
+Anything else is SQL, terminated by a semicolon. Statements may span lines.
+This handle is read-only at the file: {READ_ONLY_SENTENCE}.
+Access tokens and account numbers are redacted on the way
+out (AC-10.3); account masks are left intact, since they are what the redaction
+exists to preserve."""
+
+
+def add_arguments(subparsers: argparse._SubParsersAction[AnyParser]) -> None:
+    sync = subparsers.add_parser("sync", help="talk to the datastore's contents")
+    commands = sync.add_subparsers(dest="sync_command", required=True)
+
+    shell = commands.add_parser(
+        "shell",
+        help="open an authenticated SQL prompt on the datastore (AC-ARCH.6)",
+        description=(
+            "An authenticated SQL prompt on the encrypted datastore. Page encryption "
+            "breaks ad-hoc SQL tooling -- stock sqlite3 reads this file as corrupt -- so "
+            "this is how the datastore gets inspected. The handle is read-only at the "
+            f"file: {READ_ONLY_SENTENCE}. "
+            "Output is redacted for access tokens and account numbers."
+        ),
+    )
+    shell.set_defaults(handler=cmd_shell)
+
+    sync_run.add_arguments(commands)
+
+
+def cmd_shell(config: Config, _args: argparse.Namespace) -> int:
+    return run_shell(config)
+
+
+def run_shell(
+    config: Config,
+    *,
+    stdin: InputStream | None = None,
+    stdout: OutputStream | None = None,
+) -> int:
+    """Open the read-role handle and run the prompt over it until end of input.
+
+    The streams are parameters so the prompt can be driven by something other
+    than a terminal -- a piped script, and the tests that hold the shell at its
+    prompt while a writer checkpoints underneath it.
+    """
+    in_stream = sys.stdin if stdin is None else stdin
+    out_stream = sys.stdout if stdout is None else stdout
+    interactive = in_stream.isatty()
+
+    with connection.reader(config) as conn:
+        _print_banner(config, out_stream)
+        return _repl(
+            conn,
+            in_stream,
+            out_stream,
+            interactive=interactive,
+            identifiers=_schema_identifiers(conn),
+        )
+
+
+def _schema_identifiers(conn: connection.Connection) -> frozenset[str]:
+    """Every table, view, index and column name this datastore actually holds.
+
+    This is what tells structure from value in the free text this command
+    writes back -- the statement it echoes and the errors it reports -- and it
+    is a property of the store rather than a list kept beside the redactor, so
+    it cannot fall behind a migration.
+
+    Read once, when the shell opens, because the prompt must hold no snapshot
+    between statements and the echo runs on the path that has nothing to
+    release one. A migration applied under a live shell only adds names, and a
+    name this set has not heard of is over-redacted -- the direction this
+    surface is already wrong in.
+
+    A failure here is not caught. A datastore whose schema cannot be listed has
+    nothing this prompt could usefully be opened against, and every dot-command
+    reads the same table.
+    """
+    names = {
+        str(name)
+        for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE name IS NOT NULL")
+    }
+    # `pragma_table_info` as a table-valued function, so the table name is bound
+    # rather than pasted into a PRAGMA that cannot take a parameter.
+    names.update(
+        str(name)
+        for (name,) in conn.execute(
+            "SELECT ti.name FROM sqlite_master AS m "
+            "JOIN pragma_table_info(m.name) AS ti "
+            "WHERE m.type IN ('table', 'view')"
+        )
+    )
+    return frozenset(names)
+
+
+def _print_banner(config: Config, out: OutputStream) -> None:
+    print(f"bankmachine sync shell -- environment {config.environment.upper()}", file=out)
+    print(f"datastore: {config.datastore_path}", file=out)
+    print(f"role:      read-only at the file; {READ_ONLY_SENTENCE}", file=out)
+    print("output:    access tokens and account numbers redacted (AC-10.3)", file=out)
+    print("type .help for the command list, .quit to leave", file=out)
+
+
+def _repl(
+    conn: connection.Connection,
+    stdin: InputStream,
+    out: OutputStream,
+    *,
+    interactive: bool,
+    identifiers: frozenset[str],
+) -> int:
+    """Read a statement, run it, release whatever it held, repeat."""
+    buffered = ""
+    while True:
+        try:
+            line = _read_line(
+                CONTINUATION if buffered else PROMPT,
+                stdin,
+                out,
+                interactive,
+                identifiers,
+            )
+        except EOFError:
+            if interactive:
+                print(file=out)
+            if buffered.strip():
+                print("input ended mid-statement; it was not run", file=out)
+            return 0
+        except KeyboardInterrupt:
+            # Ctrl-C abandons the statement being typed. It does not end the
+            # session: losing a session to a mistyped line means re-opening and
+            # re-authenticating, which is the opposite of usable under pressure.
+            print("\n(statement abandoned)", file=out)
+            buffered = ""
+            continue
+
+        if not buffered:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("."):
+                if _meta_command(conn, stripped, out, identifiers):
+                    return 0
+                continue
+
+        buffered = f"{buffered}\n{line}" if buffered else line
+        if not connection.statement_is_complete(buffered):
+            continue
+        _execute(conn, buffered, out, identifiers)
+        buffered = ""
+
+
+def _read_line(
+    prompt: str,
+    stdin: InputStream,
+    out: OutputStream,
+    interactive: bool,
+    identifiers: frozenset[str],
+) -> str:
+    """One line of input, from a terminal or from whatever is feeding the shell.
+
+    `input()` is used only for a terminal, because that is what carries the
+    readline editing and history an operator expects at a prompt. A piped or
+    scripted stdin is read directly, so the shell can be driven by something
+    that is not a tty without the prompt text landing in the middle of it.
+    """
+    if interactive:
+        return input(prompt)
+    print(prompt, end="", file=out)
+    line = stdin.readline()
+    if not line:
+        print(file=out)
+        raise EOFError
+    # Echo what was read. A terminal echoes typed input on its own; a pipe does
+    # not, and a transcript that shows results without the statements that
+    # produced them is not a record of a session. The operator-verification
+    # entry for this command is exactly such a transcript.
+    #
+    # The echo is redacted like everything else the shell writes. It is output
+    # on the stream AC-10.3 governs, and a transcript is the most likely thing
+    # here to be committed or pasted into a bug report -- a token typed into a
+    # query is still a token once it has been written down. What a statement
+    # names in this datastore is structure and survives; everything else in it
+    # keeps the value rule, so the operator reads back the query they typed
+    # rather than a row of blanks where their columns were.
+    typed = line.rstrip("\n")
+    print(redact_free_text(typed, identifiers), file=out)
+    return typed
+
+
+def _meta_command(
+    conn: connection.Connection, line: str, out: OutputStream, identifiers: frozenset[str]
+) -> bool:
+    """Run a dot-command. Returns whether the shell should exit."""
+    parts = line.split()
+    name = parts[0]
+    if name in (".quit", ".exit"):
+        return True
+    if name == ".help":
+        print(_HELP, file=out)
+    elif name == ".tables":
+        _execute(
+            conn,
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name NOT LIKE 'sqlite_%' ORDER BY name;",
+            out,
+            identifiers,
+        )
+    elif name == ".schema":
+        _print_schema(conn, parts[1] if len(parts) > 1 else None, out, identifiers)
+    else:
+        print(f"unknown command {name} -- .help lists them", file=out)
+    return False
+
+
+def _print_schema(
+    conn: connection.Connection,
+    table: str | None,
+    out: OutputStream,
+    identifiers: frozenset[str],
+) -> None:
+    """The stored DDL, printed as DDL rather than squeezed into a table cell.
+
+    Schema text is **not** a redaction surface, and that is a property rather
+    than an exemption: everything in `sqlite_master` here was authored by this
+    repo's migrations, and AC-6.6 -- enforced by
+    `tests/preferences/test_no_provider_identity.py` -- is that no institution,
+    account or product identity is encoded in the schema. There is nothing in a
+    CREATE statement for AC-10.3 to protect.
+
+    Running the value rule over it destroys it instead. `_OPAQUE` blanks any
+    32-plus character run, and this schema's identifiers are longer than that:
+    `source_investment_transaction_id` is exactly 32, so the column name comes
+    out as `[REDACTED]`, and index names like
+    `connections_one_live_per_institution` go the same way. Eight lines of the
+    real schema were unreadable before this split.
+    """
+    try:
+        if table is None:
+            rows = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name"
+            ).fetchall()
+        else:
+            # `tbl_name`, not `name`: an index has its own name, and the
+            # indexes are half of what makes a table's shape legible -- the
+            # partial unique index on `connections` is where AC-1.4 lives.
+            rows = conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE sql IS NOT NULL AND tbl_name = ? ORDER BY name",
+                (table,),
+            ).fetchall()
+    except connection.DriverError as exc:
+        print(f"error: {redact_free_text(str(exc), identifiers)}", file=out)
+        return
+    finally:
+        _release_snapshot(conn, out)
+
+    if not rows:
+        print(f"no such table: {table}" if table else "(this datastore has no schema)", file=out)
+        return
+    for (sql,) in rows:
+        # `sqlite_master` stores the statement as written, indentation and
+        # trailing newline included, so the terminator needs the strip to land
+        # on the last line rather than a line of its own.
+        print(f"{sql.strip()};", file=out)
+
+
+def _execute(
+    conn: connection.Connection, statement: str, out: OutputStream, identifiers: frozenset[str]
+) -> None:
+    """Run one statement and render whatever it produced.
+
+    A failure prints a sentence and the prompt comes back. The shell is the
+    thing an operator reaches for when something is already wrong, so a typo
+    must not cost them the session -- but the error is always shown, because
+    silence is the one outcome this project does not allow.
+    """
+    try:
+        cursor = conn.execute(statement)
+        if cursor.description is None:
+            # Not the same thing as a result set that came back empty, and the
+            # difference is the whole answer when a PRAGMA is what was typed.
+            print("(no result set)", file=out)
+        else:
+            _print_table([str(column[0]) for column in cursor.description], cursor.fetchall(), out)
+    except connection.DriverError as exc:
+        # The message is redacted too: SQLite quotes the offending value back in
+        # several of its errors, and a mistyped token is still a token. It also
+        # quotes the identifier it could not resolve, which is the whole
+        # diagnosis -- so names this datastore holds survive the redaction.
+        print(f"error: {redact_free_text(str(exc), identifiers)}", file=out)
+    finally:
+        _release_snapshot(conn, out)
+
+
+def _release_snapshot(conn: connection.Connection, out: OutputStream) -> None:
+    """End any transaction the last statement left open, before the prompt returns.
+
+    This is the norm this command exists to get right. A read snapshot that
+    outlives the statement that opened it pins WAL frames, and a shell sitting
+    at its prompt overnight is sitting there during the nightly sync -- with no
+    writer lock between them, since this handle never takes one. The measured
+    cost of getting it wrong is a checkpoint that moves 0 frames of 93 instead
+    of all of them.
+
+    What is asked is whether the connection has a transaction open, not what the
+    operator typed: `BEGIN` opens one and so does `SAVEPOINT`, and a list of the
+    statements that do is exactly the kind of enumeration that goes quietly
+    stale. Rolling back is the whole recovery -- this handle cannot write, so a
+    transaction on it has nothing in it worth keeping.
+    """
+    if not conn.in_transaction:
+        return
+    conn.execute("ROLLBACK")
+    print(
+        "note: that statement left a transaction open; it was rolled back so the prompt "
+        "holds no snapshot. Nothing was lost -- this handle cannot write.",
+        file=out,
+    )
+
+
+def _print_table(columns: list[str], rows: list[tuple[object, ...]], out: OutputStream) -> None:
+    if not rows:
+        print("(no rows)", file=out)
+        return
+    identifiers = public_identifier_columns()
+    shapes = [PUBLIC_IDENTIFIER_SHAPES.get(identifiers.get(column, "")) for column in columns]
+    cells = [
+        [_render(value, shape) for value, shape in zip(row, shapes, strict=True)] for row in rows
+    ]
+    widths = [len(column) for column in columns]
+    for row in cells:
+        for index, cell in enumerate(row):
+            widths[index] = max(widths[index], len(cell))
+
+    print(_row(columns, widths), file=out)
+    print(_row(["-" * width for width in widths], widths), file=out)
+    for row in cells:
+        print(_row(row, widths), file=out)
+    print(f"({len(rows)} row{'' if len(rows) == 1 else 's'})", file=out)
+
+
+def _row(cells: list[str], widths: list[int]) -> str:
+    return "  ".join(cell.ljust(width) for cell, width in zip(cells, widths, strict=True)).rstrip()
+
+
+def _render(value: object, public_identifier: Callable[[str], bool] | None = None) -> str:
+    """One cell, as text an operator can read, with AC-10.3 applied.
+
+    Redaction runs over text values and not over numbers, and the reason is a
+    property of this schema rather than a guess: money is an INTEGER of minor
+    units here, and an account number is not an arithmetic quantity, so it is
+    TEXT -- `accounts.mask` is. Redacting integers would blank a six-figure
+    balance, which is the number the operator most often opened the shell to
+    read, while protecting nothing that an account number is actually stored
+    as. A four-digit mask passes through, which is what AC-10.3 asks for.
+
+    🔴 **One arithmetic quantity IS text, and it is spared by shape.** A
+    position size is exact decimal text -- `holdings.quantity` and
+    `investment_transactions.quantity` hold the digits the aggregator sent,
+    because a fractional share carries more precision than any scale this
+    product could pick for a scaled integer. Put through the value rule, a
+    sandbox Bitcoin position of `0.00293644` comes back `0.****3644`: the
+    account-number rule blanks any run of eight digits and the fractional part
+    of an exact decimal is one, so the operator reading a position cannot see
+    the number they opened the shell for. A cell that is wholly
+    digits-point-digits is therefore rendered verbatim.
+
+    A quantity spelled with no fractional part is NOT spared. By shape it is
+    indistinguishable from an identifier, and over-redaction is still the
+    direction to be wrong in here -- so `12345678` shares reads `****5678`,
+    visibly masked rather than quietly wrong.
+
+    🔴 **A public identifier is not an account number, and it is spared only on
+    two conditions at once.** A CUSIP is nine characters and often all digits
+    (`037833100`), so the value rule turns it into `****3100`. Yet it is printed
+    on every brokerage statement. `public_identifier` is the check for the
+    identifier `schema.py` flags on this cell's result column, and the cell is
+    printed verbatim only if the value passes it. Neither condition is enough
+    alone. The column is known only by its result name, which `AS cusip` can put
+    over any value. And about one random nine-digit number in ten passes the
+    check digit, so shape alone would spare account numbers.
+
+    A blob is summarised rather than printed. `raw_responses.body_gzip` is the
+    one that comes up, and a terminal full of gzip is not a debugging
+    affordance.
+
+    Row values keep the full rule, bare-length matching included, and that is a
+    deliberate choice with a real cost: `raw_responses.body_sha256` is 64 hex
+    characters and comes out `[REDACTED]`. Dropping bare-length matching would
+    read better and would let an unlabelled token through, and the archive's
+    "no credential is persisted verbatim" clause is a recorded decision rather
+    than a mechanism yet -- so over-redaction is the direction to be wrong in
+    here. Correlating a row with its response does not need the digest: the
+    integer `raw_response_id` foreign key is the join, and it is not redacted.
+    A cell is a value and nothing else, which is why it takes the bare rule
+    while the two surfaces that carry structure do not: `_print_schema` prints
+    `sqlite_master` unredacted, and free text is redacted against the names
+    this datastore holds.
+    """
+    if value is None:
+        return NULL_DISPLAY
+    if isinstance(value, bytes):
+        return f"<blob, {len(value)} bytes>"
+    if isinstance(value, str):
+        if _EXACT_DECIMAL.fullmatch(value):
+            return value
+        if public_identifier is not None and public_identifier(value):
+            return value
+        return redact(value)
+    return str(value)

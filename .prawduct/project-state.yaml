@@ -1,192 +1,818 @@
-# Project State — MCPlaid
+# Project State — bankmachine
 #
 # Single source of truth for all project decisions.
 # Read at session start to understand where things stand.
 #
-# Fields start as null and are filled during discovery.
-# Partially-populated state is normal throughout discovery.
+# Populated 2026-09-05 by RECONCILIATION, not interview: docs/ already held the
+# requirements, inventory, and build-vs-adopt investigation. Detail stays
+# canonical in docs/; this file classifies and points.
 
 # =============================================================================
 # CLASSIFICATION
 # =============================================================================
-# Populated during discovery. Confirmed with the user before planning.
 
 classification:
-  # Product domain. Values: utility, social, marketplace, productivity, b2b,
-  # content, automation, developer-tool, education, health, finance,
-  # entertainment, communication. May be multiple for hybrid products.
-  domain: null
+  domain: [finance, automation, developer-tool]
 
-  # Structural characteristics — architectural facts that determine what KINDS
-  # of artifacts a product needs. These are a small, stable set (6) that drive
-  # artifact generation. null = not applicable.
   structural:
-    # User-facing interface. modality: screen|terminal|voice|spatial|minimal; platform: mobile|web|desktop|cross-platform
-    has_human_interface: null
-    # Runs without user interaction. trigger: scheduled|event-driven|always-on
-    runs_unattended: null
-    # Exposes or consumes APIs. consumers: internal|external|both
-    # When this exposes an interface, record the versioning + deprecation + error-model
-    # decisions in design_decisions (api_versioning_approach, api_error_model_approach);
-    # the api-versioning advisory nudges until they are recorded.
-    exposes_programmatic_interface: null
-    # Multiple distinct user types. parties: [list of distinct user types]
+    # CLI for the operator (enroll, sync, repair, import, shell). No web UI (§2).
+    has_human_interface:
+      modality: terminal
+      platform: desktop
+    # launchd user agent, daily, must survive reboot and missed windows (AC-ARCH.2).
+    runs_unattended:
+      trigger: scheduled
+    # MCP server over stdio consumed by Claude Desktop/Cowork; CLI for the operator.
+    exposes_programmatic_interface:
+      consumers: both
+    # Single user by design (§2 — no multi-user / partner access).
     has_multiple_party_types: null
-    # Handles sensitive information. categories: [PII, financial, health, etc.]; regulatory: [list]
-    handles_sensitive_data: null
-    # Multiple processes or services communicating at runtime. topology: monolith-with-workers|client-server|microservices|pipeline
-    multi_process_distributed: null
+    handles_sensitive_data:
+      categories: [financial, PII]
+      # No regime binds a personal, single-user, read-only tool: not a financial
+      # institution (GLBA), stores no card PANs (PCI-DSS), no health data. The
+      # controls in §6 are self-imposed, which makes them requirements, not
+      # compliance. Recorded so a later reader does not mistake absence for
+      # oversight.
+      regulatory: []
+    # Two long-lived processes over one SQLCipher file: the scheduled sync writer
+    # and the MCP reader, which may be mid-query when the writer wakes.
+    multi_process_distributed:
+      topology: pipeline
 
-  # Domain-specific characteristics — what makes THIS product unique in its domain.
-  # Dynamically identified, not from a predefined list.
-  # Each: { characteristic: string, implications: [string] }
-  domain_characteristics: []
+  domain_characteristics:
+    - characteristic: "Silent staleness is the primary failure mode"
+      implications:
+        - "A degraded feed produces confidently wrong analysis, not an error."
+        - "Every MCP response carries a freshness stamp (AC-9.2) and a gap/degraded warning (AC-9.3)."
+        - "Health must record LAST SUCCESSFUL SYNC, not just a degraded flag, so the hole is computable (AC-4.5)."
+    - characteristic: "The provider roster changes over time; the engine must not"
+      implications:
+        - "No institution, account, or vendor name may appear in code or schema. See technical_decisions.architecture."
+        - "Accounts and institutions are added and removed over the product's life; removal retains history."
+    - characteristic: "Some enrollment parameters are immutable after the fact"
+      implications:
+        - "transactions.days_requested=730 cannot be raised without re-linking the Item (AC-1.2, verified against Plaid docs)."
+        - "Forces a single-item verification step before bulk enrollment."
+    - characteristic: "Aggregate-first, because the consumer is an LLM"
+      implications:
+        - "SQL does the arithmetic; tools return summaries, raw rows are paginated and hard-capped (AC-9.1)."
+        - "This constraint drives the encryption choice — queryability is not negotiable."
+    - characteristic: "Bronze/silver split — raw responses are the system of record"
+      implications:
+        - "A derivation bug is a re-run, not a re-fetch (FR-5)."
+        - "Lossless rebuild is only well-defined against a recorded derivation version (see open_questions)."
+    - characteristic: "Read-only, permanently"
+      implications:
+        - "No write path to Plaid or any institution; no mutation tools on the MCP surface (§2, §5)."
 
-  # Risk and complexity profile.
   risk_profile:
-    # Overall risk: low, medium, high.
-    # Drives discovery depth (low: 5-8 questions, medium: 8-15, high: 15-25).
-    overall: null
-    # Specific risk factors identified during classification.
-    # Each: { factor, level (low/medium/high), rationale }
-    factors: []
+    overall: high
+    factors:
+      - factor: "Wrong analysis from incomplete data"
+        level: high
+        rationale: "The verification gate (§7) exists for this. Incompleteness that looks like completeness is the worst outcome the product can produce."
+      - factor: "Irreversible enrollment parameters"
+        level: high
+        rationale: "days_requested is immutable once Transactions is added to an Item. Getting it wrong means re-linking every institution."
+      - factor: "Credential and financial-data exposure"
+        level: high
+        rationale: "Plaid secrets plus a complete personal transaction history on one machine, with a backup copy that leaves it."
+      - factor: "Data loss or corruption mid-sync"
+        level: medium
+        rationale: "Cursor advancement must be transactional with the data it accompanies (AC-2.1, AC-2.5), or history is silently skipped."
+      - factor: "Single operator per deployment, no deadline"
+        level: low
+        rationale: "Lowers schedule and blast-radius risk for any one deployment. Does not lower correctness risk, which is the binding one here."
+      - factor: "Public distribution — the tool travels, the data does not"
+        level: medium
+        rationale: >
+          Recorded 2026-09-05 when the product was restated as a general-purpose tool that may be
+          published. It REPLACES the earlier reading that there are no downstream consumers. Note
+          what does NOT change: each user self-hosts, so no third party's financial data ever
+          reaches this project or its author, and the `regulatory: []` reasoning above still holds.
+          What DOES change is a supply-chain surface — a malicious dependency or an accepted
+          contribution reaches real bank data on a stranger's machine — which argues for a
+          deliberately small dependency surface. The §7 verification gate also stops being internal
+          discipline and becomes a user-facing safety feature: a stranger will not read §7, so the
+          incomplete-data warning has to reach them some other way.
 
-  # Prior art surfaced during discovery (via web search or domain knowledge).
-  # Informational — informs scope decisions, not a gate.
-  # Each: { name, url (optional), relevance, relationship (alternative|complement|reference) }
-  prior_art: []
+  prior_art:
+    - name: "Plaid API (/transactions/sync, /investments/*, Hosted Link)"
+      url: "https://plaid.com/docs/"
+      relevance: "The data source. Cursor semantics, item error codes, and days_requested immutability are all its rules, not ours."
+      relationship: reference
+    - name: "mbafford/plaid-sync"
+      relevance: "Closest prior art for the Plaid client layer. Harvested as an attributed reference, not forked — see docs/build-vs-adopt-investigation.md."
+      relationship: reference
+    - name: "copilot-money-mcp"
+      relevance: "Vetted at source 2026-09-05. Cautionary: --live-reads scrapes browser storage broadly; --write exposes 19 mutation tools including delete_transaction with no undo. Informs this product's read-only, no-mutation-tools stance."
+      relationship: alternative
+    - name: "Copilot Money"
+      relevance: "The incumbent this replaces. Its limits — 8-month floor, zero investment backfill, silent dead connections — are the requirements' origin."
+      relationship: alternative
+    - name: "SQLCipher Community Edition (via sqlcipher3-wheels)"
+      relevance: "Page-level AES-256 with per-page HMAC. Verified working on this machine 2026-09-05: prebuilt wheel, no compiler, file header encrypted."
+      relationship: complement
 
 # =============================================================================
 # PRODUCT DEFINITION
 # =============================================================================
-# Populated during discovery and definition.
 
 product_definition:
-  # One-sentence description of what this product is and why it exists.
-  vision: null
+  vision: >
+    A locally-hosted, permanently-running pipeline that pulls the operator's financial data from
+    Plaid (plus manual imports where Plaid cannot reach) into an encrypted local datastore, and
+    exposes it read-only over MCP — such that an analyst agent can answer questions about spending,
+    cashflow, and net worth AND independently verify the data is complete and fresh before it does.
 
-  # Measurable success criteria. What does "this worked" look like?
-  goals: []
+  goals:
+    - "An analyst agent answers a period-over-period spending question correctly with no browser and no CSV in the loop."
+    - "An analyst agent can detect, without being told, that the data behind an answer is stale, gapped, or partial."
+    - "The verification gate (§7) passes: coverage, reconciliation, dedup, idempotency, rebuild, inventory, spot-check."
+    - "Adding or removing an institution is a config-and-enrollment operation, never a code change."
+    - "A daily sync runs unattended for months without the operator thinking about it, and says so loudly when it cannot."
 
-  # Who uses this product and what they need.
   users:
-    # Each persona:
-    #   name: string
-    #   description: string
-    #   technical_level: none | basic | intermediate | advanced
-    #   primary_needs: [string]
-    #   constraints: [string]
-    personas: []
+    personas:
+      - name: "Operator"
+        description: "Owns the accounts and the machine. Runs enrollment, repairs broken Items, imports what Plaid cannot reach, and reviews the account inventory."
+        technical_level: advanced
+        primary_needs:
+          - "Enroll or drop an institution without touching code."
+          - "Be told loudly when a feed breaks, and how much history the break cost."
+          - "Inspect the datastore directly when verifying it."
+        constraints:
+          - "Will not babysit a daily job."
+          - "Financial data must not leave the machine except as an encrypted backup."
+      - name: "Analyst agent"
+        description: "Claude (Cowork) reaching the MCP server over the device bridge. The primary consumer of the data."
+        technical_level: advanced
+        primary_needs:
+          - "Aggregates it can trust, not raw rows it must add up."
+          - "Explicit units, sign conventions, and rule-applied flags (AC-9.4)."
+          - "A way to establish data completeness BEFORE answering (get_pipeline_health, get_coverage_report)."
+        constraints:
+          - "Bad at arithmetic over long row lists; context is finite and expensive."
+          - "Cannot see a caveat that is not in the response payload."
 
-  # Core user flows (UI), operations (API), or pipeline stages (automation).
-  # Each: { name, description, steps (optional), priority (must-have/nice-to-have) }
-  core_flows: []
+  core_flows:
+    - name: "Enroll an institution"
+      description: "CLI creates a Hosted Link token with days_requested=730, prints the URL, exchanges the public token, persists the access token to Keychain, records the Item."
+      priority: must-have
+    - name: "Scheduled sync"
+      description: "launchd wakes the daemon daily: per Item, /transactions/sync to cursor exhaustion, daily balance snapshot, investments where the Item supports them. Raw responses persisted before normalization; cursor advanced transactionally with its data."
+      priority: must-have
+    - name: "Detect and repair a degraded Item"
+      description: "Per-Item error capture never aborts the others; degraded state plus last-successful-sync is recorded and surfaced; `connections reauth <id>` issues an update-mode Hosted Link that preserves history and cursor."
+      priority: must-have
+    - name: "Import what Plaid cannot reach"
+      description: "CSV import into the same normalized tables with source='manual', via a per-format adapter selected by config. Provenance survives into every query result."
+      priority: must-have
+    - name: "Answer a financial question over MCP"
+      description: "Aggregate-first tools return computed summaries with a freshness stamp, gap/degraded warnings, and a statement of which account rules were applied."
+      priority: must-have
+    - name: "Verify the dataset"
+      description: "The §7 gate: per-account coverage, balance reconciliation, dedup, idempotency, lossless rebuild, account inventory, manual spot-check. Publishes a report."
+      priority: must-have
+    - name: "Retire an account or institution"
+      description: "Drop an institution from the roster without deleting its history; the account is marked inactive with an end date so closed accounts do not read as permanent coverage gaps."
+      priority: must-have
+    - name: "Rebuild normalized tables from raw"
+      description: "`store rebuild` re-derives silver from bronze at a recorded derivation version."
+      priority: must-have
 
-  # Scope decisions.
   scope:
-    v1: []                # Must have for initial release
-    accommodate: []       # Design for but don't build yet
-    later: []             # Not needed for v1 to be useful
-    never: []             # Explicitly out of scope. Each: { item, rationale }
+    v1:
+      - "Plaid enrollment via Hosted Link, days_requested=730, idempotent, item-cap aware (FR-1)"
+      - "Cursor-based transaction sync: added/modified/removed, pending->posted, idempotent, crash-safe (FR-2)"
+      - "Daily balance time series and investments where supported (FR-3)"
+      - "Per-Item health, error capture, update-mode repair (FR-4)"
+      - "Raw-response preservation and documented lossless rebuild (FR-5)"
+      - "Core schema, integer cents, stable local account IDs, explicit timezone handling (FR-6)"
+      - "CSV manual-import seam with per-format adapters and preserved provenance (FR-7)"
+      - "Data-driven account rules, including the contribution-only shared-account rule (FR-8)"
+      - "Read-only aggregate-first MCP surface, 10 tools, freshness stamps and gap warnings (§5)"
+      - "Keychain-backed secrets, SQLCipher at rest, redacted logs, no telemetry (§6)"
+      - "launchd scheduling with missed-window recovery and logging (AC-ARCH.2)"
+      - "`sync shell` — authenticated SQLCipher REPL, built in step 1 as the debugging affordance for every later step"
+      - "`store backup` — an operator-invoked verified encrypted copy taken under the writer lock. In v1 because the datastore key cannot be recovered once lost and the daily balance series is the one class of data no re-sync rebuilds; SCHEDULING it is not (see `later`)."
+      - "The §7 verification gate, run and published"
+    accommodate:
+      - "Plaid webhooks — leave a clean seam, do not build (needs a public endpoint)"
+      - "Additional manual-import formats beyond the first adapter"
+      - "Additional account-rule types beyond contribution-only"
+      - "Institutions and accounts not yet known, added and removed over time"
+    later:
+      - "Retiring the incumbent aggregator once the verification gate passes"
+      - "Backup SCHEDULING, retention, and a rehearsed restore procedure — the manual `store backup` command is v1 (above); nothing runs it on a timer, and restore has never been exercised end to end"
+      - "Multi-machine operation"
+    never:
+      - item: "Any write path to Plaid or an institution"
+        rationale: "Read-only permanently. A pipeline that can move money has a different risk class."
+      - item: "Mutation tools on the MCP surface"
+        rationale: "Vetting a comparable server surfaced 19 mutation tools including delete_transaction with no undo. Not reproducing that."
+      - item: "Budgeting, forecasting, categorization rules engines, or advice"
+        rationale: "Downstream concerns. This is a data pipeline; analysis happens after the verification gate."
+      - item: "A web UI"
+        rationale: "MCP and the datastore are the only interfaces."
+      - item: "Multi-user or partner access"
+        rationale: "Single user by design."
+      - item: "Automating the current-employer retirement provider"
+        rationale: "Not a Plaid institution. Tolerated as a manual import; never automated."
+      - item: "Telemetry, analytics, or third-party error reporting"
+        rationale: "The only network destinations are Plaid's API hosts (AC-10.4)."
 
-  # Product identity.
   product_identity:
-    name: "MCPlaid"
-    personality: null     # Brand personality, mood (null for internal tools)
-    visual_preferences: null  # Look/feel preferences (null for non-visual products)
+    name: "bankmachine"
+    # Working name; rename still open (docs/build-vs-adopt-investigation.md §7).
+    personality: null
+    visual_preferences: null
 
-  platform: null          # Where this runs (web, mobile, CLI, etc.)
+  platform: "macOS (Apple Silicon), native — not containerized. Python 3.11+."
 
-  # Non-functional requirements, calibrated to risk.
   nonfunctional:
-    performance: null
-    scalability: null
-    uptime: null
-    cost_constraints: null
+    performance: >
+      MCP tool responses fast enough for interactive use (target: aggregate queries under ~1s on
+      24 months of data). Achieved by doing arithmetic in SQL over indexed columns, which is why
+      the datastore is page-encrypted rather than field-encrypted.
+    scalability: >
+      Single user, single machine, roughly 10 institutions and tens of thousands of transactions
+      over 24 months. Scale is not a design driver; correctness is.
+    uptime: >
+      The sync is a daily scheduled job, not a service — a missed window must be recovered on next
+      wake rather than skipped (AC-ARCH.2). The MCP server must start and answer even when the
+      database is empty or missing, reporting that state rather than crashing (AC-ARCH.3).
+    cost_constraints: >
+      Plaid Trial plan — hard cap of 10 Items, which the enrollment path must enforce (AC-1.5) as
+      configuration rather than a literal. No hosting cost: everything runs locally.
 
-  regulatory: []          # Each: { regulation, applicability, impact }
-  cost_estimates: []      # Each: { item, estimated_monthly_cost, notes }
+  regulatory: []
+
+  cost_estimates:
+    - item: "Plaid Trial plan"
+      estimated_monthly_cost: "$0 within Trial limits"
+      notes: "10-Item cap is the binding constraint, not price. Confirm current Trial terms before enrolling — pricing and limits are vendor-set and may have moved."
+    - item: "Local compute and storage"
+      estimated_monthly_cost: "$0"
+      notes: "Runs on an existing machine. raw_responses is compressed JSON; volume is trivial at this scale."
 
 # =============================================================================
 # TECHNICAL DECISIONS
 # =============================================================================
-# Every entry includes rationale.
-# Each: { decision, rationale, alternatives_considered, date }
 
 technical_decisions:
-  architecture: []
-  technology: []
-  data_model: []
-  integrations: []
-  operational: []
+  architecture:
+    - decision: "Build clean-slate rather than fork or adopt an existing project."
+      rationale: >
+        Roughly 70% of the specification — the bronze/silver datastore, the aggregate-first MCP
+        surface, the verification gate — has no prior implementation. Adopting a codebase buys the
+        commodity 30% (Plaid plumbing) at the cost of inheriting its storage and interface
+        decisions, which are the part that actually constitutes this project.
+      alternatives_considered: "Fork or clone-and-run one of six candidate repos, all read at source level."
+      date: 2026-09-05
+    - decision: >
+        PROVIDER-AGNOSTIC ENGINE. No financial-institution, account, or financial-product name from
+        the deployment roster appears in code, schema, or query logic. The AGGREGATOR is expressly
+        carved out — it is a single named dependency in v1 (system-requirements.md §0.1 scope note),
+        so its client package, the keychain service name, and the product name may name it. The norm
+        binds roster identity, not the aggregator. Provider-specific behavior is expressed as data: the institution
+        roster, per-account rules, product capabilities per Item, and import-format adapters are all
+        configuration the operator edits, and accounts are added and removed over the product's life
+        without a code change.
+      rationale: >
+        The requirements docs were written as a snapshot of one operator's account list on
+        2026-09-05. That roster is already known to be wrong in detail (unidentified accounts,
+        institutions that changed status mid-investigation) and will keep changing. Hardcoding it
+        makes every roster change a code change and a regression risk. Separating the engine (in
+        git) from the roster (configuration and data) is what makes this a pipeline rather than one
+        person's script. Retroactive: applies to all code from the first chunk, and to re-reading
+        the requirements docs, which name institutions in several places that must be generalized —
+        see open_questions.
+      alternatives_considered: >
+        Encode the known roster directly, as the acceptance-criteria doc's Addendum A implies.
+        Rejected: faster to first sync, wrong for the product's whole life after that.
+      date: 2026-09-05
+    - decision: >
+        REPOSITORY SCOPE. This repository is a GENERAL-PURPOSE TOOL that may be published. No
+        operator's roster, institution name, account detail, balance, operator name or machine name
+        may appear in a tracked file. The roster lives in the gitignored `deployment/` directory;
+        docs/deployment-requirements.template.md carries its shape and the layering contract.
+      rationale: >
+        The operator restated the product: it is consumed by Claude Cowork and may be released
+        publicly, so nothing specific to them belongs in it. This RESOLVES the former open question
+        "where should the roster live" in favour of moving the roster out of git, and adds what that
+        option had left open — the already-pushed history is rewritten rather than accepted, because
+        the repository was three pushed commits old and the cost never gets lower.
+        Enforced by tests/preferences/check-no-personal-data.sh on every push.
+      alternatives_considered: >
+        (a) Keep the repository private forever and extract a clean public repository later —
+        rejected: it splits the work and risks a copy-paste leak at extraction time. (b) Accept the
+        private remote and record the constraint's real boundary — rejected once public release
+        became a live intention. (c) Delete and recreate the GitHub repository, which would leave no
+        unreachable objects at all — offered and declined by the operator: no credentials or
+        balances of consequence are exposed, the remote is private, and account existence is not
+        sensitive to them.
+      date: 2026-09-05
+    - decision: >
+        MCP TRANSPORT IS LOCAL STDIO ONLY, CONFIRMED. Claude Cowork reaches the server on the same
+        machine. AC-10.5 (the MCP server opens no network sockets) therefore HOLDS.
+      rationale: >
+        Recorded because it was previously an unexamined default rather than a decision, and it is
+        the one architectural choice that would have been expensive to reverse: a remote transport
+        would require authn/authz, TLS and rate limiting, and would expose a financial datastore to
+        a socket. Confirmed with the operator 2026-09-05.
+      alternatives_considered: >
+        (a) HTTP/remote transport — rejected, not needed and materially enlarges the security model.
+        (b) Both behind a transport seam — rejected as speculative generality for v1.
+      date: 2026-09-05
+    - decision: >
+        PLATFORM: macOS for v1, WITH SEAMS FROM DAY ONE. Ship and test on macOS only, but the
+        credential store goes behind the `keyring` library rather than direct `security` CLI calls,
+        and the scheduler goes behind an interface with launchd as its only implementation.
+        Documentation states "macOS supported, other platforms unverified".
+      rationale: >
+        A public tool that hardcodes one OS's credential store is painful to port later and nearly
+        free to abstract now. This supersedes the project-preferences note specifying Keychain
+        access via the `security` CLI.
+      alternatives_considered: >
+        (a) macOS only, stated as a permanent constraint — rejected: forecloses a cheap option.
+        (b) Cross-platform built and tested in v1 — rejected: needs CI on two platforms and a second
+        scheduler implementation before anything ships.
+      date: 2026-09-05
+    - decision: >
+        THE PRODUCT IS NAMED `bankmachine`. Chosen 2026-09-05, before build step 1 fixed any
+        identifier, and before any code existed. This DISCHARGES the rename-before-step-1 decision
+        recorded the same day: `MCPlaid` embedded a third-party trademark and locked the product to
+        one aggregator.
+      rationale: >
+        Build step 1 fixes the Python package name, the keychain service name, the scheduler label
+        and the MCP server name. The keychain service name is the expensive one: changing it after
+        enrollment orphans stored access tokens. Settling the name while the repository still held
+        zero lines of code made the rename a documentation sweep rather than a migration.
+        `bankmachine` is aggregator-neutral and carries no third-party mark; PyPI returned 404 for
+        it on 2026-09-05, so the package name was free at the time of choosing.
+      alternatives_considered: >
+        (a) Keep MCPlaid, at publish time or permanently — rejected: a brand-permission question
+        the operator would own, and a name locked to one aggregator. (b) coffer, fiscus, moneta,
+        quipu, perfin-mcp — offered as a shortlist; the operator chose bankmachine.
+      caveat: >
+        Recorded so it is not rediscovered as a surprise: "bank machine" is the ordinary term for an
+        ATM in Canada and parts of the UK, which suggests a device that DISPENSES money for a
+        product whose §2 non-goals make "read-only, permanently — no write path to any aggregator
+        or institution" a headline commitment. Raised once and accepted by the operator; it is a
+        naming-connotation risk, not a technical one, and it argues for the tagline and README
+        opening to say "read-only" early rather than for a different name.
+      date: 2026-09-05
+    - decision: >
+        TWO-LAYER REQUIREMENTS. docs/system-requirements.md specifies a provider-agnostic engine and
+        contains no institution name; a deployment-requirements document specifies one operator's
+        roster as real acceptance criteria for the instance built on that engine. The engine layer
+        is version-controlled and publishable; the roster layer is not (see the 2026-09-05 decision
+        on repository scope).
+      rationale: >
+        The operator's correction: the roster requirements are genuine, they simply belong to a
+        different layer than the engine. The split carries a load-bearing rule — every deployment
+        requirement must be satisfiable by configuration plus an adapter with zero engine change, so
+        a deployment requirement that cannot be expressed that way is a GAP IN THE ENGINE SPEC
+        rather than a special case. That makes the split a checkable test rather than a filing
+        convention; §7 of the roster document carries the traceability table, and
+        docs/deployment-requirements.template.md carries that table's shape for anyone filling one in.
+      alternatives_considered: >
+        (a) Rewrite the requirements doc in place and demote the roster to non-normative operator
+        notes — rejected by the operator: it discards real requirements. (b) A superseding addendum
+        — rejected: leaves a reader reconciling two sections of one document. (c) Generalize in code
+        only and leave the doc — rejected: the spec stays misleading to every later reader.
+      date: 2026-09-05
+    - decision: "Two processes over one datastore: a scheduled sync writer and a long-lived MCP reader."
+      rationale: >
+        The MCP server may be mid-query when the daily sync wakes. Concurrency and durability
+        behavior across that boundary (journal mode, locking, reader isolation under SQLCipher) is
+        a real design question and belongs in the system architecture, not in whichever chunk hits
+        it first.
+      alternatives_considered: "A single process serving both roles. Rejected: the MCP server must not depend on sync liveness, and vice versa."
+      date: 2026-09-05
+    - decision: >
+        AC-ARCH.7 RESOLVED, in .prawduct/artifacts/architecture.md. WAL journal mode set at store
+        init after keying; every writable handle comes from one writer factory that takes an
+        exclusive flock before it returns; every read-role handle opens mode=ro (with query_only as
+        a second layer), holds no read transaction across tool calls, and never falls back to a
+        writable handle; no component creates the datastore implicitly; a process that does not
+        recognise the schema version refuses to serve, and a migration's DDL and its version stamp
+        commit in one transaction. The last four are ratified norms in that artifact's Direction
+        section, born before any code exists, so no retroactivity decision applies.
+      rationale: >
+        Every claim was measured on this machine against sqlcipher3-wheels 0.5.7 (SQLCipher 4.12.0,
+        SQLite 3.51.1) rather than taken from documentation. WAL gives the reader a non-blocking
+        snapshot while a multi-hour backfill runs, and its WAL and shm files are themselves
+        encrypted — checked, because an unencrypted WAL would have traded AC-ARCH.5 away for
+        AC-ARCH.7. A second writer gets `database is locked` once busy_timeout expires, so the unit
+        that must be serialised is the run rather than the transaction, and flock is the only
+        mechanism the kernel releases when AC-2.5's kill test kills the holder. A reader holding an
+        open snapshot starved a passive checkpoint at 0 of 93 frames and 93 of 93 immediately after
+        release, which is why the reader's snapshot discipline is a norm and not advice. A plain
+        connect() to a missing path silently creates an empty encrypted store, which under
+        AC-ARCH.4's configurable path would answer every question confidently from nothing. And
+        PRAGMA query_only=OFF re-enables writes on a read-write handle, which is why the reader's
+        refusal had to live in the file handle (mode=ro) rather than in a session flag — sync shell
+        ships the operator the very SQL prompt that can type it.
+      alternatives_considered: >
+        Rollback journal (blocks readers for the length of a backfill); a busy_timeout alone
+        (converts a fast failure into a slow one at an arbitrary point mid-run); a lease row in
+        sync_state (survives SIGKILL and strands every later run); query_only alone on a
+        read-write handle (rejected on re-probe — reversible from inside a SQL session, and sync
+        shell ships that session; the earlier note calling the read-only-WAL hazard a falsified
+        premise was itself unscoped, and the artifact's D4 records how the second probe found the
+        edge the first missed); a socket or signal between the two processes (creates exactly the
+        liveness dependency AC-ARCH.7 forbids).
+      date: 2026-09-05
+
+  technology:
+    - decision: >
+        STORE LAYER USES SQLALCHEMY CORE -- typed table metadata and the query builder, no ORM
+        (no declarative_base, no Session, no identity map). Engines are constructed with
+        create_engine(..., creator=...) where the creator is our own keyed connection from
+        store/connection.py, so SQLAlchemy never opens a connection itself.
+      rationale: >
+        Owner's decision 2026-09-05, over a builder recommendation of hand-written SQL. Table
+        metadata in one typed place is worth more across thirteen tables than the dependency costs,
+        and composable query construction is what get_coverage_report and spending_summary are
+        actually made of. The objection the recommendation rested on -- that an ORM stack has to be
+        taught SQLCipher's bespoke connection setup -- is answered by construction rather than
+        dropped: the creator= route keeps key-before-anything, WAL, mode=ro, query_only and the
+        writer lock inside the one module that owns the architecture norms. Both routes were
+        verified against SQLCipher before the decision was taken (the built-in sqlite+pysqlcipher
+        dialect resolves to sqlcipher3 and works; the creator= route works and produces a
+        ciphertext file); creator= is the one built, because the dialect route would move
+        connection setup into a URL string and out of the module the norms live in.
+      alternatives_considered: >
+        Hand-written SQL over the sqlcipher3 DBAPI with dataclass row mappings (the builder's
+        recommendation -- smallest dependency surface, but thirteen tables of hand-written mapping
+        and no single typed home for the schema). Full SQLAlchemy ORM plus Alembic (rejected: the
+        session and identity model sits awkwardly against a strict single-writer / read-only-reader
+        split, and the aggregates would drop to SQL anyway).
+      date: 2026-09-05
+    - decision: "Python 3.11+ on macOS, native."
+      rationale: "Builder's choice per system-requirements.md §1 Architecture; strongest ecosystem for the data and SQLite layers here. First verified on this machine at 3.12.3; the owner moved the pinned interpreter to 3.14 on 2026-09-06 and the suite, mypy strict and ruff were re-run green on 3.14.6 before the pin changed. requires-python stays >=3.11."
+      alternatives_considered: "Node 22+, permitted by the v1 requirements doc before this decision narrowed it."
+      date: 2026-09-05
+    - decision: "SQLCipher Community Edition via the sqlcipher3-wheels package, key held in Keychain."
+      rationale: >
+        The backup copy is the one that leaves the machine, and FileVault does not cover it.
+        Page-level AES-256 with per-page HMAC makes the backup ciphertext at rest with the whole
+        file encrypted including the header. Empirically verified on this machine 2026-09-05:
+        prebuilt wheel installs with no compiler, `SQLite format 3` magic absent from the file, a
+        known plaintext not recoverable from raw bytes, wrong key raises rather than returning
+        garbage.
+      alternatives_considered: >
+        (a) Plain SQLite, as the v1 requirements doc specified before this decision superseded it —
+        rejected, leaves the backup in plaintext. system-requirements.md §1 now specifies page
+        encryption (AC-ARCH.5), so the doc and this decision agree.
+        (b) Plain SQLite with application-level AES on sensitive columns — rejected, and the
+        rejection is load-bearing: it destroys the SQL queryability that AC-9.1's aggregate-first
+        design depends on (no range scans on date, no GROUP BY category, no SUM in SQL, no useful
+        indexes), and the workaround — deterministic or order-preserving encryption to restore
+        indexability — leaks equality and ordering patterns that frequency analysis over a personal
+        transaction set substantially defeats. It also leaves schema, indexes, row counts, and
+        freed-page residue structurally visible, which page encryption does not.
+        (c) sqlcipher3-binary / sqlcipher3 / pysqlcipher3 — unavailable for this platform or
+        requiring a Homebrew build step.
+      date: 2026-09-05
+    - decision: "`sync shell` — an authenticated SQLCipher REPL — is built in step 1, not step 9."
+      rationale: >
+        Page encryption is what breaks ad-hoc `sqlite3` and Datasette access, and that access is
+        the primary debugging affordance for every step between 1 and 9 — most of all the §7
+        verification gate. Building the replacement alongside the thing that breaks it is what keeps
+        the encryption decision honest.
+      alternatives_considered: "Defer to the verification-gate step, as the build sequence implies."
+      date: 2026-09-05
+
+  data_model:
+    - decision: "Bronze/silver split — every Plaid response persisted verbatim before normalization; normalized tables re-derivable from raw alone."
+      rationale: "A categorization or derivation bug becomes a re-run rather than a re-fetch, and lineage back to source is preserved. Disk cost is trivial at this volume."
+      alternatives_considered: "Normalize on ingest and discard responses. Rejected: makes every derivation bug a data-loss event."
+      date: 2026-09-05
+    - decision: "All monetary values stored as integer minor units. No floats in schema or aggregation code."
+      rationale: "Binary floating point cannot represent decimal currency exactly; errors accumulate across aggregation, which is the product's main operation."
+      alternatives_considered: "Decimal type. Rejected: integer cents is simpler, exact, and portable across the SQL and Python boundaries."
+      date: 2026-09-05
+    - decision: "Provider values are retained, never overwritten; local interpretation lives in separate nullable columns."
+      rationale: "Overwriting an upstream value in place destroys the ability to re-derive and to distinguish provider drift from local intent (AC-6.1)."
+      alternatives_considered: "Overwrite on import."
+      date: 2026-09-05
+    - decision: "Every account carries a stable local ID that survives re-enrollment of its Item, and account records carry a lifecycle (active/inactive with an end date)."
+      rationale: >
+        Re-authenticating an institution must not orphan history (AC-6.3). Retiring an account must
+        not make its closed period read as a permanent coverage gap — required by the
+        add-and-remove-over-time constraint.
+      alternatives_considered: "Key history on the provider's Item/account IDs. Rejected: they do not survive re-enrollment."
+      date: 2026-09-05
+    - decision: "Transaction dates stored as dates; sync metadata stored as UTC timestamps. The two are never mixed."
+      rationale: "A transaction date is a calendar fact from the institution, not an instant; treating it as one introduces silent off-by-one-day errors at period boundaries, which is exactly where period-over-period comparisons live."
+      alternatives_considered: "Uniform UTC timestamps throughout."
+      date: 2026-09-05
+    - decision: "Every stored amount is signed from the operator's point of view — positive is value held or money in, negative is value owed or money out — for every account type, liabilities included."
+      rationale: >
+        One convention rather than one per account type keeps two things from needing a special
+        case: net worth is a plain sum, and AC-11.2's reconciliation is "change in balance equals
+        sum of transactions" for every account. Aggregators disagree with each other and several
+        report a card balance as a positive amount owed, so normalizing is the connector's job.
+        `available_minor` and `limit_minor` are deliberate exceptions and hold magnitudes as
+        reported; neither participates in net worth.
+      alternatives_considered: >
+        Store balances as the source reports them and let each consumer apply the sign for the
+        account type. Rejected: it makes net worth type-dependent, and any consumer that forgets
+        the special case is wrong by twice the debt — silently, and plausibly.
+      date: 2026-09-06
+    - decision: "`accounts.balance_class` classifies each account as asset or liability, as data the operator can correct."
+      rationale: >
+        `net_worth` is an enumerated consumer of the schema and `account_type` cannot answer it:
+        the types are the source's vocabulary, they differ between sources, and an import-only
+        account has none. Found by the lock-in checkpoint's re-read of the consumer questions
+        against the delivered tables, and fixed while the schema was still free. Per the sign
+        convention above it partitions a report rather than deciding an arithmetic sign, so a
+        misclassification mislabels a breakdown instead of producing a wrong total.
+      alternatives_considered: "A taxonomy of source account types hardcoded in whichever query needs it first. Rejected: it is a roster-shaped constant in the engine, and it has no answer for a manually-imported account."
+      date: 2026-09-06
+    - decision: "The Core metadata and the migration DDL are written independently and compared by a test, never generated from one another."
+      rationale: >
+        Migrations are forward-only and never edited, so metadata that emits its own migration
+        agrees with whatever the code currently believes rather than with what any existing
+        datastore actually contains. Two independent descriptions can disagree, and the
+        disagreement is the only drift signal there is.
+      alternatives_considered: "Emit the DDL from the SQLAlchemy metadata. Rejected: fewer lines, and no observation left that could reveal drift."
+      date: 2026-09-06
+    - decision: "Multi-currency net worth is out of scope: amounts carry a currency code, but there is no FX rate table and no conversion."
+      rationale: "Recorded as a limitation by the lock-in checkpoint rather than built speculatively. Adding rates later is a new table and a derivation version, not a reshaping of the existing ones."
+      alternatives_considered: "An FX rate table now. Rejected: no consumer asks for it, and a rate series nobody populates is worse than an absent one."
+      date: 2026-09-06
+
+  integrations:
+    - decision: "Plaid is the only network destination. Read-only endpoints only."
+      rationale: "AC-10.4 and the permanent read-only stance. Any other destination is a finding, not a feature."
+      alternatives_considered: "Browser-storage scraping as used by an alternative MCP server. Rejected on inspection — see prior_art."
+      date: 2026-09-05
+    - decision: "Polling, not webhooks, for v1 — with a clean seam left for webhooks."
+      rationale: "Webhooks require a publicly reachable endpoint, which this machine is not and should not become."
+      alternatives_considered: "Stand up a tunnel or hosted endpoint. Rejected: expands the network surface for a daily-cadence pipeline."
+      date: 2026-09-05
+    - decision: "Manual import is a first-class path with per-format adapters chosen by configuration."
+      rationale: >
+        Some institutions expose no aggregator API at all, and others need one-time history
+        backfill. The set of such formats grows over time, so the adapter set is data, not a
+        hardcoded branch. Foreign input formats are unowned surfaces and get verified against real
+        sample files, not assumed.
+      alternatives_considered: "A single hardcoded importer for the first format encountered."
+      date: 2026-09-05
+    - decision: "Sandbox vs production is an explicit config flag, logged loudly at every startup."
+      rationale: "Syncing fixture data into the real datastore must be hard to do by accident (AC-10.6)."
+      alternatives_considered: "Infer from which credentials are present. Rejected: silent and easy to get wrong."
+      date: 2026-09-05
+
+  operational:
+    - decision: "No filesystem path is hardcoded; the datastore path, log directory, and config location are configuration with documented defaults."
+      rationale: >
+        The requirements doc named an absolute repo and datastore path that does not match where the
+        repo actually lives. Rather than make either literal true, both become configuration — which
+        is the same config-over-code line the provider-agnostic norm draws, applied to the
+        filesystem. The repo stays where it is; no code path assumes its location.
+      alternatives_considered: "Relocate the repo to match the doc; or hardcode the doc's absolute datastore path."
+      date: 2026-09-05
+    - decision: "launchd user agent, daily, with missed-window recovery rather than window-skipping."
+      rationale: "A laptop asleep at the scheduled time is the normal case, not the exception. Skipping is silent data staleness (AC-ARCH.2)."
+      alternatives_considered: "cron. Rejected: does not survive sleep or handle missed windows on macOS."
+      date: 2026-09-05
+    - decision: "Secrets live in the macOS Keychain — provider credentials, access tokens, and the datastore key. Never in the repo, a dotfile, shell history, or a log line."
+      rationale: "AC-10.1. Verified 2026-09-05 that the Keychain CLI round-trips cleanly, so the cost of doing this correctly is near zero."
+      alternatives_considered: "An encrypted dotfile. Rejected: moves the key problem rather than solving it."
+      date: 2026-09-05
+    - decision: "One broken Item never aborts the sync for the others; degradation is recorded with its error code AND the timestamp of last successful sync."
+      rationale: "A degraded flag without a date makes the size of the resulting data hole unguessable. Observed live in the incumbent system, where two connections had been dead for an unknown duration (AC-4.5)."
+      alternatives_considered: "Fail the run on any Item error."
+      date: 2026-09-05
 
 # =============================================================================
 # DESIGN DECISIONS
 # =============================================================================
-# UX, IA, and design decisions. Some fields (like error_handling_approach) apply
-# to all products; others (like visual_direction) only apply to products with a UI.
-# Each: { decision, rationale, date }
 
 design_decisions:
-  information_architecture: []
-  interaction_patterns: []
-  accessibility_approach: null
-  error_handling_approach: null
-  # API decisions — populate when classification.structural.exposes_programmatic_interface is set.
-  # These record the DECISION (including a deliberate "none — internal-only"), not a mandate to
-  # version. A deferral must be dated and carry a revisit trigger. See the api-contract artifact.
-  # api_versioning_approach: { scheme, deprecation_policy, stability_tiers,
-  #                            status: active|deferred, rationale, revisit_trigger (if deferred), date }
-  api_versioning_approach: null
-  # api_error_model_approach: { envelope (e.g. RFC-7807/problem+json), codes, status, rationale, date }
-  api_error_model_approach: null
-  observability_approach: null    # Signal types, correlation context, sensitive data filtering, operational model
-  infrastructure_dependencies: null  # External services (DB, queue, auth, APIs), mock boundaries, integration test strategy
+  information_architecture:
+    - decision: "The engine's code carries no roster knowledge; the roster (institutions, accounts, rules, import formats) is configuration and data the operator owns."
+      rationale: "See technical_decisions.architecture — this is that norm expressed as an IA boundary. The line between 'in git' and 'in config' is the line between the product and one operator's situation."
+      date: 2026-09-05
+    - decision: >
+        Requirement identifiers are unique within a requirements document, and the two documents
+        cite each other by those ids.
+      rationale: >
+        The layer split gave requirement ids a cross-document job they were never numbered for. A
+        duplicate id does not fail loudly — it resolves a citation to the wrong requirement, and the
+        one a reader lands on by accident is as likely to be a scheduled job as the immutable
+        enrollment parameter the engine doc calls its highest-stakes one. The deployment doc's
+        traceability table calls itself the checkable form of the layering rule, and it cannot be
+        checked against an ambiguous key. Ratified as a norm with a test as its mechanism, because
+        uniqueness is assertable by grep and should never again be caught by review.
+      date: 2026-09-05
+    - decision: "Account rules are typed and data-driven; the first type is contribution-only (count inbound transfers from the operator's own accounts as a single expense category; exclude that account's outbound spending from personal aggregates)."
+      rationale: >
+        The requirements name a specific institution for this rule; the institution is an instance,
+        the rule type is the requirement. Excluded rows are filtered and never deleted, and any
+        aggregate that applied a rule says so in its response, so the exclusion cannot be silently
+        forgotten during analysis (AC-8.3).
+      date: 2026-09-05
+
+  interaction_patterns:
+    - decision: "Aggregate-first MCP surface: computed summaries by default; raw-row access paginated and hard-capped."
+      rationale: "The consumer is an LLM. SQL is faster, cheaper, and more accurate at arithmetic than dumping 24 months of rows into a context window (AC-9.1)."
+      date: 2026-09-05
+    - decision: "Every tool response states units, sign convention, freshness, applied rules, and any known gap or degradation."
+      rationale: "Ambiguity here produces wrong analysis that looks right. A caveat the consumer cannot see in the payload does not exist (AC-9.2 through AC-9.4)."
+      date: 2026-09-05
+
+  accessibility_approach: >
+    Terminal and machine interfaces only; no GUI. The accessibility surface is therefore CLI
+    convention: readable non-colour-dependent output, meaningful exit codes, errors on stderr,
+    no reliance on terminal graphics. MCP responses are structured data, which is the accessible
+    form by construction.
+
+  error_handling_approach: >
+    High-risk product, so the taxonomy is explicit rather than assumed. Four classes:
+    (1) PER-ITEM DEGRADATION — auth-required, locked, institution-down, rate-limited. Caught per
+    Item, recorded with error code and last-successful-sync, never aborts other Items, surfaced
+    through health.
+    (2) TRANSIENT — backoff and retry; the not-yet-ready state during initial historical backfill
+    is expected, not a failure.
+    (3) DATA INTEGRITY — a cursor may never advance without the data it accompanies committing in
+    the same transaction; a crash mid-pagination resumes without loss.
+    (4) OPERATOR ERROR — wrong environment, missing credentials, item cap reached: fail loudly at
+    startup with a remedy in the message.
+    Catch specific exceptions; a genuinely necessary broad catch is waived in-line with a reason.
+    Silence is the one disallowed outcome — this product's failure mode is quiet wrongness.
+
+  api_versioning_approach:
+    scheme: "None — internal-only surface."
+    deprecation_policy: "Not applicable while the only consumers are this machine's CLI and the operator's own MCP client."
+    stability_tiers: "None."
+    status: deferred
+    rationale: >
+      The MCP tool surface has exactly one consumer, on one machine, owned by the same person who
+      changes it. Versioning would be ceremony with no beneficiary. Recorded as a deliberate
+      decision rather than an omission, because adding versioning later is a breaking change for
+      every consumer that exists by then.
+    revisit_trigger: "Any consumer outside this machine, or any second person's client, reaches the MCP surface."
+    date: 2026-09-05
+
+  api_error_model_approach:
+    envelope: "MCP tool-level errors, plus in-band warning fields on successful responses."
+    codes: >
+      Structured warnings distinguishing at minimum: stale (last sync older than expected),
+      degraded (a contributing Item is in error), gapped (known coverage hole in the queried
+      window), partial (a contributing account has bounded history), rule-applied (an account rule
+      filtered rows from this aggregate).
+    status: active
+    rationale: >
+      A hard error is the easy case. The dangerous case is a SUCCESSFUL response computed over
+      incomplete data, so incompleteness must be a field on the success path rather than an
+      exception — analysis over incomplete data has to be impossible to do accidentally (AC-9.3).
+    date: 2026-09-05
+
+  observability_approach: >
+    Runs unattended, so silent failure is the default state to design against. Structured logs to a
+    local log directory with per-run correlation, capturing per-Item outcome, rows added/modified/
+    removed, cursor advancement, and duration. Access tokens and account numbers are redacted;
+    masks are acceptable. No telemetry, analytics, or third-party error reporting of any kind.
+    The primary operational signal is not the log but `get_pipeline_health`, which is queryable by
+    the analyst agent — the observability surface and the product surface are deliberately the same
+    thing, because the consumer that most needs to know the data is stale is the one asking
+    questions of it. `sync shell` is the interactive debugging affordance.
+
+  infrastructure_dependencies: >
+    (1) Plaid API — a FOREIGN API, and the only network dependency. Its Sandbox environment is the
+    integration-test target; cursor semantics, error codes, and the immutability of enrollment
+    parameters must be verified against it and against current vendor documentation rather than
+    recalled. Never mocked at the layer under test — a mock that agrees with our misunderstanding
+    proves nothing.
+    (2) SQLCipher via sqlcipher3-wheels — real instance always; never mocked. The encryption
+    behavior IS the requirement.
+    (3) macOS Keychain — real instance in integration tests, using a test-scoped service name.
+    (4) launchd — verified by actually installing and firing the agent, including a missed-window
+    recovery case; not simulated.
+    (5) git — read-only, and only to identify the running build for the `build` field the MCP
+    server stamps on every response. Absent git, an unreadable checkout, or an installed copy
+    outside a checkout are all NORMAL: the field reports null and the server serves regardless.
+    Never required for correctness of any answer about money, which is why it is last here and
+    why nothing retries it.
+    (6) Manual-import file formats — FOREIGN input surfaces. Adapters are verified against real
+    exported sample files, not hand-written fixtures that encode our assumptions about the format.
+
   visual_direction: null
 
 # =============================================================================
 # OPEN QUESTIONS
 # =============================================================================
-# Unresolved decisions. Normal during discovery, shrinks toward zero
-# before artifact generation.
-# Each:
-#   question: string
-#   blocking: string (what can't proceed)
-#   waiting_on: "user" | "research"
-#   priority: high | medium | low
 
-open_questions: []
+# Two entries were removed from this list on 2026-09-07 because both had been
+# answered and the list had not moved with them. A question recorded as open
+# after it is closed is worse than one never recorded: it keeps being re-asked,
+# and it makes the remaining entries look less settled than they are.
+#
+#   - "Aggregator pluggability" — answered by the owner 2026-09-06 ("one in v1,
+#     drawn so a second is a new module rather than a rewrite"), built out over
+#     build step 2, and folded back into `docs/system-requirements.md` §9.2 as
+#     that plan's Done-when required.
+#   - "Which paths count as risk surfaces" — answered by the owner 2026-09-05;
+#     `risk_surfaces:` below has held the five paths since, and the comment there
+#     already recorded that it closed this question.
+# =============================================================================
+# DATA LOCALITY — THE BOUNDARY, RULED 2026-09-07
+# =============================================================================
+# `[DECISION: a PRIVATE git remote is an acceptable reading of "financial data
+# must not leave the machine except as an encrypted backup" | taken by the owner
+# 2026-09-07, answering deployment open question 6.4 with its option (b) | user
+# can revisit]`
+#
+# The remote is `git@github.com:brookstalley/bankmachine.git`, verified PRIVATE
+# on the day of the ruling. The constraint's boundary is therefore the private
+# remote, not this machine, and that is now written down rather than contradicted
+# in silence -- which was the whole point of 6.4 recording it as open.
+#
+# What this ruling does NOT do, stated because the alternative reading is
+# available and wrong:
+#
+#   - It does not undo the gitignore. `deployment/` stays ignored and the leak
+#     guard stays enforcing. 6.4's option (a) was already executed on 2026-09-05
+#     -- verified 2026-09-07: `docs/data-sources.md` appears in no commit on any
+#     ref, no roster blob exists anywhere in history, and `deployment/` was never
+#     tracked. Undoing that would cost something and buy nothing.
+#   - It does not amend the ratified norms. "No roster or operator identity in
+#     anything pushed" (project-preferences) and "configuration is gitignored"
+#     still bind. This ruling widens where *the product's own data* may rest; it
+#     does not license roster rows into git.
+#
+# 🔴 The one consequence that bites later: **publishing this repository moves the
+# boundary again, and this ruling does not cover it.** GitHub keeps unreachable
+# objects fetchable by SHA after a history purge, so flipping this repo public is
+# not equivalent to publishing a clean one. If the tool is published, publish a
+# NEW repository -- and revisit this ruling before doing either.
+
+open_questions:
+  - question: "Investment account types per institution (retirement vs. brokerage vs. rollover) — affects whether the aggregator's investments product covers them and what cost basis means. Tracked as deployment open question 6.1."
+    blocking: "The investments portion of FR-3 and the cost-basis field in list_holdings."
+    waiting_on: user
+    priority: medium
+  - question: "The complete institution roster. Tracked as deployment open question 6.2."
+    blocking: "Nothing currently. Answered 2026-09-07: build step 3 stays on sandbox, so no real institution is linked this cycle and the roster is not needed to finish it. It blocks the FIRST REAL enrollment, which is also the first moment AC-1.2 is irreversible and the first moment the granted window becomes observable (AC-1.3a)."
+    waiting_on: user
+    priority: medium
+  - question: "Retention policy for raw responses: keep indefinitely (recommended — volume is trivial and it is the system of record) or prune after N months?"
+    blocking: "Nothing immediately; it is a config default with a documented rationale."
+    waiting_on: user
+    priority: low
 
 # =============================================================================
 # USER EXPERTISE PROFILE
 # =============================================================================
-# Inferred from conversation signals, never self-assessed.
-# Drives vocabulary, explanation depth, and involvement calibration.
 
 user_expertise:
-  product_thinking: null      # none | basic | intermediate | advanced
-  technical_depth: null
-  design_sensibility: null
-  domain_knowledge: null
-  operational_awareness: null
-  evidence: []                # Each: { dimension, signal, inferred_from }
+  product_thinking: advanced
+  technical_depth: advanced
+  design_sensibility: intermediate
+  domain_knowledge: advanced
+  evidence:
+    - dimension: product_thinking
+      signal: "Wrote acceptance criteria with explicit non-goals, a named primary failure mode, and a verification gate placed before any analysis."
+      inferred_from: "docs/system-requirements.md §2, §7"
+    - dimension: product_thinking
+      signal: "Interrupted a discovery pass to impose a generality constraint before any code existed, rather than discovering it during a later refactor."
+      inferred_from: "Session 2026-09-05: no hardcoded account providers."
+    - dimension: technical_depth
+      signal: "Reached for application-level AES as an alternative to full-database encryption and asked which was right, rather than assuming either."
+      inferred_from: "Session 2026-09-05."
+    - dimension: technical_depth
+      signal: "Specified cursor-based sync with transactional cursor persistence, integer cents, and a bronze/silver split unprompted."
+      inferred_from: "docs/system-requirements.md FR-2, FR-5, AC-6.2"
+    - dimension: domain_knowledge
+      signal: "Identified days_requested immutability as the single highest-stakes parameter before building anything."
+      inferred_from: "docs/system-requirements.md AC-1.2 (FR-1), §8 build sequence"
+    - dimension: operational_awareness
+      signal: "Required missed-window recovery rather than window-skipping, and last-successful-sync dating on degraded feeds."
+      inferred_from: "docs/system-requirements.md AC-ARCH.2, AC-4.5"
+    - dimension: operational_awareness
+      signal: "Vetted a candidate dependency at source level and rejected it on undisclosed browser-storage scraping that its README did not describe."
+      inferred_from: "candidate-dependency vetting recorded during discovery, 2026-09-05"
+  operational_awareness: advanced
 
 # =============================================================================
 # BUILD PREFERENCES
 # =============================================================================
-# Developer preferences captured during discovery (testing approach, code style,
-# tooling). Optional — only when the user expresses preferences.
 
 build_preferences:
-  file_path: null             # Path to project-preferences.md (relative to .prawduct/)
-  last_updated: null
-  source: null                # discovery | inferred | iteration
+  file_path: artifacts/project-preferences.md
+  last_updated: 2026-09-05
+  source: discovery
 
 # =============================================================================
 # HEALTH CHECK
 # =============================================================================
-# Tracks periodic health check state. Health checks are triggered by
-# accumulating staleness signals, not by a fixed cadence.
 
 health_check:
   last_full_check: null
@@ -195,23 +821,95 @@ health_check:
 # =============================================================================
 # ARTIFACT MANIFEST
 # =============================================================================
-# Tracks generated artifacts and their relationships.
 
 artifact_manifest:
-  # Each:
-  #   name: string
-  #   file_path: string (relative to project root)
-  #   version: integer
-  #   depends_on: [artifact names]
-  artifacts: []
+  artifacts:
+    - name: "System requirements"
+      file_path: docs/system-requirements.md
+      version: 2
+      depends_on: []
+    - name: "Deployment requirements template"
+      file_path: docs/deployment-requirements.template.md
+      version: 1
+      depends_on: ["System requirements"]
+      # The FILLED-IN roster and its account-inventory evidence are deliberately not
+      # repository artifacts: they name institutions and carry balances, and this
+      # repository is a general-purpose tool that may be published. They live in the
+      # gitignored `deployment/` directory. See the 2026-09-05 repository-scope decision.
+    - name: "Build-vs-adopt decision record"
+      file_path: docs/build-vs-adopt-investigation.md
+      version: 1
+      depends_on: []
+    - name: "Architecture"
+      file_path: .prawduct/artifacts/architecture.md
+      version: 1
+      depends_on: ["System requirements"]
+      # Home of AC-ARCH.7 and of this product's first ratified norms (Direction section).
+      # Written before the rest of the strategy set; those upstreams now exist (below) and
+      # reconcile TO this artifact -- they cite its norms and restate none of them.
+
+    # The strategy-class set, authored 2026-09-06 in dependency order (data model -> NFRs ->
+    # security -> API contract -> observability -> operational spec). Reconciled from
+    # docs/system-requirements.md and the shipped schema, not interviewed. Which of them home
+    # ratified norms is recorded once, in the NORM REGISTRY block below -- not enumerated here,
+    # because a list in a second place goes stale the moment another artifact homes one.
+    - name: "Data model"
+      file_path: .prawduct/artifacts/data-model.md
+      version: 1
+      depends_on: ["System requirements", "Architecture"]
+      # Describes tables that ALREADY EXIST. Migration 002's DDL is frozen and never changes;
+      # where this artifact and that DDL disagree, the DDL is right and the artifact is a bug.
+    - name: "Non-functional requirements"
+      file_path: .prawduct/artifacts/nonfunctional-requirements.md
+      version: 1
+      depends_on: ["System requirements"]
+      # Targets are stated, not measured -- the MCP surface is build step 7.
+    - name: "Security model"
+      file_path: .prawduct/artifacts/security-model.md
+      version: 1
+      depends_on: ["System requirements", "Data model", "Architecture"]
+      # Carries the threat model, including what is deliberately NOT defended against.
+      # Records one owed test: AC-10.2's git ls-files scan for token-shaped strings.
+    - name: "API contract"
+      file_path: .prawduct/artifacts/api-contract.md
+      version: 1
+      depends_on: ["System requirements", "Data model", "Security model"]
+      # Two surfaces: the MCP tools (specified, step 7) and the CLI (partially built).
+      # Home of the declared surface inventory and the `Retention:` rule the Critic reads.
+    - name: "Observability strategy"
+      file_path: .prawduct/artifacts/observability-strategy.md
+      version: 1
+      depends_on: ["System requirements", "Non-functional requirements", "API contract"]
+      # The observability surface and the product surface are the same thing (get_pipeline_health).
+    - name: "Operational specification"
+      file_path: .prawduct/artifacts/operational-spec.md
+      version: 1
+      depends_on: ["Non-functional requirements", "Security model", "Observability strategy"]
+      # Scheduling (step 8) is specified, not built. Records the backup gap as the highest-value
+      # operational work outstanding -- the one failure mode with no remedy.
 
 # =============================================================================
 # BUILD STATE
 # =============================================================================
-# Runtime tracking during building. Updated after each chunk.
 
 build_state:
-  source_root: null           # Where source code lives (e.g., "src/")
+  source_root: src/bankmachine
+  # Set 2026-09-05 when build-plan-datastore-v1.md fixed the layout. Not deferred to Chunk 01:
+  # the briefing's architecture-coverage probe only walks this path when it is set, and a null
+  # value makes it report nothing forever without saying it did not run -- the absent-bad-news
+  # shape learnings.md already records for this project.
+
+# pytest runs the shell leak guard too, via `tests/preferences/test_no_personal_data.py`,
+# so no separate invocation is needed for it.
+# Points at a script rather than naming pytest directly: the gate must also run
+# `ruff check`, `ruff format --check` and `uv run mypy` (project-preferences.md
+# declares them all as dev commands, and until brookstalley/bankmachine#92 nothing
+# executed any but pytest, so mypy drifted to 12 errors over 15 commits unnoticed).
+# The script owns the list; this comment names the kinds, not a count. Neither linter emits a
+# JUnit report, so `test_commands:` -- which requires `{junit_xml}` in every entry --
+# cannot carry them, and this key refuses shell operators. `scripts/check.sh` is the
+# documented escape hatch for a compound run, and it names which command went red.
+test_command: bash scripts/check.sh {junit_xml}
 
 # =============================================================================
 # ACTIVE BUILD PLAN (optional)
@@ -230,6 +928,14 @@ build_state:
 # by this route — the session briefing warns when resolution actually took it.
 #
 # active_build_plan: artifacts/build-plan-my-scope.md
+
+# Unset, because the tie it broke is gone: build-plan-mypy-green-and-gated.md and
+# build-plan-ci-runs-the-gate.md both declare a branch that is now merged and deleted, so
+# their claim resolves for nobody. They stay LIVE (gitflow — the work is not released until
+# `develop` reaches `main`, and the release archives them by scope), but leaving the scalar
+# aimed at one of them would put a finished plan back in force on every branch that has no
+# plan of its own. Every live plan here declares its own `branch:`.
+# active_build_plan: artifacts/build-plan-ci-runs-the-gate.md
 
 # =============================================================================
 # BASE BRANCH (opt-in, unset by default)
@@ -259,6 +965,20 @@ build_state:
 # is non-main; set it by hand otherwise.
 #
 # base_branch: develop
+
+# =============================================================================
+# RISK SURFACES
+# =============================================================================
+# Paths that get the deeper Critic review at any diff size. Confirmed by the owner
+# 2026-09-05, closing the open question that asked for them before the first schema
+# chunk. These are the paths where a silent defect becomes wrong analysis rather than
+# a crash, which is this product's named primary failure mode (AC-4.4).
+risk_surfaces:
+  - src/bankmachine/connector      # the aggregator client
+  - src/bankmachine/sync           # sync and cursor persistence
+  - src/bankmachine/store          # schema, migrations, and the connection roles
+  - src/bankmachine/rules          # the account-rule engine
+  - src/bankmachine/secrets.py     # the secrets layer
 
 base_branch: develop
 
@@ -429,7 +1149,7 @@ coverage_required: false
 # override per-PR with `/pr create --accept-pending-verification "rationale"`.
 # Default off in v1.4 — opt-in by setting `operator_verification_required: true`.
 
-operator_verification_required: false
+operator_verification_required: true
 
 # =============================================================================
 # API VERSIONING DECISION (advisory resolution fact, v2.2+)
@@ -505,4 +1225,67 @@ distribution: plugin
 # the Issues backend from day one (init-product --backlog-repo). The normal
 # path is markdown-first and sets this later, at scrub/cutover.
 # `/prawduct:backlog` routes on this scalar.
-backlog_service_repo: brookstalley/MCPlaid
+backlog_service_repo: brookstalley/bankmachine
+
+# Stamped by /prawduct:backlog list — resolves backlog-overdue-grooming.
+backlog_last_groomed_at: 2026-09-13
+
+# Raised from the 40KB default on 2026-09-07, after measuring rather than
+# guessing at what the two nudged files actually hold.
+#
+# `change-log.md` (81KB) cannot shrink at all right now: all thirteen entries
+# carry a `<!-- prawduct: scope=... -->` tag and NOT ONE carries `release=`, so
+# every entry is release-pending. Deleting any of them silently unships the work
+# it records. The file shrinks by itself at the first `develop -> main` release,
+# which archives by scope -- that release, not a deletion, is the remedy.
+#
+# `project-state.yaml` (79KB) is ~35KB `technical_decisions` + `design_decisions`
+# + `open_questions`, which the nudge itself says is the methodology working and
+# not the thing to cut. Most of the rest is explanatory comment on config keys.
+#
+# 🔴 Raised 100 -> 150 on 2026-09-08, and the reason is NOT that the file is
+# fine. The 100 above was chosen so the nudge would fire at exactly this point
+# and mean "the release archive is overdue" rather than "this file is too big".
+# It fired, and it was right. Read it that way.
+#
+# What the fire revealed, and why trimming was not the answer: all 20 tagged
+# entries in `change-log.md` are release-pending across 8 scopes -- not one
+# carries `release=`, because nothing has ever been released. So the change log
+# IS the release-pending set, and deleting any entry drops its scope out of the
+# eventual release notes silently. The only untagged entry is 2.4KB, which would
+# have taken 104KB to 102KB and still tripped the nudge. There was nothing safe
+# to cut; the bulk is 20 entries of genuinely unshipped work, which is the honest
+# state of a pre-release product rather than clutter.
+#
+# 🔴 **The outstanding item is the release, not the file.** Cutting one stamps
+# `release=` across all 8 scopes and makes a trim both safe and obvious -- at
+# which point this knob should go back to 100, or lower.
+#
+# 150 keeps the nudge employed rather than retiring it: roughly nine more
+# entries of headroom, so it fires again well before the file runs away, and it
+# still clears `project-state.yaml` (79KB). The knob is repo-wide, so this also
+# relaxes the ceiling for build plans; those run an order of magnitude smaller,
+# so a build plan reaching 150KB remains a real finding.
+oversized_file_threshold_kb: 150
+
+# =============================================================================
+# NORM REGISTRY
+# =============================================================================
+# Seeds the Norm Health sweep baseline. Leads with the date deliberately.
+#
+# 17 norms ratified across four artifacts, homed in their `## Direction`
+# sections with pointer rows in project-preferences.md's Enforcement table.
+# The four datastore-access norms in architecture.md were ratified earlier
+# (2026-09-05) and are unchanged by this pass.
+#
+# Sixteen are `steady-state`. ONE is `in-transition`: the operator-POV sign
+# convention in data-model.md, which names brookstalley/bankmachine#9 as its
+# tracking item. It was ratified in-transition rather than steady-state because
+# nothing tests it yet and the connector that must obey it is mid-build --
+# recorded here because a registry that hides its one unfinished norm is
+# reporting health it has not got.
+#
+# Two norms bind a surface that does not exist (the MCP tool layer, build step
+# 7), on this repo's own precedent: architecture.md's norms were also born
+# before their code.
+norm_registry_ratified: 2026-09-07 — 17 norms across data-model, security-model, api-contract and operational-spec; 16 steady-state, 1 in-transition (#9)

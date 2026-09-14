@@ -7,3 +7,819 @@ Accumulated wisdom from building this product. Entries use "When X, do Y because
      it. Reword the prose freely; keep this marker, above the first rule. -->
 
 **Reading a rule is not applying it.** The failure mode of a learnings file is not absence, it is assent: a rule arrives at the right moment, is read, is agreed with, and changes nothing, because nothing made you recognize the case in hand as an instance of it. So for any rule you read here, name the decision you are about to make and say what the rule changes about it — or say that it does not apply, which is also an answer.
+
+---
+
+## Measure what the client delivers, not what the server sends
+
+**When a server's `instructions` (or any text a client forwards to a model) carries guidance that
+matters, measure the text the CLIENT actually hands the model — because a client may truncate at a
+budget the server never sees, and every test that holds the string in-process passes while the model
+reads a third of it.**
+
+---
+
+## Review coverage
+
+**When work should be reviewable, land it on a feature branch and review it BEFORE pushing to the
+base branch — because committing straight to `develop` collapses the review interval to nothing,
+and the coverage gate then reports "satisfied" on an empty span.**
+
+The gate resolves its base with `resolve-base`, which returns `origin/develop`. Push a commit to
+`develop` and base *is* HEAD: `merge-base…HEAD` is empty, `critic-begin` refuses both `final` and
+`cumulative` with "empty diff", and `check-cumulative-critic` answers `satisfied … (empty span
+(base tree == HEAD tree), 0 unresolved blocking)`.
+
+**Why this one bites:** that output is indistinguishable from a review that ran and found nothing.
+Nothing in it says "this work was never looked at". The failure is silent and it reads as success,
+which is the same shape as every other defect this project has been burned by — a check whose only
+bad-news channel is the absence of output.
+
+**Instances:**
+
+- *2026-09-05, the `bankmachine` rename.* Eight files including `docs/system-requirements.md` and
+  five governance records, committed straight to `develop` and pushed, then `/prawduct:critic` ran
+  and found no interval. Verified instead by four mechanical checks (grep for the stale name with
+  each surviving occurrence classified, YAML parse, dangling-path sweep, 22-case self-test) —
+  adequate for a mechanical rename, and not a substitute for review on anything with logic in it.
+- *Contrast, same day:* `repo-sanitization` used `feature/repo-sanitization` and got two real
+  reviews, the first of which returned 3 blocking findings including one that had the guard
+  checking the wrong thing entirely. That work was not more dangerous than the rename in kind — it
+  was just on a branch where the Critic could see it.
+
+**How to apply:** if the answer to "would I want a second pair of eyes on this?" is anything but a
+flat no, branch first. `.prawduct/` bookkeeping — change-log, learnings, reflections, backlog,
+project-state — is explicitly exempt: the Critic names those as free to write at any time because
+they do not move coverage.
+
+---
+
+## Guarantees by construction
+
+**When you state a guarantee, ask what else can reach the mechanism — not just whether the
+mechanism works in the case you had in mind. A guarantee defined by an enumeration decays, and one
+resting on a reversible flag was never a guarantee; both look correct at the moment you write
+them, and both fail silently later.**
+
+The tell is grammatical. "The following commands take the lock" and "the reader sets `query_only`"
+both describe a mechanism *doing the right thing in a case*. "Every writable handle comes from the
+factory that takes the lock" and "the handle is opened `mode=ro`" describe a property that has no
+case to fall outside of. Prefer the second form even when the first is true today.
+
+**Instances:**
+
+- *2026-09-05, the architecture artifact's first two norms.* The writer norm listed the commands
+  that take the exclusive lock, and the list was already wrong on the day it was written — it
+  omitted `store init`, which creates the datastore, and `store rebuild`, which rewrites every
+  normalized table. The reader norm rested on `PRAGMA query_only=ON`, which I had measured refusing
+  a write; re-probing on the Critic's finding showed `PRAGMA query_only=OFF` restores writes, and
+  the product ships `sync shell` — an operator SQL prompt — as the surface that can type it. Both
+  were fixed by changing the mechanism rather than lengthening or annotating it: one writer factory,
+  and `mode=ro` at the file handle where SQL cannot reach.
+- *Same day, the corollary about probes.* I had recorded `mode=ro` as rejected on a **falsified
+  premise**, having probed it and seen it work. Re-probing the exact adjacent case — hot WAL, `-shm`
+  deleted, directory unwritable — reproduced the original failure. The premise was neither true nor
+  false but *unscoped*, and my first probe had missed it only because the crashed writer left its
+  `-shm` behind. **A probe that confirms what you expected is the one to distrust**: the failing
+  case is usually one variable away from the one you set up.
+- *2026-09-06, the rebuild's list of tables to empty.* "A table is rebuildable if it has a
+  `raw_response_id` column" reads like a property derived from the schema rather than an enumeration
+  — which is exactly what makes it dangerous, because it is an enumeration wearing a predicate's
+  clothes. `raw_responses` has a `raw_response_id`: its own primary key. The rebuild would have
+  deleted the entire archive and then replayed it, finding nothing. The fix was not an exception for
+  that one table but the predicate the sentence had always meant: a table is rebuildable when it
+  holds a foreign key *pointing at* a raw response. **The tell was that the rule matched on a name
+  where it meant a relationship** — the same tell as a rule that matches on a filename where it means
+  a role, which the sole-constructor norm hit in the same chunk: `engine.connect()` is a checkout,
+  not a construction, and the rule now turns on whether the call carries connection parameters
+  rather than on which file it sits in.
+
+- *2026-09-07, the go-red harness judging its own results.* `verify_norms_go_red.py` decided a
+  mutation had been caught by testing `pytest exited non-zero` — an enumeration standing in for
+  "the named test failed", because pytest exits non-zero on a **collection error** too. A mutation
+  that did not parse therefore printed RED without running anything, and the case passed forever.
+  Two such cases existed; only one was found by review, and the other had been green since it was
+  written. The fix was not to correct the two mutations but to `ast.parse` every mutation before
+  running it, so a non-parsing one is reported INVALID and counted as a survivor. 🔴 **The defect
+  was in the mechanism whose entire job is catching this class**, which is the strongest version of
+  this rule: the check you trust most is the one nothing is checking. Then, one layer down, both
+  repaired cases were *still* green — one targeted lines the test's `os._exit` never reaches, and
+  the other rested on an assertion that could not distinguish the two values it named, because one
+  string embedded the other. **A check that cannot fail hides every problem in its blast radius,
+  not one, and they surface a layer at a time.**
+
+- *2026-09-08, seven in one work cycle.* Across build steps 3 and 4 I wrote seven checks that did
+  not exercise what they named: a fixture whose bad entry sat where the search never reached it; a
+  race test that patched the very check it was testing; a credential-absence assertion reading a
+  `caplog` that collected nothing; a go-red mutation that did not parse, so pytest failed at
+  COLLECTION and printed RED forever; a cursor-atomicity claim that held **positionally**, so
+  turning the transaction's `ROLLBACK` into a `COMMIT` left the suite green; a test whose docstring
+  said *"the server refused to start"* that never called the function which refused; and a mutation
+  aimed one line away from the branch its test reads. Every one passed on first run. 🔴 **The
+  through-line is not carelessness about behaviour — it is that when writing a check, attention goes
+  to the behaviour wanted and not to the path the check traverses to reach it.** Two of them were
+  guarding requirements I had implemented backwards, which is exactly when a check is least likely
+  to be examined and most needed.
+
+- *2026-09-08, the capabilities union.* Two assertions written the same hour as a commit message
+  boasting about breaking checks to watch them fail. `assert missing in str(caught.value)` looked
+  like it pinned which product list a refusal names — but **`products` is a SUBSTRING of
+  `available_products`**, so the products case passed even when the message named the other one.
+  `assert "gap" in out` passed identically before and after the `a 8-day gap` → `a gap of N days`
+  reword it was written to pin. 🔴 **Substring containment is the specific trap**: when one valid
+  value contains another as text, `in` cannot tell them apart — assert the whole phrase, or match a
+  pattern. Both found by the Critic, neither by a green suite.
+- *2026-09-08, the same change.* **A refactor that changes control flow can orphan an existing test
+  without touching it.** Reading two fields in a loop meant a body missing the first never reached
+  the second's `isinstance` guard, so the case covering a non-list `available_products` kept passing
+  while covering nothing. After changing control flow, ask which existing tests now short-circuit —
+  mutation testing is blind to it, because reverting removes the damage along with the fix.
+- *2026-09-08, the capability fixture.* **A fixture drawn from one instance of a shape cannot
+  discriminate a rule about the shape.** Every capability fixture used `ins_109508`, where
+  investments happens to sit in `available_products` — so the right read and the wrong read agreed,
+  and 552 tests plus a live sandbox test all passed against a criterion that was exactly inverted. A
+  second institution found it in one enrollment.
+
+- *2026-09-08, the window resolver, and the sharpest version of this yet.* I wrote a hand-built
+  boundary matrix for a clamp — inside coverage, before it, after today, both, unbounded, no
+  overlap, empty store, on the edge — then ran nine mutations against it and **every mutation was
+  caught.** By the rule as written, the checks were validated. Three real bugs were still live, and
+  each was a *plausible sentence the payload beside it contradicted*: a future window whose warning
+  read "this answer covers through 2026-09-08" while `effective` was null; `{since: 2027-01-01}`
+  with no `until`, an ordinary shape, producing a null window and **no warning at all**; and its
+  mirror, `{until: "2020-01-01"}` with no `since`. I found the first by re-reading the diff, the
+  second by probing reachable inputs by hand, and **the third was found in under a second by a
+  property test asserting the invariant** — "a window that covers nothing always says why" — which
+  I had only written *because* the first two had already escaped.
+  🔴 **Mutation testing validates the checks you wrote; it is structurally blind to the case you
+  did not think to write.** And a hand-built matrix is written by the same mind, at the same
+  sitting, from the same mental model as the code — so it reproduces the code's blind spot rather
+  than crossing it. Both bound-checks were keyed on one bound because I was picturing one bound.
+  **The escape is to assert the INVARIANT rather than enumerate the instances**: `if
+  window.covers_nothing: assert window.caveats` cannot be written from a mental model of which
+  windows are empty, so it does not inherit one. Note the shape of the failure — the enumeration
+  was in the *test matrix*, not in the code, which is the same decay this rule names one layer up.
+
+- *2026-09-08, the truncation guard, and the sharpest form of this rule yet — because the check that
+  failed was **mine**, and it failed silently.* The guard compared the WHERE clause of the row query
+  against the WHERE clause of the count, to catch the two being built from different predicates. It
+  extracted each by `statement.partition(" WHERE ")`. SQLAlchemy compiles with newlines
+  (`count_1 \nFROM transactions \nWHERE ...`), so the separator never matched, the extraction
+  returned `""` for **both** sides, and `"" == ""` agreed with everything. It passed its first run
+  and it passed every mutation aimed at it; only the *survival* of a mutation another test should
+  not have caught exposed it.
+  🔴 **A test that derives what it compares — parsing, extracting, filtering, transforming — has a
+  second point of failure, and that one fails OPEN.** A loose comparison is the known trap; this is
+  its quieter sibling, where the comparison is strict equality and the *operands* are empty. Nothing
+  distinguishes "these two agree" from "I found neither". The defense is one line: **every
+  extraction asserts it found what it was looking for**, before anything is compared. The repo
+  already had this right one function away — the helper in the MCP tests that derives the
+  request-scoped warning kinds from the vocabulary asserts the derived set is non-empty before using
+  it, for exactly this reason — and I did not carry it to the new extraction I wrote beside it.
+- *2026-09-08, the cursor's forged-payload fixtures, and the same rule one layer further out.* Ten
+  mutations were aimed at the new refusal paths and two SURVIVED — removing the bool guard that stops
+  JSON `true` becoming transaction id 1, and removing the scheme-tag check. Neither assertion was
+  wrong. **The fixtures were**: each forged cursor carried a placeholder fingerprint, so an EARLIER
+  guard refused every one of them before the branch under test was reached, and ten cases all passed
+  by proving the same one thing. Fixed by giving the fixtures the real fingerprint, which is the only
+  value that lets each case be wrong in exactly one way.
+  🔴 **The trap here is not a loose assertion or a derived operand — it is a fixture that cannot
+  REACH the subject**, because some other guard between the entry point and the branch fires first.
+  A parametrized list makes it worse, not better: ten green cases read as ten checks. The tell is
+  that the input is invalid in more than one way at once. **When a case exists to exercise one
+  rejection path, make it valid in every respect but that one** — and confirm it by breaking that
+  path alone and watching this case, not the list, go red.
+
+  *(Two further defects in the same chunk were found by neither the matrix nor 22 mutations, but by
+  reading reachable inputs by hand: a caveat advising a caller to raise `limit` past a cap it had
+  already hit, and a windowed answer that dropped a coverage key only when the datastore was
+  unreadable. Both reconfirm the rule above rather than extending it.)*
+
+**How to apply:** before recording a guarantee, name the surface that could violate it and check
+that surface exists in the product. **And for every check you write, break the thing it names and
+watch it fail** — a green first run is the moment to distrust, not the moment to move on. Where a
+mutation harness exists, point one at the branch the assertion actually reads; where it does not,
+edit the source, run the test, and put the source back. If the answer is "a future command someone forgets to add to
+the list" or "any SQL that reaches this handle", the guarantee needs a different mechanism, not a
+firmer sentence. And when a rule matches on a *name* — a column name, a filename, a function name —
+ask what relationship the name is standing in for, and match on that instead. **When the thing
+under test has a stateable invariant, write the invariant as well as the cases** — the cases check
+your model, and only the invariant checks the model itself; where a property-based library is
+available, that is what it is for. **And when a check derives its own operands, make the derivation
+assert it succeeded** — an extraction that can quietly return nothing turns a strict comparison into
+a tautology, and the green it produces is indistinguishable from the green you wanted. Related:
+[[review-coverage]] — both are the same family, a check whose bad news never arrives.
+
+---
+
+## Two descriptions, compared
+
+**When one thing must mirror another — table metadata against the DDL that built it, a test's
+expected value against the code that computes it, a constant against the document that quotes it —
+write both independently and have something compare them. Generating one from the other, or reusing
+the same expression on both sides, removes the disagreement; the disagreement was the only thing
+that could ever have told you they had drifted.**
+
+This is the constructive half of [[guarantees-by-construction]]. That rule says a guarantee needs a
+mechanism no case can fall outside of. This one says how you find out when you were wrong anyway:
+keep a second, independently-derived account of the same fact, and let a test read both.
+
+**Instances:**
+
+- *2026-09-06, the core schema.* `store/schema.py` (SQLAlchemy Core metadata) and
+  `store/migrations/core_schema.py` (frozen DDL) describe the same thirteen tables and neither is
+  generated from the other. Every run compares them column for column. The obvious alternative —
+  emitting the migration from the metadata — would have been fewer lines and would have made every
+  future edit to a column *silently correct on both sides*, with the file on disk agreeing with
+  whatever the code currently believes. Migrations are forward-only precisely because that
+  agreement is a lie for any datastore that already ran the old one.
+- *Same day, a property test's oracle.* `test_any_two_place_decimal_converts_exactly` checked
+  `from_decimal_string` against `Decimal.scaleb`, and hypothesis failed it on
+  `100000000000000000000000000.01`. **The code was right and the oracle was wrong**:
+  `Decimal.scaleb` rounds at the default 28-digit context, while the implementation scales the
+  digit tuple and is exact. Had the test reused the implementation's own approach it would have
+  agreed with itself forever and taught nothing.
+
+**How to apply:** when you catch yourself about to derive the checker from the checked, ask what
+observation the shortcut is making impossible. If the answer is "the two disagreeing", write it
+twice. And when an independent oracle disagrees with your code, find out which one is wrong before
+assuming — a second implementation is evidence, not a verdict.
+
+## Blocked is a claim, and it is usually wider than the truth
+
+**Before recording a step as blocked on a credential, a device or an environment, ask which part of
+it can be checked without one. The failure paths of an external system almost never need valid
+credentials — invalid ones reach the same server and come back with the real error shape.**
+
+"Blocked on X" feels like a fact because X is genuinely absent. What makes it a claim is the scope:
+it is asserted over the whole step, when what X actually gates is one half of it. The cost is
+asymmetric and quiet — an unnecessary block defers work that would have *changed the design*, and
+nothing ever reports that it could have run.
+
+**Instances:**
+
+- *2026-09-06, the aggregator client's first chunk.* The plan's `verify-api` step said "read the
+  SDK's source, then probe sandbox", and with no sandbox credentials on the machine I filed the
+  whole probe as blocked and built against source reading alone. Three things were reachable the
+  entire time, and all three were reachable with *deliberately invalid* credentials or none:
+  whether an unreachable host escapes the SDK unwrapped (it does — a raw `urllib3.MaxRetryError`,
+  which would have printed a traceback at every offline operator); the real error-body shape; and
+  that the SDK decodes an error body to `str` before re-raising. I only probed the second after a
+  Critic finding forced it open, and it turned an unusable message — every rejection reading
+  `400: Bad Request` — into one that names its cause. **The probe that would have changed the code
+  was free, and I did not look for it because I had already written down that it was blocked.**
+- *The shape to copy.* What remained genuinely blocked was narrow and worth stating narrowly: the
+  *success* response shape, which is what derivers get written against. Splitting the plan's
+  acceptance criteria into the half that could be met and the half that could not is what made the
+  remainder a gate instead of a mood.
+
+---
+
+## The norm harness sabotages the working tree, so nothing else may read it
+
+**When `verify_norms_go_red.py` is running, do not run the suite, dispatch a review, or commit —
+it edits source files in place to prove each assertion goes red, so for the length of the run the
+working tree contains code nobody wrote. Anything that reads the tree during that window reads
+sabotage and reports it as fact.**
+
+The harness is the mechanism behind [[two-descriptions-compared]] — it removes a mechanism and
+checks that a named test notices. Removing the mechanism means *writing the broken version to
+disk*, running one test, and putting it back — once per entry in its `CASES` table. The tree
+is correct before and after and wrong in between, which is the shape that makes it invisible:
+every check of the file afterwards agrees with what you meant.
+
+**Instances:**
+
+- *2026-09-07, Chunk 01 of enrollment.* A Critic review was dispatched while the harness ran. Its
+  first two dispatches were unreviewable and it said so: one manifest caught `store/rebuild.py`
+  holding the harness's sabotage — `_points_at` returning `True` unconditionally — and
+  `connector/plaid/client.py` transiently holding `finished = None`, which was the *mutation* of a
+  line I had just written rather than the line. **A review of either snapshot would have produced
+  confident, well-argued findings about code that does not exist in any commit.** The Critic
+  retried until the tree was stable, which is the only reason this was caught rather than acted on.
+
+**How to apply:** treat the harness as an exclusive lock on the working tree. Run it alone, wait
+for "all N norm breaks were caught", and only then run the suite, dispatch a review, or stage a
+commit. The cost of getting this wrong is not a failed run — a failed run would be fine, because
+it announces itself. It is a *successful* run of something else against source that was briefly a
+lie, and that result looks exactly like a real one. Related: [[review-coverage]] and
+[[guarantees-by-construction]] — the same family again, a check whose bad news never arrives.
+
+---
+
+## `ruff check` clean says nothing about `ruff format`
+
+**When you verify formatting, run `ruff format --check` — because `ruff check` and the formatter
+are two different halves, and this repo's norm (`project-preferences.md`: `Formatting: ruff
+format`) is the half `ruff check` never reaches.**
+
+The two get conflated because "ruff is clean" is how the result gets reported and remembered. It
+is not a claim about layout at all: `ruff check` runs the lint rules in `[tool.ruff.lint]`, and
+none of `E, F, I, N, UP, B, SIM` is the formatter. A file can be hand-wrapped into a shape the
+formatter would rewrite and stay clean forever.
+
+**A reformat can break the go-red harness, and that is not a reason to skip either one.**
+`verify_norms_go_red.py` mutates by literal `str.replace`, so its anchors are exact source text,
+including the line breaks the formatter owns. Reformatting a mutated file moves anchors out from
+under it. The harness reports this as `SKIP … anchor no longer present` and counts the case as a
+survivor rather than printing RED — which is the right shape, and is the only reason the coupling
+is cheap. **Prefer an anchor that names a whole expression or keyword argument over one that spans
+a formatter-chosen line break**: the former survives rewrapping, the latter is a hostage to it.
+
+**Instances:**
+
+- *2026-09-08, merging `feature/sync-v1`.* Seven files had drifted, five written on the branch,
+  across two build steps that both reported "ruff clean" at every close — because both had run
+  `ruff check` and neither had run `--check` on the formatter. Fixing the drift collapsed a
+  wrapped conditional in `cli/enroll.py` onto one line and broke the anchor for AC-1.4's
+  converging-re-run case; the harness caught it on the next run and the anchor was rewritten to
+  name the keyword argument instead.
+
+---
+
+## Ask the running process what it is running
+
+**When a claim is about which code a live process is executing, get the answer FROM THAT PROCESS —
+because your inference from the repository is strictly weaker evidence, and it fails in exactly the
+case that matters: when something has moved underneath you.**
+
+A repository tells you what is on disk. A running process tells you what it loaded, which is a
+different question whenever the two could have diverged — a server started before a merge, a client
+holding a subprocess it launched at connect time, a worktree pinned by a path argument, an import
+cached in a session that has not restarted.
+
+**Author dates are not landed dates.** A rebase, a cherry-pick, or a `filter-branch` rewrite leaves
+the author date untouched while the commit joins the branch much later. Reading the former as the
+latter produces a confident, specific, wrong answer about ordering — and reflog or
+`git log --format=%cd` on the branch is the thing that actually answers it.
+
+**Best: make the surface report its own build.** As of `6532659` every MCP response carries
+`build.commit`, captured once at process start, so the question is answered by one field on any
+call before any testing begins. 🔴 **Prefer this over every technique below** — a fingerprint infers
+the build from a value that happens to differ, and it silently stops working the moment that value
+changes for an unrelated reason.
+
+**Fallback, for a surface that does not self-report**: fingerprint it — call for a string or value
+known to differ between the two candidate builds, and read which one comes back. It costs one call
+and settles what an argument cannot. 🔴 **A recorded fingerprint decays.** The one written down for
+this repo (`limit:9999` → "at most 1000") was falsified within a day by `8c92131` moving the
+ceiling to 500, and a later reader following it would have matched against a string the build no
+longer emits — reading the mismatch as evidence of a *newer* build than they had. If you must
+record one, record what it discriminated and when, never as a standing check.
+
+**Why this one bites:** the wrong answer is a *pass*. A stale build that still behaves correctly on
+everything except the fix under test reports green, and green is what you were hoping for. The
+verification harness acquires the same defect as the system under test, and nothing in the output
+says so.
+
+🔴 **The same question applies to the RULE, not just the code: "recorded" and "reachable" are
+different claims.** A worktree sits at its own commit, so guidance committed to `develop` is
+invisible to a session working from an older branch — and that session is often the one the rule was
+written for. Before relying on a peer having read something, ask which commit their tree is at.
+Where the answer is "not yet", the forward handoff is the carrier that crosses the gap, which is an
+argument for a live rule living in both places rather than only in its home.
+
+**Instances:**
+
+- *2026-09-08, MCP acceptance round 4.* I told a peer testing session its MCP server was serving the
+  merged build, deriving "the tree has not moved since you connected" from the merge commit's author
+  date of 11:32. The previous day's `filter-branch` had split author from landed dates; the merge
+  reached `develop` after the peer connected at ~10:51. The peer called `query_transactions` with
+  `limit: 9999`, got the pre-merge ceiling of 1000 rather than the merged 500, and refused to run the
+  verification half at all — correctly, since a clean pass would have been read as confirming a fix
+  it could not have exercised. After the operator relaunched it, the same call returned 500 and the
+  round proceeded.
+- 🔴 *2026-09-08, the sharpest form: a stale tree generated work for a human out of a closed
+  decision.* The testing session's briefing fired the governance advisory about `change-log.md`
+  exceeding a 100KB ceiling, and it relayed that to the operator as a decision they needed to make.
+  The operator had settled it hours earlier — `b48ff1d` raised the ceiling to 150KB and recorded why
+  trimming was unavailable. The briefing read `oversized_file_threshold_kb: 100` from the worktree's
+  own `project-state.yaml` while `develop` said `150`. Verified: `git show
+  testing/current:.prawduct/project-state.yaml` gives 100, `develop` gives 150, and
+  `testing/current` is 11 behind with 0 ahead.
+  **Why this instance beats the inert one below: it fails OUTWARD, at a person, and it looks like
+  diligence.** A session that cannot reach a rule is silent and harms only itself; a session
+  reasoning from stale governance actively asks a human to re-decide something they closed, and the
+  ask is indistinguishable from good practice. The tell is not in the question's wording — it is
+  that the tree asking it was old.
+- *2026-09-08, the rule about the rule.* The testing session pointed out that the amended guidance
+  above was not reachable from its worktree at all: `testing/current` sits at `f6e81f2`, and both the
+  original rule and its amendment landed on `develop` afterwards. Verified — `git show
+  testing/current:.prawduct/learnings.md` matches it zero times. So "amended in `learnings.md`" and
+  "the session it was written for can read it" were not the same statement, and the only carrier on
+  that side was the forward handoff note.
+- *Same session, standing hazard.* The MCP server is a subprocess the client launches, so it runs
+  whatever existed at connect time, and `--directory` pins which checkout it serves regardless of
+  where the client sits. Both are now in `README.md` under "Wire it to an MCP client", because the
+  gap between "I changed the code" and "the thing under test changed" is invisible from the client.
+
+
+---
+
+## A green mutation is not a proof until you know the mutation landed
+
+**When you prove a guard goes red by editing source and re-running it, ASSERT that the edit
+applied before reading the result — because a `str.replace` whose anchor did not match produces
+a green run that is indistinguishable from a guard that works.**
+
+The failure is silent and it reads as success, which is the shape this project keeps getting
+caught by. You set out to prove a test can fail, the test passes, and the passing run means
+nothing happened at all rather than nothing was wrong.
+
+The defence is one line: `assert new != original` before writing, and prefer an anchor naming a
+whole statement or keyword argument over one spanning a formatter-chosen line break — the latter
+is a hostage to the next reformat, which is why [[the-norm-harness-sabotages-the-working-tree]]
+reports `SKIP … anchor no longer present` rather than counting the case as passed.
+
+**Instances:**
+
+- *2026-09-08, the warning-vocabulary guard.* Two mutations of `query.py` both reported
+  "4 passed". Neither had landed — the anchors carried indentation the real source did not have.
+  Caught only because a *4-passed* looked wrong for a run meant to go red; a less suspicious
+  reading would have recorded the guard as proven. Re-run with asserted anchors, both arms failed
+  naming `query.py:906` and the offending kind.
+- *2026-09-08, chunk 07's go-red cases.* Same error, caught by the harness instead of by me: one
+  of three new cases reported `SKIP … anchor no longer present` because the anchor guessed at a
+  `logger = get_logger("query")` line that does not exist in that module. The harness's decision
+  to report a missing anchor as a survivor rather than a pass is what made it visible.
+
+---
+
+## A cited number measures what its study measured, not what you are about to change
+
+**Before applying an external budget or threshold, check what the underlying research actually
+varied — because a derived figure quoted out of its mechanism measures the wrong thing
+confidently.**
+
+**Instances:**
+
+- *2026-09-08, the MCP token budget.* A sibling project's "≤200 tokens per tool description" was
+  taken as a byte budget and a miss was treated as a defect worth three mitigation proposals. The
+  figure is derived from tool-COUNT research — a model discriminating among many near-twin tools
+  (10 fine, 20 near-fine, 107 total failure). This server has four differentiated tools going to
+  ten specified ones, so the crowding it measures is not present. Worse, the mitigations all
+  targeted prose, which was 21% of the cost; 78% was schema structure, and that structure is the
+  drift detector, not overhead. **Measuring first would have prevented the recommendation, not
+  just corrected it.** The revisit trigger is now the mechanism (tool count, near-twins) rather
+  than a byte count.
+
+---
+
+## A repeated declaration is cheaper than the model standing in for it, until it is not
+
+**When one fact is declared at N sites with no shared model, the question is not "is this
+duplication" — it is "what is the Nth+1 site that changes the answer". Name the trigger, and the
+next builder inherits a decision instead of re-deriving one.**
+
+Collapsing a pattern into a model is not free: the model is fitted to the sites that exist, and
+sites that do not exist yet are the ones that misfit it. Collapsing too early produces an
+abstraction shaped by an unrepresentative sample, which is more expensive to undo than the
+duplication it replaced, because the duplication was at least honest about being duplication.
+
+The tell that it is still too early: the duplicated sites cannot currently disagree. If something
+downstream already validates them against each other, the duplication is checked rather than
+merely repeated — and a checked repetition is a weak defect, not an urgent one. The tell that it
+is time: a new site arrives that the existing check does *not* cover, or the check itself starts
+needing a case per site.
+
+**Instances:**
+
+- *2026-09-09, the envelope's conditional keys.* Which envelope keys a tool carries is declared at
+  three sites per tool — the tool's `_answer` call, its `_unusable` call, and `mcp._output_schema`'s
+  `windowed` / `capped` / `totals` flags — with no shared model. `totals` was the third such flag
+  and followed the pattern rather than replacing it. 🔴 **The ruling taken rather than the reflex:
+  collapse on the FOURTH conditional key, not on noticing the third.** Invalid combinations are
+  not silently reachable today because both branches are validated against the published schema,
+  which is exactly what holds this to a note rather than a defect. Three more tools are specified
+  and unbuilt, so a model built now would be fitted to five tools and meet eight. The trigger is
+  written down precisely because "we should unify this" recurs on every reading and the answer is
+  the same each time until the condition changes. See `build-plan-envelope-module.md` § Decisions.
+- *2026-09-09, the same split, in the other direction.* `GROUPINGS` and `FLOW_CLASSES` are read by
+  `mcp.py` to publish schema enums while living beside the SQL that builds them, which reads like
+  a layering violation worth fixing. It is not: `GROUPINGS` is a closed set *because* the grouping
+  is an expression the query module builds and never a column name a caller supplies, so moving it
+  away from that module would separate the constraint from the reason it exists. A duplication and
+  a deliberate adjacency look identical from the import graph alone — the why is what distinguishes
+  them, and only one of them is worth removing.
+
+---
+
+## A shared closed set is the collision parallel agents cannot see
+
+**Before fanning work out to agents that cannot see each other, land every CLOSED, test-enforced
+set they will each need to extend — in one commit, up front. Partitioning by file prevents
+collisions in files; it does nothing about a set.**
+
+Agents can be given disjoint files and still collide, because a closed vocabulary is a single
+line of code that several of them must each add one entry to. Worse, the failure is not a merge
+conflict you resolve at integration: whichever branch lands first is fine, and the others are
+*wrong in the tree* — an entry emitted but not declared is refused by the schema validator, which
+takes the whole answer down rather than degrading the one field.
+
+The tell is a tuple, enum or frozenset with a test asserting nothing outside it exists. If two
+delegates will each add to one, the coordinator adds all of them before dispatch, with the
+guidance and documentation each entry owes. It costs one commit and it is the cheapest thing in
+the whole partition.
+
+**Instances:**
+
+- *2026-09-09, the three production blockers.* Two prior discovery passes had each registered
+  only their own warning kind against `envelope.REQUEST_SCOPED_KINDS`, and the collision was
+  visible only at integration — the previous cycle recorded it as the one thing its otherwise
+  clean partition could not catch. This cycle spent chunk 00 landing all three kinds, their
+  `_GUIDANCE` entries and their rows in the server instructions before any agent started. Three
+  agents then edited `query.py`, `mcp.py`, `schema.py` and `data-model.md` concurrently with
+  **zero** conflicts in those files; the only conflict was three appends to one `CASES` tail,
+  predicted in the plan and resolved by keeping all three.
+
+---
+
+## Write a guard from the failure's point of view, not the fix's
+
+**After fixing something, do not ask "does this test assert the right thing". Ask *what change
+would make this test fail* — and if the answer is "reverting my fix", check that it actually
+does, against a fixture that can tell the two states apart.**
+
+A guard written from the fix's point of view describes what the code now does, which is exactly
+what a fixture built from the current, static world will confirm no matter what. The three ways
+it goes wrong are all invisible: the fixture cannot reach the branch, the assertion cannot
+distinguish the two outcomes, or the parameter under test is never varied.
+
+The sharpest instance of the last one: a producer given a new argument, and a caller updated to
+pass it, with every test calling the producer *directly*. Mutating the call site reddens nothing.
+When a producer and its call site are the two halves of a fix, they need **two** cases, and the
+caller's must anchor on the call.
+
+**Instances:**
+
+- *2026-09-09, `signs.caveats(..., measured=…)`.* Shipped with no test passing `measured`; the
+  suite was green with the call site reverted. The replacement test asserted rows and warnings
+  agree — still green reverted, because the reader returns the same verdicts however often it is
+  scanned. Only a fake whose answer CHANGES between calls separated them. Three review rounds,
+  each finding the previous round's guard covered nothing or half.
+- *2026-09-09, `_coverage(conn, lifecycle=…)`.* The same defect, same bundle, one surface over —
+  found by the cumulative rather than by me, after I had already fixed and written up its twin.
+
+## Reversing a ratified decision is a sweep, not an edit: grep the repo for the rejected spelling and the superseded claim before committing, because fixing the file a reviewer named and stopping there is what buys the second round
+
+## A documented remedy is a claim and is asserted like one: when a runbook tells an operator to run a command to recover from a state your change creates, write the test that puts a store in that state and runs it
+
+## Recording a policy is not ratifying one: an instruction given for one piece of work belongs in that work's plan, and a `project-preferences.md` norm row has prerequisites that file states for itself
+
+
+## Removing a value from every literal does not remove it from what those literals interpolate: a branch that builds its sentence from an exception string is the one that keeps leaking, and a guard exercising a single state proves nothing about it
+
+## A carve-out reaches every state that shares its return type: when one function collapses several distinguishable states into one value, an exception written for one of them silently governs all of them, and the collapse is the defect rather than the exception
+
+---
+
+## A truncated search proves nothing about what it did not reach: `| head -N` returning exactly N is the signature of a cut, and reading it as exhaustion turns a search into a false negative
+
+**When a search backs a NEGATIVE conclusion — "no plan carries this scope", "nothing else tests
+this", "that symbol appears nowhere else" — do not pipe it through `head`. If you already did and
+the result is exactly N lines, treat the search as unfinished, because that is what a cut looks
+like from the inside.**
+
+The asymmetry is the whole point. Truncating a search for something you expect to FIND is harmless:
+you find it in the first N or you widen. Truncating a search that must prove ABSENCE inverts the
+result — the evidence for "it is not there" is indistinguishable from "I stopped looking", and
+nothing in the output says which happened. `head` is the cheap habit that makes that failure silent,
+and both instances below reported the wrong conclusion *confidently*.
+
+**Cross-checking one item against a sibling is what catches it.** Neither instance was visible to
+any per-item check: the value written was well-formed and permitted, and only its disagreement with
+a sibling produced by the same cycle exposed it.
+
+**Instances:**
+
+- *2026-09-08, the capabilities union.* Searching for existing tests with
+  `grep -rn -B5 -A25 'def test.*capabilit' tests/ | head -60` returned a truncated list; I concluded
+  `capabilities_of` was reached only through enrollment and wrote the fix on that basis. A second
+  test existed, asserted the defect as a contract, and failed the suite on the next full run — which
+  is the only reason it surfaced at all.
+- *2026-09-09, closing the backlog for one cycle.* A subagent ran
+  `grep -rn "^scope:\|^branch:" .prawduct/artifacts/*.md | head -20`, got **exactly 20 lines**, and
+  read it as the complete list of plans. There are 14; it saw 10, and the plan it needed sorted past
+  the cut. It concluded "no plan carries this scope", substituted a branch name for the scope, and
+  reported the substitution as a deliberate choice. Nothing downstream would have rejected it — the
+  field permits either spelling — so the only detectable symptom was that the cycle's two items
+  carried different handles and stopped querying as a unit.
+
+**How to apply:** for an absence claim, run the search unbounded, or bound it with `| wc -l` first
+so the count is a fact rather than a ceiling. When a subagent reports a negative finding that
+licenses a substitution or a skip, re-derive it yourself before accepting — `delegation.md` already
+says a delegate's "Done" on a sweep is a claim; this is the same rule for a delegate's "not found".
+Related: [[guarantees-by-construction]], whose instances are the same family — a check whose bad
+news never arrives.
+
+---
+
+## A standing advisory is a queue with a history, not a fresh finding: search the backlog for its id before you analyze it, because the decision it asks for may already be filed
+
+**When an advisory names a target — a norm, a file, a stale artifact — grep the backlog for the
+advisory id BEFORE reading the target or reasoning about the fork it offers. An advisory persists
+across sessions until someone resolves it, so its second appearance looks exactly like its first,
+and the work it asks for may already be recorded, scoped, and waiting.**
+
+Advisories are re-emitted on every session start from the same mechanical probe. Nothing in the
+briefing line distinguishes "nobody has looked at this" from "this was decided three sessions ago
+and the cleanup is item #N" — the text is byte-identical either way. The owner-facing fork
+(*re-affirm and schedule cleanup, or retire*) reads as an open question in both states, which is
+what makes re-deriving the answer feel like the work rather than a duplication of it.
+
+**The tell is that the analysis comes out clean and confident.** Re-derivation from the same
+artifacts by the same method reaches the same conclusion, so nothing about the result feels
+second-hand. Cost is not just the wasted pass: filing the cleanup produces a duplicate item, and
+two items against one file invite two branches touching the same lines.
+
+**Instances:**
+
+- *2026-09-09, advisory `norm-lifecycle-dead-why-v1-fcdc48`.* Backlog **state** was checked for
+  every cited item (#9, #18, #30, #40) but the backlog was never searched for the advisory id.
+  Item **#42** already carried the re-affirm decision, the phrase "citation-shape decay, not
+  rationale decay", both citation line numbers, and an explicit amendment-vs-upkeep scope-out. The
+  session re-derived all of it and filed **#64** on top. #42 was under-scoped — it covered the #30
+  citation and not the #18 one — which is the only reason the duplicate added anything.
+
+**How to apply:** `gh issue list --search "<advisory-id>"` (or grep `.prawduct/backlog.md`) is the
+first move on any advisory, ahead of opening the file it names. If an item exists, start from its
+scope and check it against the advisory's — an under-scoped prior item is the case worth catching,
+and extending it beats filing beside it.
+
+---
+
+## A store-authored row is not a record of what anyone said
+
+**When a preservation norm — never hard-delete, never overwrite in place — meets a row the product
+itself authored, rule that the norm does not reach it, because those norms protect *evidence of what
+an outside party told us*, and a row we wrote ourselves is a current belief instead.**
+
+`data-model.md` § Direction carries two preservation norms, and both are about the aggregator. *A
+source value is never overwritten in place* exists so provider drift stays distinguishable from a
+local decision. *A transaction is never hard-deleted* exists because a removal is evidence of a
+reversal or a correction, and because a rebuild from the archive can reproduce a removal but not a
+row nobody kept. Neither why survives contact with an annotation: nobody outside said it, the
+archive does not contain it, and no rebuild can reproduce it or lose it.
+
+**Applied mechanically, both norms would have made an annotation permanent.** An agent's note is its
+belief at a moment; a belief that can be added and never withdrawn becomes *permanently wrong* the
+first time the agent learns better, and it keeps being returned beside the row as though the store
+stood behind it. Preserving it would protect nothing and mislead every later reader — the exact
+inversion of what the norms were written to do.
+
+**The category, so the next case at this edge is pre-decided:** a preservation norm reaches rows
+whose author is outside this product. Rows this product's own operator or agents authored — the
+annotation table, and anything later built on the same footing — are governed by their own
+requirement, and their requirement may say *delete means delete*.
+
+**Instances:**
+
+- *2026-09-10, FR-11 · Agent annotations.* AC-16.7 requires that an annotation be rewritable and
+  deletable with no tombstone. Recorded as a ruling on both norms rather than as a silent exemption,
+  and linked from each entry's `Rulings:` line. Note the asymmetry it does **not** license:
+  `transactions.category_override` is operator-authored but sits on an aggregator-authored row, and
+  § 5's 2026-09-10 amendment keeps it out of an agent's reach for that reason. Authorship of the
+  **row** is the test, not authorship of the value.
+
+**How to apply:** at any preservation norm's edge, ask who wrote the row — not who wrote the field,
+and not whether the field looks derived. If the answer is "we did", the norm's why does not reach it
+and the ruling is already made here; record the instance and move on.
+
+## A norm's reach is its why, not its wording: a mechanism that produces no answers is outside a norm about wrong answers, and the ruling belongs at the edge rather than in the norm
+
+**When a norm blocks something it was plainly not written for, the fix is a ruling at its edge, not
+an amendment to its statement. Test the departure against the norm's *why*: if the why has no
+purchase on the case, the norm never reached it and saying so leaves the norm intact for everything
+it does reach. Amending the statement to admit your case weakens it everywhere.**
+
+The tell is that the norm's rationale, read aloud against your case, turns out to be about something
+your code does not do. `architecture.md`'s fourth Direction norm — *a process that does not recognize
+the datastore's schema version refuses to serve* — exists because "it would return plausible,
+structurally valid, wrong answers." `store backup` runs `VACUUM INTO`: a page-level copy of
+ciphertext that reads no table, interprets no column and answers no question. There is no answer for
+an unrecognized schema to make wrong. The norm was never about it.
+
+🔴 **And check what refusing costs, because that is the half a wording-only reading hides.** Refusing
+here left `cp` as the only way to copy such a store, and this repo has *measured* `cp` losing all 300
+rows of a hot WAL — so the norm, read past its why, was pushing operators toward the one method the
+same document calls unsafe.
+
+**The exemption is then held by discovery, not by a list** (see [[Guarantees by construction]]): the
+enforcement test walks the module for handles that skip the check and asserts the exempt set, so a
+third exemption fails the test rather than arriving quietly.
+
+**Instances:**
+
+- **2026-09-10, `store backup` at an unservable schema version.** Found while rehearsing
+  `docs/first-production-connection.md` § 2.3 against a sandbox store at schema 4 under a build
+  serving 9. Recorded as a ruling on the norm rather than an amendment; reader, ordinary writer and
+  `store rebuild` unchanged. 🔴 The limitation was **already documented** in `operational-spec.md`
+  and the upgrade procedure worked around it correctly by ordering the backup before `git pull` —
+  so the defect was never "nobody noticed", it was that the workaround stopped existing the moment
+  an operator did the two steps in the other order.
+
+**How to apply:** when a norm refuses your change, read its Why sentence aloud with your mechanism
+as the subject. If it describes something your mechanism does not do, draft a ruling and price what
+refusing costs. If it describes something your mechanism *does* do, conform — the norm found a real
+problem, and an amendment that admits your case is the laundering `docs/norms.md` names.
+
+## `git add -A` stages what a tool changed under you, not what you changed: name the paths, or read the status output before the commit rather than after the review
+
+**A commit built with `git add -A` carries every modified tracked file, including ones a local tool
+rewrote while you worked. The files you edited are the ones you will proofread; the file something
+else edited is the one that ships unread. Stage by path, or read `git status` and account for every
+line before committing — the review is too late, because by then the change is history.**
+
+The dangerous case is not a stray scratch file — those are untracked and usually gitignored. It is a
+**tracked config file that a tool owns**, because it is already in the index, its diff is small, and
+nothing about it looks like your work.
+
+**Instances:**
+
+- **2026-09-10, `.claude/settings.json` in the backup fix.** A `git add -A` swept a local plugin
+  toggle into a commit about schema remedies, flipping `prawduct@prawduct` from `true` to `false` in
+  a **checked-in, shared** settings file. Merged to `develop`, every checkout would have run with
+  the governance plugin off — no gates, no Stop hook, no Critic — while `CLAUDE.md` went on
+  recording the opposite decision. Caught by the Critic at Goal 3, three rounds in. The first commit
+  of the same branch printed `git status` before committing and was clean; the second piped
+  `git add -A` straight into `git commit` and was not.
+
+**How to apply:** commit with explicit paths (`git commit -- <paths>`) for anything touching a
+config or dotfile directory, and when you do use `git add -A`, print `git status --short` and read
+every line as a question — *did I change this, and does the commit message account for it?* A line
+you cannot explain is the finding, not the noise.
+
+---
+
+## A gate's contract is what its evidence records, not what its terminal prints
+
+**When you add a check to something that produces a durable record — a test-evidence store, a
+CI summary, a status file — make the check reach THAT RECORD, because every consumer
+downstream reads the record and not your exit code, and a check that only fails the exit
+status is decorative the moment anything but a human is watching.**
+
+The trap is that the terminal tells you it works. You run the gate, a check goes red, the
+screen fills with the failure and the shell reports non-zero — every signal a person uses to
+confirm the wiring is present and correct. The record written seconds earlier says the run
+was clean, and nothing on screen mentions it.
+
+It follows a predictable shape: the record is built from an *artifact* (a JUnit report, a
+coverage file) rather than from the process outcome, so only the tool that writes that
+artifact can put a failure into it. Any check bolted on beside that tool is outside the
+channel by construction.
+
+**Instances:**
+
+- **2026-09-12, `scripts/check.sh` for #92.** The gate ran pytest, `ruff check` and `mypy`,
+  printed the red one by name, and exited 1. `prawduct-hook test-evidence record` builds
+  `.test-evidence.json` from the JUnit report and consults the command's exit status only
+  afterwards, without storing it — so a red mypy left a session-fresh record reading
+  `failed: 0`, `test-status` printed `current`, and the Stop gate passed. The issue being
+  closed was *"a declared check that nothing runs"*; the first fix reproduced it one consumer
+  along. Three Critic reviewers found it independently, from correctness, design and
+  sustainability. Fixed by appending each red check to the JUnit report as a failing case.
+  The build plan's verification had covered only the green path — the half where the defect
+  cannot appear.
+
+- **2026-09-12, the same gate, the pytest lane.** The fix above excluded pytest from the
+  appended cases whenever the report *parsed*, reasoning that a red pytest carries its own
+  failures. True only when its redness became a `<failure>` leaf — and **pytest exits 5 on
+  "no tests collected"** (one bad `-k`/`-m` in `addopts`) while writing a parseable
+  `tests="0" failures="0"`. Then pytest is the only red command, the append list empties,
+  the recording step *succeeds* so nothing warns, and the record reads `failed: 0` again.
+  **The test could not have caught it**: the stub always wrote `failures="0"`, so the
+  "not counted twice" case was asserting the silent-green outcome, not the no-double-count
+  one. Two shapes, one fixture, and the assertion cannot tell them apart. Fixed by keying
+  the exclusion on a `<failure>`/`<error>` actually being present, and by making the stub's
+  report content a parameter so both shapes exist.
+
+**A corollary the second instance earns:** *when correct behaviour DIFFERS between two shapes
+of the same input, a fixture that can only produce one shape asserts nothing about the
+choice.* The tell is a conditional in the code with no corresponding parameter in the
+fixture — here, `if parsed:` in the recorder against a stub that had no way not to parse.
+Before trusting such a test, ask which branch the fixture reaches, and whether it can reach
+the other one at all.
+
+**How to apply:** after wiring a new check, ask *which file does the next reader open?* Then
+make the check red and go read that file — not the terminal. If the artifact is written by
+one tool and your check is a second tool, you must write into the artifact yourself, and a
+test should pin that (drive the real script, fail the check, assert the recorded failure
+count moved). Verifying only the green path is the tell: the failure path is where a
+reporting bug can live, so a plan whose "Done when" mentions only success has not been
+verified, it has been demonstrated.
+
+## Evidence recorded over a tree you were editing is evidence about no tree: start the gate when you have nothing left to change, and never let a narrower re-run stand in for the declared command
+
+## A guard that greps tracked files is blind to the file you just created: stage a new fixture before a green says anything about it
+
+## A fixture that cannot reach the subject passes forever: mutate the code, and check which branch the fixture actually took
+
+## A refactor is judged by what the old code stopped doing, not by what the new code does: enumerate the branches the replaced expression had, and name where each one went
+
+## A fixture built from the mechanism you are reasoning about cannot tell apart the worlds your reasoning separates: reproduce the state the real producer leaves, not the state your helper leaves
+
+## A conformance note clears a rule on the surface it was checked against, and a rule with two entry points is cleared on neither by checking one: name the surface, and re-check a shape rule whenever a new column stores a value whose type contradicts its meaning
+
+## An option you offer the owner is a requirement they sign: before writing a rule into a question, run it against the real store's shape, because the case that breaks it is usually already sitting in the data
+
+## A harness that edits source in place must never run under a tool timeout: run it detached, and after any interrupted run check the tree against the files the chunk changed

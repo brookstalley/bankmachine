@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+#
+# Two independent pre-push guards.
+#
+#   1. Leak guard: no roster or operator identity in anything being pushed. Runs
+#      on EVERY push and is handed the actual ref range, so it inspects the
+#      COMMITS being published rather than the checked-out tree. That distinction
+#      is the whole value: the exposure this project actually had was three
+#      documentation paths sitting in already-pushed history behind a clean tip,
+#      which a worktree check reports clean.
+#
+#   2. Gitflow guard: main is a release-only branch.
+#
+# GitHub-side branch protection is a paid feature on private repos, so these
+# stand in for it locally. They are guardrails against slips, not access
+# control -- `git push --no-verify` bypasses both by design.
+#
+# ENABLED PER CLONE. Hooks directories are not committed, so a fresh clone has
+# NO guard until someone runs:
+#
+#     git config core.hooksPath .githooks
+#
+# That step is also recorded in README.md, because a setup instruction that lives
+# only inside the file it enables can never be read by the clone that needs it.
+#
+# Rejects, on refs/heads/main only:
+#   - deletion
+#   - non-fast-forward (force push)
+#   - a tip that is not a merge commit (work committed straight onto main)
+#   - a merge whose merged-in side is not a release/* or hotfix/* branch
+# Every other branch pushes untouched by guard 2.
+
+set -euo pipefail
+
+PROTECTED="refs/heads/main"
+ZERO=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
+
+die() {
+    echo "pre-push: BLOCKED -- $1" >&2
+    echo "pre-push: main is release-only. Merge a release/* or hotfix/* branch into it," >&2
+    echo "pre-push: or use --no-verify if you know what you are doing." >&2
+    exit 1
+}
+
+# stdin is consumed once and reused: both guards need the same ref lines.
+ref_lines=()
+while IFS= read -r line; do
+    [ -n "$line" ] && ref_lines+=("$line")
+done
+[ ${#ref_lines[@]} -eq 0 ] && exit 0
+
+# --- 1. Leak guard -------------------------------------------------------
+# Fails closed. A missing or non-executable guard is not a reason to push
+# unguarded -- it is the one moment the operator needs telling.
+repo_root=$(git rev-parse --show-toplevel)
+guard="$repo_root/tests/preferences/check-no-personal-data.sh"
+
+if [ ! -x "$guard" ]; then
+    echo "pre-push: BLOCKED -- leak guard missing or not executable at" >&2
+    echo "pre-push:   $guard" >&2
+    echo "pre-push: This repository may be published, so a push with no leak check" >&2
+    echo "pre-push: is refused rather than allowed silently. Restore the script, or" >&2
+    echo "pre-push: use --no-verify if you have checked by hand." >&2
+    exit 1
+fi
+
+for line in "${ref_lines[@]}"; do
+    # shellcheck disable=SC2086
+    set -- $line
+    local_sha=$2
+    remote_sha=$4
+    # A deletion pushes no content.
+    [ "$local_sha" = "$ZERO" ] && continue
+    "$guard" --range "$remote_sha" "$local_sha" || exit 1
+done
+
+# --- 2. Gitflow guard ----------------------------------------------------
+for line in "${ref_lines[@]}"; do
+    # shellcheck disable=SC2086
+    set -- $line
+    local_sha=$2
+    remote_ref=$3
+    remote_sha=$4
+
+    [ "$remote_ref" = "$PROTECTED" ] || continue
+
+    if [ "$local_sha" = "$ZERO" ]; then
+        die "refusing to delete main"
+    fi
+
+    if [ "$remote_sha" != "$ZERO" ] && ! git merge-base --is-ancestor "$remote_sha" "$local_sha"; then
+        die "refusing non-fast-forward push to main"
+    fi
+
+    # A release lands on main as a merge commit; direct commits do not.
+    if [ -z "$(git rev-parse --verify --quiet "${local_sha}^2" || true)" ]; then
+        die "main tip ${local_sha:0:8} is not a merge commit"
+    fi
+
+    merged_side=$(git rev-parse "${local_sha}^2")
+    if ! git for-each-ref --format='%(refname)' \
+            'refs/heads/release/*' 'refs/heads/hotfix/*' \
+            'refs/remotes/*/release/*' 'refs/remotes/*/hotfix/*' \
+        | while read -r ref; do
+              if git merge-base --is-ancestor "$merged_side" "$ref" 2>/dev/null; then
+                  echo found
+                  break
+              fi
+          done | grep -q found
+    then
+        die "merged-in commit ${merged_side:0:8} is not on any release/* or hotfix/* branch"
+    fi
+done
+
+exit 0

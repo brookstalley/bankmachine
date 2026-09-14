@@ -21,6 +21,33 @@
 .prawduct/.work-model-index.json
 .prawduct/reflections.md
 __pycache__/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Gate output. `docs/README.md` tells you to run `bash scripts/check.sh report.xml`
+# from the repo root, so the documented command leaves this behind on every run.
+# An untracked JUnit report sitting in a private finance repo is a file someone
+# eventually `git add -A`s by accident; it is also pure derived output.
+report.xml
 
 # Prawduct plugin version marker (per-repo last-seen)
 .prawduct/.prawduct-version
+
+# Deployment roster — this operator's institutions, accounts and match tokens.
+# The engine is provider-agnostic and public; the roster is configuration and local.
+# See docs/deployment-requirements.template.md.
+deployment/
+
+# Product data — financial data never leaves this machine (AC-10.4, AC-10.5)
+data/
+logs/
+*.db
+*.db-wal
+*.db-shm
+
+# Secrets — Plaid client_id / secret / access tokens
+.env
+.env.*
+!.env.example

@@ -1,0 +1,759 @@
+"""`bankmachine sync shell` end to end, over a real encrypted datastore.
+
+The shell is the product's only surface that runs operator-supplied SQL, so
+these are the tests where the two read-role norms are load-bearing rather than
+theoretical. The one this command exists to get right is the checkpoint pair at
+the bottom: it holds the shell at its prompt -- genuinely idle, between
+statements, the way it sits overnight -- and measures whether a writer can move
+every WAL frame past it.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import io
+import threading
+from collections.abc import Iterator
+from typing import Final
+
+import pytest
+
+from bankmachine.cli import run, sync
+from bankmachine.cli.sync import run_shell
+from bankmachine.config import Config
+from bankmachine.store import connection
+from bankmachine.store.connection import writer
+from bankmachine.store.schema import metadata, public_identifier_columns
+from conftest import use_cli_env
+
+#: Long enough that a wedged shell fails the test instead of hanging the suite.
+_TIMEOUT: Final = 15.0
+
+
+class _Script:
+    """A stdin that feeds prepared lines and then ends."""
+
+    def __init__(self, lines: list[str]) -> None:
+        self._lines = list(lines)
+
+    def isatty(self) -> bool:
+        return False
+
+    def readline(self) -> str:
+        return f"{self._lines.pop(0)}\n" if self._lines else ""
+
+
+def _run(config: Config, lines: list[str]) -> str:
+    out = io.StringIO()
+    assert run_shell(config, stdin=_Script(lines), stdout=out) == 0
+    return out.getvalue()
+
+
+# --------------------------------------------------------------------------
+# The acceptance criterion: an operator opens it, runs a query, reads the result
+# --------------------------------------------------------------------------
+
+
+def test_a_query_runs_and_returns_rows(initialized_config: Config) -> None:
+    with writer(initialized_config) as w:
+        w.execute("CREATE TABLE probe (label TEXT, amount_minor INTEGER)")
+        w.execute("INSERT INTO probe VALUES ('rent', 150000000)")
+
+    out = _run(initialized_config, ["SELECT label, amount_minor FROM probe;"])
+
+    assert "label" in out
+    assert "rent" in out
+    assert "(1 row)" in out
+    # Money is an INTEGER of minor units here, and this one is nine digits. It
+    # must survive intact: an account-number rule that also blanks a six-figure
+    # balance has redacted the number the operator opened the shell to read.
+    assert "150000000" in out
+
+
+def test_dot_tables_lists_the_real_schema(initialized_config: Config) -> None:
+    out = _run(initialized_config, [".tables"])
+
+    assert "accounts" in out
+    assert "raw_responses" in out
+    assert "sqlite_" not in out
+
+
+def test_dot_schema_prints_ddl_for_one_table(initialized_config: Config) -> None:
+    out = _run(initialized_config, [".schema accounts"])
+
+    assert "CREATE TABLE" in out
+    assert "balance_class" in out
+
+
+def test_dot_schema_shows_identifiers_the_value_rule_would_blank(
+    initialized_config: Config,
+) -> None:
+    """Schema text is structure, so the redactor does not run over it.
+
+    These names are all longer than the 32-character run `_OPAQUE` blanks, and
+    a short-name assertion cannot see the difference -- which is why the first
+    version of this test passed while `.schema` was printing
+    `CREATE UNIQUE INDEX [REDACTED]`.
+    """
+    out = _run(initialized_config, [".schema connections", ".schema investment_transactions"])
+
+    assert "[REDACTED]" not in out
+    assert "connections_one_live_per_institution" in out  # 36 characters
+    assert "source_investment_transaction_id" in out  # exactly 32
+
+
+def test_a_long_opaque_value_in_a_row_is_still_redacted(initialized_config: Config) -> None:
+    """The other half of the split: values keep the full rule, cost included.
+
+    A 64-hex digest is blanked. That is the chosen direction -- an unlabelled
+    token in a row would otherwise reach the terminal -- and this pins it so a
+    later reader sees a decision rather than an oversight.
+    """
+    digest = "9f" * 32
+    with writer(initialized_config) as w:
+        w.execute("CREATE TABLE probe (body_sha256 TEXT)")
+        w.execute("INSERT INTO probe VALUES (?)", (digest,))
+
+    out = _run(initialized_config, ["SELECT body_sha256 FROM probe;"])
+
+    assert digest not in out
+    assert "[REDACTED]" in out
+
+
+def test_an_unknown_dot_command_is_reported_rather_than_ignored(
+    initialized_config: Config,
+) -> None:
+    out = _run(initialized_config, [".nonsense"])
+
+    assert "unknown command .nonsense" in out
+
+
+def test_an_error_does_not_end_the_session(initialized_config: Config) -> None:
+    """A typo costs the statement, never the session.
+
+    The shell is what an operator reaches for when something is already wrong;
+    dropping them back to a re-authentication because they mistyped a column
+    name is the opposite of usable under pressure. The error is still shown --
+    silence is the one outcome this project disallows.
+    """
+    out = _run(initialized_config, ["SELECT * FROM no_such_table;", "SELECT 1 AS ok;"])
+
+    assert "error:" in out
+    assert "no_such_table" in out
+    assert "ok" in out
+
+
+def test_a_statement_may_span_lines(initialized_config: Config) -> None:
+    out = _run(initialized_config, ["SELECT", "  1 AS ok", ";"])
+
+    assert "ok" in out
+    assert "(1 row)" in out
+
+
+def test_input_that_ends_mid_statement_does_not_run_it(initialized_config: Config) -> None:
+    out = _run(initialized_config, ["SELECT 1 AS ok"])
+
+    assert "input ended mid-statement" in out
+    assert "(1 row)" not in out
+
+
+def test_a_blob_is_summarised_rather_than_printed(initialized_config: Config) -> None:
+    """`raw_responses.body_gzip` is the one that comes up in practice."""
+    with writer(initialized_config) as w:
+        w.execute("CREATE TABLE blobby (payload BLOB)")
+        w.execute("INSERT INTO blobby VALUES (?)", (b"\x1f\x8b" + b"\x00" * 400,))
+
+    out = _run(initialized_config, ["SELECT payload FROM blobby;"])
+
+    assert "<blob, 402 bytes>" in out
+    assert "\x1f" not in out
+
+
+# --------------------------------------------------------------------------
+# Norm 2: the read role refuses writes, and the refusal is not a session flag
+# --------------------------------------------------------------------------
+
+
+def test_the_banner_names_the_four_things_before_the_first_prompt(
+    initialized_config: Config,
+) -> None:
+    """🔴 The banner had NO test, which is how its role line came to garden-path.
+
+    VRF-001's first check is that an operator meets the environment, the path,
+    the role and the redaction before typing anything -- and no assertion here
+    read the banner at all, so its wording was free to drift. Four separate
+    claims rather than one blob, because a banner degrades a line at a time.
+
+    Order matters and is asserted: an operator who has already typed a statement
+    has stopped reading the header, so a banner printed after the first prompt
+    is not a banner.
+    """
+    out = _run(initialized_config, ["SELECT 1;"])
+    banner, _, rest = out.partition("bankmachine>")
+
+    assert "SANDBOX" in banner, "the environment is what stops a production typo"
+    assert str(initialized_config.datastore_path) in banner
+    assert "read-only at the file" in banner
+    assert "redacted" in banner
+    assert ".help" in banner and ".quit" in banner
+    assert rest, "nothing followed the banner, so this proves nothing about order"
+
+
+def _shell_parser_description() -> str:
+    """The `sync shell --help` text, read from a real parser rather than a copy."""
+    import argparse
+
+    from bankmachine.cli import sync as sync_module
+
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers()
+    sync_module.add_arguments(subparsers)
+
+    # Walked rather than indexed through `choices`, which argparse types as a bare
+    # `Iterable[Any] | None`. `_name_parser_map` is the mapping that actually carries
+    # the parser type, so the walk is what lets this stay a typed read of a real
+    # parser instead of an `Any` that would assert against anything.
+    sync_parser = subparsers._name_parser_map["sync"]
+    nested = [a for a in sync_parser._actions if isinstance(a, argparse._SubParsersAction)]
+    assert len(nested) == 1, "`sync` grew a second subparsers action; this helper picks one"
+    shell: argparse.ArgumentParser = nested[0]._name_parser_map["shell"]
+
+    description = shell.description
+    assert description is not None, "`sync shell` lost its description"
+    return description
+
+
+def test_every_surface_states_the_read_only_guarantee_in_the_same_words(
+    initialized_config: Config,
+) -> None:
+    """🔴 The guarantee is stated three times, so it is WRITTEN once.
+
+    The banner, `--help` and `.help` each tell the operator the handle cannot be
+    written to. Three literals meant a rewrite could reach two of them and leave
+    the third disagreeing about what the handle does -- which is exactly what
+    happened: the banner was fixed and `--help` kept the old wording.
+
+    This is what makes the sweep unnecessary next time rather than merely done
+    this time. One constant, asserted at every surface that renders it.
+    """
+    from bankmachine.cli.sync import _HELP, READ_ONLY_SENTENCE
+
+    banner = _run(initialized_config, ["SELECT 1;"]).partition("bankmachine>")[0]
+    assert READ_ONLY_SENTENCE in banner
+    assert READ_ONLY_SENTENCE in _HELP
+    assert READ_ONLY_SENTENCE in _shell_parser_description()
+
+
+def test_the_read_only_sentence_does_not_end_on_a_known_stranding_word() -> None:
+    """A heuristic over the one constant, and it is named as a heuristic.
+
+    The defect it guards: the sentence read `...and no PRAGMA changes that`,
+    where the demonstrative parses just as readily as a conjunction and leaves
+    the reader waiting for a clause that never comes -- on the one sentence
+    stating the guarantee they are trusting.
+
+    🔴 **This is a word list, not a property, and the distinction is the point.**
+    It cannot know whether a sentence strands its reader; it knows five words
+    that commonly do. A rewrite ending on `so` or `while` would pass and still
+    strand. What actually protects the sentence is that there is now only ONE of
+    it, reviewed once -- the list is a cheap tripwire on top, and claiming more
+    for it would be the enumeration-shaped guarantee this repo has been bitten
+    by before (`learnings.md` § Guarantees by construction).
+    """
+    from bankmachine.cli.sync import READ_ONLY_SENTENCE
+
+    last = READ_ONLY_SENTENCE.rstrip(" .").split()[-1].lower()
+    assert last not in {"that", "which", "because", "unless", "whether"}, (
+        f"the sentence ends on {last!r}, a word that commonly reads as opening a "
+        f"clause -- which is how the original wording came to look truncated"
+    )
+    assert "PRAGMA" in READ_ONLY_SENTENCE, "it must still say what cannot undo the refusal"
+
+
+def test_a_write_is_refused_in_the_read_role(initialized_config: Config) -> None:
+    out = _run(initialized_config, ["CREATE TABLE nope (a INTEGER);"])
+
+    assert "error:" in out
+    assert any(word in out.lower() for word in ("readonly", "read-only", "attempt to write"))
+
+
+def test_a_write_is_still_refused_after_pragma_query_only_off(
+    initialized_config: Config,
+) -> None:
+    """The norm's whole point, at the surface that can actually type it.
+
+    `query_only` is a reversible session flag and this prompt is the one place
+    an operator can turn it off. The refusal has to live somewhere SQL cannot
+    reach -- `mode=ro` at the file handle -- so this asserts the flag really did
+    flip and that the write failed anyway. Asserting only the failure would pass
+    just as well against a shell where the PRAGMA silently did nothing.
+    """
+    out = _run(
+        initialized_config,
+        [
+            "PRAGMA query_only = OFF;",
+            "PRAGMA query_only;",
+            "CREATE TABLE nope (a INTEGER);",
+        ],
+    )
+
+    lines = [line.strip() for line in out.splitlines()]
+    assert "0" in lines, "query_only did not actually turn off, so the refusal proves nothing"
+    assert "error:" in out
+    assert any(word in out.lower() for word in ("readonly", "read-only", "attempt to write"))
+    with connection.reader(initialized_config) as conn:
+        present = conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name = 'nope'").fetchone()[
+            0
+        ]
+    assert present == 0
+
+
+# --------------------------------------------------------------------------
+# AC-10.3: what comes out of the shell is redacted
+# --------------------------------------------------------------------------
+
+
+def test_output_redacts_tokens_and_account_numbers_but_keeps_masks(
+    initialized_config: Config,
+) -> None:
+    """Expected output is written out literally rather than computed.
+
+    Running the redactor to produce what the test expects would assert only
+    that the function equals itself. These strings are what an operator should
+    see, written independently of the code that produces them.
+    """
+    token = "sbx-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"  # credential-shape: test vector
+    with writer(initialized_config) as w:
+        w.execute("CREATE TABLE probe (note TEXT, mask TEXT, number TEXT)")
+        w.execute(
+            "INSERT INTO probe VALUES (?, ?, ?)",
+            (f"access_token={token}", "1234", "999999999999"),
+        )
+
+    out = _run(initialized_config, ["SELECT note, mask, number FROM probe;"])
+
+    assert token not in out
+    assert "access_token=[REDACTED]" in out
+    # The last four are explicitly acceptable, and are the thing the operator
+    # actually reads an account row for.
+    assert "999999999999" not in out
+    assert "****9999" in out
+    assert "1234" in out
+
+
+def test_an_exact_decimal_quantity_reads_whole(initialized_config: Config) -> None:
+    """A position size is a number to read, not an account number to blank.
+
+    `holdings.quantity` and `investment_transactions.quantity` are TEXT because
+    a fractional share carries more precision than a scaled integer could hold
+    -- so the account-number rule, which blanks any run of eight digits, meets
+    the fractional part of an ordinary position. These are values the sandbox
+    institution actually returns; every digit of each has to survive, because
+    the whole reason the column is text is that no digit may be lost.
+    """
+    quantities = ("0.00293644", "-430.80867509953123", "4211.152345617756")
+    with writer(initialized_config) as w:
+        w.execute("CREATE TABLE probe (quantity TEXT)")
+        w.executemany("INSERT INTO probe VALUES (?)", [(q,) for q in quantities])
+
+    out = _run(initialized_config, ["SELECT quantity FROM probe;"])
+
+    assert "****" not in out
+    for quantity in quantities:
+        assert quantity in out
+
+
+def test_a_bare_digit_run_is_still_masked_however_it_is_labelled(
+    initialized_config: Config,
+) -> None:
+    """The decimal point is the whole exemption, so nothing without one is spared.
+
+    Sparing measurements must not become sparing anything numeric: an account
+    number is an unbroken run of digits, and it stays one whatever column it
+    arrives in. This pins the cost of drawing the line there -- a quantity
+    written without a fractional part is masked too, which is visible rather
+    than wrong.
+    """
+    with writer(initialized_config) as w:
+        w.execute("CREATE TABLE probe (quantity TEXT, number TEXT)")
+        w.execute("INSERT INTO probe VALUES (?, ?)", ("12345678", "999999999999"))
+
+    out = _run(initialized_config, ["SELECT quantity, number FROM probe;"])
+
+    assert "12345678" not in out
+    assert "****5678" in out
+    assert "999999999999" not in out
+    assert "****9999" in out
+
+
+#: Published CUSIPs, two of them all digits -- the shape the account-number rule
+#: catches -- and two carrying a letter, which the rule never reached.
+_PUBLISHED_CUSIPS: Final = ("037833100", "594918104", "38259P508", "88160R101")
+
+
+@pytest.mark.parametrize("cusip", _PUBLISHED_CUSIPS)
+def test_a_published_cusip_passes_its_check_digit(cusip: str) -> None:
+    assert sync.is_cusip(cusip)
+
+
+@pytest.mark.parametrize(
+    "corrupted",
+    sorted(
+        {
+            "037833100"[:position] + digit + "037833100"[position + 1 :]
+            for position in range(9)
+            for digit in "0123456789"
+        }
+        - {"037833100"}
+    ),
+)
+def test_every_single_digit_corruption_of_a_cusip_fails_its_check_digit(corrupted: str) -> None:
+    """The check digit is the half of the exemption that a column alias cannot forge.
+
+    Every one-character change to a real CUSIP has to fail, or a mistyped or
+    unrelated nine-digit run in a `cusip` column would read as an identifier.
+    """
+    assert not sync.is_cusip(corrupted)
+
+
+@pytest.mark.parametrize("value", ["03783310", "0378331000", "037833 00", "38259p508", ""])
+def test_a_value_that_is_not_nine_cusip_characters_is_not_a_cusip(value: str) -> None:
+    assert not sync.is_cusip(value)
+
+
+def test_a_cusip_in_a_cusip_column_reads_whole(initialized_config: Config) -> None:
+    """A CUSIP is a public identifier, and an all-digit one is the common case.
+
+    Masked, `037833100` read `****3100`, which names no security. The value is
+    printed by every brokerage statement and every market data feed, so there is
+    nothing for AC-10.3 to protect in it.
+    """
+    with writer(initialized_config) as w:
+        w.execute("CREATE TABLE probe (cusip TEXT)")
+        w.executemany("INSERT INTO probe VALUES (?)", [(c,) for c in _PUBLISHED_CUSIPS])
+
+    out = _run(initialized_config, ["SELECT cusip FROM probe;"])
+
+    assert "****" not in out
+    for cusip in _PUBLISHED_CUSIPS:
+        assert cusip in out
+
+
+def test_a_nine_digit_run_failing_the_check_digit_is_masked_even_in_a_cusip_column(
+    initialized_config: Config,
+) -> None:
+    """The column name alone spares nothing: an alias can put any value under it."""
+    with writer(initialized_config) as w:
+        w.execute("CREATE TABLE probe (cusip TEXT)")
+        w.execute("INSERT INTO probe VALUES (?)", ("037833101",))
+
+    out = _run(initialized_config, ["SELECT cusip FROM probe;"])
+
+    assert "037833101" not in out
+    assert "****3101" in out
+
+
+def test_a_valid_cusip_outside_a_cusip_column_is_masked(initialized_config: Config) -> None:
+    """The check digit alone spares nothing: about one random nine-digit number in ten passes it."""
+    with writer(initialized_config) as w:
+        w.execute("CREATE TABLE probe (number TEXT)")
+        w.execute("INSERT INTO probe VALUES (?)", ("037833100",))
+
+    out = _run(initialized_config, ["SELECT number FROM probe;"])
+
+    assert "037833100" not in out
+    assert "****3100" in out
+
+
+def test_an_account_number_aliased_as_cusip_is_still_masked(initialized_config: Config) -> None:
+    with writer(initialized_config) as w:
+        w.execute("CREATE TABLE probe (number TEXT)")
+        w.execute("INSERT INTO probe VALUES (?)", ("999999999999",))
+
+    out = _run(initialized_config, ["SELECT number AS cusip FROM probe;"])
+
+    assert "999999999999" not in out
+    assert "****9999" in out
+
+
+def test_every_flagged_public_identifier_is_a_real_column_with_a_shape_the_shell_checks() -> None:
+    """The flag and the validator are two halves, and neither may exist alone.
+
+    A column flagged with no validator would never be spared, which fails safe
+    but silently; a validator nothing flags is dead. Asserting the set is
+    non-empty first keeps the loop below from agreeing with nothing.
+    """
+    flagged = public_identifier_columns()
+
+    assert flagged, "no column is flagged as a public identifier, so this guard checks nothing"
+    columns = {column.name for table in metadata.tables.values() for column in table.columns}
+    for name, shape in flagged.items():
+        assert name in columns, f"{name} is flagged but is no column in the schema"
+        assert shape in sync.PUBLIC_IDENTIFIER_SHAPES, (
+            f"{name} is flagged as a {shape!r}, which the shell has no check for"
+        )
+
+
+def test_an_error_message_quoting_a_token_is_redacted_too(initialized_config: Config) -> None:
+    """SQLite quotes the offending value back; a mistyped token is still a token."""
+    token = "sbx-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"  # credential-shape: test vector
+
+    out = _run(initialized_config, [f"SELECT {token};"])
+
+    assert "error:" in out
+    assert token not in out
+
+
+def test_a_token_typed_into_the_shell_is_redacted_in_the_transcript(
+    initialized_config: Config,
+) -> None:
+    """A piped session echoes its input, and the echo is output like any other.
+
+    The transcript is the thing here most likely to be committed or pasted into
+    a bug report -- the operator-verification entry for this command is one --
+    so a token typed into a query must not survive in it.
+    """
+    token = "sbx-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"  # credential-shape: test vector
+
+    out = _run(initialized_config, [f"SELECT '{token}' AS t;"])
+
+    assert token not in out
+    # Once for the echoed statement, once for the value it returned.
+    assert out.count("[REDACTED]") >= 2
+
+
+# --------------------------------------------------------------------------
+# Free text: the echoed statement and the driver's error sentence
+# --------------------------------------------------------------------------
+
+#: Exactly the 32 characters the opaque rule blanks, and a real column here.
+_LONG_COLUMN: Final = "source_investment_transaction_id"
+
+#: The same shape, and nothing this datastore holds.
+_ABSENT_NAME: Final = "a_table_this_datastore_does_not_hold"
+
+
+def test_a_statement_naming_a_long_column_is_echoed_intact(initialized_config: Config) -> None:
+    """Querying the investment tables is a core use of this surface.
+
+    The echoed statement is a mixture of structure and value, and the structure
+    half is exactly what an operator needs back to read their own transcript.
+    """
+    statement = f"SELECT {_LONG_COLUMN} FROM investment_transactions;"
+
+    out = _run(initialized_config, [statement])
+
+    assert statement in out
+    assert "[REDACTED]" not in out
+
+
+def test_an_error_naming_a_long_column_names_it(initialized_config: Config) -> None:
+    """An error that will not say which column it means is not a diagnosis."""
+    out = _run(initialized_config, [f"SELECT {_LONG_COLUMN} FROM accounts;"])
+
+    assert "error:" in out
+    assert _LONG_COLUMN in out.split("error:", 1)[1]
+
+
+def test_a_long_name_this_datastore_does_not_hold_is_still_blanked(
+    initialized_config: Config,
+) -> None:
+    """What is spared is a property of this store, not of looking like a name.
+
+    An identifier-shaped run that names nothing here is an operator-typed
+    value as far as this surface can tell, so it keeps the value rule.
+    """
+    out = _run(initialized_config, [f"SELECT * FROM {_ABSENT_NAME};"])
+
+    assert _ABSENT_NAME not in out
+    assert "[REDACTED]" in out
+
+
+def test_a_token_typed_beside_a_long_column_is_still_redacted(
+    initialized_config: Config,
+) -> None:
+    """Both halves of one line, which is the case the shape rule cannot split.
+
+    The column survives and the literal does not, in the same echoed statement.
+    """
+    token = "sbx-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"  # credential-shape: test vector
+
+    out = _run(
+        initialized_config,
+        [f"SELECT {_LONG_COLUMN} FROM investment_transactions WHERE {_LONG_COLUMN} = '{token}';"],
+    )
+
+    assert token not in out
+    assert "[REDACTED]" in out
+    assert _LONG_COLUMN in out
+
+
+# --------------------------------------------------------------------------
+# The norm this chunk exists to get right: nothing is pinned between statements
+# --------------------------------------------------------------------------
+
+
+class _Paced:
+    """A stdin that holds the shell at its prompt until the test releases it.
+
+    Blocking inside `readline` is the only way to observe the shell *between*
+    statements. That is the state the norm is about -- a prompt sitting idle
+    overnight, with the nightly sync running against the same file.
+    """
+
+    def __init__(self, lines: list[str]) -> None:
+        self._lines = list(lines)
+        self._at_prompt = threading.Event()
+        self._resume = threading.Event()
+
+    def isatty(self) -> bool:
+        return False
+
+    def readline(self) -> str:
+        self._at_prompt.set()
+        if not self._resume.wait(timeout=_TIMEOUT):
+            raise AssertionError("the shell was left blocked at its prompt")
+        self._resume.clear()
+        return f"{self._lines.pop(0)}\n" if self._lines else ""
+
+    def wait_at_prompt(self) -> None:
+        assert self._at_prompt.wait(timeout=_TIMEOUT), "the shell never reached its prompt"
+        self._at_prompt.clear()
+
+    def resume(self) -> None:
+        self._resume.set()
+
+
+@contextlib.contextmanager
+def _shell_idle_after(config: Config, lines: list[str]) -> Iterator[io.StringIO]:
+    """Run every line, then yield with the shell genuinely idle at its prompt."""
+    paced = _Paced(lines)
+    out = io.StringIO()
+    exit_codes: list[int] = []
+
+    def _drive() -> None:
+        exit_codes.append(run_shell(config, stdin=paced, stdout=out))
+
+    thread = threading.Thread(target=_drive, daemon=True)
+    thread.start()
+    try:
+        for _ in lines:
+            paced.wait_at_prompt()
+            paced.resume()
+        paced.wait_at_prompt()
+        yield out
+    finally:
+        paced.resume()
+        thread.join(timeout=_TIMEOUT)
+
+    assert not thread.is_alive(), "the shell did not exit at end of input"
+    assert exit_codes == [0]
+
+
+def _checkpoint_past_the_shell(config: Config) -> tuple[int, int]:
+    """Append frames while the shell sits idle, then try to move them all.
+
+    Returns (frames in the log, frames checkpointed). The writer opens after the
+    shell is already idle, so every frame it appends is one the shell would pin
+    if its snapshot outlived the statement that opened it.
+    """
+    with writer(config) as w:
+        _fill_wal(w)
+        busy, log_frames, checkpointed = w.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+    assert busy == 0
+    assert log_frames > 0, "the WAL held no frames, so this proved nothing"
+    return int(log_frames), int(checkpointed)
+
+
+def test_the_shell_pins_no_snapshot_while_it_sits_at_its_prompt(
+    initialized_config: Config,
+) -> None:
+    """A passive checkpoint moves every frame past an idle shell.
+
+    A shell left open overnight is open during the nightly sync, and a
+    read-role handle takes no writer lock, so nothing else serialises the two.
+    The measured failure this guards against is 0 frames of 93 moved.
+    """
+    with writer(initialized_config) as w:
+        _create_filler(w)
+
+    with _shell_idle_after(initialized_config, ["SELECT COUNT(*) FROM wal_filler;"]) as out:
+        log_frames, checkpointed = _checkpoint_past_the_shell(initialized_config)
+
+    assert checkpointed == log_frames
+    assert "(1 row)" in out.getvalue()
+
+
+def test_a_transaction_typed_at_the_prompt_is_released_before_the_prompt_returns(
+    initialized_config: Config,
+) -> None:
+    """The operator can type BEGIN. The prompt still comes back holding nothing.
+
+    This is why the release is a property of the connection rather than a list
+    of statements to watch for: `BEGIN` opens a transaction, so does `SAVEPOINT`,
+    and the shell asks the handle instead of parsing the input.
+    """
+    with writer(initialized_config) as w:
+        _create_filler(w)
+
+    with _shell_idle_after(
+        initialized_config, ["BEGIN;", "SELECT COUNT(*) FROM wal_filler;"]
+    ) as out:
+        log_frames, checkpointed = _checkpoint_past_the_shell(initialized_config)
+
+    assert checkpointed == log_frames
+    assert "rolled back" in out.getvalue()
+
+
+def test_the_checkpoint_probe_can_detect_a_shell_that_pinned_a_snapshot(
+    initialized_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The negative control for the two tests above.
+
+    A probe that only ever confirms what was expected is the one to distrust.
+    This disables the release, holds the shell at its prompt inside an open
+    transaction, and asserts the checkpoint starves -- so the passing tests
+    above are distinguishing a released snapshot from a held one, rather than
+    reporting that this harness cannot see a held one at all.
+    """
+    monkeypatch.setattr(sync, "_release_snapshot", lambda conn, out: None)
+
+    with writer(initialized_config) as w:
+        _create_filler(w)
+
+    with _shell_idle_after(initialized_config, ["BEGIN;", "SELECT COUNT(*) FROM wal_filler;"]):
+        log_frames, checkpointed = _checkpoint_past_the_shell(initialized_config)
+
+    assert checkpointed < log_frames, (
+        "a shell holding an open read transaction did not starve the checkpointer, so the "
+        "tests above cannot tell a released snapshot from a held one"
+    )
+
+
+def test_the_cli_wires_the_shell_up(
+    initialized_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`bankmachine sync shell` reaches the shell through the real parser."""
+    use_cli_env(monkeypatch, initialized_config)
+    monkeypatch.setattr("sys.stdin", _Script([".quit"]))
+
+    assert run(["sync", "shell"]) == 0
+
+
+# --------------------------------------------------------------------------
+
+
+def _create_filler(conn: connection.Connection) -> None:
+    """The table the checkpoint tests read, committed before the shell opens."""
+    conn.execute("CREATE TABLE IF NOT EXISTS wal_filler (a INTEGER, pad TEXT)")
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+
+
+def _fill_wal(conn: connection.Connection) -> None:
+    """Commit enough pages that a checkpoint has real frames to move."""
+    conn.execute("BEGIN IMMEDIATE")
+    conn.executemany(
+        "INSERT INTO wal_filler (a, pad) VALUES (?, ?)",
+        [(i, "x" * 512) for i in range(400)],
+    )
+    conn.execute("COMMIT")

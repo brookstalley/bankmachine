@@ -4,38 +4,97 @@ Developer preferences for how code is written in this project. Captured during d
 
 ## Language & Runtime
 
-- **Language**:
-- **Version**:
-- **Package manager**:
+- **Language**: Python
+- **Version**: 3.14 (verified on 3.14.6, Apple Silicon). Native macOS, not containerized.
+  **macOS is supported and tested; other platforms are unverified, not excluded** — the credential
+  store and the scheduler sit behind seams so a port is a new implementation, not a refactor.
+- **Package manager**: uv (dependency resolution, lockfile, venv). `uv run` for all dev commands.
+  `.python-version` pins **3.14**, the version this artifact records as verified — the owner took
+  that decision on 2026-09-06, and the whole suite, mypy strict and ruff were re-run on it before
+  the pin moved. `requires-python` is **`>=3.14`**, the same number: nothing here runs on any other
+  interpreter, so a lower floor would be a promise no run has ever tested. The source could not
+  honour one anyway — `call_with_retry[T]` in `connector/plaid/errors.py` uses PEP 695 type
+  parameters, which do not parse before 3.12. `tests/preferences/test_python_floor_is_exercised.py`
+  holds the declared floor, the pinned interpreter and that syntax floor together, and says in its
+  own docstring that it is written to be replaced by a CI matrix. The AC-ARCH.7
+  concurrency probes recorded in `architecture.md` were measured on 3.12.3 and are left saying so;
+  they are measurements, not settings, and the norm suite that encodes them passes on 3.14.
 
 ## Code Style
 
-- **Naming**: (e.g., snake_case functions, PascalCase classes)
-- **Formatting**: (e.g., black, prettier, gofmt)
-- **Linting**: (e.g., ruff, eslint)
-- **Type annotations**: (e.g., required, preferred, not used)
-- **Imports**: (e.g., absolute, grouped by stdlib/third-party/local)
+- **Naming**: snake_case functions and modules, PascalCase classes, SCREAMING_SNAKE constants
+- **Formatting**: ruff format
+- **Linting**: ruff
+- **Type annotations**: required — mypy strict. Money is integer minor units and dates are of two
+  distinct kinds (calendar date vs UTC instant); the type checker is what stops those being mixed.
+- **Imports**: absolute, grouped stdlib / third-party / local (ruff isort rules)
 
 ## Testing
 
-- **Framework**: (e.g., pytest, vitest, go test)
-- **Style**: (e.g., descriptive names, AAA pattern, table-driven)
-- **Coverage expectations**: (e.g., happy path + error cases, comprehensive edge cases)
-- **Testing strategies**: (e.g., property-based (hypothesis), property-based (proptest), contract testing, not applicable)
-- **Test location**: (e.g., tests/ mirror of src/, colocated, __tests__/)
-- **Parallelization**: (e.g., pytest-xdist with --dist loadgroup, vitest threads)
+- **Framework**: pytest
+- **Style**: descriptive test names stating the behaviour, AAA
+- **Coverage expectations**: happy path plus error cases everywhere; **comprehensive edge cases** on
+  the sync/cursor path, money arithmetic, dedup, and the rebuild — a defect there is silent wrong
+  analysis, not a crash
+- **Testing strategies**: property-based (hypothesis) for money arithmetic, idempotency, and
+  rebuild losslessness — these are invariants, and invariants are what property tests are for.
+  Integration tests against real SQLCipher, real Keychain (test-scoped service name), and the
+  aggregator's sandbox. Import adapters tested against real exported sample files.
+- **Test location**: `tests/` mirroring the source tree; `tests/preferences/` for norm tests
+- **Parallelization**: (unset — revisit if the suite gets slow)
 
 ## Architecture Patterns
 
-- **Data modeling**: (e.g., Pydantic v2, TypeScript interfaces, Go structs)
-- **Error handling**: (e.g., exceptions, Result types, error codes)
-- **Async**: (e.g., async/await throughout, sync unless needed)
-- **File organization**: (e.g., feature folders, layer folders, flat)
+- **Data modeling**: **SQLAlchemy Core** — typed table metadata and the query builder, no ORM: no
+  `declarative_base`, no `Session`, no identity map. Engines are constructed with
+  `create_engine(..., creator=...)` where the creator is our own keyed connection from
+  `store/connection.py`, so every SQLCipher-specific step (key first, WAL, `mode=ro`, `query_only`,
+  the writer lock) stays inside the module that owns the architecture norms and SQLAlchemy never
+  opens a connection itself. Decided 2026-09-05 by the owner, over a builder recommendation of
+  hand-written SQL; both routes were verified to drive SQLCipher before the decision was taken.
+- **Error handling**: exceptions, specific not broad. Per-connection errors are caught and recorded,
+  never allowed to abort other connections. Silence is the one disallowed outcome.
+- **Async**: sync unless needed. The workload is a daily batch and a stdio MCP server; neither is
+  concurrency-bound.
+- **File organization**: layer folders (store / connector / sync / rules / mcp / cli)
 
 ## Tooling
 
-- **Key libraries**: (list anything non-obvious that new sessions should know about)
-- **Dev commands**: (e.g., `pytest tests/`, `npm run dev`, `cargo test`)
+- **Key libraries**: `sqlcipher3-wheels` — this is the package that works on Apple Silicon.
+  `sqlcipher3-binary` is unavailable for this platform; `sqlcipher3` and `pysqlcipher3` need a
+  Homebrew build step. **Credential storage goes through `keyring`**, not direct `security` CLI
+  calls: it wraps macOS Keychain, Windows Credential Manager and SecretService behind one
+  interface, so the one part of the system that is genuinely painful to port later costs nothing
+  to abstract now. The `security` CLI round-trip was verified during discovery and remains the
+  fallback if `keyring` proves unsuitable — but it is no longer the specified mechanism.
+- **Dev commands**: `uv sync` once, then `uv run pytest -q` (whole suite, including the shell
+  leak guard), `uv run mypy` (strict, source and tests), `uv run ruff check` / `uv run ruff
+  format`. `uv run bankmachine store init|status|rebuild` drives the product itself.
+- **The gate runs every declared check, not just pytest**: `scripts/check.sh` is what
+  `test_command:` launches, and it runs `pytest`, `ruff check`, `ruff format --check` and
+  `mypy` — in that order, reporting every one that went red rather than stopping at the
+  first. Run them by hand while editing; the script is what makes a red one fail the commit
+  that caused it. Before it existed only pytest was executed by anything, and mypy drifted
+  to 12 errors across 15 commits with nothing to notice (brookstalley/bankmachine#92).
+- **CI is a second caller of that script, never a second copy of it.**
+  `.github/workflows/check.yml` runs the gate on every pull request into `develop` or
+  `main` (macOS runner, `pull_request` and `workflow_dispatch` only — macOS bills at 10×
+  on a private repo, so per-push runs were declined deliberately). A workflow that spelled
+  the four commands out in YAML would be a second declaration of the gated set, free to
+  drift from the first; `tests/preferences/test_ci_runs_the_gate.py` holds it to being a
+  caller. **Anything added to the gate is picked up by CI for free — that is the point of
+  the shape, and it is worth not breaking.** CI reports and cannot block: branch protection
+  is paid on private repositories, so `.githooks/pre-push` is still the only refusal.
+- **A red check is recorded, not just printed.** `test-evidence record` builds
+  `.test-evidence.json` from the JUnit report and does not store the command's exit status,
+  so the gate appends each red check to that report as a failing case. Without this a red
+  linter left a session-fresh record reading `failed: 0` — terminal red, evidence green,
+  Stop gate satisfied. Anything added to the gate later must reach the report the same way
+  or it is decorative.
+  `uv run python tests/preferences/verify_norms_go_red.py` re-proves that the structural
+  guarantees still fail when their mechanisms are broken — run it whenever the connection
+  layer, the schema or the raw/rebuild layer changes, because a norm test that has never
+  been red is a claim, not a check.
 
 ## Workflow
 
@@ -44,9 +103,22 @@ Developer preferences for how code is written in this project. Captured during d
 - **PR creation**: wait_for_user (default: wait_for_user — only create PRs when explicitly asked; set to "automatic" to create PRs after Critic review passes)
 - **PR merge**: wait_for_user (default: wait_for_user — present the PR for user review before merging; set to "automatic" to merge after CI passes and review is clean)
 - **PR merge strategy**: merge commit (default: merge commit — `gh pr merge --merge`; preserves each commit's identity so a reused branch's merge-base stays correct and the review/PR gates don't re-review already-merged work; set to "squash" for one linear commit per PR, or "rebase" — with either, branches are single-use: delete after merge and never reuse, because the rewritten history strands a reused branch's merge-base)
+- **Attribution**: none, everywhere — 🔴 **not commits alone.** No `Co-Authored-By`,
+  `Signed-off-by`, "Generated with …", bot trailer, badge or sign-off naming an AI, a model or a
+  tool appears in commits, PR titles or bodies, issue titles or bodies, review comments, inline
+  code comments, docstrings, documentation, changelogs, release notes or generated files. The
+  full statement, which overrides any harness default to the contrary, is the **NO ATTRIBUTION**
+  section of `CLAUDE.md`; this row is the norm-index entry pointing at it. *(The line below is the
+  narrower framework setting that this rule supersedes in scope.)*
 - **Commit attribution**: none (default: none — no `Co-Authored-By`, `Signed-off-by`, or "Generated with …" trailers on commits or PR bodies; set to "co-authored" to add a Claude `Co-Authored-By` trailer)
 - **Delegation**: (unset — `/prawduct:methodology delegation` states the default and anything written here overrides it. Say in prose how much this project wants fanned out to subagents and what it is worth fanning out for. `off` is a complete answer: it means no delegation at all, it is honoured without ceremony, and nothing nags a repo that has said it.)
 - **Delegate verification**: (unset — what a delegate here may run to prove its own change, and what it must leave to the coordinator's integration run. In this project's own words: prawduct does not know this project's test regime and will not invent a vocabulary for it. `/prawduct:doctor` will propose a starting point from what this repo already encodes about running part of its suite.)
+- **Change-log merge strategy**: `.prawduct/change-log.md` is `merge=union` in `.gitattributes`.
+  Every branch prepends a new entry to the same first lines, so a plain three-way merge conflicts
+  there every single time. Union merge takes both sides instead. 🔴 **It never conflicts, which is
+  the cost as well as the benefit:** a branch that *edits an existing entry* silently gets both
+  versions concatenated rather than a conflict to resolve. The strategy assumes the file is
+  append-only. If you find a duplicated entry, this is why.
 - **Delegation approval**: ask-on-reason (default: ask-on-reason — a plan that will delegate discloses it and proceeds, asking for approval only on one of the enumerated reasons in `methodology/planning.md` "Partition: Serial or Delegated"; set to "pre-approved" once you have seen it work here, and the ask stops returning with every plan)
 
 ---
@@ -77,6 +149,32 @@ the Direction entry it points at.
 
 | Preference / norm | Mechanism | Enforcement artifact | Audit home | Why |
 |---|---|---|---|---|
+| Provider-agnostic engine: no **financial-institution, account or financial-product name from the deployment roster** in code or schema; the roster, per-account rules, product capabilities and import-format adapters are configuration. **The aggregator is expressly carved out** — a single named dependency in v1 (`system-requirements.md` §0.1), so its client package, the keychain service name and the product name may name it | Test | `tests/preferences/test_no_provider_identity.py` | janitor | The roster changes over the product's life — accounts are added and removed. Hardcoding it makes every roster change a code change and a regression risk, and turns the product into one operator's script. The carve-out is stated because without it the norm forbids what the spec expressly permits, and a reviewer would file a false departure against the connector layer. The test matches the roster config's explicit per-entry tokens on word boundaries over the source and schema roots (`AC-0.3`); the residual judgment case — code that *branches* on provider identity without naming one — is Critic's, under the same norm. The test carries a positive control and a not-scanning-nothing assertion, because a scan over zero files or with an unmatched pattern passes forever. |
+| No roster or operator identity in anything pushed: no institution, account, balance, operator name or machine name in any commit reaching a remote — not merely in the working tree, and not merely under the source root | Test | `tests/preferences/check-no-personal-data.sh`, wired into `.githooks/pre-push` on every branch and run from the suite by `tests/preferences/test_no_personal_data.py` | advisory | This repository is a general-purpose tool that may be published, and the leak it actually had was in **documentation** — three doc paths reached a remote — which a source-root check would never have seen. The guard reads the roster's own explicit match tokens from the gitignored `deployment/roster-tokens.txt` (engine AC-0.3) rather than guessing them from labels, and matches on word boundaries. A checkout with no `deployment/` directory has no roster to leak and passes with a note, which is what makes the guard itself publishable. **Migration discharged (Chunk 01):** it moved from `scripts/` to `tests/preferences/` when the scaffold landed, and the pre-push wiring followed it — losing push-time enforcement to gain test-time enforcement would have been a straight downgrade, so the repo now has both. It stays shell: its self-test cases drive real refspecs through a real hook in a throwaway repository, and a Python rewrite would test a reimplementation rather than the thing that runs. |
+| Requirement ids are unique within a requirements document | Test | `tests/preferences/test_requirement_ids_unique.py` | janitor | The two requirements docs cite each other by id, and §7 of a roster document calls itself "the checkable form of §0.2" — which it cannot be against an ambiguous key. A duplicate id silently resolves a citation to the wrong requirement, and the one a reader lands on by accident is as likely to be a scheduled job as the immutable enrollment parameter the doc calls its highest-stakes one. Uniqueness is assertable by grep over `**AC-` headers, so it should never again be caught by review. |
+| norm lives in `.prawduct/artifacts/architecture.md` § Direction — every writable handle comes from the one writer factory, which takes the lock before it returns | Test | `tests/store/test_connection_norms.py` (lock behaviour, incl. release on SIGKILL) + `tests/preferences/test_connection_is_the_sole_constructor.py` (only `connection.py` opens a handle; `engine.py` may check one out, which carries no connection parameters) | janitor | Why lives in the Direction entry. Mechanism landed in Chunk 01, closing issue #1; each test was verified to go red with its norm deliberately broken (`tests/preferences/verify_norms_go_red.py`). |
+| norm lives in `.prawduct/artifacts/architecture.md` § Direction — read-role handles open `mode=ro`, hold no cross-call read transaction, and never fall back to a writable handle | Test | `tests/store/test_connection_norms.py` — refusal after `PRAGMA query_only=OFF`, and a checkpoint pair whose negative control starves when a snapshot IS pinned | janitor | Why lives in the Direction entry. Mechanism landed in Chunk 01, closing issue #1; each test was verified to go red with its norm deliberately broken (`tests/preferences/verify_norms_go_red.py`). |
+| norm lives in `.prawduct/artifacts/architecture.md` § Direction — no component creates the datastore implicitly | Test | `tests/store/test_connection_norms.py` — both layers: the missing-datastore error and the non-creating `mode=rw` constant | janitor | Why lives in the Direction entry. Mechanism landed in Chunk 01, closing issue #1; each test was verified to go red with its norm deliberately broken (`tests/preferences/verify_norms_go_red.py`). |
+| norm lives in `.prawduct/artifacts/architecture.md` § Direction — a process that does not recognize the schema version refuses to serve | Test | `tests/store/test_connection_norms.py` — reader refusal, **writer refusal** (both roles call one `_require_supported_schema`; two named roles skip it — `initializing_writer`, because opening an old version is the migration runner's job, and `copying_writer`, because a page-level copy answers no question), `store status` reporting, migration atomicity under a real kill, and — for the 2026-09-10 ruling — `test_only_the_two_named_roles_are_exempt_from_the_schema_check`, which **walks the module for handles that skip the check rather than listing them**, so a third exemption fails the test instead of arriving quietly | janitor | Why lives in the Direction entry. Mechanism landed in Chunk 01, closing issue #1; each test was verified to go red with its norm deliberately broken (`tests/preferences/verify_norms_go_red.py`). 🔴 The ruling's own test was seen red on 2026-09-10 by making `copying_writer` enforce the check; the parenthetical above it — *only `initializing_writer` skips it* — is superseded by that ruling and now reads as the two named roles. |
+
+| norm lives in `.prawduct/artifacts/data-model.md` § Direction — every stored amount is signed from the operator's point of view; a card balance is stored negative | Test | `tests/connector/test_derivers.py::test_a_liability_reported_positive_is_stored_negative` (balances) and `tests/connector/test_transaction_derivers.py::test_a_purchase_reported_positive_is_stored_negative` (ledger amounts) | janitor | Why lives in the Direction entry. Ratified 2026-09-07 as `in-transition` with no mechanism, deliberately — the code that had to obey it was mid-build, and asserting enforcement that does not exist is the aspirational failure. **Flipped to steady-state 2026-09-08**, on the condition the row itself set: issue #9 is closed and both tests above have been seen red, each with its norm deliberately broken by `tests/preferences/verify_norms_go_red.py`. Two cases rather than one because balances and ledger amounts are normalized on separate paths, and the aggregator inverts both. |
+| norm lives in `.prawduct/artifacts/data-model.md` § Direction — all monetary values are integer minor units; no floats in schema or aggregation | Test | `CHECK (typeof(x) = 'integer')` on every monetary column in `src/bankmachine/store/migrations/core_schema.py`, compared column-for-column by `tests/store/test_schema.py` | janitor | Why lives in the Direction entry. In the database rather than only in code because SQLite's dynamic typing accepts a float into an INTEGER column without complaint. |
+| norm lives in `.prawduct/artifacts/data-model.md` § Direction — calendar dates and UTC instants are distinct and never mix | Test | `tests/store/test_temporal_types_are_distinct.py`, `tests/store/test_types.py`, plus `GLOB`/`LIKE` CHECKs in the DDL | janitor | Why lives in the Direction entry. Three layers because each catches what the others cannot; the file-level CHECK is the one that survives a `sync shell` session typing raw SQL. |
+| norm lives in `.prawduct/artifacts/data-model.md` § Direction — every silver row carries exclusive provenance and its derivation version | Test | Per-table `CHECK (CASE source ...)` and `derivation_version_id NOT NULL` in the DDL, compared by `tests/store/test_schema.py`; exercised by `tests/store/test_rebuild.py` | janitor | Why lives in the Direction entry. A row cannot exist in a state that has lost its lineage. |
+| norm lives in `.prawduct/artifacts/data-model.md` § Direction — the daily balance and holdings series are append-only | Critic | Partly structural: the composite primary keys on `balances_daily` and `holdings` (compared by `tests/store/test_schema.py`) reject a duplicate INSERT, which is the whole of what they pin | janitor | Why lives in the Direction entry. 🔴 **Recorded `Critic`, not `Test`, and the correction matters:** a primary key rejects a duplicate INSERT but permits `UPDATE`, `DELETE`, `INSERT OR REPLACE` and `ON CONFLICT DO UPDATE` — and AC-2.4's idempotency requirement is exactly what will push the not-yet-written sync writer toward an upsert. Claiming `Test` here would have the janitor sweep read this as machine-checked, and the guard for the one series no re-sync can rebuild would never get written. Making it structural needs a `BEFORE UPDATE/DELETE` trigger on those two tables, pinned by a test. |
+| norm lives in `.prawduct/artifacts/data-model.md` § Direction — a source value is never overwritten in place | Critic | — (schema provides `category_override`; nothing prevents an UPDATE to a source column) | janitor | Why lives in the Direction entry. Recorded as `Critic` rather than `Test` because the separate column makes the norm *possible* to obey, not *impossible* to break — naming a mechanism that does not constrain it would overstate the guarantee. |
+| norm lives in `.prawduct/artifacts/data-model.md` § Direction — a transaction is never hard-deleted; removal is a soft delete | Critic | — (`removed_at` exists; no constraint forbids a DELETE) | janitor | Why lives in the Direction entry. Same honesty as the row above: the column supports the norm, it does not enforce it. |
+| norm lives in `.prawduct/artifacts/data-model.md` § Direction — a migration's DDL is frozen, and metadata and DDL are written independently | Test | `tests/store/test_schema.py::test_the_metadata_matches_the_migrated_database`, plus `CORE_SCHEMA_DDL_SHA256` | janitor | Why lives in the Direction entry. Two independent descriptions can disagree, and the disagreement is the only drift signal there is. |
+| norm lives in `.prawduct/artifacts/security-model.md` § Direction — secrets live only in the OS keychain, and never reach a log, exception or `repr` | Test | `tests/test_logging_setup.py` (token shapes, labelled credentials, exception messages, account truncation, prose negative control), `tests/test_secrets.py`, `tests/preferences/test_no_credentials_tracked.py` | janitor | Why lives in the Direction entry. `src/bankmachine/secrets.py` is the only module importing the keychain library, which is what makes the rule checkable. 🔴 **The datastore key has a deliberate-export exception** (AC-10.1 amendment 2026-09-10, FR-12), and it needed a mechanism the tests above cannot provide: they prove no secret reaches a *log*, and are blind to a caller that legitimately **prints** one. `tests/cli/test_store_key_commands.py` is AC-17.6's enforcement artifact — per verb, the key in no log, no stderr, no refusal message, with a negative control on the log-absence assertions so a never-written file cannot pass them. Back to steady-state 2026-09-10; the export's non-terminal-stdout refusal was seen red with the guard removed by hand. |
+| norm lives in `.prawduct/artifacts/security-model.md` § Direction — redaction is at the formatter, over-redacts by design, and is provider-agnostic | Test | `tests/test_logging_setup.py` | janitor | Why lives in the Direction entry. A rule keyed to one aggregator's token prefix would silently stop redacting the day a second is added. |
+| norm lives in `.prawduct/artifacts/security-model.md` § Direction — no tracked file carries a credential shape; ignore rules cover data, logs and credentials | Test | `tests/preferences/test_no_credentials_tracked.py` (AC-10.2) — `git check-ignore` per clause with a negative control, and a `git ls-files` shape scan | janitor | Why lives in the Direction entry. Deliberately separate from `check-no-personal-data.sh`: that hunts roster names, this hunts credential shape, and neither subsumes the other. Its one exemption is a per-line declaration, not a file skip list. |
+| norm lives in `.prawduct/artifacts/security-model.md` § Direction — the aggregator's API is the only network destination | Test | `tests/preferences/test_only_the_connector_reaches_the_network.py` (import scan, with a positive control and a verified red run) | janitor | Why lives in the Direction entry. **Known limit, recorded so it is not mistaken for coverage:** the scan cannot see a subprocess shelling out to `curl`, nor a dependency phoning home. Those stay Critic's under the same norm. |
+| norm lives in `.prawduct/artifacts/api-contract.md` § Direction — the MCP surface is read-only over everything the aggregator produced; the one permitted write is to a declared agent-writable sidecar table, and no derived table may be declared (amended 2026-09-10) | Critic | Partly structural today via `mode=ro` (`tests/store/test_connection_norms.py`); the tool surface itself is build step 7, and the declaration check AC-16.9 asks for does not exist because neither does the declaration | janitor | Why lives in the Direction entry. Born before the surface existed, on this repo's own precedent — the point is that step 7 is built to it rather than discovering it. 🔴 **`in-transition` since the 2026-09-10 amendment**, tracked by brookstalley/bankmachine#87; interim rule: no mutation tool, no declaration, every handle `mode=ro`. Recorded `Critic` and not `Test` deliberately — `mode=ro` is tested, but the amendment's own bound (what may be declared) has no mechanism until #87 builds one, and claiming `Test` here would have the janitor sweep read a hole as machine-checked. |
+| norm lives in `.prawduct/artifacts/api-contract.md` § Direction — every response carries a freshness stamp, and incompleteness rides the success path as a warning field | Critic | — (build step 7; wants a structural test over the tool registry rather than per-tool assertions) | janitor | Why lives in the Direction entry. The product thesis in one sentence: a consumer cannot see a caveat that is not in the payload. |
+| norm lives in `.prawduct/artifacts/api-contract.md` § Direction — the CLI exit codes `0`/`1`/`2` are a contract and the 1/2 split is not collapsible | Test | `tests/cli/test_store_commands.py`, `tests/cli/test_connector_commands.py` | janitor | Why lives in the Direction entry. launchd reads these; collapsing them makes a broken scheduler indistinguishable from a degraded feed. |
+| norm lives in `.prawduct/artifacts/api-contract.md` § Direction — a stored balance is reported with its lifecycle, and no total over balances is emitted without stating its treatment of non-active accounts (treatment ruled: include and flag) | Test | `tests/test_account_lifecycle.py` — the count (`test_the_envelope_counts_every_account_and_says_how_many_are_not_active`) and the figure (`test_the_magnitude_is_signed_and_grouped_by_currency`), each with its own `verify_norms_go_red.py` case; for the holdings total, `tests/test_list_holdings.py::test_a_position_on_a_closed_account_stays_in_the_total_and_its_part_is_stated`; for the 2026-09-13 ruling on net worth over time, `tests/test_balance_history.py::test_an_account_no_longer_listed_counts_only_through_its_last_capture_and_is_named`. Each has go-red cases that remove the magnitude | janitor | Why lives in the Direction entry. Written `in-transition` when the norm was born 2026-09-09 and **flipped to steady-state the same day**, on the condition the row itself set: the mechanism now exists and has been seen red. 🔴 **Two cases rather than one, and that is the whole point of the row:** the guard must go red with the MAGNITUDE removed, not only with the flag flipped, because a flag alone passes the norm's letter and fails the reason it was born — a consumer told something is included and handed nothing to subtract. The retroactivity debt the norm named (`query._coverage`'s unfiltered `accounts` count) is paid; it keeps counting every account and now states what the non-active ones contributed. |
+| norm lives in `.prawduct/artifacts/operational-spec.md` § Direction — no filesystem path is hardcoded | Test | `tests/preferences/test_no_hardcoded_paths.py` | janitor | Why lives in the Direction entry. The same config-over-code line the provider-agnostic norm draws, applied to the filesystem. |
+| norm lives in `.prawduct/artifacts/operational-spec.md` § Direction — a backup destination is never created implicitly and never overwritten | Test | `tests/store/test_backup.py` — refuses an existing destination, refuses an absent parent directory, and removes the zero-byte file a failed VACUUM leaves (with a negative control proving the driver leaves one) | janitor | Why lives in the Direction entry. Scoped to the **backup** half only: the datastore half is architecture.md § Direction's *no component creates the datastore implicitly*, which keeps one home for one rule rather than two rows stating it in two wordings. |
 
 **A filled `Delegation` / `Delegate verification` row states a norm, and it takes `Critic`** — a policy stated in prose is judgment-required by construction, so no linter or test can grade it; audit home `janitor`, and the why is the sentence the owner gave for it. One row covers the policy the two state together. `Delegation approval` is a setting like `PR creation`, not a norm. The row is written when the policy is **ratified** (`/prawduct:doctor` proposes, the owner confirms), never shipped here, because this table ships empty.
 

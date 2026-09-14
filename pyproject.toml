@@ -1,0 +1,99 @@
+[project]
+name = "bankmachine"
+version = "0.1.0"
+description = "Read-only local-first personal finance datastore and MCP server. It never moves money."
+readme = "README.md"
+# Matches `.python-version`, because that is the only interpreter anything here
+# runs on. A lower floor would be a promise to every installer that no run has
+# ever tested. Widen it when a CI matrix exercises the range, not before —
+# `tests/preferences/test_python_floor_is_exercised.py` holds the two together.
+requires-python = ">=3.14"
+dependencies = [
+    "certifi>=2026.7.22",
+    "keyring>=25",
+    "plaid-python>=44.0.0",
+    "sqlalchemy>=2.0",
+    "sqlcipher3-wheels>=0.5.7",
+    "urllib3>=2",
+]
+
+# No `authors` field. The published engine carries no operator identity —
+# `tests/preferences/check-no-personal-data.sh` enforces that against every pushed commit,
+# and `uv init` writes the git-config name here by default.
+
+[project.scripts]
+bankmachine = "bankmachine.__main__:main"
+
+[build-system]
+requires = ["uv_build>=0.11.32,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6",
+    "mypy>=1.11",
+    "pytest>=8",
+    # Floor raised from >=0.6 on 2026-09-07: the tree is formatted against 0.16's
+    # rules, and 0.6 formats several files differently. A floor that predates the
+    # formatting it is meant to reproduce invites a churn diff on any fresh resolve.
+    "ruff>=0.16",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+# 🔴 Pinned deliberately, and NOT tracking `requires-python`. Ruff infers this
+# from the packaging floor when unset, which lets a claim about INSTALLATION
+# silently rewrite source: raising that floor to 3.14 had the formatter turn
+# `except (A, B):` into PEP 758's `except A, B:` — valid there, and
+# indistinguishable from a Python 2 bug to everyone who meets it. This value
+# decides which syntax the formatter may EMIT, so it is set to the newest level
+# whose output still reads plainly, and it does not move when the floor does.
+target-version = "py313"
+
+[tool.ruff.format]
+# Ruff formats Python code blocks inside Markdown, and this repository's
+# artifacts quote foreign source VERBATIM as evidence -- `api-notes-plaid.md`
+# §2 reproduces the aggregator SDK's own `api_client.py`, redundant parentheses
+# and all, because the whole point of the quote is what the vendor's code
+# actually says. Reformatting it would edit a quotation into something the SDK
+# does not contain, and the decision resting on it (`_preload_content=False`,
+# AC-5.1) would cite evidence that had been silently tidied.
+#
+# Scoped to the formatter rather than to `[tool.ruff]` because the formatter is the
+# only half that reaches Markdown at all: `ruff check` on a `.md` path reports
+# "No Python files found" and lints nothing (measured, ruff 0.16.6). Excluding
+# here says exactly what is true and nothing more.
+exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["bankmachine"]
+
+[tool.mypy]
+strict = true
+# `scripts` is in here because `scripts/record_red_checks.py` is the component
+# whose failure mode is SILENT under-recording of a red run. It spent its first
+# life as a `python3 -c` string, invisible to every check this project gates on.
+files = ["src", "tests", "scripts"]
+
+# `plaid-python` 44.0.0 ships no `py.typed`, so mypy cannot see into it. Strictness
+# is not relaxed anywhere else: the untyped surface is confined to
+# `connector/plaid/`, which converts to local types at its own boundary, and
+# `warn_return_any` is what makes that conversion mandatory rather than optional.
+# Widening this to another module is a decision, not a formality.
+[[tool.mypy.overrides]]
+module = ["plaid.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    # Deselected by default. A suite that needs network and credentials on every
+    # run stops being run, and the offline suite is the one that has to stay
+    # honest; `uv run pytest -m sandbox` makes the live calls deliberately.
+    "sandbox: makes live calls to the aggregator's sandbox environment",
+]
+addopts = "-m 'not sandbox'"
