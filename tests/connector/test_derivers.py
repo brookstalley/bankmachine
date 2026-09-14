@@ -1807,3 +1807,96 @@ def test_a_valuation_and_its_negation_round_to_opposite_integers(
     assert to_minor(str(-exact), currency, "a position value", response) == -to_minor(
         str(exact), currency, "a position value", response
     )
+
+
+# --------------------------------------------------------------------------
+# Rounding disclosure — grouped per response, never silent
+# --------------------------------------------------------------------------
+
+
+def _rounding_records(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if "rounded to" in r.getMessage()]
+
+
+def test_a_repeated_rounding_is_disclosed_once_with_its_count(
+    store: Config, caplog: pytest.LogCaptureFixture
+) -> None:
+    """🔴 One line per distinct value in a response, not one per row.
+
+    Per-row disclosure buried a sync's own report under dozens of copies of one
+    sentence. The count, the value, the currency, the result and the response all
+    have to survive the grouping, or it has traded the silent-loss failure the
+    rounding convention exists to avoid for a quieter one.
+    """
+    repeated = [_account(current=json.loads("23631.9805")) for _ in range(3)]
+    single = _account(current=json.loads("10.005"))
+    for index, account in enumerate([*repeated, single]):
+        account["account_id"] = f"acct-rounded-{index}"
+    body = json.dumps({"accounts": [*repeated, single], "item": {}, "request_id": "r"}).encode()
+
+    with caplog.at_level(logging.INFO, logger="bankmachine"):
+        response = derive(store, str(ACCOUNTS_GET), body)
+
+    disclosed = _rounding_records(caplog)
+    rid = response.raw_response_id
+    assert disclosed == [
+        f"raw response {rid}: a current balance of 23631.9805 USD rounded to 23631.98 for storage, "
+        f"3 times (a valuation, not a ledger amount; the archive keeps the original)",
+        f"raw response {rid}: a current balance of 10.005 USD rounded to 10.00 for storage, "
+        f"once (a valuation, not a ledger amount; the archive keeps the original)",
+    ], disclosed
+
+
+def test_a_deriver_that_refuses_after_rounding_discloses_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Its transaction rolls back, so nothing was rounded for storage, and the
+    refusal is logged on its own by `apply_response`."""
+    from bankmachine.connector.plaid.derivers import _discloses_rounding
+
+    response = RawResponse(
+        raw_response_id=41,
+        connection_id=None,
+        endpoint=str(ACCOUNTS_GET),
+        received_at=RECEIVED,
+        body=b"{}",
+        body_sha256="",
+        request_context=None,
+    )
+
+    def refusing(conn: SAConnection, response: RawResponse, context: DerivationContext) -> None:
+        to_minor("1.005", "USD", "a current balance", response)
+        raise DerivationError("refused after rounding")
+
+    with caplog.at_level(logging.INFO, logger="bankmachine"), pytest.raises(DerivationError):
+        _discloses_rounding(refusing)(
+            None,  # type: ignore[arg-type]  # the refusing deriver never touches it
+            response,
+            DerivationContext(derivation_version_id=1),
+        )
+
+    assert _rounding_records(caplog) == []
+
+
+def test_a_rounding_outside_any_deriver_is_still_disclosed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No path rounds silently: with no response being derived there is nothing
+    to group into, so the rounding is disclosed on the spot as a group of one."""
+    response = RawResponse(
+        raw_response_id=42,
+        connection_id=None,
+        endpoint=str(ACCOUNTS_GET),
+        received_at=RECEIVED,
+        body=b"{}",
+        body_sha256="",
+        request_context=None,
+    )
+
+    with caplog.at_level(logging.INFO, logger="bankmachine"):
+        assert to_minor("1.005", "USD", "a current balance", response) == 100
+
+    assert _rounding_records(caplog) == [
+        "raw response 42: a current balance of 1.005 USD rounded to 1.00 for storage, once "
+        "(a valuation, not a ledger amount; the archive keeps the original)"
+    ]

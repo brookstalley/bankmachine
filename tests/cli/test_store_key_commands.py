@@ -15,6 +15,7 @@ import pytest
 
 from bankmachine.cli import run
 from bankmachine.config import Config
+from bankmachine.logging_setup import REDACTED
 from bankmachine.secrets import (
     DatastoreKeyMissingError,
     delete_datastore_key,
@@ -691,3 +692,8 @@ def test_each_escrow_action_leaves_a_record_naming_the_action_and_not_the_key(
     contents = log_file.read_text(encoding="utf-8")
     assert expected in contents, f"{argv} left no record of what it did"
     assert key not in contents, "the record named the key itself"
+    # A redacted word in the record reads as a key that was logged and scrubbed,
+    # on the one line that exists to say no key was written. Judged on the record's
+    # own line: other lines in the file belong to other tests.
+    (record,) = [line for line in contents.splitlines() if expected in line]
+    assert REDACTED not in record, f"{argv}'s record reads as a scrubbed secret: {record}"

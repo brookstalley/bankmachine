@@ -1536,3 +1536,34 @@ resources needs a top-level client session, not a subagent.
 **Drain with:** `prawduct-hook verify-operator-verification VRF-031`
 
 **Verified:** 2026-09-14
+
+## VRF-032 — one real pending transaction watched across settlement
+
+**Status:** accepted
+
+**Chunk:** production-data semantics (#22) · **Raised:** 2026-09-14
+
+**Why a human:** unchanged from **VRF-005**, which carries the full procedure and is the entry to
+follow. Re-raised from VRF-028, which was accepted to open the investments-followups PR on the term
+that it be raised again on the next branch. This branch (pre-production fixes) changes no
+pending-hold handling. The production datastore does not exist yet, and the sandbox has never held a
+pending row. The obligation is **#22**, and it blocks production.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-032`
+
+**Accepted:** 2026-09-14 — rationale: VRF-032 (#22, a real pending transaction across settlement) and VRF-033 (#23, the sign convention at two institutions) both need production data, and the production datastore still does not exist. This branch changes no pending-hold or sign handling. Accepted on the term that both are raised again on the next branch; the obligations stay #22 and #23, and both block production.
+
+## VRF-033 — the sign convention on a real inflow, across two institutions
+
+**Status:** accepted
+
+**Chunk:** production-data semantics (#23) · **Raised:** 2026-09-14
+
+**Why a human:** unchanged from **VRF-006**, which carries the full procedure and is the entry to
+follow. Re-raised from VRF-029 on the same term as VRF-032. One feed obeying the sign convention is
+not evidence about another, so this needs a second real institution enrolled and a real inflow. This
+branch changes no sign handling. The obligation is **#23**, and it blocks production.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-033`
+
+**Accepted:** 2026-09-14 — rationale: VRF-032 (#22, a real pending transaction across settlement) and VRF-033 (#23, the sign convention at two institutions) both need production data, and the production datastore still does not exist. This branch changes no pending-hold or sign handling. Accepted on the term that both are raised again on the next branch; the obligations stay #22 and #23, and both block production.

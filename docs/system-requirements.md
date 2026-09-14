@@ -283,6 +283,11 @@ connection.** One broken connection must never abort the sync for the others.
 **AC-4.2** — A degraded connection is recorded with its error code **and the timestamp of its last
 successful sync.**
 
+> *(Ruled 2026-09-14.)* "Its error code" is the aggregator's own code, verbatim, wherever the
+> aggregator sent one. A failure with no aggregator code records one of a closed set of codes this
+> product names for itself, published in `api-contract.md` beside `last_error_code`. It is never a
+> class name from this build's source.
+
 **AC-4.3** — A repair command produces an update-mode enrollment URL that re-authenticates a broken
 connection **without losing its history or cursor.**
 

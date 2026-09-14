@@ -18,10 +18,10 @@ from bankmachine.cli import store as store_commands
 from bankmachine.cli import sync as sync_commands
 from bankmachine.cli.enroll import EnrollmentError
 from bankmachine.cli.exit_codes import EXIT_ERROR, EXIT_OK, EXIT_RUN_AGAIN, EXIT_UNHEALTHY
-from bankmachine.cli.parser import RedactingParser
+from bankmachine.cli.parser import RedactingParser, UsageError
 from bankmachine.config import Config, ConfigError, load_config
 from bankmachine.connector import ConnectorError
-from bankmachine.logging_setup import configure_logging, get_logger, log_startup
+from bankmachine.logging_setup import FILE_ONLY, configure_logging, get_logger, log_startup, redact
 from bankmachine.secrets import SecretsError
 from bankmachine.store.connection import StoreError
 
@@ -35,11 +35,6 @@ __all__ = [
 ]
 
 logger = get_logger(__name__)
-
-#: Marks a record whose stderr copy the caller has already printed itself.
-#: Without it every failure appears twice on the terminal, once as the
-#: `bankmachine: ...` sentence and again as a timestamped log line.
-_FILE_ONLY = {"file_only": True}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -109,6 +104,14 @@ def run(argv: Sequence[str] | None = None) -> int:
 
     try:
         return int(args.handler(config, args))
+    except UsageError as exc:
+        # 🔴 Scrubbed before printing, as `RedactingParser.error` scrubs: a usage
+        # error can quote what the operator typed, and stderr is not behind the
+        # formatter. Logged because a scheduled run that was refused must not look
+        # like one that found nothing to do, and nobody is watching its stderr.
+        print(f"bankmachine: {redact(str(exc))}", file=sys.stderr)
+        logger.warning("command %s refused: %s", args.command, exc, extra=FILE_ONLY)
+        return EXIT_ERROR
     except EnrollmentError as exc:
         # 🔴 The code comes off the exception, not from the type named here. The
         # api-contract norm calls the 1/2 split non-collapsible because a
@@ -127,9 +130,9 @@ def run(argv: Sequence[str] | None = None) -> int:
         # exactly the two outcomes this logging exists to separate, so the level
         # follows the code the exception chose rather than the arm it was caught in.
         if exc.exit_code == EXIT_ERROR:
-            logger.error("command %s failed: %s", args.command, exc, extra=_FILE_ONLY)
+            logger.error("command %s failed: %s", args.command, exc, extra=FILE_ONLY)
         else:
-            logger.warning("command %s refused: %s", args.command, exc, extra=_FILE_ONLY)
+            logger.warning("command %s refused: %s", args.command, exc, extra=FILE_ONLY)
         return exc.exit_code
     except (StoreError, SecretsError, ConnectorError, ConfigError) as exc:
         # Expected failures get a sentence, not a traceback -- but they are never
@@ -149,7 +152,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         # product whose named primary failure mode is silent staleness, those two
         # must never look alike in the durable record.
         print(f"bankmachine: {exc}", file=sys.stderr)
-        logger.error("command %s failed: %s", args.command, exc, extra=_FILE_ONLY)
+        logger.error("command %s failed: %s", args.command, exc, extra=FILE_ONLY)
         return EXIT_ERROR
     except Exception:  # prawduct:allow prawduct/broad-except -- logs, reports, and exits 2
         # An unexpected failure is exactly the one worth a traceback in the file,
@@ -166,7 +169,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         # only durable record a scheduled run leaves, and to stderr, which is what
         # a developer running this by hand reads. Only the propagation is traded
         # away, and it is traded for an exit code that tells the truth.
-        logger.exception("command %s failed unexpectedly", args.command, extra=_FILE_ONLY)
+        logger.exception("command %s failed unexpectedly", args.command, extra=FILE_ONLY)
         print(f"bankmachine: {args.command} failed unexpectedly", file=sys.stderr)
         traceback.print_exc()
         return EXIT_ERROR

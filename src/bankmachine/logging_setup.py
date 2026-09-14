@@ -103,6 +103,14 @@ class RedactingFormatter(logging.Formatter):
         return redact(super().format(record))
 
 
+#: Marks a record whose terminal copy the caller has already printed itself.
+#: Without it the sentence appears twice on the terminal, once as the caller's
+#: own line and again as a timestamped log line. Public because the CLI's
+#: top-level handler is not the only code that prints and logs one sentence --
+#: a command narrating its own progress owes the log the same record.
+FILE_ONLY: Final = {"file_only": True}
+
+
 class _NotAlreadyOnStderr(logging.Filter):
     """Keeps records off stderr that the caller has already written there itself.
 

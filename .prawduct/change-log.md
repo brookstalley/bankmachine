@@ -34,6 +34,41 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-14: Five records an unattended run left untrue, fixed before production
+
+<!-- prawduct: scope=pre-production-fixes -->
+
+**Why:** the owner ruled that the first production connection does not happen with these open. Each
+made the durable record of an unattended run misstate what happened, or bury what it said.
+
+**What changed (build-plan-pre-production-fixes, Chunk 01):**
+- **#90** — `store key verify`'s audit line read `key: [REDACTED] opens`, which looks like a leaked
+  key. The fix was built on `fix/key-escrow-audit-redaction` and never merged; it is merged here. The
+  redactor is unchanged.
+- **#93** — `last_error_code` held a Python class name. It now holds the aggregator's code verbatim
+  wherever one was sent, and otherwise one of eight codes this product names for itself, published in
+  `api-contract.md` and held closed by `tests/preferences/test_the_failure_code_vocabulary_is_closed.py`.
+  AC-4.2 carries the ruling. No migration: only the sandbox store holds class-name codes, and the next
+  successful run or `connections reauth` clears them.
+- **#102** — migration 007's docstring no longer asserts how aggregates count lineages; `store/lineage.py`
+  is the one statement of that.
+- **#103** — `sync run --max-attempts` without `--until-ready` refused by `SystemExit`, past the
+  handler that logs. It raises `UsageError`, which `run()` prints through `redact`, logs, and returns
+  as `2`. `FILE_ONLY` is public in `logging_setup.py`, and the `--until-ready` wait and give-up lines
+  no longer reach the terminal twice.
+- **#111** — valuation rounding is disclosed once per distinct value per response, with a count,
+  instead of once per row. Applied by wrapping the deriver registry, so sync, enrollment, reauth and
+  rebuild all get it. Stored values are unchanged, so `DERIVATION_VERSION` does not move.
+
+**Tests changed with the requirement, not weakened:** nine assertions in `tests/cli/test_sync_run.py`
+pinned class names (`TransportError`, `TransactionsPaginationRestartError`), eight on
+`last_error_code` and one on the domain warning's detail that quotes it. Each is still exact, now to
+the code #93's ruling specifies. The usage-error test asserted `SystemExit`, the mechanism that was
+the defect; it now asserts the returned `2` and the stderr sentence, and a sibling test asserts the
+log record. The seed values in `tests/test_mcp.py` moved to a real code.
+
+**Carried:** VRF-028 and VRF-029 are raised again as VRF-032 and VRF-033. Both need production data.
+
 ## 2026-09-14: Every answer says when its rows were derived by another version
 
 <!-- prawduct: scope=investments-followups -->

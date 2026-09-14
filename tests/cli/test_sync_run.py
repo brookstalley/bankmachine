@@ -29,6 +29,7 @@ from bankmachine.connector import (
     INVESTMENTS_TRANSACTIONS_GET,
     TRANSACTIONS_SYNC,
     FetchedResponse,
+    InstitutionUnavailableError,
     ReauthRequiredError,
     TransactionsPaginationRestartError,
     TransportError,
@@ -637,7 +638,7 @@ def test_a_failing_connection_is_recorded_and_the_run_reports_one(
 
     row = _connection_row(cli_env)
     assert row["status"] == "degraded"
-    assert row["last_error_code"] == "TransportError"
+    assert row["last_error_code"] == "AGGREGATOR_UNREACHABLE"
     assert row["last_error_at"] is not None
     assert "could not be synced" in capsys.readouterr().out
 
@@ -654,11 +655,15 @@ def test_an_expired_login_is_reported_with_the_repair_that_keeps_the_history(
     the connection id already filled in.
     """
     FakeClient.fail_with = ReauthRequiredError(
-        "the login for this item has expired", endpoint=TRANSACTIONS_SYNC
+        "the login for this item has expired",
+        endpoint=TRANSACTIONS_SYNC,
+        error_code="ITEM_LOGIN_REQUIRED",
     )
 
     assert run(["sync", "run"]) == 1
 
+    # AC-4.2: the aggregator's own code, verbatim -- not the class it was filed under.
+    assert _connection_row(cli_env)["last_error_code"] == "ITEM_LOGIN_REQUIRED"
     out = capsys.readouterr().out
     assert "connections reauth 1" in out
     # The reason the line exists at all: without it the remedy an operator
@@ -748,6 +753,13 @@ def test_a_datastore_failure_on_one_connection_leaves_the_others_to_sync(
     assert rows[1] == "degraded"
     assert rows[2] == "active", "the second connection never got its turn"
     assert second_token  # the second connection is the one that had to succeed
+    with reader_connection(cli_env) as conn:
+        code = conn.execute(
+            select(connections.c.last_error_code).where(connections.c.connection_id == 1)
+        ).scalar_one()
+    # No aggregator was involved, so the code is this product's -- and it has to
+    # say "wait it out", which a class name never did.
+    assert code == "DATASTORE_LOCKED"
     assert len(_txn_rows(cli_env)) == 1
 
 
@@ -797,14 +809,16 @@ def test_a_page_run_that_never_stops_restarting_is_degraded_rather_than_hung(
     machine that is merely slow.
     """
     FakeClient.fail_with = TransactionsPaginationRestartError(
-        "the data changed while the page run was in flight", endpoint=TRANSACTIONS_SYNC
+        "the data changed while the page run was in flight",
+        endpoint=TRANSACTIONS_SYNC,
+        error_code="TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION",
     )
 
     assert run(["sync", "run"]) == 1
 
     row = _connection_row(cli_env)
     assert row["status"] == "degraded"
-    assert row["last_error_code"] == "TransactionsPaginationRestartError"
+    assert row["last_error_code"] == "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION"
     assert len(FakeClient.calls) == MAX_PAGINATION_RESTARTS + 1, (
         "the restart budget is not what bounded the run"
     )
@@ -1455,12 +1469,53 @@ def test_tuning_the_loop_without_enabling_it_is_a_usage_error(
     had enabled the loop would read as the loop giving up."""
     FakeClient.pages = [_page(status="NOT_READY")]
 
-    with pytest.raises(SystemExit) as raised:
-        run(["sync", "run", *flag])
+    assert run(["sync", "run", *flag]) == 2
 
-    assert raised.value.code == 2
-    assert "only applies with --until-ready" in capsys.readouterr().err
+    assert f"bankmachine: {flag[0]} only applies with --until-ready" in capsys.readouterr().err
     assert FakeClient.calls == []
+
+
+@pytest.mark.parametrize("flag", [["--max-attempts", "20"], ["--retry-delay", "5"]])
+def test_a_refused_tuning_flag_leaves_its_refusal_in_the_log(
+    cli_env: Config, flag: list[str]
+) -> None:
+    """🔴 The refusal an unattended run most needs recorded.
+
+    It used to leave by `SystemExit`, past the handler that logs, so a scheduled
+    run that was refused left the same log as one that found nothing to do.
+    """
+    FakeClient.pages = [_page(status="NOT_READY")]
+
+    assert run(["sync", "run", *flag]) == 2
+
+    logging.shutdown()
+    text = (cli_env.log_dir / "bankmachine.log").read_text(encoding="utf-8")
+    assert re.search(
+        rf"WARNING.*command sync refused: {re.escape(flag[0])} only applies with --until-ready",
+        text,
+    ), text
+
+
+def test_until_ready_says_each_wait_once_on_the_terminal(
+    cli_env: Config, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The printed line is the terminal's copy and the log record is the file's.
+
+    Both used to reach the terminal, so every wait and the give-up appeared twice,
+    once as the sentence and once as a timestamped log line under it. The log
+    file keeping them is held by the test below.
+    """
+    FakeClient.pages = [_page(status="NOT_READY")]
+
+    code = run(
+        ["sync", "run", "--until-ready", "--no-wait", "--retry-delay", "0", "--max-attempts", "2"]
+    )
+    assert code == 75
+
+    captured = capsys.readouterr()
+    terminal = captured.out + captured.err
+    assert terminal.count("still owed after attempt 1 of 2") == 1, terminal
+    assert terminal.count("history is still owed") == 1, terminal
 
 
 def test_until_ready_leaves_its_waiting_in_the_log_not_only_on_the_terminal(
@@ -2089,7 +2144,7 @@ def test_a_product_failure_is_recorded_against_the_domain_not_the_connection(
     assert code is None
 
     investments = _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)
-    assert investments["last_error_code"] == "TransportError"
+    assert investments["last_error_code"] == "AGGREGATOR_UNREACHABLE"
     assert investments["last_error_at"] is not None
     assert investments["last_success_at"] is None
 
@@ -2143,7 +2198,7 @@ def test_an_investments_failure_reaches_a_column_on_a_first_sync(
     assert investments is not None, (
         "the page loop returned before the failure was applied, so it reached nothing"
     )
-    assert investments["last_error_code"] == "TransportError"
+    assert investments["last_error_code"] == "AGGREGATOR_UNREACHABLE"
 
 
 def test_a_capable_connection_that_has_never_run_a_domain_has_no_row_for_it(
@@ -2222,7 +2277,9 @@ def test_an_investments_failure_clears_once_the_domain_succeeds_again(
     )
     FakeClient.pages = [_page()]
     assert run(["sync", "run", "--no-wait"]) == 1
-    assert _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)["last_error_code"] == "TransportError"
+    assert (
+        _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)["last_error_code"] == "AGGREGATOR_UNREACHABLE"
+    )
 
     FakeClient.holdings_error = None
     FakeClient.pages = [_page(next_cursor="cursor-2")]
@@ -2334,7 +2391,7 @@ def test_a_failing_domain_is_reported_beside_a_healthy_one(cli_env: Config) -> N
     row = next(r for r in _health_rows(cli_env) if r["connection_id"] == 2)
     assert row["status"] == "active", "a product error is not a statement about the login"
     domains = _domains_of(row)
-    assert domains[INVESTMENTS_DOMAIN]["last_error_code"] == "TransportError"
+    assert domains[INVESTMENTS_DOMAIN]["last_error_code"] == "AGGREGATOR_UNREACHABLE"
     assert domains[INVESTMENTS_DOMAIN]["last_error_at"] is not None
     assert domains[INVESTMENTS_DOMAIN]["last_success_at"] is None
     assert domains[TRANSACTIONS_DOMAIN]["last_error_code"] is None
@@ -2352,7 +2409,7 @@ def test_a_failing_domain_is_reported_beside_a_healthy_one(cli_env: Config) -> N
         if w.get("connection_id") == 2 and INVESTMENTS_DOMAIN in w["detail"]
     ]
     assert len(about_the_domain) == 1, about_the_domain
-    assert "TransportError" in about_the_domain[0]["detail"]
+    assert "AGGREGATOR_UNREACHABLE" in about_the_domain[0]["detail"]
     assert "never landed in full" in about_the_domain[0]["detail"], (
         "the one caveat has to carry the size of the hole the other would have named"
     )
@@ -2482,9 +2539,9 @@ def test_a_connection_that_lost_both_is_not_also_reported_as_having_synced(
 
     assert run(["sync", "run", "--no-wait"]) == 1
 
-    assert _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)["last_error_code"] == "TransportError", (
-        "the domain failure has to be recorded, or the roll-up has nothing to get wrong"
-    )
+    assert (
+        _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)["last_error_code"] == "AGGREGATOR_UNREACHABLE"
+    ), "the domain failure has to be recorded, or the roll-up has nothing to get wrong"
     out = capsys.readouterr().out
     assert "2 of 2 connections could not be synced" in out, out
     assert "investments domain failing" not in out, out
@@ -2693,7 +2750,9 @@ def test_an_attempt_that_came_back_short_retires_the_error_it_did_not_repeat(
         "the aggregator is unreachable", endpoint=INVESTMENTS_HOLDINGS_GET
     )
     assert run(["sync", "run", "--no-wait"]) == 1
-    assert _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)["last_error_code"] == "TransportError"
+    assert (
+        _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)["last_error_code"] == "AGGREGATOR_UNREACHABLE"
+    )
 
     FakeClient.holdings_error = None
     monkeypatch.setattr("bankmachine.cli.sync_run.MAX_PAGES_PER_RUN", 1)
@@ -2735,9 +2794,9 @@ def test_a_connection_that_lost_its_login_is_not_told_no_reauth_is_needed(
     out = capsys.readouterr().out
     assert "connections reauth" in out, "the repair instruction is the line that matters"
     assert "no re-authentication is needed" not in out, out
-    assert _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)["last_error_code"] == "TransportError", (
-        "the domain failure is still recorded; only the contradicting sentence is withheld"
-    )
+    assert (
+        _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)["last_error_code"] == "AGGREGATOR_UNREACHABLE"
+    ), "the domain failure is still recorded; only the contradicting sentence is withheld"
 
 
 def test_a_complete_and_empty_window_retires_the_whole_window_and_says_so(
@@ -2822,3 +2881,18 @@ def test_a_retired_investment_transaction_is_reported_whatever_branch_the_pager_
     assert marker in reported["2"], "the branch this test needs was not taken"
     assert "2 transaction(s) are no longer reported" in reported["2"]
     assert "positions recorded" in reported["2"]
+
+
+def test_a_domain_refusal_records_the_aggregators_own_code(cli_env: Config) -> None:
+    """AC-4.2 at domain scope: the code on `sync_state` is the aggregator's, verbatim."""
+    _capable_connection(cli_env)
+    FakeClient.holdings_error = InstitutionUnavailableError(
+        "the institution is down",
+        endpoint=INVESTMENTS_HOLDINGS_GET,
+        error_code="INSTITUTION_DOWN",
+    )
+    FakeClient.pages = [_page(next_cursor="cursor-1")]
+
+    assert run(["sync", "run", "--no-wait"]) == 1
+
+    assert _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)["last_error_code"] == "INSTITUTION_DOWN"
