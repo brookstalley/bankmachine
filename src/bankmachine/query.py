@@ -52,6 +52,7 @@ from bankmachine.envelope import (
 from bankmachine.logging_setup import get_logger
 from bankmachine.store import lineage, transfers
 from bankmachine.store.connection import (
+    CASEFOLD_FUNCTION,
     DatastoreProblem,
     DatastoreStatus,
     inspect,
@@ -2247,12 +2248,22 @@ def _effective_category() -> ColumnElement[Any]:
     )
 
 
-def _known_categories(conn: SAConnection) -> list[str]:
-    """Every effective category a live transaction carries, for the refusal to name."""
+def _known_categories(conn: SAConnection, spans: Sequence[SupersededSpan]) -> list[str]:
+    """Every effective category the row query could return, for the refusal to name.
+
+    🔴 Read through the same predicates and the same join as that query. A
+    category carried only by rows it excludes -- removed, or a superseded
+    generation of a re-linked account -- would otherwise pass this check and come
+    back empty, which is the believable "none" the refusal exists to prevent.
+    """
+    filters = _transaction_filters(since=None, until=None, account_id=None, after=None, spans=spans)
     return sorted(
         str(value)
         for value in conn.execute(
-            select(_effective_category()).where(transactions.c.removed_at.is_(None)).distinct()
+            select(_effective_category())
+            .select_from(transactions.join(accounts))
+            .where(*filters)
+            .distinct()
         ).scalars()
     )
 
@@ -2322,6 +2333,20 @@ def _transaction_filters(
         filters.append(transactions.c.amount_minor >= narrowed_by.min_amount_minor)
     if narrowed_by.max_amount_minor is not None:
         filters.append(transactions.c.amount_minor <= narrowed_by.max_amount_minor)
+    if narrowed_by.search is not None:
+        # `instr`, not `LIKE`: a literal substring needs no escaping, so no
+        # character a caller types can turn into a wildcard. Both sides go
+        # through the one Unicode fold the read handle registers, because
+        # SQLite's own folding stops at ASCII. A NULL merchant folds to NULL and
+        # leaves the description to decide.
+        folded = narrowed_by.search.casefold()
+        fold = getattr(func, CASEFOLD_FUNCTION)
+        filters.append(
+            or_(
+                func.instr(fold(transactions.c.description), folded) > 0,
+                func.instr(fold(transactions.c.merchant_name), folded) > 0,
+            )
+        )
     if after is not None:
         # 🔴 The keyset predicate belongs in the SHARED list, not on the row
         # query alone. `truncation.remaining` is what `truncated` turns on, and
@@ -2628,6 +2653,33 @@ def _pending_caveat(pending: dict[str, HoldTally]) -> list[Caveat]:
     return [Caveat(kind="includes_pending_rows", detail=detail)]
 
 
+def _search_caveat(narrowed_by: TransactionFilter, matching: int) -> list[Caveat]:
+    """The notice that a text search can miss the very row it was meant to find. AC-9.6.
+
+    🔴 On EVERY searched answer, not only an empty one. A search that found three
+    of five refunds looks complete, and a total over what it found is believed --
+    an undercount gets no second look. Silence on a search that happened to
+    match something would teach a reader that a quiet answer is a complete one.
+
+    Carries `matching`, the whole request's count, rather than this page's rows,
+    so it reads the same on every page of a walk.
+    """
+    if narrowed_by.search is None:
+        return []
+    return [
+        Caveat(
+            kind="search_is_literal",
+            detail=(
+                f"`search` matched {narrowed_by.search!r} as a literal, case-insensitive "
+                f"substring of `description` or `merchant` and nothing looser; {matching} "
+                f"transaction(s) matched. A counterparty the institution abbreviated or spelled "
+                f"differently does not match, so a transaction this search did not find may "
+                f"still be in the store and a total over what it found may be short"
+            ),
+        )
+    ]
+
+
 def list_transactions(
     config: Config,
     *,
@@ -2672,16 +2724,16 @@ def list_transactions(
             raise UnknownAccountError(
                 f"account_id {account_id} does not exist. list_accounts reports the ids that do."
             )
+        spans = lineage.superseded_spans(conn)
         # Same ordering, same reason: which categories exist is a fact about the
         # data, and an unreadable store has already answered above.
         if narrowed_by.category is not None:
-            known = _known_categories(conn)
+            known = _known_categories(conn, spans)
             if narrowed_by.category not in known:
                 raise UnknownCategoryError(
                     f"category {narrowed_by.category!r} is carried by no transaction in this "
                     f"store. The categories it holds: {', '.join(known) or 'none'}"
                 )
-        spans = lineage.superseded_spans(conn)
         filters = _transaction_filters(
             since=since,
             until=until,
@@ -2870,6 +2922,7 @@ def list_transactions(
                 + _not_active_caveat(not_active)
                 + _roster_observed_empty_caveat(not_active)
                 + _pending_caveat(pending)
+                + _search_caveat(narrowed_by, matching)
             ),
             lifecycle=lifecycle,
         )

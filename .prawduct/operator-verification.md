@@ -1358,3 +1358,30 @@ check more relevant here, not less, and still not runnable before the cutover. T
 **#23**, and it blocks production.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-026`
+
+## VRF-027 — a search answer read by a model in a real client
+
+**Status:** pending
+
+**Chunk:** transaction filters, Chunk 02 · **Raised:** 2026-09-14
+
+**Why a human:** `search_is_literal` rides every searched answer, and tests assert that it fires,
+that it names the term and the count, and that its absence on an unsearched answer means something.
+None can say whether a model asked "did I get a refund from X?" actually uses `search`, and then
+reports a miss as "no match for that spelling" rather than "no refund". That is a reading judgement,
+and it is the reason the warning exists.
+
+**Where to verify:** the sandbox store, with the sandbox MCP server RELAUNCHED on this branch's build
+first — confirm by `build.commit` in any answer.
+
+**Verify:**
+
+1. Ask a real client whether a refund arrived from a counterparty the sandbox holds. The client calls
+   `query_transactions` with `search` rather than paging the window by hand.
+2. Ask for a counterparty the store holds under an abbreviation or a different spelling. The answer
+   does not say the transaction never happened; it says the search was literal and offers a wider
+   search or a read of the rows.
+3. Ask what a refunded category really cost. Any figure the answer builds from searched rows is
+   presented as what the search found, with its rows shown, not as the whole amount.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-027`

@@ -785,10 +785,11 @@ Required tools:
 | `find_recurring` | Detected recurring charges with cadence, amount drift, last-seen |
 | `get_coverage_report` | Per account: first and last transaction date, gaps against the account's own cadence, source breakdown |
 
-*(Build status 2026-09-13: `get_pipeline_health`, `list_accounts`, `list_holdings`,
-`balance_history`, `query_transactions`, `money_summary` and `get_coverage_report` are implemented;
-`find_recurring` is not yet built, and the descope — including what the shipped tools do not yet
-carry — is recorded in `.prawduct/artifacts/api-contract.md`.)*
+*(Build status 2026-09-14: `get_pipeline_health`, `list_accounts`, `list_holdings`,
+`balance_history`, `query_transactions`, `money_summary` and `get_coverage_report` are implemented,
+and `query_transactions` carries every filter named above under AC-9.6; `find_recurring` is not yet
+built, and the descope — including what the shipped tools do not yet carry — is recorded in
+`.prawduct/artifacts/api-contract.md`.)*
 
 > 🔴 **`list_accounts`'s "lifecycle state" has never been on the wire (2026-09-09).** It is
 > named in the row above and in `api-contract.md`'s equivalent table, and it was never built.
@@ -861,8 +862,9 @@ could only select nothing by mistake is refused rather than answered empty.** *(
   currency's minor units and never converted. A minimum above the maximum is refused.
 - **Text** is one `search` term, matched as a case-insensitive substring against `description` or
   `merchant`, with no wildcard characters. An empty or whitespace-only term is refused. 🔴 Every
-  answer to a search carries a request-scoped warning that the match is literal and that a miss is
-  not proof of absence.
+  answer a search was run for carries a request-scoped warning that the match is literal and that a
+  miss is not proof of absence. An answer from a store that could not be read carries `partial`
+  instead: no match ran, so there is no match to qualify.
 - Filters compose with one another, the window and the account. They narrow the rows and
   `truncation.matching`, and never the coverage figures beside them. A cursor resumes only a request
   carrying the same filters.

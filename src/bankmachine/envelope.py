@@ -163,6 +163,11 @@ REQUEST_SCOPED_KINDS: tuple[str, ...] = (
     # this entry as a single firing rule and making the health emitter obey it
     # would delete exactly that case.
     "roster_observed_empty",
+    # 🔴 A text search matched literally, so it can miss a row it was meant to
+    # find: an institution's abbreviation defeats a substring. It rides EVERY
+    # searched answer rather than only an empty one, because a search that found
+    # three of five refunds looks complete and an undercount gets believed.
+    "search_is_literal",
 )
 
 #: The warning vocabulary the API contract fixes. Named here as a tuple rather
@@ -520,6 +525,11 @@ _CURSOR_REFUSAL = (
 _CURSOR_SCHEME = 2
 
 
+#: The longest `search` accepted. A term past it is a pasted paragraph rather
+#: than the distinctive part of a counterparty's name.
+MAX_SEARCH_LENGTH = 200
+
+
 class BadFilterError(ValueError):
     """A filter value that can select nothing, refused rather than answered empty.
 
@@ -553,8 +563,23 @@ class TransactionFilter:
     #: units. Money out is negative, so "spent $100 or more" is a MAXIMUM of -10000.
     min_amount_minor: int | None = None
     max_amount_minor: int | None = None
+    #: Text matched as a literal, case-insensitive substring of `description` or
+    #: `merchant`. No character in it is a wildcard.
+    search: str | None = None
 
     def __post_init__(self) -> None:
+        if self.search is not None and not self.search.strip():
+            # It would match every transaction, so a blank that reached this
+            # argument by mistake would come back as the unfiltered answer.
+            raise BadFilterError(
+                "search is empty or only whitespace, which would match every transaction. "
+                "Omit it to ask for every row, or give the text to look for"
+            )
+        if self.search is not None and len(self.search) > MAX_SEARCH_LENGTH:
+            raise BadFilterError(
+                f"search is {len(self.search)} characters and at most {MAX_SEARCH_LENGTH} are "
+                f"accepted. Search for the distinctive part of the text instead"
+            )
         low, high = self.min_amount_minor, self.max_amount_minor
         if low is not None and high is not None and low > high:
             raise BadFilterError(
@@ -565,7 +590,7 @@ class TransactionFilter:
 
     def material(self) -> list[object]:
         """Every field, in a fixed order, for the fingerprint to hash."""
-        return [self.category, self.min_amount_minor, self.max_amount_minor]
+        return [self.category, self.min_amount_minor, self.max_amount_minor, self.search]
 
     @property
     def narrows(self) -> bool:

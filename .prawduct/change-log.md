@@ -34,7 +34,7 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
-## 2026-09-14: `query_transactions` filters by category and by a signed amount range
+## 2026-09-14: `query_transactions` filters by category, a signed amount range and a literal search
 
 <!-- prawduct: scope=transaction-filters -->
 
@@ -60,6 +60,26 @@ so a question about one refund meant paging the whole window by hand.
   wording in the tool schema, the truncation remedy, the envelope reference, the client guide and
   the contract now say "the same window, account and filters".
 - **VRF-025 and VRF-026** re-raise VRF-020 and VRF-021 on the term their acceptance set.
+
+**What changed (Chunk 02):**
+
+- **`search`** matches its text as a literal, case-insensitive substring of `description` or
+  `merchant`, through `instr`, so `%` and `_` mean themselves. Case folds over Unicode through a
+  function registered on read-role handles, because SQLite's own folding stops at ASCII. A blank or
+  over-200-character term is refused. The fold's cost was measured at about 2ms per 10,000 rows
+  (`mcp-search-latency-2026-09-14.md`).
+- **`search_is_literal`**, a new request-scoped warning, rides every answer a search ran for, empty
+  or not. Its detail names the term and the whole request's match count, so it reads the same on
+  every page. An unreadable store's answer carries only `partial`, since no match ran.
+- **Every claim that filtering is impossible is retired:** the server instructions, the envelope
+  reference's "cannot answer" list (which now names what `search` cannot do), the contract's
+  descope note and AC-9.1's build status. The warning is defined in the contract table, the
+  warnings reference and the client guide. A go-red case pins the retired primer claim.
+- **From Chunk 01's review:** the category existence check now reads through the row query's own
+  predicates and join, so a category only a superseded generation carries is refused. The SQLite
+  integer refusal is tested on all four bounds.
+- **VRF-027** asks whether a model in a real client uses `search` and reports a miss as a literal
+  miss rather than as "no refund".
 
 ## 2026-09-13: A stopped balance names the account that took it over, and a disclosure names only what the request reaches
 

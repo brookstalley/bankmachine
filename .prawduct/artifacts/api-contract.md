@@ -325,10 +325,11 @@ Every tool is safe and idempotent, trivially — nothing writes.
 > `find_recurring` are analysis conveniences whose data is already in the datastore.
 >
 > **What the shipped tools do not yet carry**, also descoped rather than silently unimplemented:
-> `query_transactions` is specified paginated with category, amount-range and merchant filters and
-> currently offers a date range, an account and a hard cap; `money_summary` is specified with
-> period-over-period comparison and does not yet offer it — it does now carry the merchant, account,
-> month and flow-class groupings, both directions, and per-currency rows.
+> `money_summary` is specified with period-over-period comparison and does not yet offer it — it
+> does now carry the merchant, account, month and flow-class groupings, both directions, and
+> per-currency rows. *(2026-09-14: `query_transactions` has left this sentence. It is paginated and
+> carries every filter AC-9.1 names — category, a signed amount range and a literal text `search` —
+> under AC-9.6.)*
 >
 > The `experimental` tier permits these changes without a version bump. It does not permit them
 > going unrecorded, which is what this amendment exists to prevent.
@@ -1237,6 +1238,7 @@ three-week-old hole in the data and answer confidently.
 | `includes_pending_rows` | This answer's rows include authorisation holds that have not settled, so a figure computed from it may change without any new activity |
 | `roster_observed_empty` | A connection contributing to THIS request had its roster read successfully and it listed no accounts at all. Every account on that connection is separately marked `no_longer_reported`; this kind is the connection-level anomaly beside that account-level truth, and it is what distinguishes a whole household closing its accounts from a feed that returns success and no rows |
 | `sign_convention_unverified` | This answer draws on a connection whose stored sign distribution was measured and found INVERTED relative to the operator-signed convention, so its amounts run the wrong way. 🔴 It does not fire for a merely unconfirmed connection — see the note below the table |
+| `search_is_literal` | THIS request narrowed by `search`, which matches literally, so a transaction whose text abbreviates or respells the counterparty is not among the rows. It fires on every searched answer, empty or not, because a search that found some of what it looked for reads as complete |
 
 🔴 **The window/row/account kinds below the line are REQUEST-scoped; the connection kinds above them
 are CONNECTION-scoped, and the distinction is the reason they exist.** A connection-scoped warning describes the standing state of the pipeline,

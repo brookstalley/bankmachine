@@ -339,6 +339,11 @@ boundary it names — so the *absence* of one is information too:
   operator de-selected every account from sharing, or the feed broke in a way that returns success.
   Do **not** report it as accounts having closed — name the connection, say its roster came back
   empty, and call `get_pipeline_health` before drawing any conclusion about the household.
+- `search_is_literal` — this request used `search`, which matches its text literally, ignoring
+  case, against `description` and `merchant`. A counterparty the institution abbreviated or spelled
+  differently is not found. It rides **every** searched answer, empty or not: quote a figure summed
+  over a search as what the search found, and widen the search before reporting that something did
+  not happen.
 - `sign_convention_unverified` — a contributing connection was measured against the sign convention
   and its amounts run the wrong way, so on that feed income reads as spending. Name the connection
   and say its direction is in question; do **not** correct it yourself.

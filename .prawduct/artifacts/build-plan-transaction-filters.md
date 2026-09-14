@@ -89,9 +89,9 @@ owner and ruled on 2026-09-14: one `search` over `description` and `merchant`; a
   term over 200 characters is refused | MED impact | user can override] — An empty term that
   silently matched every row would turn a typo into the unfiltered answer.
 - [ASSUMPTION: case folding covers non-ASCII letters, not only ASCII | LOW impact | user can defer]
-  — SQLite's `LIKE` and `lower()` fold ASCII only, so `café` would not match `CAFÉ`. Chunk 02
-  measures whether a registered deterministic fold function on the reader connection costs anything
-  that matters; if it does, ASCII-only folding ships and the warning's `detail` says so.
+  — SQLite's `LIKE` and `lower()` fold ASCII only, so `café` would not match `CAFÉ`. **Settled by
+  measurement (`mcp-search-latency-2026-09-14.md`): the registered Unicode fold costs about 2ms per
+  10,000 rows over ASCII `lower()`, so it ships.**
 - [ASSUMPTION: the amount bounds apply to each row in its OWN currency's minor units, with no
   currency filter | LOW impact | user can override] — Rows carry `currency`, the sandbox holds one,
   and the tool description says a bound is not converted. A `currency` filter is out of scope above.
@@ -194,6 +194,10 @@ reading a search answer reports the literal-match caveat rather than a confident
     that measurement.
   - An operator verification entry: a model in a real client, asked whether a named refund arrived,
     uses `search` and carries the literal-match caveat into its answer.
+  - `[DECISION: an unreadable store's answer to a search carries only \`partial\`, not
+    \`search_is_literal\` | no match ran, so a warning qualifying a match would describe a search that
+    never happened, and its "0 transaction(s) matched" would read as a real result | AC-9.6's wording
+    was sharpened to say so before its first review | user can veto]`
   - **Carried from Chunk 01's review (`rev-20260914T043729Z-506331da`), riding this chunk's commit:**
     the SQLite integer ceiling on the amount bounds is tested on one of its four bounds, so add the
     other three to the existing parametrize; and `_known_categories` must compose from

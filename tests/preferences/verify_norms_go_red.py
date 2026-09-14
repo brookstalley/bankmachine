@@ -95,6 +95,7 @@ COVERAGE_TESTS = "tests/test_account_coverage.py"
 LIFECYCLE_TESTS = "tests/test_account_lifecycle.py"
 HOLDINGS_TESTS = "tests/test_list_holdings.py"
 BALANCE_TESTS = "tests/test_balance_history.py"
+FILTER_TESTS = "tests/test_query_filters.py"
 INVESTMENT_DERIVER_TESTS = "tests/connector/test_investment_derivers.py"
 PENDING_TESTS = "tests/test_pending_semantics.py"
 BACKUP = pathlib.Path("src/bankmachine/store/backup.py")
@@ -1886,6 +1887,14 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "THIS SERVER CANNOT ANSWER: recurring-charge detection",
         "THIS SERVER CANNOT ANSWER: balance history; recurring-charge detection",
         f"{BALANCE_TESTS}::test_the_primer_no_longer_calls_a_balance_history_unanswerable",
+    ),
+    (
+        "the primer no longer calls filtering unanswerable",
+        MCP,
+        'f"THIS SERVER CANNOT ANSWER: recurring-charge detection. "',
+        'f"THIS SERVER CANNOT ANSWER: recurring-charge detection; any filter on amount, text or "\n'
+        '        f"category. "',
+        f"{FILTER_TESTS}::test_the_primer_no_longer_calls_filtering_unanswerable",
     ),
     (
         "lifecycle norm: a position on a non-active account says so",
