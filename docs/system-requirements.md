@@ -1008,7 +1008,7 @@ say so is before the caller exists.
 
 **AC-17.7 · Every instruction about the key names the command that carries it out — in both
 directions.** Backing the key up: `store init` at minting, `store status` as the standing line,
-`store backup`, and the README's quick start. **Restoring it:** every diagnosis that tells an
+`store backup`, and the README's production setup. **Restoring it:** every diagnosis that tells an
 operator to put a key back names `store key import`. No surface hands out a shell recipe that would
 put the key in shell history, and that is checked over tracked documents as well as over command
 output. *Why:* the surfaces disagreed, so which answer the operator met depended on which command
