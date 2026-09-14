@@ -176,7 +176,7 @@ waves 2–3 that is **not** Medium: it was derived and argued in
 - [x] Chunk 07: `balance_history` — one series, read two ways
 - [x] Chunk 08: Net worth, and the two ways it can be quietly wrong
 - [x] Chunk 09: Holdings and the balance series leave `query.py` (a pure move, #115)
-- [ ] Chunk 10: An investment account's activity counts as coverage (#107)
+- [x] Chunk 10: An investment account's activity counts as coverage (#107)
 
 Context: Wave 1 (chunks 01-04) merged to `develop` as PR #114 on 2026-09-13; the branch
 continues. VRF-020/021 (production-only) are re-raised and pending, and with VRF-022 (the holdings
@@ -231,6 +231,15 @@ and `balance_history` have never been on `develop`: moved now, the PR shows them
 own modules, and nobody reviews a 900-line move. #107 goes here because it edits the coverage code
 beside that move, and the VRF-022/023 client session can read its answer in the same sitting. The
 PR still blocks on VRF-020/021, VRF-022 and VRF-023, and chunk 10 adds its own client reading.
+
+Chunk 09 is committed as `66ab96a`, and its review (`rev-20260913T234353Z-a12c5cf0`) raised 0
+blocking, 1 warning and 5 notes. R-5 and R-6 were accepted, and R-1 to R-4 were fixed in Chunk 10's
+commit. Chunk 10 is committed as `27f627f`. Its review ran as a cumulative over the branch
+(`rev-20260914T001645Z-4026ed54`) and raised 0 blocking, 0 warnings and 7 notes. R-3, R-4, R-5 and
+R-7 were accepted. R-1, R-2 and R-6 were fixed in `1ebe24f`, which a `verify-resolutions` pass
+covers. The gate passed at each commit, and the go-red harness caught all 217. Both chunks are done.
+The one PR for waves 2 and 3 plus 09–10 is the owner's call, and it blocks on VRF-020/021
+(production-only) and VRF-022 to VRF-024.
 
 ## The Program
 
