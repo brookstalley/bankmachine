@@ -24,17 +24,15 @@ this store's row per Item -- `source_connection_id` holds the Item id and is
 unique -- so the lineage a transaction belongs to is the connection whose
 response produced it, and the column is a plain reference to it.
 
-🔴 **Every row is KEPT, and aggregates count one lineage.** The rejected
-alternative was a natural key over `(account_id, ledger_date, amount_minor,
-name)`, which is what most systems do and is wrong for this one: two genuinely
-distinct real transactions with the same merchant, amount and day -- two $5
-coffees, two identical fares -- collapse into one and the total goes DOWN with
-nothing to say so. An overcount gets questioned; an undercount gets believed.
-A rule that can silently delete real money is on the wrong side of that. So
-nothing is deleted here and nothing is deduped: the newest lineage answers for
-the range it covers, older lineages answer only outside it, and the overlap is
-DISCLOSED. A boundary computed wrongly then produces a visible duplicate or a
-disclosed exclusion, both of which an operator can see.
+🔴 **Every row is KEPT.** The rejected alternative was a natural key over
+`(account_id, ledger_date, amount_minor, name)`, which is what most systems do
+and is wrong for this one: two genuinely distinct real transactions with the
+same merchant, amount and day -- two $5 coffees, two identical fares -- collapse
+into one and the total goes DOWN with nothing to say so. An overcount gets
+questioned; an undercount gets believed. A rule that can silently delete real
+money is on the wrong side of that, so nothing is deleted here and nothing is
+deduped. How a read counts rows that cover the same range is `store/lineage.py`'s
+to say, not this migration's.
 
 🔴 **Nullable, and no backfill, which is the runner's contract and also what is
 honest.** `apply` issues DDL only, and there is no constant that is correct: the

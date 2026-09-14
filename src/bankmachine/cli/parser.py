@@ -28,6 +28,20 @@ from bankmachine.logging_setup import redact
 AnyParser = TypeVar("AnyParser", bound=argparse.ArgumentParser)
 
 
+class UsageError(Exception):
+    """The command line was wrong in a way only the handler can see.
+
+    argparse refuses what it can judge from the arguments alone. A combination
+    whose meaning depends on another flag is judged in the handler, and calling
+    the parser's `error` from there raises `SystemExit` straight past `run()`,
+    the one place that writes a refusal to the log file. A scheduled run that
+    was refused would then leave nothing in the only record anyone reads.
+
+    Raised instead, so `run()` prints it through the same scrub
+    `RedactingParser.error` applies, logs it, and exits `2`.
+    """
+
+
 class RedactingParser(argparse.ArgumentParser):
     """An `ArgumentParser` that does not echo credentials back at the operator.
 

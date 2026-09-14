@@ -39,7 +39,8 @@ from sqlalchemy import func, select, update
 from sqlalchemy.engine import Connection as SAConnection
 
 from bankmachine.cli.exit_codes import EXIT_OK, EXIT_RUN_AGAIN, EXIT_UNHEALTHY
-from bankmachine.cli.parser import AnyParser
+from bankmachine.cli.failure_codes import failure_code
+from bankmachine.cli.parser import AnyParser, UsageError
 from bankmachine.config import Config
 from bankmachine.connector import (
     INVESTMENTS_PRODUCT,
@@ -52,7 +53,7 @@ from bankmachine.connector import (
 from bankmachine.connector.plaid.client import PlaidClient
 from bankmachine.connector.plaid.window import read_investment_transaction_page
 from bankmachine.derivers import ALL_DERIVERS
-from bankmachine.logging_setup import get_logger
+from bankmachine.logging_setup import FILE_ONLY, get_logger
 from bankmachine.secrets import SecretsError, get_access_token, get_plaid_secret
 from bankmachine.store.connection import (
     DatastoreMissingError,
@@ -349,9 +350,7 @@ def add_arguments(commands: argparse._SubParsersAction[AnyParser]) -> None:
             f"(default: {DEFAULT_RETRY_DELAY_SECONDS:.0f})"
         ),
     )
-    # The parser itself, so the handler can raise a real usage error through
-    # argparse's own channel rather than inventing a second one.
-    run_parser.set_defaults(handler=cmd_sync_run, tuning_parser=run_parser)
+    run_parser.set_defaults(handler=cmd_sync_run)
 
 
 def cmd_sync_run(
@@ -375,7 +374,7 @@ def cmd_sync_run(
         tuning = (("--max-attempts", args.max_attempts), ("--retry-delay", args.retry_delay))
         supplied = [name for name, value in tuning if value is not None]
         if supplied:
-            args.tuning_parser.error(f"{' and '.join(supplied)} only applies with --until-ready")
+            raise UsageError(f"{' and '.join(supplied)} only applies with --until-ready")
         return _run_once(config, args)
 
     max_attempts = DEFAULT_MAX_ATTEMPTS if args.max_attempts is None else args.max_attempts
@@ -403,11 +402,13 @@ def cmd_sync_run(
             return code
         if attempt == max_attempts:
             break
+        # The printed line below is the terminal's copy; this one is the log's.
         logger.info(
             "--until-ready: history still owed after attempt %d of %d; waiting %.0fs",
             attempt,
             max_attempts,
             retry_delay,
+            extra=FILE_ONLY,
         )
         print(f"\nstill owed after attempt {attempt} of {max_attempts}; waiting {retry_delay:.0f}s")
         sleep(retry_delay)
@@ -419,6 +420,7 @@ def cmd_sync_run(
     logger.warning(
         "--until-ready gave up waiting after %d attempts; history is still owed",
         max_attempts,
+        extra=FILE_ONLY,
     )
     print(
         f"bankmachine: history is still owed after {max_attempts} attempts; "
@@ -542,7 +544,7 @@ def _sync_one(
     try:
         access_token = get_access_token(config, credential_ref)
     except SecretsError as exc:
-        return _degrade(config, outcome, "CREDENTIAL_UNREADABLE", str(exc))
+        return _degrade(config, outcome, failure_code(exc), str(exc))
 
     attempt = 0
     restarts = 0
@@ -659,7 +661,7 @@ def _sync_one(
         # repair. Everything else about the handling is identical -- this one
         # connection degrades and the run carries on (AC-4.1).
         outcome.login_expired = True
-        return _degrade(config, outcome, type(exc).__name__, str(exc))
+        return _degrade(config, outcome, failure_code(exc), str(exc))
     except (ConnectorError, StoreError) as exc:
         # 🔴 `StoreError`, not `DerivationError`. `_persist` takes the exclusive
         # writer lock per page and does not wait, so an ordinary `store backup`
@@ -668,7 +670,7 @@ def _sync_one(
         # escaped the run, and was reported as a command that could not run at
         # all. Every connection after the locked one was then skipped, which is
         # the one thing AC-4.1 says must never happen.
-        return _degrade(config, outcome, type(exc).__name__, str(exc))
+        return _degrade(config, outcome, failure_code(exc), str(exc))
 
     if outcome.historical_complete:
         _record_granted_window(config, connection_id, outcome)
@@ -864,7 +866,7 @@ def _pull_investments(
         # stare at.
         raise
     except (ConnectorError, StoreError) as exc:
-        outcome.investments_error_code = type(exc).__name__
+        outcome.investments_error_code = failure_code(exc)
         outcome.investments_error_reason = str(exc)
         now = now_utc()
         with writer_connection(config) as conn:

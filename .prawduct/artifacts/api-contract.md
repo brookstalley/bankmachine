@@ -1111,7 +1111,7 @@ fine** — "healthy" is an answer, and an empty result would be indistinguishabl
 | `institution` | string | the institution this connection is to. A display name, not a key — a retired connection and its live replacement at the same institution share it |
 | `status` | string | `active`, `degraded`, or `retired`. 🔴 `degraded` means the LAST sync attempt failed and nothing has succeeded since — read `last_success_at` beside it for how long that has been true, because `degraded` alone does not distinguish an hour from a month |
 | `last_success_at` | string, nullable | when this connection last completed a sync run in full, ISO-8601 UTC; null when it never has. 🔴 It advances only on a COMPLETE run: a run that fetched pages successfully and stopped mid-history clears the error state without moving this, because this is the field the staleness warning reads and advancing it would report a connection current while it is behind |
-| `last_error_code` | string, nullable | the aggregator's own code for the most recent failure, null when the last attempt succeeded. It is the aggregator's vocabulary and not this product's, so treat an unrecognised value as a value rather than as a defect |
+| `last_error_code` | string, nullable | what the most recent failure was, null when the last attempt succeeded. The aggregator's own code, verbatim, wherever it sent one; otherwise one of the codes this product records on its own behalf, listed below. Treat an unrecognised value as a value rather than as a defect — the aggregator adds codes |
 | `requested_history_days` | integer, nullable | how many days of history was asked for when this connection was enrolled; null when nothing was requested. Read `granted_history_days` against it — the shortfall between them is a known gap, not an absence of data |
 | `granted_history_days` | integer, nullable | how many days the institution actually granted, measured from the oldest transaction it returned. 🔴 Null means NOT YET MEASURED, never "no shortfall" |
 | `history_starts` | string, nullable | the oldest date this connection's history reaches back to, `YYYY-MM-DD`; null before any history has been measured. It is the date `granted_history_days` was counted from, so it answers "how far back can I ask?" without arithmetic |
@@ -1130,9 +1130,28 @@ One entry per sync domain the connection has ever attempted. 🔴 **Three of the
 | `domain` | string | which class of data it is about — `transactions` or `investments`. Treat an unrecognised value as a domain this build gained after the reader learned the list, not as a defect |
 | `last_attempt_at` | string, nullable | when this domain was last tried, ISO-8601 UTC, whatever came of it |
 | `last_success_at` | string, nullable | when this domain last got **everything it asked for**, ISO-8601 UTC. 🔴 Null means it has been tried and has NEVER landed in full — the hole is this domain's whole history (AC-4.5) — never "fine". It advances only on a complete pull, so a connection whose positions arrived while its investment-transaction window came back short leaves this exactly where it was |
-| `last_error_code` | string, nullable | what the last attempt at this domain failed with, null when it succeeded. 🔴 Present here while the connection's own `status` is `active` is the **expected** shape rather than a contradiction: one domain failing is not a statement about the login, so it does not degrade the connection and `connections reauth` repairs nothing |
+| `last_error_code` | string, nullable | what the last attempt at this domain failed with, null when it succeeded — the same vocabulary as the connection's own. 🔴 Present here while the connection's own `status` is `active` is the **expected** shape rather than a contradiction: one domain failing is not a statement about the login, so it does not degrade the connection and `connections reauth` repairs nothing |
 | `last_error_at` | string, nullable | when that failure happened, ISO-8601 UTC. Read against `last_success_at` beside it — the span between them is how long this domain has been stopped, which is the figure AC-4.5 says must be computable rather than guessed |
 | `history_starts` | string, nullable | the oldest date this domain's own history reaches back to, `YYYY-MM-DD`; null before any complete pull has measured one |
+
+**Codes this product records in `last_error_code`** *(connection and domain scope)*.
+
+Recorded only when the aggregator sent no code of its own: a failure that never reached it, or a
+refusal whose body carried none. 🔴 **Never a Python class name**, which would publish implementation
+detail and change under a rename. The set is closed and disjoint from the aggregator's vocabulary, so
+a reader can tell whose code they are reading
+(`tests/preferences/test_the_failure_code_vocabulary_is_closed.py`).
+
+| Code | Means | What to do |
+|---|---|---|
+| `CREDENTIAL_UNREADABLE` | the connection's access token could not be read from the keychain | restore the keychain entry; nothing at the aggregator is wrong |
+| `AGGREGATOR_UNREACHABLE` | the aggregator did not answer, so nothing about the request was judged | usually nothing — the next run retries; check the network if it persists |
+| `AGGREGATOR_NOT_CONFIGURED` | this product's aggregator credentials or settings are not usable, and no code came back | fix the configuration; retrying with the same values cannot help |
+| `AGGREGATOR_REFUSED_WITHOUT_CODE` | the aggregator refused, and its answer carried no code | read the log line for that run; the refusal's own sentence is there |
+| `RESPONSE_UNUSABLE` | the aggregator answered with something this build cannot use | a build defect or a changed response shape; report it, retrying will not help |
+| `DATASTORE_LOCKED` | another writer held the datastore — typically `store backup` running beside the sync | nothing; the next run picks up where this one stopped |
+| `DERIVATION_FAILED` | a response was archived and could not be derived | read the log for the raw response id, and `sync shell` for its body |
+| `DATASTORE_FAILED` | the datastore refused a write for another reason | `store status`, and the log line for that run |
 
 **Fields — `rows[]`** *(`get_coverage_report`)*.
 

@@ -1536,3 +1536,30 @@ resources needs a top-level client session, not a subagent.
 **Drain with:** `prawduct-hook verify-operator-verification VRF-031`
 
 **Verified:** 2026-09-14
+
+## VRF-032 — one real pending transaction watched across settlement
+
+**Status:** pending
+
+**Chunk:** production-data semantics (#22) · **Raised:** 2026-09-14
+
+**Why a human:** unchanged from **VRF-005**, which carries the full procedure and is the entry to
+follow. Re-raised from VRF-028, which was accepted to open the investments-followups PR on the term
+that it be raised again on the next branch. This branch (pre-production fixes) changes no
+pending-hold handling. The production datastore does not exist yet, and the sandbox has never held a
+pending row. The obligation is **#22**, and it blocks production.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-032`
+
+## VRF-033 — the sign convention on a real inflow, across two institutions
+
+**Status:** pending
+
+**Chunk:** production-data semantics (#23) · **Raised:** 2026-09-14
+
+**Why a human:** unchanged from **VRF-006**, which carries the full procedure and is the entry to
+follow. Re-raised from VRF-029 on the same term as VRF-032. One feed obeying the sign convention is
+not evidence about another, so this needs a second real institution enrolled and a real inflow. This
+branch changes no sign handling. The obligation is **#23**, and it blocks production.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-033`

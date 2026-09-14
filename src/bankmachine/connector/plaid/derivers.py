@@ -35,7 +35,9 @@ aggregator sent and `from_decimal_string` converts it exactly or refuses.
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
@@ -265,16 +267,79 @@ def to_minor(amount: object, currency: str, what: str, response: RawResponse) ->
         # has. Re-derived through Decimal rather than caught-and-guessed: the
         # quantize is what decides the stored value, and it must be visible.
         rounded = Decimal(amount).quantize(Decimal(1).scaleb(-exponent), rounding=ROUND_HALF_EVEN)
-        _log.info(
-            "raw response %s: %s of %s %s rounded to %s for storage (a valuation, "
-            "not a ledger amount; the archive keeps the original)",
-            response.raw_response_id,
-            what,
-            amount,
-            currency,
-            rounded,
+        _disclose_rounding(
+            _Rounding(response.raw_response_id, what, amount, currency, str(rounded))
         )
         return from_decimal_string(str(rounded), exponent=exponent)
+
+
+@dataclass(frozen=True, slots=True)
+class _Rounding:
+    """One distinct rounding: the same value, rounded the same way, in one response."""
+
+    raw_response_id: int
+    what: str
+    original: str
+    currency: str
+    rounded: str
+
+
+#: The roundings of the response being derived, while a registered deriver runs.
+_ROUNDINGS: ContextVar[dict[_Rounding, int] | None] = ContextVar("_ROUNDINGS", default=None)
+
+
+def _disclose_rounding(rounding: _Rounding) -> None:
+    """Count it toward the response's disclosure, or disclose it now if there is none."""
+    tally = _ROUNDINGS.get()
+    if tally is None:
+        _log_rounding(rounding, 1)
+        return
+    tally[rounding] = tally.get(rounding, 0) + 1
+
+
+def _log_rounding(rounding: _Rounding, times: int) -> None:
+    _log.info(
+        "raw response %s: %s of %s %s rounded to %s for storage, %s (a valuation, "
+        "not a ledger amount; the archive keeps the original)",
+        rounding.raw_response_id,
+        rounding.what,
+        rounding.original,
+        rounding.currency,
+        rounding.rounded,
+        "once" if times == 1 else f"{times} times",
+    )
+
+
+def _discloses_rounding(deriver: Deriver) -> Deriver:
+    """The deriver, disclosing its roundings once per distinct value when it returns.
+
+    🔴 **Every rounding is still disclosed; what changed is the unit.** One line
+    per row buried a sync's own report: the investments feed re-derives its whole
+    window on every run, so a price repeated across a portfolio's history printed
+    the same sentence dozens of times, and the lines naming the connection and its
+    shortfall scrolled away above them. Grouping keeps the value, the currency,
+    the result and the response, and adds the count a reader was tallying by hand.
+
+    Nothing is disclosed when the deriver raises. Its transaction rolls back, so
+    nothing was rounded for storage, and `apply_response` logs the failure itself.
+
+    Applied to the registry rather than taken as a parameter by `to_minor`, so
+    every path that derives -- sync, enrollment, reauth and rebuild -- gets it by
+    going through the one registry, and no caller can forget to pass it.
+    """
+
+    @functools.wraps(deriver)
+    def disclosing(conn: SAConnection, response: RawResponse, context: DerivationContext) -> None:
+        tally: dict[_Rounding, int] = {}
+        token = _ROUNDINGS.set(tally)
+        try:
+            deriver(conn, response, context)
+        finally:
+            _ROUNDINGS.reset(token)
+        for rounding, times in tally.items():
+            _log_rounding(rounding, times)
+
+    return disclosing
 
 
 def balance_class_of(account_type: str, response: RawResponse) -> str:
@@ -2291,11 +2356,11 @@ def _write_investment_transaction(
     )
 
 
-#: What `bankmachine.derivers` composes into this build's registry.
+#: Every endpoint this build derives, before the rounding disclosure is applied.
 #:
 #: Keyed by the endpoint's own path, which is also what `store.raw` records, so a
 #: rebuild years from now can still tell what a stored response was.
-PLAID_DERIVERS: Final[Mapping[str, Deriver]] = {
+_DERIVERS: Final[Mapping[str, Deriver]] = {
     str(INSTITUTIONS_GET): derive_nothing,
     # Registered by name as deriving nothing, like the catalogue above and for the
     # same reason: its reply is `request_id` alone, so there is nothing in it to
@@ -2309,4 +2374,10 @@ PLAID_DERIVERS: Final[Mapping[str, Deriver]] = {
     str(INVESTMENTS_HOLDINGS_GET): derive_investments_holdings,
     str(INVESTMENTS_TRANSACTIONS_GET): derive_investment_transactions,
     str(TRANSACTIONS_SYNC): derive_transactions_sync,
+}
+
+#: What `bankmachine.derivers` composes into this build's registry. Every entry
+#: discloses its roundings once per distinct value, whichever path derives.
+PLAID_DERIVERS: Final[Mapping[str, Deriver]] = {
+    endpoint: _discloses_rounding(deriver) for endpoint, deriver in _DERIVERS.items()
 }
