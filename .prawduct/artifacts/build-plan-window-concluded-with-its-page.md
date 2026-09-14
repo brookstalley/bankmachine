@@ -32,7 +32,8 @@ last_validated: 2026-09-14
 
 # Build Plan: An Investments Window Is Concluded With the Page That Closes It
 
-Closes brookstalley/bankmachine#113.
+Closes brookstalley/bankmachine#113, and #121: a stale comment in `sync_run.py`, which this change
+already touches.
 
 ## Problem
 
@@ -78,7 +79,7 @@ because concluding the older window would then soft-delete rows it really return
   `record_domain_history_start` in the same transaction, which keeps today's "removals and the range
   measured after them commit together". The rebuild uses the bare pass and never stamps `sync_state`,
   because an archived body is evidence about rows, never about how current a domain is.
-- **`InvestmentWindowReplay` exposes what it concluded** (a `WindowOutcome` per connection), so the sync
+- **`InvestmentWindowReplay` exposes its last conclusion** (the closing page's id and its `WindowOutcome`), so the sync
   reports removals and the window's verdict from the conclusion that actually committed rather than
   recomputing it.
 - **A window that did not close concludes nothing, in both paths**, exactly as now: short, page
