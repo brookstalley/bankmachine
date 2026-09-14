@@ -158,6 +158,7 @@ def _seed(config: Config, *, degraded: bool = False, granted: int | None = 90) -
                 body=body,
                 received_at=now,
                 derivers=ALL_DERIVERS,
+                replay_passes=(),
             )
 
 
@@ -933,6 +934,7 @@ def _seed_investments(config: Config) -> None:
                 body=json.dumps(body).encode(),
                 received_at=now,
                 derivers=ALL_DERIVERS,
+                replay_passes=(),
             )
 
 
@@ -2744,6 +2746,7 @@ def _seed_many(config: Config, count: int) -> None:
             ).encode(),
             received_at=now,
             derivers=ALL_DERIVERS,
+            replay_passes=(),
         )
 
 

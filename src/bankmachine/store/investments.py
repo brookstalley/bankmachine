@@ -24,12 +24,13 @@ store would look exactly as it should if the institution had genuinely dropped
 them. So exhaustion is not a caller's promise to keep -- it is derived here, from
 the evidence the caller passes, once, for every caller.
 
-There are two callers, and the second is why the first cannot be the only one.
-`store rebuild` replays the archive, and a replay through the derivers alone
-re-upserts every row that ever appeared and clears every soft delete with it --
-so `connector.plaid.window` reassembles each archived window and calls this with
-the same evidence the sync passed. A rebuilt store then retires exactly what the
-synced store retired (AC-5.2).
+One caller, reached by two paths. `connector.plaid.window.InvestmentWindowReplay`
+reassembles a window's pages and calls this at the page that closed it. The sync
+runs that pass inside each page's derivation transaction, so a window is
+concluded with the page that closed it; `store rebuild` runs it over the archive,
+because a replay through the derivers alone re-upserts every row that ever
+appeared and clears every soft delete with it. A rebuilt store then retires
+exactly what the synced store retired, at the same instants (AC-5.2).
 """
 
 from __future__ import annotations
@@ -111,6 +112,23 @@ class WindowOutcome:
     """
 
 
+def report_incomplete_window(connection_id: int, rows_seen: int, stated_total: int | None) -> None:
+    """Say that a window was not seen whole, so nothing about what is missing was concluded.
+
+    Not a failure. The ordinary state of a run bounded by its page ceiling, which
+    the exit-code contract reports as work still owed rather than as something
+    wrong. Its own function because a window that never closes never reaches the
+    reconciliation below, and the sync still owes the log that it stopped short.
+    """
+    _log.info(
+        "connection %d saw %d of %s investment transactions in its window, so the "
+        "window is incomplete: nothing is soft-deleted and no range is recorded",
+        connection_id,
+        rows_seen,
+        "an unstated number of" if stated_total is None else stated_total,
+    )
+
+
 def record_investment_transaction_window(
     conn: SAConnection,
     *,
@@ -141,16 +159,7 @@ def record_investment_transaction_window(
     treated exactly as a short run is.
     """
     if not window_is_exhausted(rows_seen, stated_total):
-        # Not a failure. The ordinary state of a run bounded by its page ceiling,
-        # which AC's exit-code contract reports as work still owed rather than as
-        # something wrong.
-        _log.info(
-            "connection %d saw %d of %s investment transactions in its window, so the "
-            "window is incomplete: nothing is soft-deleted and no range is recorded",
-            connection_id,
-            rows_seen,
-            "an unstated number of" if stated_total is None else stated_total,
-        )
+        report_incomplete_window(connection_id, rows_seen, stated_total)
         return WindowOutcome(exhausted=False, removed=0, history_start_date=None)
 
     if not page_response_ids:

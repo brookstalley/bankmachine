@@ -95,6 +95,7 @@ def _apply(config: Config, endpoint: str, body: dict[str, Any], received_at: Utc
             body=json.dumps(body).encode(),
             received_at=received_at,
             derivers=ALL_DERIVERS,
+            replay_passes=(),
         )
 
 

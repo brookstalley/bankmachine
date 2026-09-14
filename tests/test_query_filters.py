@@ -192,6 +192,7 @@ def filtered_config(initialized_config: Config) -> Config:
                 body=body,
                 received_at=now,
                 derivers=ALL_DERIVERS,
+                replay_passes=(),
             )
         source_id, override = _OVERRIDDEN
         conn.execute(

@@ -151,3 +151,11 @@ against the pre-change source. `/prawduct:critic` has run, with findings disposi
 ## Context
 
 Branched from `develop` at `2983d4b`.
+
+Built. Both interruption tests were run against a planted copy of the old shape (no pass in the page
+loop, and the window concluded under a separate writer acquisition afterwards) and failed there: the
+dropped row was never retired. The planted file was then restored byte for byte. Affected test files
+green (147), and mypy clean across source and tests.
+
+One finding from building: mypy refused the test reading `writer_connection` through `sync_run`,
+which does not re-export it. The helper reads it from `store.engine` directly.

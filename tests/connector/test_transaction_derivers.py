@@ -191,6 +191,7 @@ def _apply(
             body=body,
             received_at=received_at if received_at is not None else now_utc(),
             derivers=ALL_DERIVERS,
+            replay_passes=(),
         )
 
 

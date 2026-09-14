@@ -30,7 +30,7 @@ import argparse
 import math
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Final
@@ -51,7 +51,10 @@ from bankmachine.connector import (
     parse_response_body,
 )
 from bankmachine.connector.plaid.client import PlaidClient
-from bankmachine.connector.plaid.window import read_investment_transaction_page
+from bankmachine.connector.plaid.window import (
+    InvestmentWindowReplay,
+    read_investment_transaction_page,
+)
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.logging_setup import FILE_ONLY, get_logger
 from bankmachine.secrets import SecretsError, get_access_token, get_plaid_secret
@@ -61,11 +64,11 @@ from bankmachine.store.connection import (
     inspect,
     remedy_for,
 )
-from bankmachine.store.derivation import apply_response
+from bankmachine.store.derivation import ReplayPass, apply_response
 from bankmachine.store.engine import reader_connection, transaction, writer_connection
 from bankmachine.store.investments import (
     WindowOutcome,
-    record_investment_transaction_window,
+    report_incomplete_window,
     window_is_exhausted,
 )
 from bankmachine.store.raw import RawResponse
@@ -563,7 +566,7 @@ def _sync_one(
             # would derive transactions against a roster frozen on the day the
             # operator linked the institution.
             accounts_page = client.accounts_get(access_token, connection_id=connection_id)
-            _persist(config, accounts_page, connection_id)
+            _persist(config, accounts_page, connection_id, replay_passes=())
 
             # 🔴 AC-3.2: pulled for a connection that reports it can serve them,
             # and for no other reason. Whole-value membership of the recorded
@@ -640,7 +643,7 @@ def _sync_one(
                 if status == HISTORICAL_COMPLETE:
                     outcome.historical_complete = True
 
-                _persist(config, fetched, connection_id)
+                _persist(config, fetched, connection_id, replay_passes=())
                 outcome.pages += 1
                 if not _has_more(fetched):
                     break
@@ -779,13 +782,18 @@ def _record_granted_window(config: Config, connection_id: int, outcome: Connecti
         )
 
 
-def _persist(config: Config, fetched: FetchedResponse, connection_id: int) -> RawResponse:
-    """Archive and derive one page. The cursor rides the derivation's transaction.
+def _persist(
+    config: Config,
+    fetched: FetchedResponse,
+    connection_id: int,
+    *,
+    replay_passes: Sequence[ReplayPass],
+) -> RawResponse:
+    """Archive and derive one page; the cursor and any pass's conclusion ride its transaction.
 
-    Returns the archived response, because the investments window needs to name
-    the pages it was assembled from: a row carrying none of THIS window's
-    response ids is a row the window did not return, and that is the only
-    removal signal the endpoint offers (`store.investments`).
+    Returns the archived response, because the investments loop reads its
+    control fields back off the archived page, through the reader a rebuild uses
+    on the same row.
     """
     with writer_connection(config) as conn:
         return apply_response(
@@ -795,6 +803,7 @@ def _persist(config: Config, fetched: FetchedResponse, connection_id: int) -> Ra
             body=fetched.body,
             received_at=fetched.received_at,
             derivers=ALL_DERIVERS,
+            replay_passes=replay_passes,
             request_context=fetched.request_context,
         )
 
@@ -851,7 +860,7 @@ def _pull_investments(
     _record_attempt(config, connection_id, INVESTMENTS_DOMAIN)
     try:
         holdings_page = client.investments_holdings_get(access_token, connection_id=connection_id)
-        _persist(config, holdings_page, connection_id)
+        _persist(config, holdings_page, connection_id, replay_passes=())
         outcome.investments_pulled = True
         window = _pull_investment_transactions(
             config,
@@ -907,6 +916,44 @@ def _pull_investments(
         )
 
 
+@dataclass(slots=True)
+class _WindowConcludedBySync:
+    """The replay's window pass, plus the one fact only a sync may record.
+
+    🔴 **The same `InvestmentWindowReplay` a rebuild runs**, observing each page
+    inside that page's derivation transaction. A window is therefore concluded
+    in the transaction of the page that closed it: no writer acquisition sits
+    between the two for a concurrent `store backup` to take, and a crash cannot
+    keep the page and lose what it establishes. A rebuild replaying the same
+    pages reaches the same conclusion at the same response and instant.
+
+    🔴 **The domain's measured history start rides the same transaction, and only
+    here.** A store reporting one window's range beside another's removals would
+    claim a measurement its own rows contradict, so the two commit together. It
+    is the sync's to record because an archived body is evidence about rows,
+    never about how current a domain is: a replay that stamped `sync_state` would
+    restate a measurement a later run has since moved past, and the rebuild's
+    digest would refuse a rebuild that reproduced every row.
+    """
+
+    replay: InvestmentWindowReplay = field(default_factory=InvestmentWindowReplay)
+
+    def observe(self, conn: SAConnection, response: RawResponse) -> None:
+        self.replay.observe(conn, response)
+        conclusion = self.replay.last_conclusion
+        if conclusion is None or conclusion[0] != response.raw_response_id:
+            return
+        start = conclusion[1].history_start_date
+        if start is not None and response.connection_id is not None:
+            record_domain_history_start(
+                conn,
+                connection_id=response.connection_id,
+                domain=INVESTMENTS_DOMAIN,
+                start=start,
+                at=response.received_at,
+            )
+
+
 def _pull_investment_transactions(
     config: Config,
     client: PlaidClient,
@@ -925,22 +972,17 @@ def _pull_investment_transactions(
     reason the page ceiling here costs a re-read rather than a gap.
 
     AC-3.3: the window asked for is `config.history_days`, the one configured
-    window. What came back is recorded by
-    `record_investment_transaction_window`, which also owns the removal
-    reconciliation -- and refuses both if these pages did not exhaust the window.
+    window. What came back is concluded by `_WindowConcludedBySync` inside the
+    closing page's own derivation transaction -- the removals, and the range
+    measured after them -- and nothing is concluded if these pages did not
+    exhaust the window.
     """
     end = now_utc().date()
     start = end - timedelta(days=config.history_days)
+    concluding = _WindowConcludedBySync()
     page_response_ids: list[int] = []
     rows_seen = 0
     stated_total: int | None = None
-    # 🔴 The instant the removals are stamped with, taken from the ARCHIVE rather
-    # than the clock. A `removed_at` of `now_utc()` could never be reproduced by
-    # a replay of the same pages, so AC-5.2's "rebuildable from raw responses
-    # alone" would be false for every soft delete. The last page's `received_at`
-    # is a property of the window, so a rebuild that replays it concludes the
-    # same removal at the same instant.
-    concluded_at = now_utc()
 
     while len(page_response_ids) < MAX_PAGES_PER_RUN:
         fetched = client.investments_transactions_get(
@@ -950,9 +992,13 @@ def _pull_investment_transactions(
             offset=rows_seen,
             connection_id=connection_id,
         )
-        response = _persist(config, fetched, connection_id)
+        # 🔴 The window's pass rides this page's own derivation transaction, so
+        # the page that closes the window commits with the removals it
+        # establishes. They are stamped with that page's archived `received_at`,
+        # never the clock, which is what lets a rebuild replaying the same pages
+        # conclude the same removal at the same instant (AC-5.2).
+        response = _persist(config, fetched, connection_id, replay_passes=(concluding,))
         page_response_ids.append(response.raw_response_id)
-        concluded_at = response.received_at
         # 🔴 Read back off the ARCHIVED page rather than off the reply in hand,
         # through the reader a rebuild uses on the same row. The two paths then
         # cannot disagree about how many rows a page carried or how many the
@@ -985,34 +1031,12 @@ def _pull_investment_transactions(
             MAX_PAGES_PER_RUN,
         )
 
-    with writer_connection(config) as conn, transaction(conn):
-        window = record_investment_transaction_window(
-            conn,
-            connection_id=connection_id,
-            window_start=calendar_date(start),
-            window_end=calendar_date(end),
-            page_response_ids=page_response_ids,
-            rows_seen=rows_seen,
-            stated_total=stated_total,
-            at=concluded_at,
-        )
-        if window.history_start_date is not None:
-            # 🔴 Recorded by the SYNC, in the same transaction as the removals
-            # the range was measured after -- a store reporting one window's
-            # range beside another's rows would claim a measurement its own rows
-            # contradict. It is the sync's to record because `store rebuild`
-            # re-runs the reconciliation above from the archived pages, and a
-            # replay that stamped a domain's progress would restate a
-            # measurement the run that took it has since moved past. The
-            # transactions domain records its own range the same way, a few
-            # functions up.
-            record_domain_history_start(
-                conn,
-                connection_id=connection_id,
-                domain=INVESTMENTS_DOMAIN,
-                start=window.history_start_date,
-                at=concluded_at,
-            )
+    conclusion = concluding.replay.last_conclusion
+    if conclusion is not None and conclusion[0] == page_response_ids[-1]:
+        window = conclusion[1]
+    else:
+        report_incomplete_window(connection_id, rows_seen, stated_total)
+        window = WindowOutcome(exhausted=False, removed=0, history_start_date=None)
     outcome.investment_transactions_removed = window.removed
     if not window.exhausted:
         # 🔴 Taken from the window's OWN verdict rather than from the page

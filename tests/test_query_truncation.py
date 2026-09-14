@@ -658,6 +658,7 @@ def seeded_config(initialized_config: Config) -> Config:
                 body=body,
                 received_at=now,
                 derivers=ALL_DERIVERS,
+                replay_passes=(),
             )
     return initialized_config
 

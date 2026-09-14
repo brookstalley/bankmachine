@@ -112,6 +112,7 @@ def _capture(
             body=json.dumps(body).encode(),
             received_at=at,
             derivers=ALL_DERIVERS,
+            replay_passes=(),
         )
 
 
@@ -924,6 +925,7 @@ def _positions_land(config: Config, capture: dict[str, Any], at: UtcInstant) -> 
             body=json.dumps(capture).encode(),
             received_at=at,
             derivers=ALL_DERIVERS,
+            replay_passes=(),
         )
 
 

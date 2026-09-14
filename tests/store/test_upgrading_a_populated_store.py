@@ -458,6 +458,7 @@ def _archive_and_derive(config: Config, endpoint: str, body: bytes) -> None:
             body=body,
             received_at=FETCHED,
             derivers=ALL_DERIVERS,
+            replay_passes=(),
         )
 
 

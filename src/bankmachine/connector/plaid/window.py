@@ -12,8 +12,10 @@ page. Replaying the archive through the derivers alone therefore re-upserts
 every row that ever appeared and clears every soft delete with it -- the rebuilt
 store would hold rows the synced store had retired, and the rebuild would report
 success. `InvestmentWindowReplay` is what stops that: it reassembles each
-window from the archive and re-runs the same reconciliation the sync ran, at the
-page that closed it.
+window from the archive and concludes it at the page that closed it. It is also
+the pass the sync runs as each page lands, inside that page's derivation
+transaction, so the two paths conclude every window with one piece of code at
+one response.
 
 🔴 **Reassembled at the closing page, not once at the end of the replay.** A
 removal is stamped with the instant its window closed, and the evidence for it
@@ -45,6 +47,7 @@ from bankmachine.connector import (
 )
 from bankmachine.logging_setup import get_logger
 from bankmachine.store.investments import (
+    WindowOutcome,
     record_investment_transaction_window,
     window_is_exhausted,
 )
@@ -172,9 +175,19 @@ class InvestmentWindowReplay:
     bulk deletion `store.investments` refuses a short run for. The rebuild's
     content digest then reports the removal it could not reproduce, which is a
     refusal an operator can act on rather than a deletion nobody sees.
+
+    🔴 **The live sync runs this same pass**, inside each page's derivation
+    transaction (`store.derivation.apply_response`). A window is then concluded in
+    the transaction of the page that closed it, and a rebuild replaying those
+    pages concludes it at the same response and the same archived instant.
+    `last_conclusion` is how the sync reads back what that commit established.
     """
 
     _in_progress: dict[int, _WindowInProgress] = field(default_factory=dict)
+    #: The last window this pass concluded: the closing page's raw response id and
+    #: what the reconciliation established. One entry rather than a history, so a
+    #: rebuild over years of archive holds one outcome, not one per window.
+    last_conclusion: tuple[int, WindowOutcome] | None = None
 
     def observe(self, conn: SAConnection, response: RawResponse) -> None:
         if response.endpoint != str(INVESTMENTS_TRANSACTIONS_GET):
@@ -204,7 +217,7 @@ class InvestmentWindowReplay:
             )
             self._in_progress[response.connection_id] = _WindowInProgress()
             return
-        record_investment_transaction_window(
+        concluded = record_investment_transaction_window(
             conn,
             connection_id=response.connection_id,
             window_start=page.window_start,
@@ -217,4 +230,5 @@ class InvestmentWindowReplay:
             # different `removed_at`, and AC-5.2 false for every soft delete.
             at=response.received_at,
         )
+        self.last_conclusion = (response.raw_response_id, concluded)
         self._in_progress[response.connection_id] = _WindowInProgress()
