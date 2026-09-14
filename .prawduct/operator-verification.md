@@ -1539,7 +1539,7 @@ resources needs a top-level client session, not a subagent.
 
 ## VRF-032 — one real pending transaction watched across settlement
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#22) · **Raised:** 2026-09-14
 
@@ -1551,9 +1551,11 @@ pending row. The obligation is **#22**, and it blocks production.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-032`
 
+**Accepted:** 2026-09-14 — rationale: VRF-032 (#22, a real pending transaction across settlement) and VRF-033 (#23, the sign convention at two institutions) both need production data, and the production datastore still does not exist. This branch changes no pending-hold or sign handling. Accepted on the term that both are raised again on the next branch; the obligations stay #22 and #23, and both block production.
+
 ## VRF-033 — the sign convention on a real inflow, across two institutions
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#23) · **Raised:** 2026-09-14
 
@@ -1563,3 +1565,5 @@ not evidence about another, so this needs a second real institution enrolled and
 branch changes no sign handling. The obligation is **#23**, and it blocks production.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-033`
+
+**Accepted:** 2026-09-14 — rationale: VRF-032 (#22, a real pending transaction across settlement) and VRF-033 (#23, the sign convention at two institutions) both need production data, and the production datastore still does not exist. This branch changes no pending-hold or sign handling. Accepted on the term that both are raised again on the next branch; the obligations stay #22 and #23, and both block production.
