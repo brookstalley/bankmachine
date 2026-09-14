@@ -298,8 +298,8 @@ _GUIDANCE: dict[str, _Guidance] = {
             "that day and the last balance that stopped counting. Where a later account row "
             "took that balance over, as a re-link leaves it, `detail` names that account too, "
             "and net worth moves across the handover only by the difference between the two "
-            "balances -- the move with no activity behind it is claimed only of what nothing "
-            "replaced"
+            "balances, except on a net-worth day `detail` names as counting neither account. "
+            "The move with no activity behind it is claimed only of what nothing replaced"
         ),
         act=(
             "quote the total as given AND quote the flagged magnitude beside it -- the total "

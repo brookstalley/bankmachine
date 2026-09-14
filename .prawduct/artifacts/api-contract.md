@@ -248,8 +248,9 @@ the balance-lifecycle norm names one unmigrated emitter it does not grandfather.
   account row in the same identity partition took the balance over, as a re-link leaves it, the
   answer also names that account and its first day and balance. The claim that a later net worth
   moves with no activity behind it is made only of the part nothing replaced, since across a
-  handover net worth moves only by the difference between the two balances. The figure stays
-  whole. What refusing
+  handover net worth moves only by the difference between the two balances. A net-worth day
+  strictly between the two ends counts neither account, and is named with the balance it leaves
+  out. A successor two stopped accounts would share replaces neither. The figure stays whole. What refusing
   would cost was measured first. On the sandbox store, 14 relinked accounts' last balances equal
   their 14 replacements' to the cent, so carrying them forward serves every later net worth at
   exactly 2×. That is a wrong figure with its correction beside it; the ruling serves the right

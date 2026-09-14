@@ -539,7 +539,8 @@ criterion can be ratified before the ruling is.
 account through its last capture and not after. It names that day, the account's signed last
 balance, and the per-currency count and signed sum that stopped counting. Where a later account row
 the institution describes the same way took the balance over, it names that account, and it
-claims a move with no activity behind it only of the part nothing replaced. Carrying a frozen balance
+claims a move with no activity behind it only of the part nothing replaced. A net-worth day between
+the two ends counts neither account, and is named with the balance it leaves out. Carrying a frozen balance
 forward puts balances on days nobody captured and counts a relinked account's money twice; on the
 sandbox store that doubles every later net worth. A total at one instant (`coverage`,
 `money_summary`, `list_holdings`' `totals`) still includes and flags. Recorded in `api-contract.md`

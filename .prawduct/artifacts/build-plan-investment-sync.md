@@ -1090,7 +1090,7 @@ Tests are the floor, and three things here are not testable from a fixture:
 - **Backlog:** none filed. Both were found in this branch's client session and fixed before the PR.
 - **Artifacts consumed:** `api-contract.md` § Direction's lifecycle norm and its ruling on net worth
   over time, and the `rule-applied` amendment. `docs/system-requirements.md` AC-12.8's ruling.
-  `store/lineage.py`'s identity partition.
+  `src/bankmachine/store/lineage.py`'s identity partition.
 - **Requirements confidence:** High. Both are observed on the real store with the current build.
 - **Decisions:**
   - `[DECISION: a stopped account is named as REPLACED by the account that shares its identity
@@ -1186,6 +1186,24 @@ Tests are the floor, and three things here are not testable from a fixture:
     exactly one holds that day", which is what a chain of re-links needs. `lineage._group` became
     `lineage.identity_partition`, and no caller outside `lineage` used it.
   - **Gate:** green (`prawduct-hook test-status`).
+  - **Review (`rev-20260914T022414Z-baa484bc`, cumulative, one round past the budget on the
+    owner's word, 2026-09-14):** 0 blocking and 4 warnings, all fixed in one commit.
+    - **R-1:** two stopped accounts could both claim one successor, which calls a real drop a
+      handover. A successor claimed twice now replaces neither.
+    - **R-2:** nothing pinned the earliest-successor rule in a chain. There is now a chain test.
+    - **R-3 and R-4 (one defect):** a net-worth day strictly between a stop and its successor's
+      first capture counts neither account. Another connection's capture makes that row complete,
+      so "net worth moves only by the difference" was false on it. Each such day is now named beside
+      the handover with the balance it leaves out. The description, the guidance, the contract
+      ruling and AC-12.8 all say so. `[DECISION: name those days rather than withhold their rows |
+      taken in this plan | user can veto]`. Withholding them would change the Chunk 08 ruling that
+      an account counts through its last capture and not after, which is the owner's call. Naming
+      them keeps the ruling and makes the claim true.
+    - The contested-claim and between-day tests were seen RED against the unfixed code before it
+      changed. The chain test passed before and after, because the code already took the earliest,
+      and its go-red case (`min` to `max`) is what shows it bites.
+    - The review also reported `store/lineage.py` as missing. That was a false alarm on a
+      prefix-less path, and the path above is now written in full.
 - **Type:** code
 - **Critic mode:** final
 - **Done when:**

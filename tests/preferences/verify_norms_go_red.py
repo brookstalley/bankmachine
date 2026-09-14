@@ -2000,6 +2000,32 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         f"{BALANCE_TESTS}::test_two_candidates_for_one_stopped_account_claim_no_replacement",
     ),
     (
+        # Two balances handed to one row would call a real drop a handover.
+        "AC-12.8 ruling: a successor two stopped accounts would share replaces neither",
+        QUERY_BALANCES,
+        "        if claims[(successor.account_id, key[1])] == 1\n",
+        "        if claims[(successor.account_id, key[1])] >= 1\n",
+        f"{BALANCE_TESTS}::test_one_replacement_claimed_by_two_stopped_accounts_replaces_neither",
+    ),
+    (
+        "AC-12.8 ruling: a chain of re-links pairs each stop with the next generation",
+        QUERY_BALANCES,
+        "        earliest = min(candidate.day for candidate in later)\n",
+        "        earliest = max(candidate.day for candidate in later)\n",
+        f"{BALANCE_TESTS}::"
+        "test_a_chain_of_relinks_pairs_each_stopped_account_with_the_one_that_followed_it",
+    ),
+    (
+        # The day a broken connection sat unlinked while others synced: net worth
+        # reads without the balance, and "does not move" would be false there.
+        "AC-12.8 ruling: a net-worth day between a stop and its successor is named",
+        QUERY_BALANCES,
+        "        if gap:\n",
+        "        if False:\n",
+        f"{BALANCE_TESTS}::"
+        "test_a_net_worth_day_between_a_stop_and_its_replacement_names_what_it_leaves_out",
+    ),
+    (
         # The request-scoped promise: an answer about one account names no span on another.
         "rule-applied: the superseded disclosure names only the request's account",
         QUERY,

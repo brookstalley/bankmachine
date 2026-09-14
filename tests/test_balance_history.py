@@ -465,6 +465,9 @@ def test_a_relinked_account_is_named_with_its_replacement_and_no_move_is_claimed
         total += last
     assert f"2 account(s) whose last balances sum to {total} USD" in named
     assert f"2 account(s) replaced, last balances summing to {total} USD" in named
+    assert "count neither account" not in named, (
+        f"a gap day was named where no net-worth row fell between the handover's ends: {named!r}"
+    )
     assert _MOVE_CLAIM not in named and "nothing replacing" not in named, (
         f"a move is claimed across a handover that kept net worth where it was: {named!r}"
     )
@@ -561,6 +564,100 @@ def test_replaced_and_unreplaced_accounts_each_state_their_own_part_of_the_figur
     assert answer.coverage["not_active_balance_minor_units"] == [
         {"currency": "USD", "current_minor_units": kept_last + gone_last}
     ]
+
+
+def _last_balance(config: Config, account_id: int, day: UtcInstant) -> int:
+    """The balance the deriver stored for one account on one capture day."""
+    (minor,) = [
+        stored_minor
+        for held, stored_day, stored_minor, _, _ in _stored(config)
+        if held == account_id and stored_day == day.date().isoformat()
+    ]
+    return minor
+
+
+def test_a_chain_of_relinks_pairs_each_stopped_account_with_the_one_that_followed_it(
+    two_connections: Config,
+) -> None:
+    """Each stop hands over to the NEXT generation, never to the newest.
+
+    Three generations of one account: the first stops when the second appears,
+    and the second when the third does. Pairing the first with the third would
+    name a handover across a day the second was the one counting.
+    """
+    listed = _first_connection()[:1]
+    second, third = _relisted(listed, suffix="second"), _relisted(listed, suffix="third")
+    _capture(two_connections, 1, _day(0), listed)
+    _capture(two_connections, 1, _day(2), second)
+    _capture(two_connections, 1, _day(4), third)
+    first_id = _account_for(two_connections, listed[0]["account_id"])
+    second_id = _account_for(two_connections, second[0]["account_id"])
+    third_id = _account_for(two_connections, third[0]["account_id"])
+
+    (named,) = _details(query_balances.balance_history(two_connections), "account_no_longer_active")
+
+    for stopped, stopped_on, successor, from_day in (
+        (first_id, _day(0), second_id, _day(2)),
+        (second_id, _day(2), third_id, _day(4)),
+    ):
+        assert (
+            f"account {stopped} through {stopped_on.date().isoformat()}, last balance "
+            f"{_last_balance(two_connections, stopped, stopped_on)} USD, replaced by account "
+            f"{successor} from {from_day.date().isoformat()} at "
+            f"{_last_balance(two_connections, successor, from_day)} USD"
+        ) in named, f"account {stopped} is not paired with the generation after it: {named!r}"
+
+
+def test_one_replacement_claimed_by_two_stopped_accounts_replaces_neither(
+    two_connections: Config,
+) -> None:
+    """🔴 Two balances cannot both hand over to one account row.
+
+    Two look-alikes counted together that are followed by ONE account are a real
+    drop by one balance, not two handovers. Naming both as replaced would call
+    that drop a handover and tell the reader net worth did not move.
+    """
+    listed = _first_connection()[:1]
+    _capture(two_connections, 1, _day(0), listed + _relisted(listed, suffix="twin"))
+    _capture(two_connections, 1, _day(2), _relisted(listed, suffix="after"))
+
+    (named,) = _details(query_balances.balance_history(two_connections), "account_no_longer_active")
+
+    assert "replaced by" not in named, f"one successor was claimed by two accounts: {named!r}"
+    assert "2 account(s) with nothing replacing them" in named and _MOVE_CLAIM in named
+
+
+def test_a_net_worth_day_between_a_stop_and_its_replacement_names_what_it_leaves_out(
+    two_connections: Config,
+) -> None:
+    """🔴 A net-worth row between the handover's two ends counts neither account.
+
+    Another connection captured on that day, so the row is complete by the
+    series' own rule, and it reads without the relinked balance. "Net worth does
+    not move across the handover" is false on that day, which is exactly the
+    shape a connection that broke, was left for days and was then re-linked
+    leaves behind.
+    """
+    listed = _first_connection()[:1]
+    _capture(two_connections, 1, _day(0), listed)
+    _capture(two_connections, 2, _day(0), _second_connection())
+    _capture(two_connections, 2, _day(1), _second_connection())
+    _capture(two_connections, 1, _day(2), _relisted(listed))
+    _capture(two_connections, 2, _day(2), _second_connection())
+    old = _account_for(two_connections, listed[0]["account_id"])
+    last = _last_balance(two_connections, old, _day(0))
+    between = _day(1).date().isoformat()
+
+    answer = query_balances.balance_history(two_connections)
+
+    assert between in _net_worth(answer.rows), (
+        "no net-worth row fell between the handover's ends, so nothing is under test"
+    )
+    (named,) = _details(answer, "account_no_longer_active")
+    assert "replaced by account" in named, "the fixture's relink found no successor"
+    assert (
+        f"(net-worth rows on {between} count neither account, so they leave out {last} USD)"
+    ) in named, f"a net-worth day counting neither account went unnamed: {named!r}"
 
 
 # --------------------------------------------------------------------------

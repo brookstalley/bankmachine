@@ -9,6 +9,7 @@ Read-role only, like every tool: its handles come from `reader_connection`, open
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -146,12 +147,30 @@ def _successors(
         on_that_day = [candidate for candidate in later if candidate.day == earliest]
         if len(on_that_day) == 1:
             found[(held, currency)] = on_that_day[0]
-    return found
+    # 🔴 One account row cannot take two balances over. Two look-alikes counted
+    # together and followed by ONE account are a real drop by one balance, and
+    # naming both as handed over would tell the reader net worth did not move.
+    claims = Counter((successor.account_id, key[1]) for key, successor in found.items())
+    return {
+        key: successor
+        for key, successor in found.items()
+        if claims[(successor.account_id, key[1])] == 1
+    }
+
+
+def _net_worth_days(rows: Sequence[tuple[object, dict[str, Any]]]) -> dict[str, list[str]]:
+    """Each currency's net-worth days across the whole answer, oldest first, as `YYYY-MM-DD`."""
+    days: dict[str, list[str]] = {}
+    for _, row in rows:
+        if row["account_id"] is None:
+            days.setdefault(str(row["currency"]), []).append(str(row["date"]))
+    return {currency: sorted(found) for currency, found in days.items()}
 
 
 def _series_ends(
     stopped: dict[tuple[int, str], tuple[CalendarDate, int]],
     successors: dict[tuple[int, str], _Successor],
+    net_worth_days: dict[str, list[str]],
 ) -> str:
     """What the lifecycle freeze means on an answer over the balance SERIES, with the figure.
 
@@ -177,6 +196,14 @@ def _series_ends(
     figure is split: a replaced account is named with its successor, and the move
     is claimed only of the part nothing replaced. Claiming it of the whole would
     have a reader report a drop that never happened.
+
+    🔴 **A net-worth day strictly between the two ends counts NEITHER account.**
+    Another connection captured on it, so the row is complete by the series' own
+    rule, and it reads without the relinked balance. A connection that broke, was
+    left for days while others kept syncing, and was then re-linked leaves exactly
+    that. So each such day is named beside the handover with the balance it leaves
+    out, and "moves only by the difference" is said of the handover and not of
+    those days.
     """
 
     def named(account_id: int, currency: str, day: CalendarDate, minor: int) -> str:
@@ -184,10 +211,21 @@ def _series_ends(
         successor = successors.get((account_id, currency))
         if successor is None:
             return text
-        return (
+        text = (
             f"{text}, replaced by account {successor.account_id} from "
             f"{successor.day.isoformat()} at {successor.minor} {currency}"
         )
+        gap = [
+            between
+            for between in net_worth_days.get(currency, [])
+            if day.isoformat() < between < successor.day.isoformat()
+        ]
+        if gap:
+            text += (
+                f" (net-worth rows on {', '.join(gap)} count neither account, so they leave out "
+                f"{minor} {currency})"
+            )
+        return text
 
     each = "; ".join(
         named(account_id, currency, day, minor)
@@ -225,8 +263,9 @@ def _series_ends(
         text += (
             f". Of that, {handed_over}: a later account row the institution describes the same "
             f"way counts each balance from the day named, so across that handover net worth "
-            f"moves only by the difference between the two balances, and a net worth unchanged "
-            f"there is correct rather than a gap"
+            f"moves only by the difference between the two balances. The exception is a day "
+            f"named above as counting neither account, whose net-worth row leaves that last "
+            f"balance out"
         )
     if left:
         text += (
@@ -570,7 +609,10 @@ def balance_history(
                 _withheld_net_worth_caveat(withheld)
                 + _undenominable_caveat(undenominable)
                 + _not_active_caveat(
-                    not_active, consequence=_series_ends(stopped, _successors(conn, stopped))
+                    not_active,
+                    consequence=_series_ends(
+                        stopped, _successors(conn, stopped), _net_worth_days(ordered)
+                    ),
                 )
                 + _roster_observed_empty_caveat(not_active)
             ),
