@@ -2699,8 +2699,8 @@ def list_transactions(
     stays the count of what the whole request selects and reads the same on
     every page of the walk.
 
-    `narrowed_by` selects by effective category and signed amount (AC-9.6). It
-    narrows the rows and both counts, and never the coverage figures beside them.
+    `narrowed_by` carries the filters AC-9.6 defines. It narrows the rows and
+    both counts, and never the coverage figures beside them.
     """
     problem = _readable(config)
     if problem is not None:

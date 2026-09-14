@@ -359,6 +359,9 @@ Once connected, these are answerable directly:
 - "What did I spend on food last month?"
 - "Which of my connections is stale?"
 - "What's my current balance across all accounts?"
-- "Show me every transaction over $100 since August." *(There is no amount filter: this means
-  paging the whole window and filtering the rows client-side, and an answer should say so.)*
+- "Show me every purchase of $100 or more since August." *(`query_transactions` with `since` and
+  `max_amount_minor_units=-10000`. Amounts are signed, so money OUT of $100 or more is at most
+  -10000; money IN of $100 or more is `min_amount_minor_units=10000`.)*
+- "Did I get a refund from Walmart?" *(`search="walmart"`. The match is literal, so an answer that
+  finds nothing says the institution may have spelled it differently, not that no refund arrived.)*
 - "Is any of this data incomplete?"

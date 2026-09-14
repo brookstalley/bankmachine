@@ -218,6 +218,14 @@ reading a search answer reports the literal-match caveat rather than a confident
   2. `git grep` for the retired claim returns only history (change-log, archived plans, reviews)
   3. Each new assertion verified by breaking what it names and watching it fail
   4. The sandbox MCP server relaunched on this build and #20's three repro questions asked of it
+     — **Run 2026-09-14** by launching `bankmachine mcp` fresh over stdio against the real sandbox
+     store on the Chunk 02 working tree (`build.commit` `a33c1d9`, `dirty: true`), NOT through this
+     session's attached client server, which predates the branch. `category=TRAVEL` with
+     `min_amount_minor_units=1` returned the 25 United Airlines credits; `search="united"` matched
+     49 rows and carried `search_is_literal`; the respelled `search="utd airlines"` matched 0 and
+     still carried it; `max_amount_minor_units=-50000` returned only outflows of $500 or more; and
+     `category="TRAVL"` was refused as `invalid_argument`, naming the nine real categories. A real
+     client's reading of those answers is VRF-027's, and needs the client relaunched.
   5. Committed, then `/prawduct:critic cumulative` run and blocking findings resolved
   6. Chunk marked `[x]` in Status
 

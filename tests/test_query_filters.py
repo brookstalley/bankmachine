@@ -1,4 +1,4 @@
-"""The filters on `query_transactions`: effective category and a signed amount range. AC-9.6.
+"""The filters on `query_transactions`, as AC-9.6 defines them.
 
 🔴 Every expected row set is derived from the table by an oracle written against
 the columns in Python, never through `_transaction_filters` or
