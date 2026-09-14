@@ -63,6 +63,7 @@ reverted; `verify_norms_go_red.py`'s AC-5.3 case is pinned to it.
 
 **Carried:** VRF-034 and VRF-035 are raised again as VRF-036 and VRF-037. Both need production data
 this branch cannot supply.
+
 ## 2026-09-14: An investments window is concluded with the page that closes it
 
 <!-- prawduct: scope=window-concluded-with-its-page -->

@@ -460,7 +460,7 @@ answered `HISTORICAL_UPDATE_COMPLETE`, `has_more` false, **empty** `next_cursor`
 modified or removed rows. That is a finished backfill with nothing in it, so on a page with no
 cursor the status is what says whether the domain landed. The empty cursor is still never stored.
 A page that does carry a cursor still lands the domain whatever its status; that is tracked
-separately rather than settled here.
+as #126 rather than settled here.
 
 **What the transaction body actually holds** *(measured on a real sandbox row)*: `account_id`,
 `amount`, `iso_currency_code`, `date`, `authorized_date`, `pending`, `pending_transaction_id`,
