@@ -1327,3 +1327,67 @@ excluded as "have trades and holdings".
 **Drain with:** `prawduct-hook verify-operator-verification VRF-024`
 
 **Verified:** 2026-09-13
+
+## VRF-025 — one real pending transaction watched across settlement
+
+**Status:** accepted
+
+**Chunk:** production-data semantics (#22) · **Raised:** 2026-09-14
+
+**Why a human:** unchanged from **VRF-005**, which carries the full procedure and is the entry to
+follow. Re-raised from VRF-020, which was accepted to open the investment-sync PR on the stated term
+that it be raised again on the next branch. This is its seventh raising, for the same reason as
+every earlier one: the sandbox has never held a pending row and the production cutover has not
+happened. This branch adds filters to `query_transactions` and changes no pending-hold handling.
+The obligation is **#22**, and it blocks production.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-025`
+
+**Accepted:** 2026-09-14 — rationale: Accepted to open the transaction-filters PR. VRF-025 and VRF-026 cannot run before the production cutover (the sandbox holds no pending row and one enrolled institution) and are raised again on the next branch on the same term. VRF-027 is accepted to open the PR and remains owed as the reading test for search: raise it again on the next branch unless it has been run in a real client against the sandbox by then.
+
+## VRF-026 — the sign convention on a real inflow, across two institutions
+
+**Status:** accepted
+
+**Chunk:** production-data semantics (#23) · **Raised:** 2026-09-14
+
+**Why a human:** unchanged from **VRF-006**, which carries the full procedure and is the entry to
+follow. Re-raised from VRF-021 on the same term as VRF-025, and for its seventh time. One feed
+obeying the sign convention is not evidence about another, so this needs a second real institution
+enrolled and a real inflow. 🔴 This branch's amount range compares against the SIGNED amount, so an
+inverted feed would be filtered the wrong way as well as summed the wrong way — which makes the
+check more relevant here, not less, and still not runnable before the cutover. The obligation is
+**#23**, and it blocks production.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-026`
+
+**Accepted:** 2026-09-14 — rationale: Accepted to open the transaction-filters PR. VRF-025 and VRF-026 cannot run before the production cutover (the sandbox holds no pending row and one enrolled institution) and are raised again on the next branch on the same term. VRF-027 is accepted to open the PR and remains owed as the reading test for search: raise it again on the next branch unless it has been run in a real client against the sandbox by then.
+
+## VRF-027 — a search answer read by a model in a real client
+
+**Status:** accepted
+
+**Chunk:** transaction filters, Chunk 02 · **Raised:** 2026-09-14
+
+**Why a human:** `search_is_literal` rides every searched answer, and tests assert that it fires,
+that it names the term and the count, and that its absence on an unsearched answer means something.
+None can say whether a model asked "did I get a refund from X?" actually uses `search`, and then
+reports a miss as "no match for that spelling" rather than "no refund". That is a reading judgement,
+and it is the reason the warning exists.
+
+**Where to verify:** the sandbox store, with the sandbox MCP server RELAUNCHED on this branch's build
+first — confirm by `build.commit` in any answer.
+
+**Verify:**
+
+1. Ask a real client whether a refund arrived from a counterparty the sandbox holds. The client calls
+   `query_transactions` with `search` rather than paging the window by hand.
+2. Ask for a counterparty the store holds under an abbreviation or a different spelling. The answer
+   does not say the transaction never happened; it says the search was literal and offers a wider
+   search or a read of the rows.
+3. Ask what a refunded category really cost. Any figure the answer builds from searched rows is
+   presented as what the search found, with its rows shown, not as the whole amount.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-027`
+
+**Accepted:** 2026-09-14 — rationale: Accepted to open the transaction-filters PR. VRF-025 and VRF-026 cannot run before the production cutover (the sandbox holds no pending row and one enrolled institution) and are raised again on the next branch on the same term. VRF-027 is accepted to open the PR and remains owed as the reading test for search: raise it again on the next branch unless it has been run in a real client against the sandbox by then.

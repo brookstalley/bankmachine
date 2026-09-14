@@ -475,6 +475,17 @@ def copying_writer(config: Config) -> Iterator[Connection]:
         yield conn
 
 
+#: The SQL name of the Unicode case fold registered on every read-role handle.
+#: SQLite's own `lower()` and `LIKE` fold ASCII letters only, so a search for
+#: "café" would not find "CAFÉ" and the answer would carry nothing saying why.
+CASEFOLD_FUNCTION = "bankmachine_casefold"
+
+
+def _casefold(value: object) -> str | None:
+    """`str.casefold`, and NULL for anything that is not text, as SQL expects."""
+    return value.casefold() if isinstance(value, str) else None
+
+
 def _open_read_role(config: Config, key: str) -> Connection:
     """The one place a read-role handle is constructed.
 
@@ -509,6 +520,8 @@ def _open_read_role(config: Config, key: str) -> Connection:
         ) from exc
     _key_and_prepare(conn, config, key)
     conn.execute("PRAGMA query_only = ON")
+    # Registered on the read role, where the one query that calls it runs.
+    conn.create_function(CASEFOLD_FUNCTION, 1, _casefold, deterministic=True)
     return conn
 
 

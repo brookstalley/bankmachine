@@ -264,7 +264,7 @@ and `truncated` is `returned < remaining` — so **never** page on `returned < m
 true at the end of every walk.
 
 **To read the rest, page.** A truncated answer also carries `truncation.next_cursor`; hand it back as
-`query_transactions`'s `cursor` argument, with the same window and account, and keep going until
+`query_transactions`'s `cursor` argument, with the same window, account and filters, and keep going until
 `truncated` is false — the last page carries no `next_cursor`, which is the signal to stop. The
 cursor is opaque: pass it back unchanged, never build or edit one, and never send one issued for a
 different question, because both are refused rather than answered. Narrowing the window or raising
@@ -339,6 +339,11 @@ boundary it names — so the *absence* of one is information too:
   operator de-selected every account from sharing, or the feed broke in a way that returns success.
   Do **not** report it as accounts having closed — name the connection, say its roster came back
   empty, and call `get_pipeline_health` before drawing any conclusion about the household.
+- `search_is_literal` — this request used `search`, which matches its text literally, ignoring
+  case, against `description` and `merchant`. A counterparty the institution abbreviated or spelled
+  differently is not found. It rides **every** searched answer, empty or not: quote a figure summed
+  over a search as what the search found, and widen the search before reporting that something did
+  not happen.
 - `sign_convention_unverified` — a contributing connection was measured against the sign convention
   and its amounts run the wrong way, so on that feed income reads as spending. Name the connection
   and say its direction is in question; do **not** correct it yourself.
@@ -354,6 +359,9 @@ Once connected, these are answerable directly:
 - "What did I spend on food last month?"
 - "Which of my connections is stale?"
 - "What's my current balance across all accounts?"
-- "Show me every transaction over $100 since August." *(There is no amount filter: this means
-  paging the whole window and filtering the rows client-side, and an answer should say so.)*
+- "Show me every purchase of $100 or more since August." *(`query_transactions` with `since` and
+  `max_amount_minor_units=-10000`. Amounts are signed, so money OUT of $100 or more is at most
+  -10000; money IN of $100 or more is `min_amount_minor_units=10000`.)*
+- "Did I get a refund from Walmart?" *(`search="walmart"`. The match is literal, so an answer that
+  finds nothing says the institution may have spelled it differently, not that no refund arrived.)*
 - "Is any of this data incomplete?"

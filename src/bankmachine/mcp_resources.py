@@ -372,6 +372,25 @@ _GUIDANCE: dict[str, _Guidance] = {
             "as money spent."
         ),
     ),
+    "search_is_literal": _Guidance(
+        means=(
+            "this request narrowed by `search`, which matched its text as a literal, "
+            "case-insensitive substring of `description` or `merchant` and nothing looser; "
+            "`detail` names the text and how many transactions matched"
+        ),
+        for_this_answer=(
+            "a transaction whose institution abbreviated or spelled the counterparty differently "
+            "is not in these rows, and nothing else in the answer can show that it is missing -- "
+            "so a count or a total over them can be short, and an empty answer does not mean the "
+            "transaction never happened"
+        ),
+        act=(
+            "say the search was literal. Before reporting that something did not happen, widen "
+            "the question: a shorter or different spelling, or the same window and account with "
+            "no `search`, reading the rows. Present a figure summed over a search as what that "
+            "search found, never as the whole amount."
+        ),
+    ),
     "sign_convention_unverified": _Guidance(
         means=(
             "a connection this answer draws on has been MEASURED against the sign convention "
@@ -729,10 +748,12 @@ _CANNOT_ANSWER = (
     "- **Recurring-charge or subscription detection.** Nothing groups repeated charges. A "
     "hand-rolled guess over `query_transactions` is a guess, and presenting it as a "
     "subscription list is presenting an inference as a record.\n"
-    "- **Filtering by amount, by text, or by category.** `query_transactions` takes a window, "
-    "an account and a page, and nothing else. A question like 'every transaction over $100' "
-    "means paging the whole window and filtering the rows yourself — say that is what you "
-    "did.\n\n"
+    "- **A match looser than a literal substring, or a refund netted against its purchase.** "
+    "`query_transactions`' `search` finds a row only when its `description` or `merchant` "
+    "contains the text as typed, ignoring case, so a counterparty the institution abbreviated "
+    "or spelled differently is not found and a total over what a search found can be short. "
+    "Nothing pairs a refund with the purchase it reverses: netting the two is arithmetic you "
+    "do on rows you can show.\n\n"
     "The tools "
     + ", ".join(f"`{tool}`" for tool in UNBUILT_TOOLS)
     + " are SPECIFIED and NOT BUILT. They are absent from `tools/list` on purpose, and their "
@@ -776,8 +797,8 @@ _ENVELOPE_NOTES = (
     "last page of every walk, and a caller looping on it asks forever for a page that does not "
     "exist.\n"
     "- **`truncation.next_cursor` is OPAQUE.** Pass it back unchanged as `cursor` with the "
-    "same window and account; never read one, build one, or edit one. It is present when and "
-    "only when there is another page to read.\n"
+    "same window, account and filters; never read one, build one, or edit one. It is present "
+    "when and only when there is another page to read.\n"
     f"- **Warnings have a vocabulary of their own**, with what each kind means and what to do "
     f"about it, at `{WARNINGS_URI}`."
 )

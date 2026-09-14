@@ -34,6 +34,53 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-14: `query_transactions` filters by category, a signed amount range and a literal search
+
+<!-- prawduct: scope=transaction-filters -->
+
+**Why:** #20's owner ruling makes inflows reachable, and two of its three deliverables had shipped
+(`money_summary` and cursor pagination). The filters AC-9.1 names for `query_transactions` had not,
+so a question about one refund meant paging the whole window by hand.
+
+**What changed (Chunk 01):**
+
+- **AC-9.6 states the filter semantics** for category, amount and text, including the owner's
+  2026-09-14 rulings: one literal `search` over `description` and `merchant`, signed amount bounds,
+  and a warning on every search.
+- **`category`** matches the effective category (override, else source, else `UNCATEGORIZED`) through
+  one shared expression, which `money_summary`'s category grouping now also uses. A group key passed
+  back selects exactly the transactions that group counted. A category no live transaction carries
+  is refused, naming the categories that exist.
+- **`min_amount_minor_units` / `max_amount_minor_units`** bound the signed amount inclusively. A
+  transposed range and an integer SQLite cannot bind are refused as `invalid_argument`.
+- **One `TransactionFilter` value** feeds both the SQL predicates and the cursor fingerprint, so a
+  cursor resumes only a request with the same filters. An unfiltered request hashes exactly what it
+  did before, so cursors issued by the previous build still resume.
+- The filters narrow the rows and `truncation.matching`, never the coverage figures. The cursor
+  wording in the tool schema, the truncation remedy, the envelope reference, the client guide and
+  the contract now say "the same window, account and filters".
+- **VRF-025 and VRF-026** re-raise VRF-020 and VRF-021 on the term their acceptance set.
+
+**What changed (Chunk 02):**
+
+- **`search`** matches its text as a literal, case-insensitive substring of `description` or
+  `merchant`, through `instr`, so `%` and `_` mean themselves. Case folds over Unicode through a
+  function registered on read-role handles, because SQLite's own folding stops at ASCII. A blank or
+  over-200-character term is refused. The fold's cost was measured at about 2ms per 10,000 rows
+  (`mcp-search-latency-2026-09-14.md`).
+- **`search_is_literal`**, a new request-scoped warning, rides every answer a search ran for, empty
+  or not. Its detail names the term and the whole request's match count, so it reads the same on
+  every page. An unreadable store's answer carries only `partial`, since no match ran.
+- **Every claim that filtering is impossible is retired:** the server instructions, the envelope
+  reference's "cannot answer" list (which now names what `search` cannot do), the contract's
+  descope note and AC-9.1's build status. The warning is defined in the contract table, the
+  warnings reference and the client guide. A go-red case pins the retired primer claim.
+- **From Chunk 01's review:** the category existence check now reads through the row query's own
+  predicates and join, so a category only a superseded generation carries is refused. The SQLite
+  integer refusal is tested on all four bounds.
+- **VRF-027** asks whether a model in a real client uses `search` and reports a miss as a literal
+  miss rather than as "no refund".
+
 ## 2026-09-13: A stopped balance names the account that took it over, and a disclosure names only what the request reaches
 
 <!-- prawduct: scope=investments-v1 -->

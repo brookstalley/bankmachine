@@ -785,10 +785,11 @@ Required tools:
 | `find_recurring` | Detected recurring charges with cadence, amount drift, last-seen |
 | `get_coverage_report` | Per account: first and last transaction date, gaps against the account's own cadence, source breakdown |
 
-*(Build status 2026-09-13: `get_pipeline_health`, `list_accounts`, `list_holdings`,
-`balance_history`, `query_transactions`, `money_summary` and `get_coverage_report` are implemented;
-`find_recurring` is not yet built, and the descope — including what the shipped tools do not yet
-carry — is recorded in `.prawduct/artifacts/api-contract.md`.)*
+*(Build status 2026-09-14: `get_pipeline_health`, `list_accounts`, `list_holdings`,
+`balance_history`, `query_transactions`, `money_summary` and `get_coverage_report` are implemented,
+and `query_transactions` carries every filter named above under AC-9.6; `find_recurring` is not yet
+built, and the descope — including what the shipped tools do not yet carry — is recorded in
+`.prawduct/artifacts/api-contract.md`.)*
 
 > 🔴 **`list_accounts`'s "lifecycle state" has never been on the wire (2026-09-09).** It is
 > named in the row above and in `api-contract.md`'s equivalent table, and it was never built.
@@ -844,6 +845,36 @@ analysis that looks right.
 
 **AC-9.5** — Coverage is reported **per account, never per institution.** One institution may hold
 many accounts with different coverage windows, and an institution-level summary hides that.
+
+**AC-9.6** — 🔴 **`query_transactions`' filters are exact about what they select, and a filter that
+could only select nothing by mistake is refused rather than answered empty.** *(Owner ruling
+2026-09-14 on the text, amount and warning semantics; the category rules are inferred from the
+`account_id` precedent and recorded as vetoable in `build-plan-transaction-filters.md`.)*
+
+- **Category** matches the **effective** category exactly: the operator's override where there is
+  one, else the source category, else `UNCATEGORIZED`. It is the value `money_summary` reports as a
+  category `group_key`, so a group's key passed back selects exactly the transactions that group
+  counted. A category no live transaction in the store carries is refused, and the refusal names the
+  categories that exist. Existence is judged against the store, never the window: a real category
+  with no rows in this window is an ordinary empty answer.
+- **Amount** is bounded by `min_amount_minor_units` and `max_amount_minor_units`, both inclusive,
+  compared with the **signed** amount a row carries (money out is negative), in that row's own
+  currency's minor units and never converted. A minimum above the maximum is refused.
+- **Text** is one `search` term, matched as a case-insensitive substring against `description` or
+  `merchant`, with no wildcard characters. An empty or whitespace-only term is refused. 🔴 Every
+  answer a search was run for carries a request-scoped warning that the match is literal and that a
+  miss is not proof of absence. An answer from a store that could not be read carries `partial`
+  instead: no match ran, so there is no match to qualify.
+- Filters compose with one another, the window and the account. They narrow the rows and
+  `truncation.matching`, and never the coverage figures beside them. A cursor resumes only a request
+  carrying the same filters.
+
+*Why:* the filters make an inflow reachable by name, which is #20's ruling — reachability, no
+netting. Each rule closes the one way its filter could hand back a believable wrong answer: a
+misspelled category reads as "none", a transposed range as "nothing that size", a sign read the
+other way as the opposite direction, and a substring defeated by an institution's abbreviation as
+"no refund". An undercount gets believed, so the last of these is warned about on every search
+rather than only when nothing matched.
 
 ---
 

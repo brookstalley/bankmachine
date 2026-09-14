@@ -163,6 +163,11 @@ REQUEST_SCOPED_KINDS: tuple[str, ...] = (
     # this entry as a single firing rule and making the health emitter obey it
     # would delete exactly that case.
     "roster_observed_empty",
+    # 🔴 A text search matched literally, so it can miss a row it was meant to
+    # find: an institution's abbreviation defeats a substring. It rides EVERY
+    # searched answer rather than only an empty one, because a search that found
+    # three of five refunds looks complete and an undercount gets believed.
+    "search_is_literal",
 )
 
 #: The warning vocabulary the API contract fixes. Named here as a tuple rather
@@ -520,7 +525,90 @@ _CURSOR_REFUSAL = (
 _CURSOR_SCHEME = 2
 
 
-def _request_fingerprint(*, since: date | None, until: date | None, account_id: int | None) -> str:
+#: The longest `search` accepted. A term past it is a pasted paragraph rather
+#: than the distinctive part of a counterparty's name.
+MAX_SEARCH_LENGTH = 200
+
+
+class BadFilterError(ValueError):
+    """A filter value that can select nothing, refused rather than answered empty.
+
+    Rides the same boundary path `InvertedWindowError` does, for its reason: a
+    range with its bounds transposed selects no rows, and `rows: []` is a
+    believable answer to "which refunds over $400 arrived" -- so an ordinary slip
+    would come back as a confident nothing rather than as a complaint.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class TransactionFilter:
+    """What narrows `query_transactions` beyond its window and account. AC-9.6.
+
+    🔴 **One value, read by the statement AND by the cursor.** The predicates are
+    built from it in `query._transaction_filters` and a cursor's fingerprint is
+    taken over it here, and the two must describe the same result set: a filter
+    the statement applied and the fingerprint forgot lets page two of a `TRAVEL`
+    walk resume a `FOOD_AND_DRINK` one, answering with real rows that read as a
+    continuation. Carried as one value so a field added later reaches both by
+    construction rather than by someone remembering the second site.
+
+    An invalid value cannot be built, so no reader has to check one again.
+    """
+
+    #: The EFFECTIVE category, matched exactly: the operator's override where there
+    #: is one, else the source category, else `UNCATEGORIZED` -- the value
+    #: `money_summary(group_by=category)` reports as `group_key`.
+    category: str | None = None
+    #: Inclusive bounds on the SIGNED amount, in each row's own currency's minor
+    #: units. Money out is negative, so "spent $100 or more" is a MAXIMUM of -10000.
+    min_amount_minor: int | None = None
+    max_amount_minor: int | None = None
+    #: Text matched as a literal, case-insensitive substring of `description` or
+    #: `merchant`. No character in it is a wildcard.
+    search: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.search is not None and not self.search.strip():
+            # It would match every transaction, so a blank that reached this
+            # argument by mistake would come back as the unfiltered answer.
+            raise BadFilterError(
+                "search is empty or only whitespace, which would match every transaction. "
+                "Omit it to ask for every row, or give the text to look for"
+            )
+        if self.search is not None and len(self.search) > MAX_SEARCH_LENGTH:
+            raise BadFilterError(
+                f"search is {len(self.search)} characters and at most {MAX_SEARCH_LENGTH} are "
+                f"accepted. Search for the distinctive part of the text instead"
+            )
+        low, high = self.min_amount_minor, self.max_amount_minor
+        if low is not None and high is not None and low > high:
+            raise BadFilterError(
+                f"min_amount_minor_units ({low}) is above max_amount_minor_units ({high}), "
+                f"so the range selects nothing. Amounts are signed and money out is "
+                f"negative: 'spent $100 or more' is max_amount_minor_units=-10000"
+            )
+
+    def material(self) -> list[object]:
+        """Every field, in a fixed order, for the fingerprint to hash."""
+        return [self.category, self.min_amount_minor, self.max_amount_minor, self.search]
+
+    @property
+    def narrows(self) -> bool:
+        return any(value is not None for value in self.material())
+
+
+#: The filter that narrows nothing: every reader's default, so a caller passing
+#: none gets exactly the result set it got before filters existed.
+UNFILTERED = TransactionFilter()
+
+
+def _request_fingerprint(
+    *,
+    since: date | None,
+    until: date | None,
+    account_id: int | None,
+    narrowed_by: TransactionFilter = UNFILTERED,
+) -> str:
     """Which result set a cursor belongs to, short enough to travel inside one.
 
     🔴 A keyset position is only meaningful inside the query that produced it.
@@ -532,10 +620,16 @@ def _request_fingerprint(*, since: date | None, until: date | None, account_id: 
     `limit` is deliberately not part of it: it chooses how much of a result set
     comes back per page, not which result set that is, and a caller changing it
     between pages is doing something ordinary.
+
+    The filter's fields are appended only when one is set, so an unfiltered
+    request hashes exactly what it hashed before filters existed. A client
+    relaunches this server as a subprocess, and a cursor one build issued and the
+    next build receives is ordinary traffic that should still resume.
     """
-    material = json.dumps(
-        [iso_or_none(since), iso_or_none(until), account_id], separators=(",", ":")
-    )
+    fields: list[object] = [iso_or_none(since), iso_or_none(until), account_id]
+    if narrowed_by.narrows:
+        fields.extend(narrowed_by.material())
+    material = json.dumps(fields, separators=(",", ":"))
     # Eight bytes, because this discriminates a caller's mistake and is not a
     # signature. A forged cursor reaches only rows the request's own filters
     # already admit, at a position `since` could have reached anyway.
@@ -583,12 +677,15 @@ class Cursor:
         since: date | None,
         until: date | None,
         account_id: int | None,
+        narrowed_by: TransactionFilter = UNFILTERED,
     ) -> Cursor:
         """The only route that should build one, so the fingerprint cannot be forgotten."""
         return cls(
             ledger_date=ledger_date,
             transaction_id=transaction_id,
-            request=_request_fingerprint(since=since, until=until, account_id=account_id),
+            request=_request_fingerprint(
+                since=since, until=until, account_id=account_id, narrowed_by=narrowed_by
+            ),
         )
 
     def encode(self) -> str:
@@ -638,6 +735,7 @@ def parse_cursor(
     since: date | None,
     until: date | None,
     account_id: int | None,
+    narrowed_by: TransactionFilter = UNFILTERED,
 ) -> Cursor | None:
     """A `cursor` argument, decoded and checked against the request carrying it.
 
@@ -650,7 +748,9 @@ def parse_cursor(
     if text is None:
         return None
     cursor = Cursor.decode(text)
-    if cursor.request != _request_fingerprint(since=since, until=until, account_id=account_id):
+    if cursor.request != _request_fingerprint(
+        since=since, until=until, account_id=account_id, narrowed_by=narrowed_by
+    ):
         raise MalformedCursorError(_CURSOR_REFUSAL)
     return cursor
 
@@ -1006,8 +1106,8 @@ class Truncation:
         )
         if self.next_cursor is not None:
             remedy = (
-                f"Pass this answer's `next_cursor` back as `cursor`, with the same window "
-                f"and account, to read the next page. {remedy}"
+                f"Pass this answer's `next_cursor` back as `cursor`, with the same window, "
+                f"account and filters, to read the next page. {remedy}"
             )
         caveats.append(
             Caveat(
