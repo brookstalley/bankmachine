@@ -40,7 +40,13 @@ governed_by:
       - "the aggregator's API is the only network destination → inapplicable because nothing here reaches the network"
 partition: serial — the chunks share little code but Chunk 02 and Chunk 03 both edit `store/schema.py` and the change-log, and the whole is small enough that a delegate's integration cost exceeds the wall clock it would save.
 last_validated: 2026-09-14
+lifecycle: completed
+archived: 2026-09-14
+released_in: v0.1.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build plan — three investments follow-ups: the bill, a CUSIP, and rows from an older derivation
 

@@ -1630,3 +1630,29 @@ transactions, so a paycheck and a bill at a second institution are still owed. T
 **Drain with:** `prawduct-hook verify-operator-verification VRF-037`
 
 **Accepted:** 2026-09-14 — rationale: Accepted to open the empty-complete-transactions-page PR (#123), which bears on neither entry: it changes when a transactions feed with no cursor is recorded as landed, and no pending-hold or sign handling. VRF-036 needs a real pending transaction watched across settlement, which production (live since 2026-09-11) has not yet held long enough. VRF-037 needs a paycheck and a bill at a second institution with cash accounts, and the second production institution is investment-only. Each is re-raised as a fresh pending entry on the next branch, as VRF-034/035 were, so this acceptance discharges the block and not the obligation.
+
+## VRF-038 — one real pending transaction watched across settlement
+
+**Status:** pending
+
+**Chunk:** production-data semantics (#22) · **Raised:** 2026-09-14
+
+**Why a human:** unchanged from **VRF-005**, which carries the full procedure and is the entry to
+follow. Re-raised from VRF-036, which was accepted to open the empty-complete-transactions-page PR on
+the term that it be raised again on the next branch. Production has been live since 2026-09-11 and
+has not yet held a real pending row across its settlement. The obligation is **#22**.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-038`
+
+## VRF-039 — the sign convention on a real inflow, across two institutions
+
+**Status:** pending
+
+**Chunk:** production-data semantics (#23) · **Raised:** 2026-09-14
+
+**Why a human:** unchanged from **VRF-006**, which carries the full procedure and is the entry to
+follow. Re-raised from VRF-037 on the same term as VRF-038. Two institutions are enrolled in
+production, but the second is investment-only and carries no cash transactions, so a paycheck and a
+bill at a second institution are still owed. The obligation is **#23**.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-039`

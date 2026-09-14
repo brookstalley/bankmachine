@@ -33,7 +33,13 @@ governed_by:
       - "the daily balance and holdings series are append-only → inapplicable because this plan neither reads nor writes either series"
 partition: serial — both chunks edit `query._transaction_filters`, `query.list_transactions`, the `query_transactions` definition in `mcp.py` and the cursor fingerprint in `envelope.py`; 02's `search` extends the filter value 01 introduces, so a second delegate would be writing into a type the first had not settled.
 last_validated: 2026-09-14
+lifecycle: completed
+archived: 2026-09-14
+released_in: v0.1.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build plan — filters on `query_transactions`, so a refund can be found
 

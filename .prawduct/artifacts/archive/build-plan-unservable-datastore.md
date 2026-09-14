@@ -23,7 +23,13 @@ governed_by:
       - "§ Direction: *no component creates the datastore implicitly* → conforms; nothing here creates, migrates or writes anything. The refusal is emitted from a read path and its remedy NAMES `store init` rather than performing it, which is the norm's distinction held exactly"
       - "§ Direction: *every writable handle comes from the one writer factory, and that factory takes the exclusive writer lock* → conforms; no writable handle is opened in `src/` by this change. The new tests build their states through the two handles that already exist: `initializing_writer` for a pre-migration store (the migration runner's handle, and the one path permitted to open an unsupported schema) and `writer()` for stamping a version forward on a healthy one. Both are the factory rather than around it — no test opens a connection of its own"
       - "§ Direction: *every read-role handle is opened read-only at the file (`mode=ro`), holds no read snapshot* → conforms; `inspect` already opens with `require_supported_schema=False` and this change reads its result rather than changing how it opens"
+lifecycle: completed
+archived: 2026-09-14
+released_in: v0.1.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build Plan — an unservable datastore refuses, loudly
 

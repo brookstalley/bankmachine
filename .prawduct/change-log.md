@@ -36,7 +36,7 @@
 
 ## 2026-09-14: A transactions feed that finishes empty is recorded as landed
 
-<!-- prawduct: scope=empty-complete-transactions-page -->
+<!-- prawduct: scope=empty-complete-transactions-page | release=v0.1.0 -->
 
 **Why:** the first investment-only institution enrolled in production answered `/transactions/sync`
 with `HISTORICAL_UPDATE_COMPLETE`, no changes and an empty `next_cursor`. The run reported the
@@ -66,7 +66,7 @@ this branch cannot supply.
 
 ## 2026-09-14: An investments window is concluded with the page that closes it
 
-<!-- prawduct: scope=window-concluded-with-its-page -->
+<!-- prawduct: scope=window-concluded-with-its-page | release=v0.1.0 -->
 
 **Why:** #113. A sync archived and derived each investments page under one writer handle. Then it
 acquired a second handle to conclude the window: soft-delete what the window did not return, and
@@ -99,7 +99,7 @@ windows, and is #122 (`stage: research`).
 
 ## 2026-09-14: Five records an unattended run left untrue, fixed before production
 
-<!-- prawduct: scope=pre-production-fixes -->
+<!-- prawduct: scope=pre-production-fixes | release=v0.1.0 -->
 
 **Why:** the owner ruled that the first production connection does not happen with these open. Each
 made the durable record of an unattended run misstate what happened, or bury what it said.
@@ -134,7 +134,7 @@ log record. The seed values in `tests/test_mcp.py` moved to a real code.
 
 ## 2026-09-14: Every answer says when its rows were derived by another version
 
-<!-- prawduct: scope=investments-followups -->
+<!-- prawduct: scope=investments-followups | release=v0.1.0 -->
 
 **Why:** #116. `DERIVATION_VERSION` moved from 10 to 11 with no migration, and a store derived at 10
 kept serving what the older logic produced, with nothing on any answer to say so. Only a change-log
@@ -166,7 +166,7 @@ re-points at 012 and keeps 011's fixture as `populated_before_the_refused_holdin
 
 ## 2026-09-14: A CUSIP reads as itself in `sync shell`
 
-<!-- prawduct: scope=investments-followups -->
+<!-- prawduct: scope=investments-followups | release=v0.1.0 -->
 
 **Why:** #112. The shell masks any run of eight or more digits as an account number, so an
 all-digit CUSIP such as `037833100` would read `****3100`. A CUSIP is a public identifier, printed
@@ -191,7 +191,7 @@ check digit, dropping the column condition, and removing the flag.
 
 ## 2026-09-14: The investments bill is two subscriptions, and the artifacts now say so
 
-<!-- prawduct: scope=investments-followups -->
+<!-- prawduct: scope=investments-followups | release=v0.1.0 -->
 
 **Why:** #106 asked whether the capability gate's union read would initialize and bill investments
 on Items that only *could* serve them. Enrollment already asks for `investments` optionally, so that
@@ -216,7 +216,7 @@ settled it on 2026-09-12.
 
 ## 2026-09-14: `query_transactions` filters by category, a signed amount range and a literal search
 
-<!-- prawduct: scope=transaction-filters -->
+<!-- prawduct: scope=transaction-filters | release=v0.1.0 -->
 
 **Why:** #20's owner ruling makes inflows reachable, and two of its three deliverables had shipped
 (`money_summary` and cursor pagination). The filters AC-9.1 names for `query_transactions` had not,
@@ -263,7 +263,7 @@ so a question about one refund meant paging the whole window by hand.
 
 ## 2026-09-13: A stopped balance names the account that took it over, and a disclosure names only what the request reaches
 
-<!-- prawduct: scope=investments-v1 -->
+<!-- prawduct: scope=investments-v1 | release=v0.1.0 -->
 
 **Why:** a real client read of the sandbox store (VRF-023) found two warnings stating something
 false. `account_no_longer_active` on `balance_history` said a net worth read across a stopped
@@ -286,7 +286,7 @@ disclosure named every span in the store, so `query_transactions(account_id=21)`
 
 ## 2026-09-13: An investment account's trades and positions count as coverage
 
-<!-- prawduct: scope=investments-v1 -->
+<!-- prawduct: scope=investments-v1 | release=v0.1.0 -->
 
 **Why:** an account whose only activity is trades and positions read `transaction_count` 0, and both
 listings raised `accounts_without_coverage` for it. That told an agent to distrust an account whose
@@ -307,7 +307,7 @@ data is in the store (#107).
 
 ## 2026-09-13: Net worth that says what stopped counting, and a holdings total that is not a second balance
 
-<!-- prawduct: scope=investments-v1 -->
+<!-- prawduct: scope=investments-v1 | release=v0.1.0 -->
 
 **Why:** a net-worth total is the most believable wrong number this product can emit, and it goes
 wrong silently in two ways. It can count an investment account twice, once as its balance and again
@@ -347,7 +347,7 @@ record per position per day.
 
 ## 2026-09-13: Net worth over time, and each account's balance history, from one series
 
-<!-- prawduct: scope=investments-v1 -->
+<!-- prawduct: scope=investments-v1 | release=v0.1.0 -->
 
 **Why:** the server had no answer to "what was my net worth last month". Only the latest balance per
 account was served, and the primer told an agent the question was unanswerable, although every
@@ -387,7 +387,7 @@ capture, rather than calling that feed working.
 
 ## 2026-09-13: A holdings answer says what it cannot vouch for, and names the positions it refused
 
-<!-- prawduct: scope=investments-v1 -->
+<!-- prawduct: scope=investments-v1 | release=v0.1.0 -->
 
 **Why:** `list_holdings` served three well-formed answers that were quietly wrong. It presented a
 2021 price on a 2026 capture as a current value. It dropped any position in a unit this build
@@ -430,7 +430,7 @@ capture now decides.
 
 ## 2026-09-13: `list_holdings` serves positions, with the date of the price each is valued at
 
-<!-- prawduct: scope=investments-v1 -->
+<!-- prawduct: scope=investments-v1 | release=v0.1.0 -->
 
 **Why:** wave 1 stored what is inside an investment account and no tool read it, so an agent asked
 about positions was told the server could not answer. And the one date the aggregator puts on a
@@ -463,7 +463,7 @@ ambiguous anchor as `AMBIGUOUS`, and the sub-second reach test fails on one.
 
 ## 2026-09-13: Stop telling every agent that holdings are not stored
 
-<!-- prawduct: scope=investments-v1 -->
+<!-- prawduct: scope=investments-v1 | release=v0.1.0 -->
 
 **Why:** the envelope reference's "what this server cannot answer" said "No security, quantity or
 cost basis is stored" — true before wave 1, false after it, and served to every agent that reads
@@ -487,7 +487,7 @@ and the corrected step 5 and 6 procedures recorded in the entry.
 
 ## 2026-09-12: Wave 1 verified against the real sandbox, and what that found
 
-<!-- prawduct: scope=investments-v1 -->
+<!-- prawduct: scope=investments-v1 | release=v0.1.0 -->
 
 **Why:** three operator-verification entries (VRF-017, VRF-018, VRF-019) stood between wave 1
 and its PR, and each names a claim no test in this repo can make: that the whole path works
@@ -557,7 +557,7 @@ run-level summary rather than the connection line it named.
 
 ## 2026-09-12: A rebuild stops resurrecting the transactions the source dropped
 
-<!-- prawduct: scope=investments-v1 -->
+<!-- prawduct: scope=investments-v1 | release=v0.1.0 -->
 
 **Why:** AC-5.2 says the normalized tables are rebuildable from the raw responses alone, and
 with investments in the store that had become false in one direction no test could see. A
@@ -669,7 +669,7 @@ modelled at all, since the feed sends tax lots and this build drops every one.
 
 ## 2026-09-12: A connection is no longer one stream, and the health surface says so
 
-<!-- prawduct: scope=investments-v1 -->
+<!-- prawduct: scope=investments-v1 | release=v0.1.0 -->
 
 **Why:** AC-4.4 names silent staleness as this system's primary failure mode, and a second
 sync domain that no surface reports is silent staleness with a new cause. Two domains now
@@ -725,7 +725,7 @@ brookstalley/bankmachine#107.
 
 ## 2026-09-12: Investment transactions, and a removal signal that had to be derived
 
-<!-- prawduct: scope=investments-v1 -->
+<!-- prawduct: scope=investments-v1 | release=v0.1.0 -->
 
 **Why:** AC-3.3 was the second of FR-3's two unimplemented acceptance criteria. Holdings say
 what an account holds *today*; nothing said what moved it there. `investment_transactions`
@@ -800,7 +800,7 @@ display name, and the structural facts the fixtures are the oracle for are untou
 
 ## 2026-09-12: What is inside an investment account, recorded for the first time
 
-<!-- prawduct: scope=investments-v1 -->
+<!-- prawduct: scope=investments-v1 | release=v0.1.0 -->
 
 **Why:** the schema for investments has existed since build step 1 and every one of its
 tables was empty. `securities`, `holdings` and `investment_transactions` were created,
@@ -859,7 +859,7 @@ refusal on every rebuild.
 
 ## 2026-09-12: The gate runs somewhere that is not the author's machine
 
-<!-- prawduct: scope=ci-runs-the-gate -->
+<!-- prawduct: scope=ci-runs-the-gate | release=v0.1.0 -->
 
 **Why:** `scripts/check.sh` runs every declared check, and exactly one thing launched it —
 the governance gate on the machine of whoever was editing. `.githooks/pre-push` does not run
@@ -904,7 +904,7 @@ was checked against real `security list-keychains` output locally and never on a
 
 ## 2026-09-12: mypy is green, and four declared checks now run under one exit code
 
-<!-- prawduct: scope=mypy-green-and-gated -->
+<!-- prawduct: scope=mypy-green-and-gated | release=v0.1.0 -->
 
 **Why:** `project-preferences.md` declared checks that nothing ran (brookstalley/bankmachine#92).
 mypy was declared and red; `ruff format --check` was declared and, on 2026-09-08 merging
@@ -936,7 +936,7 @@ directory is type-checked from now on.**
 
 ## 2026-09-11: A re-issued roster is counted once, and the exclusion is disclosed
 
-<!-- prawduct: scope=duplicated-roster-double-count -->
+<!-- prawduct: scope=duplicated-roster-double-count | release=v0.1.0 -->
 
 **Why:** `money_summary` for 2026-08 returned `outflow_minor_units: 2229892` against a true
 `1114946` — **exactly 2×** — with every account appearing twice at identical figures and
@@ -1003,7 +1003,7 @@ the older's — was rejected because it breaks the common case of a new Item gra
 
 ## 2026-09-11: A write on an environment nobody chose is refused
 
-<!-- prawduct: scope=environment-guard -->
+<!-- prawduct: scope=environment-guard | release=v0.1.0 -->
 
 **Why:** `environment` fell back to `sandbox` whenever nothing selected it, and every
 per-environment container is keyed on that value — `plaid:<env>` and `datastore:<env>` in the
@@ -1080,7 +1080,7 @@ file is the durable answer for anyone who would rather not export.
 
 ## 2026-09-10: An expired login is repaired in place, not re-linked
 
-<!-- prawduct: scope=connections-reauth -->
+<!-- prawduct: scope=connections-reauth | release=v0.1.0 -->
 
 **Why:** the product's only answer to `ITEM_LOGIN_REQUIRED` — its most common production event —
 was *re-run `bankmachine enroll` and pick the same institution*, and that operation destroys data
@@ -1166,7 +1166,7 @@ institutions that give no stable account id. Both are #91.
 
 ## 2026-09-10: The sync shell's role line stops stranding its reader
 
-<!-- prawduct: scope=shell-banner-role-line -->
+<!-- prawduct: scope=shell-banner-role-line | release=v0.1.0 -->
 
 **Why:** the banner read `writes are refused and no PRAGMA changes that`. It was complete as
 authored — `that` is a demonstrative, standing for the fact that writes are refused — and it still
@@ -1202,7 +1202,7 @@ diagnosis was not, which is why the issue records both.
 
 ## 2026-09-10: A datastore can be backed up at any schema version
 
-<!-- prawduct: scope=backup-at-any-schema-version -->
+<!-- prawduct: scope=backup-at-any-schema-version | release=v0.1.0 -->
 
 **Why:** `store backup` opened through the ordinary writer factory, so it inherited the check that
 stops a process serving a schema version it does not recognize — and a store already sitting at such
@@ -1257,7 +1257,7 @@ wrong was the workaround, not the absence of a note.
 
 ## 2026-09-10: The operator can get the datastore key out, check it, and put it back
 
-<!-- prawduct: scope=datastore-key-escrow -->
+<!-- prawduct: scope=datastore-key-escrow | release=v0.1.0 -->
 
 **Why:** the datastore key cannot be recovered from the datastore, and `balances_daily` is the one
 series no re-sync rebuilds — so a lost key is permanent data loss with no remedy. The product warned
@@ -1356,7 +1356,7 @@ wherever the operator actually stored it — is still owed and sandbox cannot re
 
 ## 2026-09-10: Production cutover hardening — what five reviews found the night before real accounts
 
-<!-- prawduct: scope=production-cutover-hardening -->
+<!-- prawduct: scope=production-cutover-hardening | release=v0.1.0 -->
 
 **Why:** the owner connects real accounts the next day. Five independent read-only reviews of
 `develop` at `4b78550` — security, MCP surface, money model, sync/connector, docs — found no
@@ -1429,7 +1429,7 @@ account with no currency anywhere.
 
 ## 2026-09-09: A store this build cannot serve refuses, instead of answering zero
 
-<!-- prawduct: scope=unservable-datastore -->
+<!-- prawduct: scope=unservable-datastore | release=v0.1.0 -->
 
 **Why:** a populated datastore at a schema version this build does not serve was reported to the
 client as a **success** — `isError` false, no JSON-RPC error, `rows: []`, every `coverage` figure
@@ -1482,7 +1482,7 @@ narrower than what shipped.
 
 ## 2026-09-09: The roster observation is recorded, and the contract describes what it publishes
 
-<!-- prawduct: scope=production-blocker-findings -->
+<!-- prawduct: scope=production-blocker-findings | release=v0.1.0 -->
 
 **Why:** the previous cycle closed three production blockers and produced three findings it
 deliberately did not fix in place. One of them was a shipped answer that is knowably wrong at a real
@@ -1537,7 +1537,7 @@ Replacing the sweep with the extraction contract's parser fixes both that and `#
 
 ## 2026-09-09: Three answers that could be wrong in silence now say so on the wire
 
-<!-- prawduct: scope=production-blockers -->
+<!-- prawduct: scope=production-blockers | release=v0.1.0 -->
 
 **Why:** three answers this product gives were plausible, well-formed, and capable of being
 wrong with no signal at all. A balance frozen since an account stopped being reported still
@@ -1590,7 +1590,7 @@ value reachable in the read path and unreachable in the product, filed as `#48`.
 
 ## 2026-09-09: The wire envelope becomes its own module, before the next tool lands
 
-<!-- prawduct: scope=envelope-module-split -->
+<!-- prawduct: scope=envelope-module-split | release=v0.1.0 -->
 
 **Why:** `query.py` had grown to 2101 lines owning two separable things — the envelope
 model every MCP answer is built from, and the SQL for all five tools. An envelope change
@@ -1626,7 +1626,7 @@ both reference documents are byte-identical to `develop`, diffed rather than eye
 
 ## 2026-09-09: One aggregate that answers spending, income and cashflow — and says which is which
 
-<!-- prawduct: scope=mcp-answer-scope-completion -->
+<!-- prawduct: scope=mcp-answer-scope-completion | release=v0.1.0 -->
 
 **Why:** three different things were all being called spending, and the surface could not tell them
 apart. Measured over the sandbox store's full 24 months, `spending_summary` reported $267,692.77 of
@@ -1686,7 +1686,7 @@ of an aggregate, and this excludes nothing.
 
 ## 2026-09-09: Where a tool's boundary is drawn
 
-<!-- prawduct: scope=mcp-tool-surface-norm -->
+<!-- prawduct: scope=mcp-tool-surface-norm | release=v0.1.0 -->
 
 **Why:** #30 recorded an owner directive — "minimize tools, use actions to cover related
 capabilities" — together with the conflict it implies. MCP allows one `outputSchema` per tool,
@@ -1731,7 +1731,7 @@ sweep moved in the same commit as the merge, which is the `mcp-answer-scope-comp
 
 ## 2026-09-08: The MCP surface says what it is, and what to do about what it says
 
-<!-- prawduct: scope=mcp-alignment -->
+<!-- prawduct: scope=mcp-alignment | release=v0.1.0 -->
 
 **Why:** a review of three sibling projects' MCP practice, read against this server and
 against the SDK's own type definitions at 2.2.0 — the same version this repo cited when it
@@ -1789,7 +1789,7 @@ building the emitter is the aggregate-rule path and is not this wave's.
 
 ## 2026-09-08: A truncated answer carries the route to the rest
 
-<!-- prawduct: scope=mcp-answer-scope -->
+<!-- prawduct: scope=mcp-answer-scope | release=v0.1.0 -->
 
 **Why:** the entry below made a capped answer stop reading as a complete one. It did not make the
 missing rows reachable. The cap is a contract term, narrowing the window moves the boundary rather
@@ -1882,7 +1882,7 @@ pages, the last carrying no cursor and no `rows_truncated` warning. August 2026 
 
 ## 2026-09-08: A capped answer says how much it left behind
 
-<!-- prawduct: scope=mcp-answer-scope -->
+<!-- prawduct: scope=mcp-answer-scope | release=v0.1.0 -->
 
 **Why:** `query_transactions` stops at its row cap and says nothing. An acceptance round measured
 what that costs: the documented default of `limit: 100` silently dropped ~16 months of one
@@ -1983,7 +1983,7 @@ agreed with everything — it now normalizes first and refuses to pass on a fail
 
 ## 2026-09-08: An answer says which window it actually covered
 
-<!-- prawduct: scope=mcp-answer-scope -->
+<!-- prawduct: scope=mcp-answer-scope | release=v0.1.0 -->
 
 **Why:** `spending_summary` over a window that precedes coverage returned no rows, and nothing in
 the payload distinguished "you spent nothing" from "this is not knowable". Four independent
@@ -2056,7 +2056,7 @@ clamping was offered and rejected.
 
 ## 2026-09-08: The log can tell a failed run from a quiet one, and two claims stop being unchecked
 
-<!-- prawduct: scope=observability -->
+<!-- prawduct: scope=observability | release=v0.1.0 -->
 
 **Why:** A scheduled sync leaves one durable trace — the log file — and it recorded a failure and a
 run with nothing to do identically. For a product whose named primary failure mode is silent
@@ -2096,7 +2096,7 @@ cadence.
 
 ## 2026-09-08: A mistyped account id stops getting a confident empty answer
 
-<!-- prawduct: scope=sync-v1 -->
+<!-- prawduct: scope=sync-v1 | release=v0.1.0 -->
 
 **Why:** a fourth acceptance pass, again driving the tools blind, put it in one line — a typo in an
 argument is loud and a typo in an account id is silent, and the silent one is the dangerous one.
@@ -2125,7 +2125,7 @@ axis (#19), not this.
 
 ## 2026-09-08: Refuse the argument you cannot honour, instead of clamping it quietly
 
-<!-- prawduct: scope=sync-v1 -->
+<!-- prawduct: scope=sync-v1 | release=v0.1.0 -->
 
 **Why:** a second session driving the tools blind found that the previous round's `limit` fix had
 replaced one silent answer with another, and that three more inputs returned a confident empty
@@ -2167,7 +2167,7 @@ the aggregator sends (`name` and `merchant_name` both read from the archived bod
 
 ## 2026-09-08: The exception stops crossing the boundary, and a misspelled bound stops lying
 
-<!-- prawduct: scope=sync-v1 -->
+<!-- prawduct: scope=sync-v1 | release=v0.1.0 -->
 
 **Why:** the Critic found the fix above had left the leak it named. The change-log entry called out
 a `StatementError` carrying the SELECT as the defect, and the new test pinned `"SELECT" not in
@@ -2212,7 +2212,7 @@ a real window returns rows.
 
 ## 2026-09-08: Every windowed question was unanswerable, and the checker was told to say so
 
-<!-- prawduct: scope=sync-v1 -->
+<!-- prawduct: scope=sync-v1 | release=v0.1.0 -->
 
 **Why:** `spending_summary` and `query_transactions` failed on *any* `since` or `until` with
 `StatementError: (TemporalError) a calendar date must be a date, got str`. That is every question
@@ -2254,7 +2254,7 @@ annotation is pinned by its own test, and the docstring no longer claims otherwi
 
 ## 2026-09-08: Capabilities are both product lists, and AC-3.2 stops inverting
 
-<!-- prawduct: scope=sync-v1 -->
+<!-- prawduct: scope=sync-v1 | release=v0.1.0 -->
 
 **Why:** the first live enrollment against a second sandbox institution printed
 `capabilities: balance` for a connection that was, at that moment, syncing transactions and
@@ -2299,7 +2299,7 @@ that does not exist; re-enrolling the sandbox connection corrects it for free.
 
 ## 2026-09-08: Transaction sync, and the first MCP slice — the product can be asked questions
 
-<!-- prawduct: scope=sync-v1 -->
+<!-- prawduct: scope=sync-v1 | release=v0.1.0 -->
 
 **Why:** build step 4, and the first slice of step 7. Enrollment gave the product a connection;
 this gives it data, and a way to be asked about it.
@@ -2364,7 +2364,7 @@ every payload, but no test can say whether an *agent* reads them.
 
 ## 2026-09-07: Enrollment — one institution linked, and the states that exist after the token is spent
 
-<!-- prawduct: scope=enrollment-v1 -->
+<!-- prawduct: scope=enrollment-v1 | release=v0.1.0 -->
 
 **Why:** build step 3. The product could reach the aggregator and archive what it said, but it could
 not link an institution, so every table below `connections` had nothing to hang from.
@@ -2418,7 +2418,7 @@ irreversible choice is a human's judgement, not a test's.
 
 ## 2026-09-07: What the cumulative review changed about the derivers
 
-<!-- prawduct: scope=connector-v1 -->
+<!-- prawduct: scope=connector-v1 | release=v0.1.0 -->
 
 **Why:** the bundle review of build step 2 found one blocking defect and two design errors, and
 all three were mine to have caught.
@@ -2474,7 +2474,7 @@ until step 3's first real connection, and account retirement.
 
 ## 2026-09-07: Enrollment, the derivers, and the archive exemption made structural
 
-<!-- prawduct: scope=connector-v1 -->
+<!-- prawduct: scope=connector-v1 | release=v0.1.0 -->
 
 **Why:** build step 2's remaining half. Chunk 03 adds the calls enrollment will make —
 `/link/token/create`, `/item/public_token/exchange`, `/item/get`, `/accounts/get` — and Chunk 04
@@ -2542,7 +2542,7 @@ a control on each.
 
 ## 2026-09-07: The connector's error taxonomy, and the retry channel it feeds
 
-<!-- prawduct: scope=connector-v1 -->
+<!-- prawduct: scope=connector-v1 | release=v0.1.0 -->
 
 **Why:** FR-4 is written in four connection-health states — auth-required, locked,
 institution-down, rate-limit — and until this chunk every aggregator failure reached the
@@ -2611,7 +2611,7 @@ that one recorded shape, so a change in the aggregator's error body moves them a
 
 ## 2026-09-07: The strategy artifacts, and the two gaps writing them exposed
 
-<!-- prawduct: scope=strategy-artifacts -->
+<!-- prawduct: scope=strategy-artifacts | release=v0.1.0 -->
 
 **Why:** `/prawduct:doctor` reported the coverage chain stuck at layer 1 — six expected
 strategy-class artifacts had never been created. They are now written, in the dependency
@@ -2785,7 +2785,7 @@ keychain. Restore has no runbook and has not been rehearsed end to end by a huma
 
 ## 2026-09-06: VRF-002 discharged — the connector's live half, and what the sandbox really serves
 
-<!-- prawduct: scope=connector-v1 -->
+<!-- prawduct: scope=connector-v1 | release=v0.1.0 -->
 
 **Why:** Chunk 01 shipped unticked on purpose. Its success path had never been probed —
 no sandbox credentials existed on this machine, so `tests/connector/fixtures/` was empty
@@ -2831,7 +2831,7 @@ in its own text: the aggregator secret has no environment variable by design, an
 
 ## 2026-09-06: the connector's walking skeleton — the product reaches the outside world
 
-<!-- prawduct: scope=connector-v1 -->
+<!-- prawduct: scope=connector-v1 | release=v0.1.0 -->
 
 **Why:** build step 2 is the aggregator client, and every later step reads through it.
 Chunk 01 proves the whole path before widening it: configuration resolves, the keychain
@@ -2906,7 +2906,7 @@ discharged the same day, once credentials arrived; see the entry above.
 
 ## 2026-09-06: `sync shell` — the operator gets to look inside their own datastore
 
-<!-- prawduct: scope=datastore-v1 -->
+<!-- prawduct: scope=datastore-v1 | release=v0.1.0 -->
 
 **Why:** page encryption breaks every ad-hoc SQL tool — stock `sqlite3` reads this file as corrupt,
 because the pages are ciphertext. Until this command existed there was no way for the operator to
@@ -2997,7 +2997,7 @@ the owner's own eyes.
 
 ## 2026-09-06: Raw preservation and rebuild — a bronze layer that checks its own work
 
-<!-- prawduct: scope=datastore-v1 -->
+<!-- prawduct: scope=datastore-v1 | release=v0.1.0 -->
 
 **Why:** FR-5's bronze/silver split turns a categorization bug into a re-run instead of a re-fetch,
 and a re-fetch is often impossible — an aggregator's history window does not come back. It is built
@@ -3084,7 +3084,7 @@ would have landed on build step 2 rather than here:
 
 ## 2026-09-06: The core schema — thirteen tables, with the requirements built into them
 
-<!-- prawduct: scope=datastore-v1 -->
+<!-- prawduct: scope=datastore-v1 | release=v0.1.0 -->
 
 **Why:** the schema is the format every later consumer depends on, and it was being designed before
 any of those consumers exist. Chunk 02 is the plan's lock-in chunk: the last point at which changing
@@ -3155,7 +3155,7 @@ freshness stamp for an import-only account with no connection.
 
 ## 2026-09-06: The walking skeleton — an encrypted WAL datastore with its four norms enforced
 
-<!-- prawduct: scope=datastore-v1 -->
+<!-- prawduct: scope=datastore-v1 | release=v0.1.0 -->
 
 **Why:** the repository held zero lines of Python. The architecture's four norms were prose claims
 with an open issue (#1) standing in for their mechanism, and an operator had no way to create or
@@ -3265,7 +3265,7 @@ trip it.
 
 ## 2026-09-05: AC-ARCH.7 resolved — the system architecture, measured rather than assumed
 
-<!-- prawduct: scope=architecture -->
+<!-- prawduct: scope=architecture | release=v0.1.0 -->
 
 **Why:** `docs/system-requirements.md` AC-ARCH.7 deliberately deferred journal mode, locking
 behaviour and reader isolation under encryption to "the system architecture" — a document that did
@@ -3351,7 +3351,7 @@ enforcement item re-filed from frozen markdown into the live Issues backend.
 
 ## 2026-09-05: Named — the product is `bankmachine`
 
-<!-- prawduct: scope=rename -->
+<!-- prawduct: scope=rename | release=v0.1.0 -->
 
 **Why:** The working name embedded a third-party trademark and locked the product to one
 aggregator, and build step 1 is what fixes the Python package name, the keychain service name, the
@@ -3388,7 +3388,7 @@ name meets the correction first.
 
 ## 2026-09-05: Repository made publishable — roster out of git, history purged, boundary guarded
 
-<!-- prawduct: scope=repo-sanitization -->
+<!-- prawduct: scope=repo-sanitization | release=v0.1.0 -->
 
 **Why:** The operator restated the product. MCPlaid is a **general-purpose tool, not linked to
 their personal finances** — consumed by Claude Cowork, and possibly released publicly, so nothing

@@ -56,7 +56,13 @@ governed_by:
       - "a transaction is never hard-deleted; removal is a soft delete → inapplicable to C1 and C2. C3 is a discovery ABOUT this norm's columns and must not propose weakening it"
       - "the daily balance and holdings series are append-only → inapplicable; nothing writes `balances_daily` or `holdings`"
       - "every stored amount is signed from the operator's point of view → inapplicable; no chunk changes a stored sign"
+lifecycle: completed
+archived: 2026-09-14
+released_in: v0.1.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build Plan — The Three Findings the Blocker Cycle Produced
 

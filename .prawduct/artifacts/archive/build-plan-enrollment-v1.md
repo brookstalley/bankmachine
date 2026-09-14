@@ -54,7 +54,13 @@ governed_by:
       - "requirement ids unique within a requirements document → 🔴 engaged rather than inapplicable: this plan ADDS `AC-1.3a` to `docs/system-requirements.md`. `tests/preferences/test_requirement_ids_unique.py` is the check, and it passes on the amendment as written"
 partition: serial — all three chunks extend the same two modules (`connector/plaid/client.py` and a new `cli/enroll.py`), and Chunk 02 cannot be specified until Chunk 01's live probe says what Hosted Link actually returns. A fan-out here would have two delegates editing one client module against an API shape neither had confirmed.
 last_validated: null
+lifecycle: completed
+archived: 2026-09-14
+released_in: v0.1.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 ## Requirements Confidence
 

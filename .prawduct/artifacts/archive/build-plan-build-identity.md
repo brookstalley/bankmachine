@@ -12,7 +12,13 @@ governed_by:
       - "additive changes only on the MCP surface: new tools, new optional arguments, new response fields → conforms; this adds one response field and one `serverInfo` key, removes and repurposes nothing"
       - "never remove or repurpose an existing field → conforms; `version` in `serverInfo` keeps its meaning and gains a sibling"
       - "🔴 versioning scheme: none, deferred (recorded 2026-09-05) → NOT reversed by this plan. That decision is about versioning the API CONTRACT so consumers can negotiate. This is build PROVENANCE — which code is running — and it sits with `as_of` and `environment`, not with a version handle. The revisit trigger (a consumer outside this machine) is untouched"
+lifecycle: completed
+archived: 2026-09-14
+released_in: v0.1.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build plan — build identity in every answer
 

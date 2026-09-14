@@ -41,7 +41,13 @@ governed_by:
       - "every silver row carries exclusive provenance and its derivation version → `accounts` carries no `derivation_version_id` and is not rebuildable; C1's AC-12.6 rests on exactly that and must not change it"
       - "the daily balance and holdings series are append-only → inapplicable; nothing here writes `balances_daily` or `holdings`. FR-9 adds a column to `accounts`, which is a dimension table and not one of the two series this norm governs"
       - "🔴 a source value is never overwritten in place → CONFORMS, and it is the one disposition here that needed an argument rather than a check. AC-13.2 requires a settlement to update `amount_minor` IN PLACE, which reads at first like a departure. It is not: the norm protects a source value from being clobbered by LOCAL interpretation, which is why the remedy it names is a separate override column. A settlement replaces one figure the source reported with a later figure the source reported for the same transaction — the source correcting itself, not us reinterpreting it — and both raw responses stay in `raw_responses`, so the hold amount is never lost and the row remains rebuildable. C2 also verified the hold figure is not retained as a second field, which is AC-13.2's own requirement and would otherwise be the tempting way to dodge this question"
+lifecycle: completed
+archived: 2026-09-14
+released_in: v0.1.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build Plan — The Three Production Blockers
 

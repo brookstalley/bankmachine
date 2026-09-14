@@ -23,7 +23,13 @@ governed_by:
       - "🔴 every read-role handle is opened read-only at the file → conforms, unchanged; `reader_connection` keeps its single call site pattern and no code moves across that call"
       - "no component creates the datastore implicitly → inapplicable"
       - "a process that does not recognize the schema version refuses to serve → inapplicable; no schema version is read or written here"
+lifecycle: completed
+archived: 2026-09-14
+released_in: v0.1.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build Plan — Envelope Module Split
 

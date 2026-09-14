@@ -39,7 +39,13 @@ governed_by:
       - "🔴 secrets live only in the OS keychain and nothing returns one into a log, an exception or a payload → conforms, and it is load-bearing on this diff rather than paperwork: the two registration guards raise `ToolRegistrationError` carrying a tool name, a field name and a schema path, and `cmd_mcp` logs that refusal with `logger.exception` on a subprocess whose stderr the operator reads. None of those values is caller-supplied or credential-derived — they are this module's own literals — and no new code path touches `secrets.py` or a connection's `credential_ref`"
       - "log redaction happens at the formatter and over-redacts by design → conforms, unchanged; the one new log line added by this plan goes through the same formatter as every other, and nothing here configures, bypasses or narrows redaction"
       - "🔴 the aggregator's API is the only network destination → conforms, and it is checked rather than asserted: every deliverable reads the local datastore, `mcp.py` and `query.py` gain no import that can reach a socket, and `test_only_the_connector_reaches_the_network.py` holds that for the whole tree with a go-red case that plants an `ssl` import in `query.py`"
+lifecycle: completed
+archived: 2026-09-14
+released_in: v0.1.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build plan — completing the answer-scope cluster
 

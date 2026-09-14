@@ -27,7 +27,13 @@ governed_by:
       - "the CLI's three-way exit code is a contract → inapplicable because this plan changes no exit code"
 partition: serial — one chunk; the disclosure text and the mechanism must land together or the payload asserts something untrue
 last_validated: 2026-09-11
+lifecycle: completed
+archived: 2026-09-14
+released_in: v0.1.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build Plan: A Duplicated Roster Stops Doubling Every Total
 

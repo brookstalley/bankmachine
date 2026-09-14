@@ -28,7 +28,13 @@ governed_by:
       - "a process that does not recognize the datastore's schema version refuses to serve, loudly → inapplicable because this plan changes no schema check; the environment guard runs before it and is a separate refusal"
 partition: serial — chunk 02 re-enters the function chunk 01 guards, and chunk 03 is documentation the first two make true
 last_validated: 2026-09-11
+lifecycle: completed
+archived: 2026-09-14
+released_in: v0.1.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build Plan: A Defaulted Environment Cannot Receive a Write
 

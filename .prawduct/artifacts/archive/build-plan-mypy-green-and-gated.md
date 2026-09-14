@@ -19,7 +19,13 @@ governed_by:
       - "argparse must not echo a credential back → conforms and is untouched. `RedactingParser.error` and the key-escrow `error` keep their bodies verbatim; this plan changes the two functions' RETURN ANNOTATION only, and `parser_class=RedactingParser` stays on the subparsers action so every subcommand parser still redacts"
 partition: serial — chunk 03's gate can only be made green by chunks 01 and 02, and a gate declared before the tree is clean would land red on purpose
 last_validated: 2026-09-12
+lifecycle: completed
+archived: 2026-09-14
+released_in: v0.1.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build Plan: mypy Is Green, And Something Runs It
 

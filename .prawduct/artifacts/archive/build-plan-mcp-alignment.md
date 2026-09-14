@@ -6,7 +6,13 @@ branch: feature/mcp-alignment
 depends_on:
   - artifact: api-contract
     file_path: .prawduct/artifacts/api-contract.md
+lifecycle: completed
+archived: 2026-09-14
+released_in: v0.1.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build plan — MCP surface alignment
 

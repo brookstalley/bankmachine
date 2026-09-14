@@ -22,7 +22,13 @@ governed_by:
       - "requirement ids unique within a requirements document → inapplicable because this plan adds no requirement ids"
 partition: serial — 02 and 03 both extend the same store module and schema, and every chunk builds on 01's connection layer. Nothing here is independent enough to fan out, and the first chunk is the one that must not be built twice.
 last_validated: null
+lifecycle: completed
+archived: 2026-09-14
+released_in: v0.1.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 ## Requirements Confidence
 
