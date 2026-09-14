@@ -99,7 +99,7 @@ shell. #116: a store derived at an older version answers with nothing saying so.
 ## Status
 
 - [x] Chunk 01: The investments bill, stated where the operator decides it
-- [ ] Chunk 02: A CUSIP reads as itself in `sync shell`
+- [x] Chunk 02: A CUSIP reads as itself in `sync shell`
 - [ ] Chunk 03: An answer says when its rows were derived by another version
 
 Context: planned 2026-09-14. Re-raise on this branch before the PR: VRF-025 (#22) and VRF-026 (#23),
@@ -183,8 +183,13 @@ of the new check is measured on a synthetic two-year store, in the same form as
   2. Each new assertion verified by breaking what it names — drop the check digit test and watch the
      aliased case go red; drop the column test and watch the unflagged case go red
   3. Product verified against a scratch copy of the sandbox store
-  4. Committed, then `/prawduct:critic` run and blocking findings resolved
+  4. Committed. Reviewed by Chunk 03's cumulative Critic, not a chunk review of its own
   5. Chunk marked `[x]` in Status
+
+  `[DECISION: no separate chunk Critic for Chunk 02 | a review snapshots the tree, so an edit under
+  review voids it. Chunk 03 edits `store/schema.py` too, and would wait out the whole review. The
+  diff is small, and Chunk 03's `cumulative` covers merge-base...HEAD, which includes it. Amended
+  2026-09-14, mid-build | user can veto]`
 
 ### Chunk 03: An answer says when its rows were derived by another version
 

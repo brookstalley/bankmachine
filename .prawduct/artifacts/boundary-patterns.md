@@ -115,7 +115,7 @@ adds nothing of its own to the refusal — `mode=ro` at the file is what makes
 `PRAGMA query_only = OFF` typed at this prompt harmless. Everything it writes,
 including the statement it echoes back in a piped session, goes through
 `logging_setup`'s redaction, so AC-10.3 has one rule for values rather than one
-per surface. Four boundaries make that rule precise:
+per surface. Five boundaries make that rule precise:
 
 - **Values, not numbers.** Money here is an INTEGER of minor units while an
   account number is TEXT (`accounts.mask`), so redacting integers would blank a
@@ -133,6 +133,17 @@ per surface. Four boundaries make that rule precise:
   and a quantity spelled without a fractional part is masked along with them —
   `****5678` for 12,345,678 shares is over-redaction in the direction this
   surface stays wrong in, and it is visible rather than quietly wrong.
+- **A public identifier is not an account number — on two conditions at once.** A CUSIP is nine
+  characters and often all digits (`037833100`), so the account-number rule rendered it
+  `****3100`, and a CUSIP is printed on every brokerage statement. `schema.py` flags
+  `securities.cusip` through `Column.info`, naming the identifier. The shell prints a cell verbatim
+  only when its result column carries a flag AND the value passes that identifier's own check
+  (`sync.is_cusip`, the check digit). **Neither condition is enough alone.** The driver gives a
+  result column's name and not its table, so `SELECT description AS cusip` puts any value under the
+  flagged name. The check digit alone passes about one random nine-digit number in ten. A flagged
+  identifier with no check in `sync.PUBLIC_IDENTIFIER_SHAPES` is never spared, and a test fails on
+  it. ISIN is not flagged: its two-letter country prefix leaves no eight-digit run for the rule to
+  catch.
 - **Values, not structure.** Schema text is not a redaction surface at all.
   Everything in `sqlite_master` was authored by this repo's migrations, and
   AC-6.6 — enforced by `tests/preferences/test_no_provider_identity.py` — is

@@ -43,6 +43,7 @@ import argparse
 import contextlib
 import re
 import sys
+from collections.abc import Callable, Mapping
 from typing import Final, Protocol
 
 from bankmachine.cli import sync_run
@@ -50,6 +51,7 @@ from bankmachine.cli.parser import AnyParser
 from bankmachine.config import Config
 from bankmachine.logging_setup import redact, redact_free_text
 from bankmachine.store import connection
+from bankmachine.store.schema import public_identifier_columns
 
 with contextlib.suppress(ImportError):  # readline is absent on some platforms
     # Imported for the side effect: it backs `input()` with line editing and
@@ -64,6 +66,41 @@ with contextlib.suppress(ImportError):  # readline is absent on some platforms
 #: characters, so none of them can match this -- while every exact decimal the
 #: store holds is written with the point that identifies it.
 _EXACT_DECIMAL: Final = re.compile(r"-?\d+\.\d+")
+
+#: Nine characters of the CUSIP alphabet: eight of the issue and issuer, then a
+#: check digit that is always a digit.
+_CUSIP_SHAPE: Final = re.compile(r"[0-9A-Z*@#]{8}[0-9]")
+
+
+def is_cusip(value: str) -> bool:
+    """Whether `value` is nine CUSIP characters whose ninth is their check digit.
+
+    The standard's modulus-10 "double add double": each of the first eight
+    characters takes a value (a digit its own, `A`-`Z` 10-35, `*` 36, `@` 37,
+    `#` 38), every second one is doubled, and the digits of each result are
+    summed. The check digit brings that sum to a multiple of ten. It catches
+    every single-character error, which is what lets it stand beside a column
+    name that an alias can forge.
+    """
+    if not _CUSIP_SHAPE.fullmatch(value):
+        return False
+    total = 0
+    for position, character in enumerate(value[:8]):
+        if character.isdigit():
+            worth = int(character)
+        elif character.isalpha():
+            worth = ord(character) - ord("A") + 10
+        else:
+            worth = 36 + "*@#".index(character)
+        if position % 2 == 1:
+            worth *= 2
+        total += worth // 10 + worth % 10
+    return (10 - total % 10) % 10 == int(value[8])
+
+
+#: The check behind each identifier `schema.py` can flag. A flagged column whose
+#: identifier has no entry here is never spared, and a test fails on it.
+PUBLIC_IDENTIFIER_SHAPES: Final[Mapping[str, Callable[[str], bool]]] = {"cusip": is_cusip}
 
 
 class InputStream(Protocol):
@@ -431,7 +468,11 @@ def _print_table(columns: list[str], rows: list[tuple[object, ...]], out: Output
     if not rows:
         print("(no rows)", file=out)
         return
-    cells = [[_render(value) for value in row] for row in rows]
+    identifiers = public_identifier_columns()
+    shapes = [PUBLIC_IDENTIFIER_SHAPES.get(identifiers.get(column, "")) for column in columns]
+    cells = [
+        [_render(value, shape) for value, shape in zip(row, shapes, strict=True)] for row in rows
+    ]
     widths = [len(column) for column in columns]
     for row in cells:
         for index, cell in enumerate(row):
@@ -448,7 +489,7 @@ def _row(cells: list[str], widths: list[int]) -> str:
     return "  ".join(cell.ljust(width) for cell, width in zip(cells, widths, strict=True)).rstrip()
 
 
-def _render(value: object) -> str:
+def _render(value: object, public_identifier: Callable[[str], bool] | None = None) -> str:
     """One cell, as text an operator can read, with AC-10.3 applied.
 
     Redaction runs over text values and not over numbers, and the reason is a
@@ -475,6 +516,16 @@ def _render(value: object) -> str:
     direction to be wrong in here -- so `12345678` shares reads `****5678`,
     visibly masked rather than quietly wrong.
 
+    🔴 **A public identifier is not an account number, and it is spared only on
+    two conditions at once.** A CUSIP is nine characters and often all digits
+    (`037833100`), so the value rule turns it into `****3100`. Yet it is printed
+    on every brokerage statement. `public_identifier` is the check for the
+    identifier `schema.py` flags on this cell's result column, and the cell is
+    printed verbatim only if the value passes it. Neither condition is enough
+    alone. The column is known only by its result name, which `AS cusip` can put
+    over any value. And about one random nine-digit number in ten passes the
+    check digit, so shape alone would spare account numbers.
+
     A blob is summarised rather than printed. `raw_responses.body_gzip` is the
     one that comes up, and a terminal full of gzip is not a debugging
     affordance.
@@ -497,5 +548,9 @@ def _render(value: object) -> str:
     if isinstance(value, bytes):
         return f"<blob, {len(value)} bytes>"
     if isinstance(value, str):
-        return value if _EXACT_DECIMAL.fullmatch(value) else redact(value)
+        if _EXACT_DECIMAL.fullmatch(value):
+            return value
+        if public_identifier is not None and public_identifier(value):
+            return value
+        return redact(value)
     return str(value)

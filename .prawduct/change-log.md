@@ -34,6 +34,31 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-14: A CUSIP reads as itself in `sync shell`
+
+<!-- prawduct: scope=investments-followups -->
+
+**Why:** #112. The shell masks any run of eight or more digits as an account number, so an
+all-digit CUSIP such as `037833100` would read `****3100`. A CUSIP is a public identifier, printed
+on every brokerage statement.
+
+**What changed (build-plan-investments-followups, Chunk 02):** `schema.py` flags `securities.cusip`
+as a public identifier through `Column.info`, naming which identifier. The shell prints a cell
+unmasked only when its result column is flagged AND the value passes `sync.is_cusip`, the CUSIP
+check digit. Neither condition is enough alone: an alias can put any value under a flagged name,
+and about one random nine-digit number in ten passes the check digit. `boundary-patterns.md` gains
+this as the shell's fifth redaction boundary. ISIN is not flagged, because its letter prefix leaves
+no digit run for the rule to catch.
+
+**Verified:** against a scratch copy of the sandbox store through `bankmachine sync shell`. A valid
+CUSIP read whole in `cusip` and masked under `AS label`. A value failing the check digit, and a
+12-digit run aliased `AS cusip`, both read masked. Three mutations were each seen red: dropping the
+check digit, dropping the column condition, and removing the flag.
+
+**Carried with it:** the go-red harness case for the shell's token redaction anchored on the one
+`_render` line this change split, so the harness would have skipped it. It is re-anchored on
+`return redact(value)` and was seen red again with the redaction removed.
+
 ## 2026-09-14: The investments bill is two subscriptions, and the artifacts now say so
 
 <!-- prawduct: scope=investments-followups -->
