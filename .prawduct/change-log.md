@@ -46,7 +46,7 @@ so a question about one refund meant paging the whole window by hand.
 
 - **AC-9.6 states the filter semantics** for category, amount and text, including the owner's
   2026-09-14 rulings: one literal `search` over `description` and `merchant`, signed amount bounds,
-  and a warning on every search. Search itself is the next chunk.
+  and a warning on every search.
 - **`category`** matches the effective category (override, else source, else `UNCATEGORIZED`) through
   one shared expression, which `money_summary`'s category grouping now also uses. A group key passed
   back selects exactly the transactions that group counted. A category no live transaction carries
