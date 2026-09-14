@@ -176,3 +176,19 @@ blocked by them unless they are accepted again.
 ## Context
 
 Branched from `develop` at `4d28caa`. Baseline suite green on that tree (`test-status`).
+
+Built and committed (`61d0c1e` merges #90's branch; `416a519` carries the other four). Every new test
+was run against the pre-change `sync_run.py` and `derivers.py` and failed there.
+
+Two findings from building, recorded here rather than silently absorbed:
+1. **Nine class-name pins, not the eight the plan counted.** The ninth is the domain warning's
+   `detail`, which quotes `last_error_code`. So the code reaches the MCP warning text as well as the
+   field, and the re-pin covers both.
+2. **#93 was exercised on the live sandbox store by accident.** A verification `sync run` from a
+   shell without the aggregator client id degraded Tartan Bank. `get_pipeline_health` now reports
+   `last_error_code: AGGREGATOR_NOT_CONFIGURED` and a `degraded` warning naming that code, which is
+   the ruling holding end to end. `last_success_at` is untouched, and the next successful run
+   restores the connection.
+
+**Still owed for "Done when":** #111's measured stderr line count on a real sandbox sync. That needs
+the operator's own environment. Then the full suite evidence and `/prawduct:critic`.

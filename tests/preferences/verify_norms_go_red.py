@@ -823,7 +823,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # line also closes the expired-login handler just before it, and an
         # unqualified anchor broke that one -- a path this test never takes.
         "        # the one thing AC-4.1 says must never happen.\n"
-        "        return _degrade(config, outcome, type(exc).__name__, str(exc))",
+        "        return _degrade(config, outcome, failure_code(exc), str(exc))",
         "        # the one thing AC-4.1 says must never happen.\n        raise",
         f"{SYNC_RUN_TESTS}::test_one_connection_failing_does_not_stop_the_others",
     ),
