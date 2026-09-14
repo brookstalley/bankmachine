@@ -171,8 +171,11 @@ def source_institution_id_of(item_body: bytes) -> str:
 ENROLLMENT_PRODUCTS: tuple[str, ...] = ("transactions",)
 
 #: Asked for, but never at the cost of an institution. Both products are requested
-#: up front by operator decision (2026-09-07), which bills `investments` on every
-#: connection that has it including deposit-only ones. The recommendation was
+#: up front by operator decision (2026-09-07), which starts the Investments Holdings
+#: subscription on every connection that has the product, deposit-only ones
+#: included. The Investments Transactions subscription is a second fee, and it
+#: starts at that connection's first sync, which calls
+#: `/investments/transactions/get` (`api-notes-plaid.md` §25). The recommendation was
 #: `transactions` alone, because AC-3.2 drives investment pulls off `/item/get`
 #: rather than off what was requested -- and that discovery still runs. 🔴 It runs
 #: only because capabilities read the UNION of `products` and `available_products`:

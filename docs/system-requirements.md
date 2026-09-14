@@ -260,6 +260,13 @@ rather than by detecting a shortfall: the granted window is unobservable on
 remains unbuilt is the READ side, and the tools that would expose it are tracked in
 `.prawduct/artifacts/api-contract.md`.)*
 
+*(Cost ruling, 2026-09-14, owner: the gate reads the union of `products` and
+`available_products` and stays that way. A capable connection therefore carries two monthly
+investments subscriptions at the aggregator. Investments Holdings starts at enrollment, which
+asks for `investments` optionally. Investments Transactions starts at the connection's first sync,
+whose `/investments/transactions/get` call adds it. Both are accepted, and neither is priced here:
+the rate is the owner's contract. Evidence and source: `api-notes-plaid.md` §25.)*
+
 **AC-3.4** — 🔴 **Liability accounts (loans, lines of credit) are covered by account type, balance,
 and transactions — the same path as any other account.** Liability-*product* detail (APR, minimum
 payment, payoff date, statement schedule) is **explicitly out of scope for v1**, and no liabilities

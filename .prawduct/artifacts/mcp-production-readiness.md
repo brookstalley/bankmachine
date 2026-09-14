@@ -440,10 +440,11 @@ item 9 terminal-only. It is a drain away from `verified`, not a piece of work.
    store. This is `#10`, and the cutover is what makes it urgent.
 3. Set `operator_verification_required: true` in `project-state.yaml` before the first production
    cut, so the remaining VRF entries gate rather than advise.
-4. 🔴 **Decide #106 before the first production sync.** Investment sync (2026-09-13) calls the
-   investments endpoints for every Item whose recorded capabilities name the product, including
-   ones where it is only *available*, and the aggregator initializes and bills a product on first
-   use. The sandbox bills nothing, so no test run shows the cost.
+4. ~~**Decide #106 before the first production sync.**~~ Decided 2026-09-14: the union gate stands,
+   and both investments subscriptions are accepted. Holdings starts at enrollment; Transactions
+   starts at a connection's first sync. **Still owed by you:** the per-Item price for both, from
+   your contract (`docs/first-production-connection.md` §1.2), and a look at the first production
+   `sync run` for an `investments:` error line if the dashboard has investments disabled.
 5. Enroll production. Work § "Day one in production" below in order.
 6. Discharge **VRF-005** and **VRF-006** over the first weeks; that is what lifts `blocks:production`
    from #22 and #23, and #40's tail with them.

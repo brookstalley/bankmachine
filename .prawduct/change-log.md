@@ -34,6 +34,31 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-14: The investments bill is two subscriptions, and the artifacts now say so
+
+<!-- prawduct: scope=investments-followups -->
+
+**Why:** #106 asked whether the capability gate's union read would initialize and bill investments
+on Items that only *could* serve them. Enrollment already asks for `investments` optionally, so that
+reach is small. The cost the artifacts missed is a second subscription: the aggregator bills
+Investments Holdings and Investments Transactions separately, and the first
+`/investments/transactions/get` call, which every sync makes for every capable connection, starts
+the second one.
+
+**What changed (build-plan-investments-followups, Chunk 01):** the owner ruled to accept both
+subscriptions and keep the union gate. AC-3.2 records the ruling. `api-notes-plaid.md` §25 records
+the billing rules with their source. The production guide §1.2 names both subscriptions and when
+each starts. The readiness checklist marks #106 decided. The comments on
+`ENROLLMENT_OPTIONAL_PRODUCTS` and on the sync's investments gate stop implying one bill. No
+behaviour changed.
+
+**Not done, and said so:** #106's first acceptance box, the per-Item cost from the owner's contract,
+is not met. The aggregator publishes no investments rate, so both documents record it as unpriced.
+One open question was recorded rather than answered: what a sync does when investments is disabled
+in the dashboard. It cannot be probed before production and is under `api-notes-plaid.md` § Still
+to verify. A stale "not probed" entry for `/investments/transactions/get` there was struck; §26
+settled it on 2026-09-12.
+
 ## 2026-09-14: `query_transactions` filters by category, a signed amount range and a literal search
 
 <!-- prawduct: scope=transaction-filters -->

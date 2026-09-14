@@ -26,10 +26,19 @@ institution picker to institutions supporting *every* product in it — a requir
 silently removes most card issuers and credit unions from the list, with no error to explain the
 absence. The **optional** set adds the product at institutions that support it and narrows nothing.
 
-🔴 **Where `investments` is actually enabled on the Item, the aggregator bills for it, per Item and
-per month.** That is the price of having holdings discoverable later on the connections that can
-carry it. If you do not want that bill, leave `investments` disabled in the dashboard: enrollment
-asks for it optionally, so a dashboard that does not offer it does not fail the link.
+🔴 **Where `investments` is enabled, a capable connection carries TWO monthly subscriptions at the
+aggregator, per Item.** *Investments Holdings* starts when the institution is linked, because
+enrollment asks for the product. *Investments Transactions* starts at that connection's first
+`sync run`, because the sync calls `/investments/transactions/get`, and that call adds it. The
+aggregator does not publish the rate, so check your contract for both before you enroll a
+brokerage or a retirement account.
+
+If you do not want either bill, leave `investments` disabled in the dashboard. Enrollment asks for
+it optionally, so a dashboard that does not offer it does not fail the link. **Unverified:** what
+the nightly sync does then. It decides whether to call by what the Item reports it can serve, not
+by the dashboard. If the aggregator still reports investments and refuses the call, every run
+records an investments error and exits `1`. Watch the first `sync run` for an
+`investments:` error line (`api-notes-plaid.md` § Still to verify).
 
 **1.3 Hosted Link enabled.** `enroll` always requests a hosted session
 (`link_token_create` in `src/bankmachine/connector/plaid/client.py` sends
@@ -43,7 +52,8 @@ in; if a bank's OAuth flow is involved, the hosted session handles the return it
 knowing because searching for a redirect URI to register is the obvious wrong turn here.
 
 **1.4 Billing configured, and you know the per-Item price.** Every live connection bills monthly
-until it is removed at the aggregator. `bankmachine connections retire <id>` is what removes it —
+until it is removed at the aggregator, and a connection that holds investments carries the two
+investments subscriptions in §1.2 on top of its transactions fee. `bankmachine connections retire <id>` is what removes it —
 per its `--help`, it "removes it at the aggregator, so it stops counting against the plan cap and
 stops billing", and keeps every row the connection produced. Retiring also marks that connection's
 accounts inactive, so their balances stop reading as current.

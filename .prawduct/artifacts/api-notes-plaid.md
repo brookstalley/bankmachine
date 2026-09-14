@@ -742,11 +742,29 @@ gate compares whole values) among fourteen `available_products` — and
 
 🔴 **What this does NOT settle is the bill.** The aggregator adds a product to an Item on
 first use and bills for it; the sandbox bills nothing, so this probe can say the call
-succeeds and cannot say what it costs. An operator whose institutions mostly *could* serve
-investments will therefore have them all initialized by the first sync after this ships. That
-is a cost decision and it belongs to the owner, which is why it is written here rather than
-quietly gated around: narrowing the gate to `products` alone is what §13 measured as the read
-that never discovers anything.
+succeeds and cannot say what it costs.
+
+**The bill, as the aggregator documents it** *(<https://plaid.com/docs/account/billing/>,
+read 2026-09-14)*. Investments is **two subscriptions**, each a monthly fee per Item for as
+long as the access token is valid:
+
+- *Investments Holdings* — added by requesting `investments` at `/link/token/create`, or by
+  the first `/investments/holdings/get`.
+- *Investments Transactions* — added, together with Holdings, by the first
+  `/investments/transactions/get`.
+
+Both are measured against this product's own calls. Enrollment asks for `investments`
+optionally (`ENROLLMENT_OPTIONAL_PRODUCTS`), so a capable institution's Item carries Holdings
+from the moment it is linked, and the union gate rarely reaches an Item it would not already
+have reached. The Item it can reach is one whose institution could not serve investments at
+link time and lists them later. Every sync calls both endpoints for every connection the gate
+admits, so the **second subscription starts at that connection's first sync**.
+
+**Ruled 2026-09-14 by the owner: both subscriptions are accepted and the union gate stands.**
+The gate did not change, so §13's finding that `products` alone discovers nothing is untouched.
+The per-Item price is **unpriced here**: the aggregator publishes no investments rate, and the
+figure is the owner's contract, not something this repository can know. AC-3.2 records the
+ruling.
 
 ---
 
@@ -862,11 +880,14 @@ both directions to exercise on live data.
   path that does not produce it, which is what #67 was built to offer.
 - ~~**The `/investments/holdings/get` response shape.**~~ Done 2026-09-12 — see §22-24.
   The fixture is recorded and the probe compares against it on every `-m sandbox` run.
-- **`/investments/transactions/get`.** Not probed. The pinned SDK's model carries no
-  settlement date and **no removal signal** — `cancel_transaction_id` and an
-  offset/count window over `total_investment_transactions` are all it offers — which
-  the investments build plan's Chunk 02 assumes otherwise about. Its own `verify-api`
-  step settles it.
+- ~~**`/investments/transactions/get`.**~~ Done 2026-09-12 — see §26. Paged by offset, with no
+  settlement date, no removal signal and no stated window of its own.
+- **What an investments call returns when the product is disabled in the dashboard.** The
+  production guide offers disabling `investments` as the way to avoid its bill, and enrollment
+  still links because it asks optionally. But `sync run` gates on the Item's capabilities, not on
+  the dashboard. If the aggregator still lists `investments` in `available_products` for such a
+  client and refuses the call, every nightly sync records an investments error and exits `1`.
+  The sandbox enables every product, so this cannot be probed before production.
 - **A real rate limit or a real `PRODUCT_NOT_READY`.** Neither was provoked;
   both are exercised against constructed responses only, and `PRODUCT_NOT_READY`
   remains the least-evidenced entry in the taxonomy.
