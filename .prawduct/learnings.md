@@ -814,16 +814,6 @@ verified, it has been demonstrated.
 
 ## A fixture that cannot reach the subject passes forever: mutate the code, and check which branch the fixture actually took
 
-**Instances:**
-
-- *2026-09-13, the derivation-version go-red case.* It reverted `DERIVATION_VERSION` by one and
-  pointed at an upgrade test whose fixture stamps rows at a fixed literal version, which was correct
-  when written. Two bumps later the fixture sat two versions back, so a single reverted bump still
-  read as an expected content change, and the case printed GREEN for the one bump this chunk made.
-  🔴 **A guard pinned to a literal goes blind as the value it guards moves past it.** Each version
-  bump needs its own fixture exactly one version back, and the go-red case must be retargeted on
-  every bump. The harness caught it only because it counts a GREEN as a survivor.
-
 ## A refactor is judged by what the old code stopped doing, not by what the new code does: enumerate the branches the replaced expression had, and name where each one went
 
 ## A fixture built from the mechanism you are reasoning about cannot tell apart the worlds your reasoning separates: reproduce the state the real producer leaves, not the state your helper leaves

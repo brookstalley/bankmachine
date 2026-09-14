@@ -456,9 +456,9 @@ def _coverage_row_fields() -> dict[str, dict[str, Any]]:
         "holdings_as_of": {
             "type": ["string", "null"],
             "description": (
-                "the newest day this account's positions were captured, the day `list_holdings` "
-                "names as its `as_of_date`. null means no position was ever captured for it, "
-                "never that it holds nothing today"
+                "the newest day a position was captured for this account. null means no position "
+                "was ever captured for it, never that it holds nothing today. A position refused "
+                "for its unit is not a capture here; `list_holdings` names it under `rule-applied`"
             ),
         },
         "history_starts": {

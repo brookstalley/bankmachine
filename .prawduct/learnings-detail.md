@@ -226,6 +226,14 @@ When a test's setup names a string, a token or a status the production code bran
 it from the constant (`sync_run.NOT_READY`) rather than by hand; a near-miss spelling is a
 fixture that silently covers a different path.
 
+**Instance (2026-09-13, the derivation-version go-red case):** it reverted `DERIVATION_VERSION` by
+one and pointed at an upgrade test whose fixture stamps rows at a fixed literal version, which was
+correct when written. Two bumps later the fixture sat two versions back, so a single reverted bump
+still read as an expected content change, and the case printed GREEN for the one bump that chunk
+made. 🔴 **A guard pinned to a literal goes blind as the value it guards moves past it.** Each
+version bump needs its own fixture exactly one version back, and the go-red case must be retargeted
+on every bump. The harness caught it only because it counts a GREEN as a survivor.
+
 ---
 
 ## A refactor is judged by what the old code stopped doing, not by what the new code does: enumerate the branches the replaced expression had, and name where each one went
