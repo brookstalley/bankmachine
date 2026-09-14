@@ -1570,7 +1570,7 @@ branch changes no sign handling. The obligation is **#23**, and it blocks produc
 
 ## VRF-034 — one real pending transaction watched across settlement
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#22) · **Raised:** 2026-09-14
 
@@ -1582,9 +1582,11 @@ never held a pending row. The obligation is **#22**, and it blocks production.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-034`
 
+**Accepted:** 2026-09-14 — rationale: Accepted to open the window-concluded-with-its-page PR, which bears on neither entry: it changes when an investments window's removals commit, and no pending-hold or sign handling. VRF-034 needs a real pending transaction watched across settlement, and production (live since 2026-09-11) has not yet held one long enough. VRF-035 needs a real inflow at two institutions, and the second production institution enrolled on 2026-09-14 is investment-only, with no cash transactions to judge. Each is re-raised immediately as a fresh pending entry (VRF-036/037), so this acceptance discharges the block and not the obligation.
+
 ## VRF-035 — the sign convention on a real inflow, across two institutions
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#23) · **Raised:** 2026-09-14
 
@@ -1594,3 +1596,5 @@ not evidence about another, so this needs a second real institution enrolled and
 branch changes no sign handling. The obligation is **#23**, and it blocks production.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-035`
+
+**Accepted:** 2026-09-14 — rationale: Accepted to open the window-concluded-with-its-page PR, which bears on neither entry: it changes when an investments window's removals commit, and no pending-hold or sign handling. VRF-034 needs a real pending transaction watched across settlement, and production (live since 2026-09-11) has not yet held one long enough. VRF-035 needs a real inflow at two institutions, and the second production institution enrolled on 2026-09-14 is investment-only, with no cash transactions to judge. Each is re-raised immediately as a fresh pending entry (VRF-036/037), so this acceptance discharges the block and not the obligation.
