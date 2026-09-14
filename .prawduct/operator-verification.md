@@ -1401,7 +1401,7 @@ per its acceptance it is carried by VRF-030 rather than re-raised as owed.
 
 ## VRF-028 — one real pending transaction watched across settlement
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#22) · **Raised:** 2026-09-14
 
@@ -1413,9 +1413,11 @@ obligation is **#22**, and it blocks production.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-028`
 
+**Accepted:** 2026-09-14 — rationale: Accepted to open the investments-followups PR. VRF-028 (a real pending transaction across settlement) and VRF-029 (the sign convention at two institutions) both need production data. The production datastore still does not exist (checked 2026-09-14: the production MCP server reports the datastore missing, 0 connections), so neither can run. This branch changes no pending-hold or sign handling. Accepted on the term that both are raised again on the next branch; the obligations stay #22 and #23, and both block production.
+
 ## VRF-029 — the sign convention on a real inflow, across two institutions
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#23) · **Raised:** 2026-09-14
 
@@ -1426,6 +1428,8 @@ sandbox is one connection (its `sign_convention` reads `consistent`, 0 of 441 ju
 which says nothing about a second feed). The obligation is **#23**, and it blocks production.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-029`
+
+**Accepted:** 2026-09-14 — rationale: Accepted to open the investments-followups PR. VRF-028 (a real pending transaction across settlement) and VRF-029 (the sign convention at two institutions) both need production data. The production datastore still does not exist (checked 2026-09-14: the production MCP server reports the datastore missing, 0 connections), so neither can run. This branch changes no pending-hold or sign handling. Accepted on the term that both are raised again on the next branch; the obligations stay #22 and #23, and both block production.
 
 ## VRF-030 — a search answer read by a model in a real client
 
