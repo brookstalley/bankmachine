@@ -48,7 +48,13 @@ governed_by:
       - "🔴 `bankmachine store rebuild` after step 5 if any connection is not syncing (§ the operational note this plan discharges) → conforms and is the reason Chunk 04 exists. The spec already warns that a rebuild is owed once investments land; this plan makes the replay a tested property rather than an instruction the operator has to remember"
 partition: serial, and examined per wave rather than once. Wave 1 (01–04): every chunk writes into `connector/plaid/derivers.py` and `cli/sync_run.py`, and 03 widens the same `query.py` domain filters that 01 and 02 create rows behind — two delegates collide in all three files on their first commit. Waves 2–3 (05–08) look parallelizable and are not: 05 and 07 both add a definition to the one `_tool_definitions()` function, 06 and 08 both touch the warning vocabulary and the instructions primer that a budget test holds, and every wave depends on the one before it for its fixtures. The wall-clock saving is smaller than the merge in all three cases. Chunks 09–10: serial — 10 edits `query.py`, whose shape 09 changes, and both re-point cases in `verify_norms_go_red.py`, which must run alone
 last_validated: 2026-09-12
+lifecycle: completed
+archived: 2026-09-14
+released_in: v0.1.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build Plan: Investment Sync
 

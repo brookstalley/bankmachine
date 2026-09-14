@@ -33,7 +33,13 @@ governed_by:
       - "a transaction is never hard-deleted → inapplicable because no transaction path is touched"
 partition: serial — #93 and #103 both change `cli/sync_run.py` and `tests/cli/test_sync_run.py`, and the other three are small enough that briefing a delegate costs more than the change
 last_validated: 2026-09-14
+lifecycle: completed
+archived: 2026-09-14
+released_in: v0.1.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build Plan: Five Fixes Before the First Production Connection
 

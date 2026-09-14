@@ -50,7 +50,13 @@ governed_by:
       - "errors are exceptions, specific not broad; per-connection errors never abort other connections; silence is the one disallowed outcome → 🔴 conforms, and AC-4.1 is exactly this norm applied to the sync loop. A connection that fails records its error on its own row and the loop continues"
 partition: serial — Chunk 01 fixes the cursor/transaction boundary that Chunks 02 and 03 both write through, and Chunk 03's granted-window computation reads what Chunk 02's deriver stores. A fan-out would have delegates writing the same deriver module against a boundary none of them had settled.
 last_validated: null
+lifecycle: completed
+archived: 2026-09-14
+released_in: v0.1.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 ## Requirements Confidence
 

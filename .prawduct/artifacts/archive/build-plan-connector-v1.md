@@ -27,7 +27,13 @@ governed_by:
       - "requirement ids unique within a requirements document → inapplicable because this plan adds no requirement ids"
 partition: serial — 02 and 03 both extend the same client module, and 04 derives from the fixtures 01 records. The chunks are a dependency chain rather than a fan-out, and Chunk 01 fixes the containment boundary every later chunk is checked against, so it is the one that must not be built twice.
 last_validated: null
+lifecycle: completed
+archived: 2026-09-14
+released_in: v0.1.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 ## Requirements Confidence
 

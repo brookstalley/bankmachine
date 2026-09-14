@@ -41,7 +41,13 @@ governed_by:
       - "a migration's DDL is frozen once written → inapplicable because this plan changes no schema and adds no migration"
 partition: serial — all three chunks edit the same two modules (`query.py` and `mcp.py`), and each extends the statement the previous one built: 02 counts the rows 01's window selects, 03 pages the rows 02 counted. A fan-out would have three delegates editing one `select()` against a window type none of them had settled.
 last_validated: 2026-09-08
+lifecycle: completed
+archived: 2026-09-14
+released_in: v0.1.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build plan — the window and row count an answer actually used
 

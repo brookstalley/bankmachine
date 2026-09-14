@@ -20,7 +20,13 @@ governed_by:
     dispositions:
       - "§ Direction: *a backup destination is never created implicitly and never overwritten* → conforms; both refusals live in `back_up` above the handle and are untouched by this change"
       - "§ Direction: *no filesystem path is hardcoded* → conforms; the copy's source is `config.datastore_path` and its destination is the operator's argument. `_verify` reaches the copy by `dataclasses.replace(config, datastore_path=destination)` rather than by constructing a path, which is the same rule held one layer in"
+lifecycle: completed
+archived: 2026-09-14
+released_in: v0.1.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build Plan — a datastore can be backed up at any schema version
 

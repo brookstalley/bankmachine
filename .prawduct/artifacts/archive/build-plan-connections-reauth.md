@@ -32,7 +32,13 @@ governed_by:
       - "§ Direction: *every read-role handle is opened read-only at the file and holds no read snapshot* → conforms; the command's three reads (`_one_connection`, and the preservation assertions' readers in test) all go through `reader_connection`, and no new read role is introduced"
       - "§ Direction: *no component creates the datastore implicitly* → conforms; `cmd_reauth` opens with `_require_datastore(config)`, which refuses a missing store and names `store init` rather than creating one — the same guard `cmd_list` and `cmd_retire` use"
       - "§ Direction: *a process that does not recognize the datastore's schema version refuses to serve, loudly* → inapplicable to this plan's own code, which adds no migration and no schema read, and conforms by inheritance: `_require_datastore` routes through `inspect`/`remedy_for`, which is where that refusal lives"
+lifecycle: completed
+archived: 2026-09-14
+released_in: v0.1.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build Plan — repairing an expired login without minting a second Item
 

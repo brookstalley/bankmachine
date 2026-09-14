@@ -20,7 +20,13 @@ governed_by:
     dispositions:
       - "Platform: macOS (Apple Silicon), native, not containerized; Deploy target: this machine, no staging, no remote → **a hosted runner is a new place this code executes, and the spec's rows do not cover it.** Not a departure, because those rows describe where the product is DEPLOYED and CI deploys nothing — it checks out, tests and discards. Matched as far as it can be (macOS, native, no container) and the runner is deliberately given no credential, no secret and a read-only token, so nothing about the deploy target becomes reachable from it. Recorded rather than waved through: if CI is ever given a secret, that is the moment this stops being true and operational-spec needs a row of its own"
 last_validated: 2026-09-12
+lifecycle: completed
+archived: 2026-09-14
+released_in: v0.1.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build Plan: CI Runs The Gate
 
