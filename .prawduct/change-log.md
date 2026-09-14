@@ -34,6 +34,31 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-14: A transactions feed that finishes empty is recorded as landed
+
+<!-- prawduct: scope=empty-complete-transactions-page -->
+
+**Why:** the first investment-only institution enrolled in production answered `/transactions/sync`
+with `HISTORICAL_UPDATE_COMPLETE`, no changes and an empty `next_cursor`. The run reported the
+backfill complete, but the deriver returned at its empty-cursor guard before recording the domain's
+success, so `sync_state` kept `last_success_at` null for the transactions domain. Every answer that
+connection contributed to then carried a `partial` caveat saying its transactions "never landed in
+full" -- telling an agent to distrust data that was all there. No stored amount was wrong. The owner
+ruled it fixed before the first release. (#123)
+
+**What changed:**
+- `derive_transactions_sync` records the transactions domain as landed when a page with no cursor
+  says `HISTORICAL_UPDATE_COMPLETE`. The empty cursor is still never stored, so a good cursor is kept
+  and `NOT_READY` and `INITIAL_UPDATE_COMPLETE` pages with no cursor still land nothing.
+- `DERIVATION_VERSION` is 12. A rebuild replays this deriver and the digest covers `sync_state`, so
+  the same archive now derives a different `last_success_at`; at an unchanged version the rebuild
+  would refuse that change. After upgrading, run `bankmachine store rebuild` as the upgrade order
+  already says.
+
+**Tests added:** a complete page with no cursor lands the domain without storing the cursor, keeps
+the cursor it had, and an unfinished page with no cursor lands nothing (`tests/connector/test_sync_cursor.py`);
+a complete and empty feed raises no never-landed caveat across two runs (`tests/cli/test_sync_run.py`).
+
 ## 2026-09-14: Five records an unattended run left untrue, fixed before production
 
 <!-- prawduct: scope=pre-production-fixes -->

@@ -529,3 +529,52 @@ def test_a_body_the_deriver_cannot_read_refuses_one_response_not_the_run(
         "the refusal does not name the row an operator would go and read"
     )
     assert _cursor(enrolled) is None
+
+
+def _transactions_domain(config: Config) -> Any:
+    with reader_connection(config) as conn:
+        return (
+            conn.execute(select(sync_state).where(sync_state.c.domain == TRANSACTIONS_DOMAIN))
+            .mappings()
+            .one_or_none()
+        )
+
+
+def test_a_complete_page_with_no_cursor_lands_the_domain(enrolled: Config) -> None:
+    """🔴 A finished backfill that held nothing is still a finished backfill.
+
+    An Item whose institution holds no cash accounts answers
+    `HISTORICAL_UPDATE_COMPLETE` with no changes and an EMPTY `next_cursor`
+    (measured against a real investment-only institution). The empty cursor is
+    still not stored -- that rule is about the cursor -- but the domain got
+    everything it asked for. Leaving `last_success_at` null reports it as never
+    landed on every answer the connection contributes to, for as long as it
+    exists.
+    """
+    _apply(enrolled, _page(next_cursor=None, status="HISTORICAL_UPDATE_COMPLETE"))
+
+    domain = _transactions_domain(enrolled)
+    assert domain is not None, "a finished feed left no record that it was attempted"
+    assert domain["last_success_at"] is not None, "a finished feed was left never-landed"
+    assert domain["cursor"] is None, "an empty cursor was stored as if it were one"
+
+
+def test_a_complete_page_with_no_cursor_keeps_the_cursor_it_had(enrolled: Config) -> None:
+    """Landing the domain must not cost it the place it had reached."""
+    _apply(enrolled, _page(next_cursor=CURSOR_ONE))
+
+    _apply(enrolled, _page(next_cursor=None, status="HISTORICAL_UPDATE_COMPLETE"))
+
+    assert _cursor(enrolled) == CURSOR_ONE, "an empty cursor overwrote a good one"
+
+
+def test_an_unfinished_page_with_no_cursor_does_not_land_the_domain(enrolled: Config) -> None:
+    """The mirror, without which the rule above is satisfied by landing every page.
+
+    `INITIAL_UPDATE_COMPLETE` hands over the first stretch of a backfill with the
+    rest still arriving, so a page at that status with no cursor has proved
+    nothing about the domain being complete.
+    """
+    _apply(enrolled, _page(next_cursor=None, status="INITIAL_UPDATE_COMPLETE"))
+
+    assert _transactions_domain(enrolled) is None

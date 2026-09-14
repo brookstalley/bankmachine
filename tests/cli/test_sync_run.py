@@ -2896,3 +2896,34 @@ def test_a_domain_refusal_records_the_aggregators_own_code(cli_env: Config) -> N
     assert run(["sync", "run", "--no-wait"]) == 1
 
     assert _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)["last_error_code"] == "INSTITUTION_DOWN"
+
+
+def test_a_complete_and_empty_transactions_feed_is_not_reported_as_never_landed(
+    cli_env: Config,
+) -> None:
+    """🔴 An institution with no cash accounts finishes its transactions feed empty.
+
+    The aggregator answers `HISTORICAL_UPDATE_COMPLETE` with no changes and an
+    empty cursor. The run is complete, and the health surface has to agree with
+    it: a `partial` caveat saying the feed "never landed in full" rides every
+    answer and tells an agent to distrust data that is all there.
+
+    Multi-hop, because the empty cursor is not stored and the next run starts the
+    feed from nothing again -- which must land it again rather than undo it.
+    """
+    FakeClient.pages = [_page()]
+    assert run(["sync", "run"]) == 0
+
+    for _ in range(2):
+        domain = _domain_row(cli_env, 1, TRANSACTIONS_DOMAIN)
+        assert domain is not None and domain["last_success_at"] is not None
+        assert domain["cursor"] is None
+        never_landed = [
+            w
+            for w in query.pipeline_health(cli_env).to_wire()["warnings"]
+            if "never landed" in w["detail"]
+        ]
+        assert never_landed == [], never_landed
+
+        FakeClient.pages = [_page()]
+        assert run(["sync", "run"]) == 0

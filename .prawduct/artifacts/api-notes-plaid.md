@@ -454,6 +454,12 @@ it is not an error, not a degraded connection, and not the end of a page run.
 stores an empty cursor — which means *start from the beginning* — or, worse, overwrites a good
 cursor with one. The cursor is written only from a response that carried one.
 
+🔴 **An empty cursor is not only `NOT_READY`.** Measured in production 2026-09-14 against an
+investment-only institution (every account an investment account, none holding cash): `/transactions/sync`
+answered `HISTORICAL_UPDATE_COMPLETE`, `has_more` false, **empty** `next_cursor`, and no added,
+modified or removed rows. That is a finished backfill with nothing in it, so the status -- not the
+cursor -- is what says whether the domain landed. The empty cursor is still never stored.
+
 **What the transaction body actually holds** *(measured on a real sandbox row)*: `account_id`,
 `amount`, `iso_currency_code`, `date`, `authorized_date`, `pending`, `pending_transaction_id`,
 `transaction_id`, `name`, `merchant_name`, `personal_finance_category` (`primary`/`detailed`/

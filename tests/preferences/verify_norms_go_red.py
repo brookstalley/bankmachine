@@ -1441,14 +1441,14 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         # again, so the documented fix would fail on the store it is for.
         "AC-5.3: a derivation that changes the rows bumps the version",
         pathlib.Path("src/bankmachine/store/derivation.py"),
+        "DERIVATION_VERSION = 12",
         "DERIVATION_VERSION = 11",
-        "DERIVATION_VERSION = 10",
         # 🔴 Pinned to the test for the rows THIS bump changed, whose fixture is
         # stamped at exactly one version back. A fixture further back keeps
         # `change_was_expected` true under a single reverted bump, and the guard
         # reads green while proving nothing -- which is how this case last survived.
-        "tests/store/test_rebuild_investments.py::"
-        "test_a_position_held_in_both_tables_rebuilds_to_one_record_as_an_expected_change",
+        "tests/connector/test_sync_cursor.py::"
+        "test_a_store_derived_before_empty_feeds_landed_rebuilds_them_as_an_expected_change",
     ),
     (
         "AC-12.7: a non-active account's silence is closure, not a coverage finding",
