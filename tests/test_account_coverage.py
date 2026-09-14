@@ -17,21 +17,31 @@ to be quiet in the window asked about.
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
+from sqlalchemy import func, select, update
 
 from bankmachine import query
 from bankmachine.config import Config
-from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC
+from bankmachine.connector import (
+    ACCOUNTS_GET,
+    INVESTMENTS_HOLDINGS_GET,
+    INVESTMENTS_TRANSACTIONS_GET,
+    TRANSACTIONS_SYNC,
+)
 from bankmachine.derivers import ALL_DERIVERS
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import writer_connection
 from bankmachine.store.schema import (
     PROVENANCE_SOURCES,
+    accounts,
     connections,
     institutions,
+    investment_transactions,
     transactions,
 )
 from bankmachine.store.types import now_utc
@@ -225,6 +235,107 @@ def _cover_the_empty_account(config: Config) -> None:
         )
 
 
+FIXTURES = Path(__file__).parent / "connector" / "fixtures"
+
+
+def _capture(name: str) -> dict[str, Any]:
+    """A recorded sandbox capture, parsed the way the deriver parses it: numbers as text."""
+    body: dict[str, Any] = json.loads((FIXTURES / name).read_bytes(), parse_float=str)
+    return body
+
+
+def _seed_investment_activity(config: Config) -> dict[str, Any]:
+    """Investment activity for four accounts, each holding a different mix of the feeds.
+
+    Built on `_seed`'s store, through the real derivers, from the recorded holdings
+    and trades captures. Those two captures name DIFFERENT accounts, which is what
+    lets one store hold every combination #107 turns on:
+
+    * ``trades_only`` -- an investment account with trades and no positions;
+    * ``positions_only`` -- one with positions and no trades;
+    * ``covered`` -- the checking account `_seed` already gave four transactions,
+      handed the other trades account's trades too, so one account holds rows in
+      BOTH tables and a count taken through a widened join is visibly multiplied;
+    * ``no_data`` -- the account those trades were taken from, still on the roster
+      and now holding nothing in any feed.
+
+    The captures' rosters also list accounts neither capture gives anything to
+    (their checking, loan and card accounts), and those join the roster as further
+    accounts with no data in any feed.
+
+    Returns each account's store id, the trade counts read off the captures, and
+    the store ids of every roster account and of the ones this fixture gave data,
+    so a test asserts against the fixture rather than a number copied from it.
+    """
+    holdings = _capture("investments_holdings_get.json")
+    trades = _capture("investments_transactions_get.json")
+    holding_accounts = sorted({h["account_id"] for h in holdings["holdings"]})
+    trade_accounts = sorted({t["account_id"] for t in trades["investment_transactions"]})
+    assert holding_accounts and len(trade_accounts) >= 2, "the captures stopped separating feeds"
+    assert not set(holding_accounts) & set(trade_accounts), (
+        "an account now holds both positions and trades in the captures, so no account here is "
+        "trades-only or positions-only any more"
+    )
+    trades_only, taken_from = trade_accounts[0], trade_accounts[1]
+    for trade in trades["investment_transactions"]:
+        if trade["account_id"] == taken_from:
+            trade["account_id"] = COVERED
+
+    roster = json.loads(_accounts_body())
+    known = {entry["account_id"] for entry in roster["accounts"]}
+    for capture in (holdings, trades):
+        for entry in capture["accounts"]:
+            if entry["account_id"] not in known:
+                roster["accounts"].append(entry)
+                known.add(entry["account_id"])
+    now = now_utc()
+    with writer_connection(config) as conn:
+        for endpoint, body in (
+            (ACCOUNTS_GET.path, roster),
+            (INVESTMENTS_HOLDINGS_GET.path, holdings),
+            (INVESTMENTS_TRANSACTIONS_GET.path, trades),
+        ):
+            apply_response(
+                conn,
+                connection_id=1,
+                endpoint=endpoint,
+                body=json.dumps(body).encode(),
+                received_at=now,
+                derivers=ALL_DERIVERS,
+            )
+        ids = dict(
+            conn.execute(select(accounts.c.source_account_id, accounts.c.account_id)).tuples().all()
+        )
+    per_account = {
+        source: sum(1 for t in trades["investment_transactions"] if t["account_id"] == source)
+        for source in (trades_only, COVERED)
+    }
+    return {
+        "trades_only": ids[trades_only],
+        "positions_only": ids[holding_accounts[0]],
+        "covered": ids[COVERED],
+        "no_data": ids[taken_from],
+        "empty": ids[EMPTY],
+        "trades_only_trades": per_account[trades_only],
+        "covered_trades": per_account[COVERED],
+        "roster": {ids[entry["account_id"]] for entry in roster["accounts"]},
+        # Read off what this fixture wrote, never off the store: `_seed` gave the
+        # covered account transactions, and the captures gave trades and positions.
+        "with_data": {ids[source] for source in (COVERED, trades_only, *holding_accounts)},
+    }
+
+
+def _named(wire: dict[str, Any]) -> set[int]:
+    """The account ids `accounts_without_coverage` names on this answer; empty when it is absent."""
+    named: set[int] = set()
+    for caveat in wire["warnings"]:
+        if caveat["kind"] == "accounts_without_coverage":
+            match = re.search(r"account\(s\) ([\d, ]+)", caveat["detail"])
+            assert match, f"the warning names no accounts: {caveat['detail']}"
+            named |= {int(part) for part in match.group(1).replace(" ", "").split(",") if part}
+    return named
+
+
 def _rows_by_account(wire: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {row["name"]: row for row in wire["rows"]}
 
@@ -372,6 +483,153 @@ def test_an_account_that_does_not_exist_is_still_refused_by_name(
 
 
 # --------------------------------------------------------------------------
+# #107: an investment account's activity is data, and the listings say so
+# --------------------------------------------------------------------------
+
+
+def _by_id(wire: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    return {row["account_id"]: row for row in wire["rows"]}
+
+
+def test_an_investment_account_carries_its_trades_and_positions_on_its_own_row(
+    initialized_config: Config,
+) -> None:
+    """🔴 The row says where an investment account's activity is, not only what it lacks.
+
+    `transaction_count` 0 on its own sent a reader to conclude the account was
+    empty. The trade count and the day its positions were last captured sit beside
+    it, so the same row says what the store DOES hold. The holdings day is compared
+    with `list_holdings`' own `as_of_date` for the account: two tools naming two
+    different days for one capture is the disagreement a verification surface
+    exists to rule out.
+    """
+    _seed(initialized_config)
+    ids = _seed_investment_activity(initialized_config)
+    rows = _by_id(_call(initialized_config, "list_accounts", {})["structuredContent"])
+    positions = _call(initialized_config, "list_holdings", {})["structuredContent"]["rows"]
+    captured = {row["account_id"]: row["as_of_date"] for row in positions}
+
+    trades_only = rows[ids["trades_only"]]
+    assert trades_only["transaction_count"] == 0
+    assert trades_only["investment_transaction_count"] == ids["trades_only_trades"]
+    assert trades_only["holdings_as_of"] is None
+
+    positions_only = rows[ids["positions_only"]]
+    assert positions_only["investment_transaction_count"] == 0
+    assert positions_only["holdings_as_of"] is not None
+    assert positions_only["holdings_as_of"] == captured[ids["positions_only"]]
+
+    # Present and zero rather than absent on an account no feed has anything for.
+    nothing = rows[ids["no_data"]]
+    assert nothing["investment_transaction_count"] == 0
+    assert nothing["holdings_as_of"] is None
+
+
+def test_neither_listing_names_an_account_whose_data_is_investments(
+    initialized_config: Config,
+) -> None:
+    """🔴 #107: the warning told an agent to distrust an account whose data IS in the store.
+
+    Both listings describe the ACCOUNT, so both now name only the accounts nothing
+    has ever been recorded for in any feed. Asserted as the exact set on both
+    tools, derived from what the fixture wrote rather than from the store: a set
+    that still holds an investment account is the bug, and a set that lost a
+    genuinely empty account is the warning gone quiet -- the failure #19 was.
+    """
+    _seed(initialized_config)
+    ids = _seed_investment_activity(initialized_config)
+    expected = ids["roster"] - ids["with_data"]
+    assert {ids["empty"], ids["no_data"]} <= expected, "the fixture lost its empty accounts"
+    assert {ids["trades_only"], ids["positions_only"], ids["covered"]} <= ids["with_data"]
+
+    for tool in ("list_accounts", "get_coverage_report"):
+        named = _named(_call(initialized_config, tool, {})["structuredContent"])
+        assert named == expected, (tool, sorted(named ^ expected))
+
+
+def test_querying_an_investment_only_account_for_transactions_still_warns(
+    initialized_config: Config,
+) -> None:
+    """The warning stays where it is still true: this tool answers from the transactions feed.
+
+    `query_transactions` cannot return a trade, so its empty answer about an
+    investment-only account really is data not present for THIS tool. Narrowing it
+    here would let "no transactions found" pass as "nothing happened".
+    """
+    _seed(initialized_config)
+    ids = _seed_investment_activity(initialized_config)
+    wire = _call(
+        initialized_config,
+        "query_transactions",
+        {"account_id": ids["trades_only"], "since": "2020-01-01", "until": "2030-12-31"},
+    )["structuredContent"]
+
+    assert wire["rows"] == []
+    assert _named(wire) == {ids["trades_only"]}
+
+
+def test_summarising_money_still_names_an_account_with_no_transactions_in_it(
+    initialized_config: Config,
+) -> None:
+    """`money_summary` totals the transactions feed, so an investment account adds nothing to it.
+
+    Its zero contribution is absent data for this aggregate, whatever the account
+    holds elsewhere, so the aggregate keeps naming it.
+    """
+    _seed(initialized_config)
+    ids = _seed_investment_activity(initialized_config)
+    wire = _call(initialized_config, "money_summary", {})["structuredContent"]
+
+    assert {ids["trades_only"], ids["positions_only"]} <= _named(wire)
+
+
+def test_each_feed_is_counted_on_its_own_and_never_multiplied_by_the_other(
+    initialized_config: Config,
+) -> None:
+    """🔴 One account with rows in BOTH tables reports each count exactly.
+
+    The coverage walk already outer-joins `transactions`. Joining the trade table
+    beside it multiplies every count by the other -- four transactions and twenty
+    trades would both read eighty -- and nothing about eighty looks wrong.
+    """
+    _seed(initialized_config)
+    ids = _seed_investment_activity(initialized_config)
+    assert ids["covered_trades"] > 1, "the fixture no longer puts several trades on one account"
+
+    for tool in ("list_accounts", "get_coverage_report"):
+        row = _by_id(_call(initialized_config, tool, {})["structuredContent"])[ids["covered"]]
+        assert row["transaction_count"] == 4, tool
+        assert row["investment_transaction_count"] == ids["covered_trades"], tool
+
+
+def test_a_removed_trade_is_not_counted(initialized_config: Config) -> None:
+    """A trade the feed stopped returning is soft-deleted; counting it promises data.
+
+    The `removed_at` stamp is written directly, standing in for the window
+    reconciliation that writes it in a sync: that stamp is the whole of what the
+    reconciliation leaves on the row, and it is what the count must honour.
+    """
+    _seed(initialized_config)
+    ids = _seed_investment_activity(initialized_config)
+    with writer_connection(initialized_config) as conn:
+        first = conn.execute(
+            select(func.min(investment_transactions.c.investment_transaction_id)).where(
+                investment_transactions.c.account_id == ids["trades_only"]
+            )
+        ).scalar_one()
+        conn.execute(
+            update(investment_transactions)
+            .where(investment_transactions.c.investment_transaction_id == first)
+            .values(removed_at=now_utc())
+        )
+
+    row = _by_id(_call(initialized_config, "list_accounts", {})["structuredContent"])[
+        ids["trades_only"]
+    ]
+    assert row["investment_transaction_count"] == ids["trades_only_trades"] - 1
+
+
+# --------------------------------------------------------------------------
 # One producer, two readers
 # --------------------------------------------------------------------------
 
@@ -384,6 +642,9 @@ def test_the_two_tools_never_disagree_about_an_account(initialized_config: Confi
     that is missing -- a caller has no way to tell which half is lying.
     """
     _seed(initialized_config)
+    # Investment activity too, so the two investment fields are compared at values
+    # other than their zero and null defaults.
+    _seed_investment_activity(initialized_config)
     listed = {
         row["account_id"]: row
         for row in _call(initialized_config, "list_accounts", {})["structuredContent"]["rows"]
@@ -395,8 +656,17 @@ def test_the_two_tools_never_disagree_about_an_account(initialized_config: Confi
 
     assert set(listed) == set(reported), "the two tools disagree about which accounts exist"
     for account_id, row in listed.items():
-        for field in ("first_transaction_date", "last_transaction_date", "transaction_count"):
+        for field in (
+            "first_transaction_date",
+            "last_transaction_date",
+            "transaction_count",
+            "investment_transaction_count",
+            "holdings_as_of",
+        ):
             assert row[field] == reported[account_id][field], (account_id, field)
+    assert any(row["investment_transaction_count"] for row in listed.values()), (
+        "no account carries a trade count, so the comparison above never left zero"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -718,6 +988,8 @@ def _coverage(first: date | None, starts: date | None, count: int = 5) -> query.
         first_transaction_date=None if first is None else calendar_date(first),
         last_transaction_date=None if first is None else calendar_date(first),
         transaction_count=count,
+        investment_transaction_count=0,
+        holdings_as_of=None,
         history_starts=None if starts is None else calendar_date(starts),
     )
 

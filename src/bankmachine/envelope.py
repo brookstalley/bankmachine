@@ -10,7 +10,7 @@ documentation, log files and a health tool it did not think to call are all
 invisible at the moment of answering.
 
 🔴 **Nothing here touches the datastore, and that is the boundary this module is
-for.** These types describe an answer's shape; `query.py` fills them by reading,
+for.** These types describe an answer's shape; the query modules fill them by reading,
 which is why the constructors that need a connection stay there. The split is
 what lets the wire contract be reviewed on its own instead of inside a thousand
 lines of unrelated SQL -- and it is why a tool's own vocabulary, the groupings
@@ -125,8 +125,8 @@ REQUEST_SCOPED_KINDS: tuple[str, ...] = (
     # 🔴 A position in THIS answer is not a current value: its price is older than
     # the day it was captured by more than the threshold, its price date is
     # unknown, a newer capture of its connection listed nothing for its account,
-    # or the connection's investments stopped landing while its transactions
-    # carried on. Request-scoped because it is about the rows this
+    # or the connection's investments feed stopped: its last investments attempt
+    # brought no holdings reply back. Request-scoped because it is about the rows this
     # answer returned: the aggregator's sandbox values every position at a
     # years-old price, and that belongs on the answer holding those positions --
     # riding every answer would be the "true and useless" failure above.

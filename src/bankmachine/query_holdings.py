@@ -22,7 +22,6 @@ from bankmachine.config import Config
 from bankmachine.connector import INVESTMENTS_HOLDINGS_GET
 from bankmachine.envelope import Answer, Caveat, iso_or_none
 from bankmachine.query import (
-    _POSITIONS_FROZE,
     _account_lifecycle,
     _answer,
     _not_active_caveat,
@@ -49,6 +48,14 @@ from bankmachine.store.types import CalendarDate, UtcInstant, calendar_date, utc
 #: is a price nobody refreshed. 🔴 An assumption rather than a measurement, and the
 #: owner's to override; the investment-sync build plan records it as one.
 POSITION_PRICE_STALE_AFTER = timedelta(days=4)
+
+#: What a non-active account means for an answer over POSITIONS, whose `totals`
+#: count and value them. `query._not_active_caveat` takes it as its consequence.
+_POSITIONS_FROZE = (
+    "Their positions froze on the day each row was captured and are not facts about today. "
+    "`totals` includes them and states how many there are and what they are worth, so quote "
+    "that beside any total you report and name those accounts"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,7 +144,7 @@ def _holdings_totals(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """What `list_holdings`' rows add up to, per currency, with the non-active part stated.
 
     🔴 **Summed from the rows this answer returns, never from a second read**, on
-    `_flow_class_totals`' reason: a total taken at another instant than the rows
+    `query._flow_class_totals`' reason: a total taken at another instant than the rows
     beside it can contradict them, and a reader cannot tell which is wrong.
     `list_holdings` is uncapped, so the rows are every position.
 

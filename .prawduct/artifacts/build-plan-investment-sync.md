@@ -1030,8 +1030,24 @@ Tests are the floor, and three things here are not testable from a fixture:
   `query_transactions(account_id=` one of them `)` still does. An account with no data in either
   feed is still named.
 - **Visual change:** yes — the wording an agent reads to decide whether an account is empty. The
-  operator verification entry is added at chunk close, to be read in the same client session as
-  VRF-022/023.
+  operator verification entry is VRF-024, to be read in the same client session as VRF-022/023.
+- **Result, recorded 2026-09-13:**
+  - **Sandbox store (read-only, this build):** 28 accounts. The two investment accounts (ids 20
+    and 21) carry `transaction_count` 0, 219 and 948 trades, and `holdings_as_of` 2026-09-13.
+    Neither listing names them. `list_accounts` and `get_coverage_report` each name the same 16
+    accounts, exactly the set with nothing in any feed.
+    `query_transactions(account_id=20)` returns no rows and names account 20.
+  - **Harness:** six new cases, covering both listing predicates, `query_transactions` keeping its
+    own predicate, the widened join, the removed-trade filter and the cannot-answer claim. Each was
+    seen RED in a subset run. The full harness run alone and detached then caught all 217.
+  - **Tests written first and seen red:** the four new cases the code had to change failed before
+    it did. The two that pin unchanged behaviour (`query_transactions` and `money_summary` still
+    naming an investment account) passed before and after, as intended.
+  - 🔴 **One test expectation was wrong, and it was corrected rather than the code bent to it.** The
+    listing test first expected exactly two named accounts. The captures' rosters also add the
+    sandbox's checking, loan and card accounts, which have no data in any feed, so naming them is
+    correct. The expectation now derives the set from what the fixture wrote, not from the store, so
+    it is still exact.
 - **Type:** code
 - **Critic mode:** final
   <!-- Reviews 09 and 10 together. Chunk 08's cumulative covers the branch to 68566f2, and the PR

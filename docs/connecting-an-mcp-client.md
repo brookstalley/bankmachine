@@ -122,7 +122,9 @@ is healthy; `get_coverage_report` tells you what data actually exists, per accou
 fourteen sandbox accounts have never had a transaction recorded, and before this pair an empty
 answer about one of them was indistinguishable from a quiet month — so "am I paying down my
 mortgage?" answered "no payments found", which looked honest and was false. Any answer touching
-such an account now carries an `accounts_without_coverage` warning naming it.
+such an account now carries an `accounts_without_coverage` warning naming it. An investment
+account's trades and positions count as data on the account listings, where they appear as
+`investment_transaction_count` and `holdings_as_of`.
 
 The server also starts against a **missing or empty datastore** and reports that through
 `get_pipeline_health` rather than refusing (AC-ARCH.3) — so a tool that returns nothing tells you
@@ -311,10 +313,12 @@ boundary it names — so the *absence* of one is information too:
   unread, and what to do about it.
 - `counted_during_change` — a write landed between the row read and the count read, so the two
   describe moments a fraction apart. The rows are accurate as of the `as_of` stamp.
-- `accounts_without_coverage` — an account in scope has **never** had a transaction recorded. Its
-  empty result means *data not present*, never *no activity*; call `get_coverage_report` for the
-  per-account picture. It speaks for the transactions feed only — an investment account's trades and
-  positions are not counted, so call `list_holdings` for what such an account holds.
+- `accounts_without_coverage` — an account in scope has **no data** for what the tool answers from.
+  Its empty result means *data not present*, never *no activity*; call `get_coverage_report` for
+  the per-account picture. On `list_accounts` and `get_coverage_report` it names an account with
+  nothing in any feed. On `query_transactions` and `money_summary` it names an account with no
+  transaction, so an investment account can carry it there — call `list_holdings` for what such an
+  account holds.
 - `account_no_longer_active` — an account in scope is closed, or its institution stopped listing it.
   Its balance froze on the date the row carries and is **not a fact about today**. Totals over
   balances *include* it and say by how much, so quote that magnitude beside the total — the reader
@@ -322,7 +326,8 @@ boundary it names — so the *absence* of one is information too:
 - `positions_not_current` — a position in the answer is **not a current value**: its price is more
   than four calendar days older than the day it was captured, its price date is unknown, a newer
   capture of its connection listed nothing for its account (it may hold none of it now), or the
-  connection's investments stopped arriving while its transactions did not. `detail` keeps the
+  connection's investments feed stopped (its last investments attempt brought no holdings reply
+  back). `detail` keeps the
   four apart. Quote `as_of_date` and `price_as_of` beside any value you report; a null price date
   is unknown, never recent.
 - `includes_pending_rows` — some contributing rows are authorisation holds that have not settled, so

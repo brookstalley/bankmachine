@@ -1204,3 +1204,32 @@ server on this build first, for VRF-022's reason.
    net worth, the answer names those accounts or the figure that stopped counting.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-023`
+
+## VRF-024 — an investment account read as having data, by a model in a real client
+
+**Status:** pending
+
+**Chunk:** investment sync, Chunk 10 (#107) · **Raised:** 2026-09-13
+
+**Why a human:** tests assert that `list_accounts` and `get_coverage_report` carry
+`investment_transaction_count` and `holdings_as_of`, and name only accounts with nothing in any
+feed. They also assert that `query_transactions` still names an investment account with no
+transactions. None can say whether a model reading `transaction_count` 0 beside a nonzero trade
+count concludes the account is active. Nor can they say whether it still reports "no transactions
+found" for that account honestly, without calling the account empty.
+
+**Where to verify:** the sandbox store. Relaunch the sandbox MCP server on this build first, for
+VRF-022's reason, and read it in the same client session as VRF-022/023. Measured on this build, the
+sandbox's two investment accounts (store ids 20 and 21) carry trades and a holdings day. Neither
+listing names them, and the listings name exactly the 16 accounts with nothing in any feed.
+
+**Verify:**
+
+1. Ask whether the investment accounts have any activity. The answer cites their trade counts or
+   holdings day and does not call them empty or unsynced.
+2. Ask for recent transactions on one of them. The answer says no transactions are recorded for that
+   account and points at its holdings or trades. It does not conclude nothing happened.
+3. Ask which accounts have no data at all. The answer lists the accounts
+   `accounts_without_coverage` names on `list_accounts` and does not include the investment accounts.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-024`

@@ -381,6 +381,13 @@ Every tool is safe and idempotent, trivially — nothing writes.
 > domain's last attempt and its newest archived holdings reply, never from calendar days of separate
 > stamps, which a sync crossing midnight UTC splits.
 
+> **Amendment (2026-09-13, #107).** 🔴 **An investment account's activity is data on the coverage
+> rows.** `list_accounts` and `get_coverage_report` carry `investment_transaction_count` and
+> `holdings_as_of` beside `transaction_count`. They name an account under
+> `accounts_without_coverage` only when nothing is recorded for it in any feed. `query_transactions`
+> and `money_summary` keep naming an account with no transaction, because they answer from that
+> feed alone. Trades are counted per account and still served as rows by no tool.
+
 🔴 **Two of these eight are the verification surface, not the analysis surface.** `get_pipeline_health`
 and `get_coverage_report` exist so the analyst agent can **establish completeness *before* answering**.
 The product's headline goal is not "answer the question" but "answer it, or say why you should not."
@@ -976,7 +983,9 @@ here.
 | `consent_expires_at` | string, nullable | When the operator's authorisation for this connection lapses. 🔴 After it does, data stops arriving with **no failure to notice** — the pipeline is poll-only, so expiry otherwise surfaces as a failed run rather than in advance. A `partial` warning fires within 14 days of it and a `degraded` one once it has passed. Null means the connection has not been polled since this was recorded — never that consent does not expire |
 | `source_error_code` | string, nullable | The aggregator's STANDING complaint about this connection. 🔴 Not `last_error_code`, which records the last sync *attempt* failing: a connection can be unwell while the most recent poll succeeded, and folding the two together would let one success bury a complaint nobody resolved. Non-null raises `degraded` |
 | `last_transaction_date` | string, nullable | the newest transaction recorded for this account, `YYYY-MM-DD`; null on the same condition |
-| `transaction_count` | integer | how many transactions this store holds for the account. `0` rather than null, because a null here would be a second spelling of the same fact. 🔴 Counted from the TRANSACTIONS feed alone: investment trades are not in it, so an investment account holding positions can read `0` — `list_holdings` answers what it holds |
+| `transaction_count` | integer | how many transactions this store holds for the account. `0` rather than null, because a null here would be a second spelling of the same fact. 🔴 Counted from the TRANSACTIONS feed alone: investment trades are not in it, so an investment account can read `0` here. `investment_transaction_count` and `holdings_as_of` beside it say what the store holds for such an account |
+| `investment_transaction_count` | integer | how many investment trades (buys, sells, dividends, fees) this store holds for the account, soft-deleted ones excluded. `0` rather than null, for `transaction_count`'s reason. 🔴 Counted, never served: no tool returns a trade as a row |
+| `holdings_as_of` | string, nullable | the newest day this account's positions were captured, `YYYY-MM-DD` — the same day `list_holdings` names as that account's `as_of_date`. Null means no position has ever been captured for it, never "holds nothing today". A position refused for its unit is not a capture here; `list_holdings` names it under `rule-applied` |
 | `lifecycle` | string | `active`, `closed`, or `no_longer_reported` — see § *A classifying tool carries `totals`* and FR-9. `no_longer_reported` names an OBSERVATION and not a closure; `closed` is the operator's own declaration and is the only value that asserts one |
 | `closed_date` | string, nullable | when the operator recorded this account as closed; null when none has been recorded, **including** for an account that is merely no longer reported |
 | `last_seen_in_roster` | string, nullable | the date this account was last listed by its institution; null when there is no roster observation behind this account: an import-only account (FR-7) has no connection, and an aggregator account's connection has none until its first sync after migration 004. 🔴 A null is silence, never a statement that the account is import-only — read `lifecycle` and the row's own provenance for that. A DIFFERENT fact from `last_transaction_date` and often a much later one — neither may be derived from the other |
@@ -1128,6 +1137,8 @@ without a second call — and carries the analysis `list_accounts` does not.
 | `first_transaction_date` | string, nullable | as on a `list_accounts` row: null means NO TRANSACTION HAS EVER BEEN RECORDED, never "no activity" |
 | `last_transaction_date` | string, nullable | as on a `list_accounts` row |
 | `transaction_count` | integer | as on a `list_accounts` row; `0` is a real answer |
+| `investment_transaction_count` | integer | as on a `list_accounts` row |
+| `holdings_as_of` | string, nullable | as on a `list_accounts` row |
 | `lifecycle` | string | as on a `list_accounts` row: `active`, `closed`, or `no_longer_reported` |
 | `closed_date` | string, nullable | as on a `list_accounts` row |
 | `last_seen_in_roster` | string, nullable | as on a `list_accounts` row |
@@ -1212,7 +1223,7 @@ three-week-old hole in the data and answer confidently.
 | `window_extends_past_coverage` | The window asked for reaches past the covered end — today, or the last transaction when that is later |
 | `rows_truncated` | The request matched more rows than the cap returned, and the answer holds only the newest of them |
 | `counted_during_change` | A write landed between the row read and the count read, so the two describe moments a fraction apart |
-| `accounts_without_coverage` | An account in the scope of THIS request has never had a transaction recorded, so its empty result means data not present, never no activity. It speaks for the TRANSACTIONS feed only: an investment account's trades and positions are not counted, so an account holding positions can carry it |
+| `accounts_without_coverage` | An account in the scope of THIS request has no data for what this tool answers from, so its empty result means data not present, never no activity. On `list_accounts` and `get_coverage_report`, which describe the account itself, that means nothing has been recorded for it in ANY feed: no transaction, no investment trade, no captured position. On `query_transactions` and `money_summary`, which answer from the transactions feed, it means no transaction has ever been recorded, so an investment account can carry it there |
 | `account_no_longer_active` | An account in the scope of THIS request is closed or is no longer listed by its institution, so its balance is frozen as of the date beside it and is not a fact about today |
 | `positions_not_current` | A position in THIS answer is not a current value: its price is more than four calendar days older than the day it was captured, its price date is unknown, a newer investments pull of its connection listed no position for its account (which may hold none of it now), or the connection's investments feed has stopped: its last investments attempt brought no holdings reply back. `detail` keeps the four apart and names the accounts; a null price date is unknown, never recent |
 | `includes_pending_rows` | This answer's rows include authorisation holds that have not settled, so a figure computed from it may change without any new activity |
@@ -1232,8 +1243,14 @@ on actually crosses the boundary it names, so its presence is information and **
 is wrong.** "This account has never had a transaction" looks like standing state of the store, and
 therefore connection-scoped — but a fifth kind riding every response equally would reproduce the
 defect the paragraph above records. It fires only when *this* request's scope actually contains an
-uncovered account: on `list_accounts` when the listing holds one, and on
-`query_transactions(account_id=N)` when the account asked about has none.
+uncovered account. On `list_accounts` and `get_coverage_report` that is a listed account with
+nothing in any feed. On `query_transactions(account_id=N)` it is the account asked about having no
+transaction, and on `money_summary` any account in its scope having none.
+🔴 **What "uncovered" means follows what the tool answers from, and that is the rule, not an
+inconsistency.** A listing describes the account, so an investment account whose trades or positions
+are recorded has data and is not named. `query_transactions` and `money_summary` can only return
+the transactions feed, so for them the same account's empty answer really is data not present, and
+naming it is still true (#107).
 
 🔴 **`sign_convention_unverified` fires on a MEASURED inversion, not on the absence of a
 verification — and its name is the weaker of the two readings.** The name was fixed by a discovery

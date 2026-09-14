@@ -2,9 +2,10 @@
 
 🔴 **Read-only, and structurally so.** `api-contract.md` § Direction: *the MCP
 surface is read-only; there are no mutation tools, and adding one is not a
-decision this norm leaves open.* Every tool here goes through `query.py`, which
-opens `mode=ro` at the file — so the refusal lives in the file handle rather
-than in a rule a future tool author has to remember. Vetting a comparable server
+decision this norm leaves open.* Every tool here reads through `query.py` or a
+module built on its core, and every one opens `mode=ro` at the file — so the
+refusal lives in the file handle rather than in a rule a future tool author has
+to remember. Vetting a comparable server
 surfaced 19 mutation tools including `delete_transaction` with no undo, on a
 datastore holding this class of data.
 
@@ -442,8 +443,22 @@ def _coverage_row_fields() -> dict[str, dict[str, Any]]:
             "type": "integer",
             "description": (
                 "0 is a real answer: the account has no data in the TRANSACTIONS feed at all. "
-                "Investment trades and positions are not counted -- `list_holdings` answers "
-                "what an investment account holds"
+                "Investment trades are not in it -- they are `investment_transaction_count`"
+            ),
+        },
+        "investment_transaction_count": {
+            "type": "integer",
+            "description": (
+                "how many investment trades the store holds for the account, removed ones "
+                "excluded; 0 is a real answer. Counted only: no tool returns a trade as a row"
+            ),
+        },
+        "holdings_as_of": {
+            "type": ["string", "null"],
+            "description": (
+                "the newest day this account's positions were captured, the day `list_holdings` "
+                "names as its `as_of_date`. null means no position was ever captured for it, "
+                "never that it holds nothing today"
             ),
         },
         "history_starts": {
@@ -827,7 +842,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "positive balance is value held, a negative one is value owed, so a credit "
                 "card balance is negative. 🔴 Every row carries `lifecycle`: a balance on a "
                 "row that is not `active` FROZE on `last_seen_in_roster` and is not a fact "
-                "about today, so read it before summing anything into a net worth."
+                "about today, so read it before summing anything into a net worth. An "
+                "investment account's trades and positions are data here too: they are "
+                "counted in `investment_transaction_count` and dated by `holdings_as_of`."
             ),
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
             "outputSchema": _output_schema(
@@ -1468,10 +1485,12 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "last transaction recorded, how many there are, the account's own posting "
                 "cadence, and how long it has been silent measured against that cadence. "
                 "Call this before concluding an account has no activity -- a "
-                "`transaction_count` of 0 means NO DATA WAS EVER RECORDED for it, which is a "
-                "different answer from 'nothing happened' and the two are indistinguishable "
-                "anywhere else. It counts the TRANSACTIONS feed alone; what an investment "
-                "account holds is `list_holdings`'s to answer. "
+                "`transaction_count` of 0 means NO TRANSACTION WAS EVER RECORDED for it, which "
+                "is a different answer from 'nothing happened' and the two are "
+                "indistinguishable anywhere else. The cadence counts the TRANSACTIONS feed "
+                "alone; an investment account's trades are `investment_transaction_count`, its "
+                "last positions capture is `holdings_as_of`, and `list_holdings` serves what "
+                "it holds. "
                 "`silence_ratio` above 1 means a full posting cycle has been "
                 "missed; a ratio near 1 is worth a second look even when the flag is false. "
                 "🔴 A non-active account's trailing silence is CLOSURE, not a hole: the flag "

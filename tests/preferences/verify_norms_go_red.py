@@ -76,6 +76,7 @@ SYNC_RUN_TESTS = "tests/cli/test_sync_run.py"
 QUERY = pathlib.Path("src/bankmachine/query.py")
 QUERY_HOLDINGS = pathlib.Path("src/bankmachine/query_holdings.py")
 QUERY_BALANCES = pathlib.Path("src/bankmachine/query_balances.py")
+MCP_RESOURCES = pathlib.Path("src/bankmachine/mcp_resources.py")
 SIGNS = pathlib.Path("src/bankmachine/signs.py")
 SIGN_TESTS = "tests/test_sign_convention.py"
 ENVELOPE = pathlib.Path("src/bankmachine/envelope.py")
@@ -1108,6 +1109,52 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "        uncovered = [entry for entry in all_coverage if entry.uncovered]",
         "        uncovered: list[AccountCoverage] = []",
         f"{COVERAGE_TESTS}::test_summarising_money_warns_when_an_account_in_scope_has_no_coverage",
+    ),
+    (
+        "#107: list_accounts names only an account with nothing in any feed",
+        QUERY,
+        "        no_data = [c for c in coverage.values() if c.no_data_in_any_feed]",
+        "        no_data = [c for c in coverage.values() if c.uncovered]",
+        f"{COVERAGE_TESTS}::test_neither_listing_names_an_account_whose_data_is_investments",
+    ),
+    (
+        "#107: get_coverage_report names only an account with nothing in any feed",
+        QUERY,
+        "[c for c in coverage.values() if c.no_data_in_any_feed], listing=True",
+        "[c for c in coverage.values() if c.uncovered], listing=True",
+        f"{COVERAGE_TESTS}::test_neither_listing_names_an_account_whose_data_is_investments",
+    ),
+    (
+        "#107: query_transactions keeps naming an account with no transaction",
+        QUERY,
+        "if c is not None and c.uncovered]",
+        "if c is not None and c.no_data_in_any_feed]",
+        f"{COVERAGE_TESTS}::test_querying_an_investment_only_account_for_transactions_still_warns",
+    ),
+    (
+        "#107: the trade count is never taken through a join beside transactions",
+        QUERY,
+        "            .outerjoin(trades, trades.c.account_id == accounts.c.account_id)",
+        "            .outerjoin(\n"
+        "                investment_transactions,\n"
+        "                investment_transactions.c.account_id == accounts.c.account_id,\n"
+        "            )\n"
+        "            .outerjoin(trades, trades.c.account_id == accounts.c.account_id)",
+        f"{COVERAGE_TESTS}::test_each_feed_is_counted_on_its_own_and_never_multiplied_by_the_other",
+    ),
+    (
+        "#107: a removed trade is not counted",
+        QUERY,
+        "        .where(investment_transactions.c.removed_at.is_(None))\n",
+        "",
+        f"{COVERAGE_TESTS}::test_a_removed_trade_is_not_counted",
+    ),
+    (
+        "#107: the cannot-answer list says trades are counted but served as rows by no tool",
+        MCP_RESOURCES,
+        "and served as rows by no tool; ",
+        "and read by no tool; ",
+        f"{MCP_TESTS}::test_the_unserved_trades_claim_holds_against_what_every_tool_reads",
     ),
     (
         # The break makes the whole-request count take the keyset predicate the

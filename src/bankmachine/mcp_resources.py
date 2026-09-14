@@ -246,9 +246,11 @@ _GUIDANCE: dict[str, _Guidance] = {
     ),
     "accounts_without_coverage": _Guidance(
         means=(
-            "an account inside the scope of this request has NEVER had a transaction "
-            "recorded -- not none in this window, none at all, ever. It speaks for the "
-            "TRANSACTIONS feed only: investment trades and positions are recorded apart from it"
+            "an account inside the scope of this request has NO DATA for what this tool "
+            "answers from -- not none in this window, none at all, ever. On `list_accounts` "
+            "and `get_coverage_report` that is nothing in any feed: no transaction, investment "
+            "trade or captured position. On `query_transactions` and `money_summary` it is no "
+            "transaction, so an investment account whose trades are stored can carry it there"
         ),
         for_this_answer=(
             "any row count, total or empty result touching that account describes ABSENT "
@@ -258,11 +260,10 @@ _GUIDANCE: dict[str, _Guidance] = {
         ),
         act=(
             "never report zero activity for a named account carrying this warning. Say the "
-            "account has no transaction data at all, and call `get_coverage_report` for the "
-            "per-account picture -- `transaction_count`, the first and last transaction, and "
-            "how long it has been silent against its own cadence. For an investment account, "
-            "call `list_holdings` for what it holds -- `transaction_count` does not count its "
-            "trades."
+            "store has no data for it on this question, and call `get_coverage_report` for "
+            "the per-account picture -- `transaction_count`, `investment_transaction_count`, "
+            "`holdings_as_of`, and how long it has been silent against its own cadence. For "
+            "an investment account, call `list_holdings` for what it holds."
         ),
     ),
     "counted_during_change": _Guidance(
@@ -704,14 +705,16 @@ _CANNOT_ANSWER = (
     "improvising over the tools that do exist.\n\n"
     # 🔴 Positions ARE served, so this bullet is about what sits behind one -- the
     # part a model would otherwise improvise: a lot no table extracts, and trades
-    # stored but read by no query. Tests hold both claims against the code.
+    # stored and counted but served by no query. Tests hold both claims against the code.
     "- **Tax lots, and the trades behind a position.** Positions are served by "
     "`list_holdings` as they stood on the day they were captured: quantity, market value, "
     "and cost basis where the institution supplied one. What sits behind a position is not "
     "served. Its tax lots are not extracted: the aggregator sends them and only the verbatim "
     "response archive keeps them, so anything asked per lot has no data path. Its buys, "
-    "sells, dividends and fees are stored and read by no tool; `query_transactions` does "
-    "not return them, so an investment account with no rows there may still have traded.\n"
+    "sells, dividends and fees are stored and counted per account as "
+    "`investment_transaction_count` on `list_accounts`, and served as rows by no tool; "
+    "`query_transactions` does not return them, so an investment account with no rows there "
+    "may still have traded.\n"
     # 🔴 The series IS served, so this bullet is about the days it does not hold --
     # the gap a model would otherwise fill by arithmetic.
     "- **A balance on a day nothing captured it, or before its first capture.** "

@@ -946,13 +946,21 @@ def _cannot_answer_text() -> str:
 def test_the_unserved_trades_claim_holds_against_what_every_tool_reads(
     initialized_config: Config,
 ) -> None:
-    """🔴 The reference says trades are stored and read by no tool; this holds that to the SQL.
+    """🔴 The reference says trades are counted but served as rows by no tool; held to the SQL.
 
     Checked against the statements every registered tool actually executes, not
     against a list of files: a tool's query already runs through store helpers
     beyond `query.py`, and the next one to read trades could arrive through any of
     them. The store holds real trades first, because a query that reads them only
     when an investment account exists would issue nothing over a store without one.
+
+    🔴 Counting a trade is not serving one. The coverage rows count each account's
+    trades so an investment account is not reported as holding no data, and that
+    count needs only the account a trade belongs to and whether it was removed.
+    Serving a trade means reading what it IS -- its amount, date, security or
+    description -- so the claim is held against the trade's CONTENT columns,
+    derived from the table rather than listed here, so a column a migration adds
+    is content until someone says otherwise.
     """
     _seed(initialized_config)
     _seed_investments(initialized_config)
@@ -985,13 +993,30 @@ def test_the_unserved_trades_claim_holds_against_what_every_tool_reads(
         "no tool's query was captured, so this cannot tell a tool that reads trades from one "
         "that does not"
     )
-    reads_trades = any("investment_transactions" in s for s in statements)
-    says_unserved = "read by no tool" in _cannot_answer_text()
+    # The columns a count may touch. Everything else on a trade is what it IS.
+    counted_by = {"investment_transaction_id", "account_id", "removed_at"}
+    content = [c.name for c in investment_transactions.columns if c.name not in counted_by]
+    assert content, "the trade table has no content columns, so this checks nothing"
+    # Positive control for the second half: the coverage rows DO count trades, so
+    # the column check below judges statements that reach the table at all.
+    assert any("investment_transactions" in s for s in statements), (
+        "no tool's query reaches the trade table, so a tool that serves trades cannot be told "
+        "from one that only counts them"
+    )
+    serves_trades = any(
+        f"investment_transactions.{column}" in s for s in statements for column in content
+    )
+    text = _cannot_answer_text()
+    says_unserved = "served as rows by no tool" in text
 
-    assert says_unserved != reads_trades, (
-        "the cannot-answer list says no tool reads trades, and a tool now does"
+    assert says_unserved != serves_trades, (
+        "the cannot-answer list says no tool serves trades, and a tool now reads what one is"
         if says_unserved
-        else "no tool reads trades, and the list an agent is sent to no longer says so"
+        else "no tool serves trades, and the list an agent is sent to no longer says so"
+    )
+    assert "investment_transaction_count" in text, (
+        "trades are counted on the coverage rows, and the list that says they are not served "
+        "does not point at where they ARE counted"
     )
 
 
