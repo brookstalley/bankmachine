@@ -171,7 +171,7 @@ blocked by them unless they are accepted again.
 
 ## Status
 
-- [ ] Chunk 01 — The five fixes
+- [x] Chunk 01 — The five fixes
 
 ## Context
 
@@ -190,5 +190,16 @@ Two findings from building, recorded here rather than silently absorbed:
    the ruling holding end to end. `last_success_at` is untouched, and the next successful run
    restores the connection.
 
-**Still owed for "Done when":** #111's measured stderr line count on a real sandbox sync. That needs
-the operator's own environment. Then the full suite evidence and `/prawduct:critic`.
+**"Done when", verified.** Full gated suite green (`test-status`). Critic
+`rev-20260914T172751Z-b6d37bcb`: 0 blocking. R-2's stale `login_expired` comment was fixed in
+`15f744b`. R-1 and R-3 were accepted, R-1 on the measurement below. **#111 measured on the sandbox**
+by the owner at `15f744b`: 16 grouped rounding lines where the issue recorded ~150, and 17 stderr
+lines in all against 157. The Critic's concern was real: the repeats span responses 109-111, each
+carrying both repeated prices. Per-response grouping still cuts the volume about ninefold, and the
+run's own report is readable again. The same run restored the connection the earlier verification
+attempt had degraded.
+
+`verify-resolutions` over `15f744b` came back clean, with R-2 confirmed. One observation was demoted
+rather than fixed: the new `login_expired` comment calls the recorded code "the aggregator's
+vocabulary", and it can also be one of the local codes. It is inert prose, so it is fixed with the
+next change that touches `sync_run.py` rather than in a review round of its own.
