@@ -177,7 +177,7 @@ waves 2–3 that is **not** Medium: it was derived and argued in
 - [x] Chunk 08: Net worth, and the two ways it can be quietly wrong
 - [x] Chunk 09: Holdings and the balance series leave `query.py` (a pure move, #115)
 - [x] Chunk 10: An investment account's activity counts as coverage (#107)
-- [ ] Chunk 11: Two warnings that claim more than the request or the store supports
+- [x] Chunk 11: Two warnings that claim more than the request or the store supports
 
 Context: Wave 1 (chunks 01-04) merged to `develop` as PR #114 on 2026-09-13; the branch
 continues. VRF-020/021 (production-only) are re-raised and pending, and with VRF-022 (the holdings
@@ -1202,8 +1202,24 @@ Tests are the floor, and three things here are not testable from a fixture:
     - The contested-claim and between-day tests were seen RED against the unfixed code before it
       changed. The chain test passed before and after, because the code already took the earliest,
       and its go-red case (`min` to `max`) is what shows it bites.
-    - The review also reported `store/lineage.py` as missing. That was a false alarm on a
-      prefix-less path, and the path above is now written in full.
+    - The review also reported the lineage module as missing. That was a false alarm on a
+      prefix-less path, and "Artifacts consumed" now gives it in full.
+    - **Verify-resolutions (`rev-20260914T024622Z-31551f82`):** all four are confirmed fixed, with 0
+      findings. Two observations were accepted as not worth a change. The list of between days is
+      unbounded, growing by one date per day of a long outage over a wide window. The R-1 test
+      would also pass if its fixtures fell into different partitions, and its go-red case is what
+      proves it bites.
+    - **Census** (`prawduct-hook render-dispositions --review rev-20260914T022414Z-baa484bc`), for
+      the PR body:
+
+      | Finding | Severity | State | Detail |
+      |---|---|---|---|
+      | R-1 | warning | fixed | Two stopped accounts in one identity partition can both claim the same successor, so the warning calls a real net-worth drop a handover |
+      | R-2 | warning | fixed | The 'earliest later capture' rule and the re-link chain it exists for are untested: changing min to max in _successors survives every test |
+      | R-3 | warning | fixed | The handover wording assumes nothing happens between a stopped account's last capture and its successor's first, so gap-day net-worth rows that omit the whole balance are covered by a warning saying net worth does not move |
+      | R-4 | warning | fixed | account_no_longer_active says net worth does not move across a re-link handover, which is false for a net-worth row dated between the stopped account's last capture and its successor's first |
+
+      **4 findings** (4 warning), all fixed. The PR coverage gate is satisfied at `e9618da`.
 - **Type:** code
 - **Critic mode:** final
 - **Done when:**
