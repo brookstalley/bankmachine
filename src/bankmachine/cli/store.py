@@ -515,7 +515,7 @@ def cmd_key_verify(config: Config, _args: argparse.Namespace) -> int:
     """Answer whether a candidate opens the datastore. Exit 1 means it does not."""
     candidate = validate_candidate_key(_prompt_for_key("key to check"))
     if connection.opens_with(config, candidate):
-        _record("checked a candidate datastore key: it opens the datastore")
+        _record("checked a candidate datastore key; it opens the datastore")
         print(f"MATCHES -- this key opens the datastore at {config.datastore_path}")
         return EXIT_OK
     # Ran, and found a problem. Not EXIT_ERROR: the command did exactly what it
@@ -566,9 +566,17 @@ def _record(what: str) -> None:
     key get exported, and did anyone restore one" had only the failures to read,
     because those went through the error path and the successes went nowhere.
 
-    The value is not interpolated here and there is nothing to redact -- the
-    sentence names the ACTION. That is what makes this safe to write at INFO to a
-    file the operator keeps.
+    The value is not interpolated here -- the sentence names the ACTION. That is
+    what makes this safe to write at INFO to a file the operator keeps.
+
+    🔴 Holding no secret is not the same as giving the redactor nothing to scrub.
+    The formatter blanks the word after any credential label and `:` or `=`,
+    whatever that word is, so a sentence reading "key: it opens" logs as
+    "key: [REDACTED] opens" -- a record that looks like a leak on the one line an
+    operator reads to learn whether a key left. Every `what` is therefore a string
+    literal the redactor leaves whole, and
+    `tests/cli/test_store_commands.py::test_every_escrow_record_survives_redaction_word_for_word`
+    collects each call's literal from this file's source and holds that.
     """
     logger.info("%s", what)
 

@@ -424,3 +424,53 @@ def test_backup_reports_a_missing_datastore_rather_than_creating_one(
     assert "no datastore at" in err
     assert not destination.exists()
     assert not cli_env.datastore_path.exists()
+
+
+def test_every_escrow_record_survives_redaction_word_for_word() -> None:
+    """🔴 An audit line the redactor scrubs reads as a leaked key, though none was.
+
+    `_record` writes the line an operator reads to answer "was this key ever
+    exported, and did anyone restore one". The formatter blanks the word after a
+    credential label and `:` or `=` by design, so "checked a candidate datastore
+    key: it opens" logged as "key: [REDACTED] opens" -- a key-shaped hole in the
+    one record that exists to say no key was written.
+
+    The literals are read from the source rather than copied here, so a record
+    added tomorrow is checked without anyone remembering to list it. A call whose
+    argument is not a plain string literal fails outright: nothing here could
+    judge what it renders.
+    """
+    import ast
+    import inspect
+
+    from bankmachine.cli import store
+    from bankmachine.logging_setup import REDACTED, redact
+
+    literals: list[str] = []
+    unjudgeable: list[int] = []
+    for node in ast.walk(ast.parse(inspect.getsource(store))):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_record"
+        ):
+            continue
+        argument = node.args[0] if len(node.args) == 1 and not node.keywords else None
+        if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+            literals.append(argument.value)
+        else:
+            unjudgeable.append(node.lineno)
+
+    assert not unjudgeable, (
+        f"`_record` is called with something other than one string literal at source lines "
+        f"{unjudgeable}; what that renders cannot be checked against the redactor"
+    )
+    # Export to a file, export to the terminal, verify, import. Fewer means the walk
+    # stopped finding the calls, and a check over nothing passes.
+    assert len(literals) >= 4, f"found only {literals}"
+
+    scrubbed = {line: redact(line) for line in literals if REDACTED in redact(line)}
+    assert not scrubbed, (
+        f"the redactor blanks part of these audit lines, so each reads as a logged secret: "
+        f"{scrubbed}"
+    )
