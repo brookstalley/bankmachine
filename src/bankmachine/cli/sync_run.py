@@ -158,8 +158,9 @@ class ConnectionOutcome:
     reason: str | None = None
     #: Whether the failure is an expired login, which `connections reauth` repairs
     #: in place. Carried as its own field rather than re-derived from the error
-    #: code, because the code recorded on the row is the exception's class name
-    #: and a report keyed on that string would drift the moment the class moved.
+    #: code, because the code recorded on the row is the aggregator's vocabulary,
+    #: and which of its codes mean an expired login is `errors.py`'s to decide --
+    #: a report keyed on the string would be a second copy of that map.
     login_expired: bool = False
     still_materializing: bool = False
     historical_complete: bool = False
