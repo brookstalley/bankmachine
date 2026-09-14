@@ -58,6 +58,11 @@ ruled it fixed before the first release. (#123)
 **Tests added:** a complete page with no cursor lands the domain without storing the cursor, keeps
 the cursor it had, and an unfinished page with no cursor lands nothing (`tests/connector/test_sync_cursor.py`);
 a complete and empty feed raises no never-landed caveat across two runs (`tests/cli/test_sync_run.py`).
+A rebuild of a store derived at version 11 accepts the change as expected, and fails with the bump
+reverted; `verify_norms_go_red.py`'s AC-5.3 case is pinned to it.
+
+**Carried:** VRF-034 and VRF-035 are raised again as VRF-036 and VRF-037. Both need production data
+this branch cannot supply.
 ## 2026-09-14: An investments window is concluded with the page that closes it
 
 <!-- prawduct: scope=window-concluded-with-its-page -->
