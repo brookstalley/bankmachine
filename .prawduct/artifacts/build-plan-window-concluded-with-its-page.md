@@ -152,7 +152,7 @@ against the pre-change source. `/prawduct:critic` has run, with findings disposi
 
 ## Status
 
-- [ ] Chunk 01 — The window concludes with its closing page
+- [x] Chunk 01 — The window concludes with its closing page
 
 ## Context
 
@@ -168,3 +168,10 @@ which does not re-export it. The helper reads it from `store.engine` directly.
 
 Verified: `verify_norms_go_red.py` caught all 227 norm breaks, run detached. The full gated suite is
 green (`test-status` current). #121's comment fix is folded in (`6e0fd7c`), and VRF-034/035 are raised.
+
+Critic `rev-20260914T184052Z-07a8ebb2`: 0 blocking. Two warnings were fixed in `5019dc3`: R-2 (the sync
+hard-coded its pass while the rebuild ran `all_replay_passes()`; the sync now reads that list and refuses
+a pass it can't run) and R-5 (the Derivation Seam contract still described concluding outside the
+page's transaction). R-4's overclaiming docstrings were corrected. R-1, R-3, R-6 and R-7 were accepted.
+`verify-resolutions` (`rev-20260914T185953Z-640f0179`) came back clean. The full suite is green again after
+the fixes.
