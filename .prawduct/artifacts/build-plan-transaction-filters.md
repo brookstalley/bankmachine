@@ -28,6 +28,9 @@ governed_by:
       - "`category_override` is operator-owned and wins over the source category → conforms; the filter matches the EFFECTIVE category, override first, which is exactly the expression `money_summary` groups by"
       - "a transaction is never hard-deleted; removal is a soft delete → conforms; the filters join the shared predicate list, which already excludes removed rows"
       - "a migration's DDL is frozen once written → inapplicable because no schema changes and no index is added (see the latency step in Chunk 02 for when that would change)"
+      - "calendar dates and UTC instants are distinct types and never mix → inapplicable because the only dates read are the existing window bounds, untouched here; every new predicate compares a string or an integer"
+      - "every silver row carries the evidence for which it is → inapplicable because this plan writes no row; the filters read derived rows as they stand"
+      - "the daily balance and holdings series are append-only → inapplicable because this plan neither reads nor writes either series"
 partition: serial — both chunks edit `query._transaction_filters`, `query.list_transactions`, the `query_transactions` definition in `mcp.py` and the cursor fingerprint in `envelope.py`; 02's `search` extends the filter value 01 introduces, so a second delegate would be writing into a type the first had not settled.
 last_validated: 2026-09-14
 ---
@@ -99,7 +102,7 @@ owner and ruled on 2026-09-14: one `search` over `description` and `merchant`; a
 
 ## Status
 
-- [ ] Chunk 01: `category` and the amount range, end to end — the filter value, the fingerprint, the requirement
+- [x] Chunk 01: `category` and the amount range, end to end — the filter value, the fingerprint, the requirement
 - [ ] Chunk 02: `search`, the `search_is_literal` warning, and retiring every "cannot filter" claim
 
 ## Scaffolding
@@ -191,6 +194,12 @@ reading a search answer reports the literal-match caveat rather than a confident
     that measurement.
   - An operator verification entry: a model in a real client, asked whether a named refund arrived,
     uses `search` and carries the literal-match caveat into its answer.
+  - **Carried from Chunk 01's review (`rev-20260914T043729Z-506331da`), riding this chunk's commit:**
+    the SQLite integer ceiling on the amount bounds is tested on one of its four bounds, so add the
+    other three to the existing parametrize; and `_known_categories` must compose from
+    `_transaction_filters` (soft delete, superseded spans) over the same `accounts` join as the row
+    query, so a category carried only by rows the query excludes is refused as AC-9.6 says rather
+    than answered empty — with a test that reaches it.
 - **Tests:** unit — `search` matches on `description` alone, on `merchant` alone, case-insensitively,
   and treats `%` and `_` literally; the warning fires on every searched answer including a
   zero-row one and on no unsearched answer (its absence is information); every emitted kind is
