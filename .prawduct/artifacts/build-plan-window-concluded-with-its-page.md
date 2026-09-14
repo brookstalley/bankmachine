@@ -101,8 +101,11 @@ because concluding the older window would then soft-delete rows it really return
   page, but that page itself can still be lost to derivation, and the rebuild would then diverge. The gap
   is milliseconds on one held handle, no lock can intervene, and it applies to **every** endpoint, not
   to investments windows alone. Filed separately as **#122** (`stage: research`) rather than folded in.
-- **Stores already holding an unconcluded window stay unrebuildable.** No store has one that matters:
-  production does not exist, and the sandbox has never had its reconciliation interrupted. Repairing
+- **Stores already holding an unconcluded window stay unrebuildable.** No store has one that matters.
+  Production went live on 2026-09-11; its store was migrated and rebuilt on 2026-09-14 by this
+  branch's own build, and that rebuild succeeded, so it holds no unconcluded window. Its first
+  investment-bearing institution was enrolled and synced by this branch's build the same day. The
+  sandbox has never had its reconciliation interrupted. Repairing
   one is the operator accepting the rebuild's instants, which `RebuildNotReproducibleError` already
   explains.
 
