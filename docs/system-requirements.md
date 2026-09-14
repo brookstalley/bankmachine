@@ -335,7 +335,8 @@ until those rows are re-derived.** A version can move without a migration. When 
 already stored keep what the older logic produced until `store rebuild` replays the archive. Nothing
 in the rows themselves says they would come out differently now, so an answer computed over them
 reads as current. Older rows name `store rebuild` as the remedy. Rows newer than this build mean the
-server is older than the build that derived them, and name upgrading it as the remedy. The check
+server is older than the build that derived them, and name upgrading it as the remedy; a rebuild by such a build refuses before deleting
+anything, because it would re-stamp newer rows with older logic and silence the warning. The check
 reads every table carrying `derivation_version_id`, not only the tables a rebuild empties, and it
 costs index lookups rather than a scan, because it rides every answer.
 

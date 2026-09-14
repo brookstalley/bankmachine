@@ -578,14 +578,14 @@ one, because a build that does not recognize the datastore's schema version refu
    pending.
 5. `uv run bankmachine store status` — exit 0, and the schema version has moved. Read the
    `derivation:` line too: it lists every derivation version your stored rows were produced by,
-   beside the one this build derives.
+   beside the one this build derives. 🔴 If it names a version NEWER than this build's, stop here:
+   you have pulled an older checkout. Upgrade it; `store rebuild` refuses in that state rather than
+   replace newer rows with older logic.
 6. `uv run bankmachine store rebuild`, then `store status` again. The `derivation:` line should now
    name one version. 🔴 Run the rebuild after every upgrade, not only when a connection is stuck:
    several migrations add a column a sync fills only for rows it adds, and a derivation change with
    no migration at all leaves every stored row as the older logic produced it. Until the rebuild
-   runs, every MCP answer carries a `derivation_version_mismatch` warning saying so. If the line
-   names a version NEWER than this build's, you have pulled an older checkout; upgrade instead of
-   rebuilding.
+   runs, every MCP answer carries a `derivation_version_mismatch` warning saying so.
 7. Reconnect the client.
 
 *Failure looks like:* every MCP tool answering `datastore_unservable` instead of an answer. That is

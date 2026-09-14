@@ -137,6 +137,17 @@ class RebuildNotReproducibleError(StoreError):
     """
 
 
+class RebuildByAnOlderBuildError(StoreError):
+    """Stored rows were derived by a NEWER derivation version than this build's.
+
+    Refused before anything is deleted. A rebuild re-stamps every row it writes
+    with this build's version, so an older build that went ahead would replace a
+    newer build's rows with older logic's -- and afterwards every stamp would read
+    current, the version warning would go quiet, and nothing could say it had
+    happened. The remedy is to upgrade this checkout, never to rebuild with it.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class RebuildReport:
     """What a rebuild did, in the terms the operator needs to judge it."""
@@ -341,6 +352,20 @@ def rebuild(
     with writer_connection(config) as conn:
         tables = rebuildable_tables()
         with transaction(conn):
+            newer = [
+                version
+                for version in derivation_versions_present(conn, derived_tables())
+                if version > derivation.DERIVATION_VERSION
+            ]
+            if newer:
+                raise RebuildByAnOlderBuildError(
+                    f"stored rows were derived by derivation version(s) "
+                    f"{', '.join(map(str, newer))}, newer than this build's "
+                    f"{derivation.DERIVATION_VERSION}. Refused before anything was deleted: a "
+                    f"rebuild would replace them with this older logic's output and every "
+                    f"stamp would then read current. Upgrade this checkout to the build that "
+                    f"derived them instead"
+                )
             # 🔴 The dimension tables count too. The replay upserts them rather
             # than deleting them, and every row it writes is re-stamped with this
             # build's version -- so an older stamp there is content the rebuild

@@ -25,13 +25,19 @@ governed_by:
   - artifact: data-model
     dispositions:
       - "a migration's DDL is frozen once written, and the Core metadata and that DDL are written independently → conforms; migration 012 is a new module whose indexes are declared again, independently, in `schema.py`, and `tests/store/test_schema.py` compares the two"
-      - "every stored amount is signed / integer minor units / dates and instants never mix → inapplicable because no amount or date is written or read"
+      - "every stored amount is signed from the operator's point of view → inapplicable because no amount is written or read"
+      - "all monetary values are integer minor units → inapplicable because no amount is written or read"
+      - "calendar dates and UTC instants are distinct types and never mix → inapplicable because no date is written or read"
       - "every silver row carries the evidence for which it is → conforms, and Chunk 03 reads that evidence: `derivation_version_id` is what the check asks about"
-      - "the daily balance and holdings series are append-only / a source value is never overwritten / no hard delete → inapplicable because nothing here writes a row"
+      - "the daily balance and holdings series are append-only → inapplicable because nothing here writes a series row"
+      - "a source value is never overwritten in place → inapplicable because nothing here writes a source value"
+      - "a transaction is never hard-deleted → inapplicable because nothing here deletes a transaction"
   - artifact: security-model
     dispositions:
       - "log redaction over-redacts by design and is keyed to credential shape → conforms, narrowly: Chunk 02 spares ONE cell shape in ONE surface (`sync shell`) where two independent conditions both hold, a column the schema declares a public identifier and a value that passes that identifier's check digit. The log formatter and `redact_free_text` are untouched"
-      - "secrets only in the keychain / no credential tracked / aggregator is the only network destination → inapplicable because nothing here touches a credential or the network"
+      - "secrets live only in the OS keychain → inapplicable because nothing here touches a credential"
+      - "no tracked file carries a credential-shaped string → inapplicable because no credential is written anywhere"
+      - "the aggregator's API is the only network destination → inapplicable because nothing here reaches the network"
 partition: serial — the chunks share little code but Chunk 02 and Chunk 03 both edit `store/schema.py` and the change-log, and the whole is small enough that a delegate's integration cost exceeds the wall clock it would save.
 last_validated: 2026-09-14
 ---
@@ -116,6 +122,11 @@ only older rows were \`securities\` made \`store rebuild\` refuse, while the new
 operator to run it. AC-5.4 promises the warning holds "until those rows are re-derived", so a
 remedy that refuses is inside that criterion, not new scope. A test isolating the dimension-only case
 was seen red before the fix | user can veto]`
+
+`[DECISION: \`store rebuild\` refuses when any stored row is newer than this build | cumulative
+review R-5: a rebuild re-stamps what it writes, so an older build would silently replace newer rows
+and the warning would go quiet. Raised by the review of this chunk, fixed in its resolution commit |
+user can veto]`
 
 ## Scaffolding
 
@@ -218,8 +229,8 @@ of the new check is measured on a synthetic two-year store, in the same form as
   - **Migration 012** — one index on `derivation_version_id` for every table `derived_tables()` names,
     declared again independently in `schema.py`. A guard fails when a derived table has no index
     leading with that column, so a future derived table cannot slip out of it.
-  - One store-reading function (in `store/`, beside `rebuild._previous_derivation_versions`, which
-    it replaces rather than duplicates) returning the distinct versions present across derived
+  - One store-reading function (in `src/bankmachine/store/rebuild.py`, replacing
+    `_previous_derivation_versions` rather than duplicating it) returning the distinct versions present across derived
     tables, as index lookups.
   - `derivation_version_mismatch` in `CONNECTION_SCOPED_KINDS`, built in `_pipeline_warnings`, with
     `detail` distinguishing older rows (run `bankmachine store rebuild`) from newer ones (this server

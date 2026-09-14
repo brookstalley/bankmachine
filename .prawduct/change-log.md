@@ -54,7 +54,8 @@ prints a `derivation:` line; the warning and the field on one health answer shar
 **Found while verifying:** a rebuild judged "content change expected" only from the rows it deletes.
 `securities` is upserted and re-stamped rather than deleted, so a store whose only older rows were
 securities refused the rebuild the new warning names. The rebuild now counts the dimension tables'
-versions too.
+versions too. And from the review: a rebuild by a build older than any stored row now refuses before
+deleting anything, because it would re-stamp newer rows with older logic and silence the warning.
 
 **Documents moved with it:** the API contract's vocabulary table and coverage fields, the client
 guide's kind list, `data-model.md` § Provenance, and `operational-spec.md`'s upgrade note. The

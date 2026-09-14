@@ -25,6 +25,7 @@ from bankmachine.store import derivation
 from bankmachine.store.derivation import ensure_derivation_version
 from bankmachine.store.engine import reader_connection, writer_connection
 from bankmachine.store.rebuild import (
+    RebuildByAnOlderBuildError,
     derivation_versions_present,
     derived_tables,
     rebuildable_tables,
@@ -228,3 +229,26 @@ def test_a_rebuild_commits_and_clears_it_when_only_a_dimension_row_is_older(
 
     assert report.change_was_expected
     assert _mismatches(enrolled) == []
+
+
+def test_a_rebuild_by_an_older_build_refuses_and_leaves_the_newer_rows_alone(
+    enrolled: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 Rebuilding with a build older than the rows would erase the evidence of it.
+
+    Every row a rebuild writes is stamped with this build's version, so an older
+    build that went ahead would leave newer rows re-derived by older logic, the
+    warning silenced, and no stamp left to say so. It must refuse before deleting.
+    """
+    newer = derivation.DERIVATION_VERSION + 1
+    _derive_a_position(enrolled, monkeypatch, version=newer)
+    with reader_connection(enrolled) as conn:
+        before = derivation_versions_present(conn, derived_tables())
+    assert newer in before, "the seeding did not leave a newer row, so nothing is refused"
+
+    with pytest.raises(RebuildByAnOlderBuildError, match="newer than this build"):
+        rebuilt(enrolled)
+
+    with reader_connection(enrolled) as conn:
+        assert derivation_versions_present(conn, derived_tables()) == before
+    assert _mismatches(enrolled), "the refusal silenced the warning it exists to protect"

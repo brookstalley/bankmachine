@@ -275,7 +275,8 @@ version a derived row carries beside the one this build derives. Every MCP answe
 older version remains. So step 5's check is also the rebuild's check: if the `derivation:` line
 lists more than this build's version, run `bankmachine store rebuild`, then run `store status`
 again and see the list collapse to one. A version *newer* than this build's means the reverse: this
-checkout is older than the one that derived the rows, so upgrade it and do not rebuild with it.
+checkout is older than the one that derived the rows, so upgrade it. `store rebuild` refuses in
+that state, before deleting anything.
 
 The MCP server and the CLI must be upgraded *with* the datastore — an older reader
 refuses to serve, which is the norm working rather than a fault.
