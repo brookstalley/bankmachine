@@ -1975,6 +1975,56 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         "test_an_account_no_longer_listed_counts_only_through_its_last_capture_and_is_named",
     ),
     (
+        # With no successor found, every relinked account is told to have moved net
+        # worth, which is the phantom drop a reader would report.
+        "AC-12.8 ruling: a relinked account is named with the account that took it over",
+        QUERY_BALANCES,
+        "            found[(held, currency)] = on_that_day[0]\n",
+        "            pass\n",
+        f"{BALANCE_TESTS}::"
+        "test_a_relinked_account_is_named_with_its_replacement_and_no_move_is_claimed",
+    ),
+    (
+        "AC-12.8 ruling: a look-alike live on the stop day is not a successor",
+        QUERY_BALANCES,
+        "            and candidate.day > last_day\n",
+        "            and candidate.day >= last_day\n",
+        f"{BALANCE_TESTS}::"
+        "test_a_look_alike_live_before_the_account_stopped_is_not_its_replacement",
+    ),
+    (
+        "AC-12.8 ruling: two equal candidates for one stopped account claim no successor",
+        QUERY_BALANCES,
+        "        if len(on_that_day) == 1:\n",
+        "        if on_that_day:\n",
+        f"{BALANCE_TESTS}::test_two_candidates_for_one_stopped_account_claim_no_replacement",
+    ),
+    (
+        # The request-scoped promise: an answer about one account names no span on another.
+        "rule-applied: the superseded disclosure names only the request's account",
+        QUERY,
+        "            if (account_id is None or span.account_id == account_id)\n",
+        "            if (True or span.account_id == account_id)\n",
+        f"{AGGREGATE_TESTS}::"
+        "test_the_superseded_disclosure_names_only_an_account_the_request_is_scoped_to",
+    ),
+    (
+        "rule-applied: the superseded disclosure names no span ending before the window",
+        QUERY,
+        "            and (since is None or span.end >= since)\n",
+        "            and (True or span.end >= since)\n",
+        f"{AGGREGATE_TESTS}::"
+        "test_the_superseded_disclosure_names_only_a_span_the_requested_window_meets",
+    ),
+    (
+        "rule-applied: the superseded disclosure names no span starting after the window",
+        QUERY,
+        "            and (until is None or span.start <= until)\n",
+        "            and (True or span.start <= until)\n",
+        f"{AGGREGATE_TESTS}::"
+        "test_the_superseded_disclosure_names_only_a_span_the_requested_window_meets",
+    ),
+    (
         # A total that counts frozen positions and says nothing of them passes the
         # flag and fails the reason: the reader has nothing to subtract.
         "AC-12.8: a holdings total states what its non-active positions are worth",

@@ -177,6 +177,7 @@ waves 2–3 that is **not** Medium: it was derived and argued in
 - [x] Chunk 08: Net worth, and the two ways it can be quietly wrong
 - [x] Chunk 09: Holdings and the balance series leave `query.py` (a pure move, #115)
 - [x] Chunk 10: An investment account's activity counts as coverage (#107)
+- [ ] Chunk 11: Two warnings that claim more than the request or the store supports
 
 Context: Wave 1 (chunks 01-04) merged to `develop` as PR #114 on 2026-09-13; the branch
 continues. VRF-020/021 (production-only) are re-raised and pending, and with VRF-022 (the holdings
@@ -1066,6 +1067,132 @@ Tests are the floor, and three things here are not testable from a fixture:
   2. Committed, then `/prawduct:critic` run and blocking findings resolved
   3. #107 and #115 marked shipped through `/prawduct:backlog` once the PR merges, and the chunk
      marked `[x]` in Status
+
+### Chunk 11: Two warnings that claim more than the request or the store supports
+
+- **Description:** The VRF-022/023/024 client session (2026-09-13) surfaced two warnings that state
+  something false on the sandbox store. Both are on the wire an agent reads, so the owner put both in
+  this PR (2026-09-13) rather than the backlog.
+  1. **`account_no_longer_active` on `balance_history` overclaims a move.** It says a net worth read
+     across an account's last day "moves by that account's last balance" and tells the reader to
+     name −7716415 beside any later figure. On the sandbox all 14 stopped accounts were re-linked.
+     Each has one twin (ids 15–28) with the same institution, name, mask, type and subtype, first
+     captured 2026-09-11, two days after the old one's last capture on 09-09, at the same balance.
+     The net worth is flat across the handover. The claim was true of the case Chunk 08 measured
+     and is written as general, the same shape as Chunk 08's R-1. This code is new on this branch.
+  2. **The superseded-generation `rule-applied` disclosure is not request-scoped.**
+     `query._superseded_caveat` names every span in the store. `query_transactions(account_id=21)`
+     names accounts 1–5, none of which the request touches. That breaks the contract's promise that
+     a request-scoped kind fires only when the request crosses its boundary (`api-contract.md`
+     § Direction, the 2026-09-10 `rule-applied` amendment). It has been on `develop` since the
+     re-link fix (`a893053`). There is no pre-existing exception, so it is fixed here.
+- **Depends on:** Chunk 10
+- **Backlog:** none filed. Both were found in this branch's client session and fixed before the PR.
+- **Artifacts consumed:** `api-contract.md` § Direction's lifecycle norm and its ruling on net worth
+  over time, and the `rule-applied` amendment. `docs/system-requirements.md` AC-12.8's ruling.
+  `store/lineage.py`'s identity partition.
+- **Requirements confidence:** High. Both are observed on the real store with the current build.
+- **Decisions:**
+  - `[DECISION: a stopped account is named as REPLACED by the account that shares its identity
+    partition and currency and was first captured earliest after the stopped account's last
+    capture, when exactly one account holds that earliest day | taken in this plan | user can
+    veto]`. The partition is `lineage`'s own: institution, mask, name, type
+    and subtype, with an account missing mask or subtype matched only to itself. One rule then
+    decides "the same real account" for both the exclusion and this warning. A second rule could
+    disagree with it and leave the two answers contradicting each other.
+    - The strictly-later first capture is what separates a replacement from a look-alike that was
+      live alongside it.
+    - A tie between candidates claims no replacement, because a handover wrongly claimed hides a
+      real move. A move wrongly flagged is only a figure the reader questions.
+    - The replacement need not be active itself, so a chain of re-links still pairs each stop with
+      the account that followed it.
+  - `[DECISION: the figure that stopped counting stays whole and agrees with
+    coverage.not_active_balance_minor_units; the detail splits it into replaced and unreplaced |
+    taken in this plan | user can veto]`. The magnitude stays load-bearing (the lifecycle norm, and
+    its go-red cases). The claim of a move is made only of the unreplaced part. A replaced account
+    is named with its replacement, the day that account was first captured, and its first balance.
+    Across each handover net worth moves only by the difference between the two balances.
+  - `[DECISION: replacements are found over the whole store, whatever the request's account_id |
+    taken in this plan]`. This is `superseded_spans`'s reason: the two generations are different
+    accounts, so narrowing to one of them leaves it looking unreplaced.
+  - `[DECISION: the superseded disclosure names only spans on the request's account (when one is
+    named) whose range overlaps the requested window (open ends unbounded); the EXCLUSION keeps
+    every span | taken in this plan]`. `counts_once` must still see the whole store, or a partial
+    exclusion would pass as a total. A span outside the request excluded nothing from the answer, so
+    naming it says nothing about this answer.
+- **Deliverables:**
+  - `lineage` publishes its identity partition, so `query_balances` reuses the rule rather than
+    restating it.
+  - `query_balances`: the replacement lookup, and `_series_ends` naming each replaced account's
+    successor and splitting the figure. Rewrite the ruling docstring's premise: a relinked account
+    is not double-counted, and is not a move either.
+  - `query._superseded_caveat` is scoped to the request's account and window, at both call sites.
+  - Update every surface that says what the series warning names:
+    - `mcp.py`'s `balance_history` description
+    - `mcp_resources.py`'s `account_no_longer_active` guidance
+    - `api-contract.md`'s ruling and its Chunk 08 amendment
+    - `docs/system-requirements.md` AC-12.8's ruling
+    - `docs/connecting-an-mcp-client.md`'s tool table
+- **Tests** (beside the cases they refine; relinks produced through the shipped derivers, never
+  written by hand):
+  - `tests/test_balance_history.py`:
+    - a re-linked account is named as replaced by its successor, from that account's first day and
+      at its first balance. No move is claimed for it, and the figure still equals the envelope's.
+    - a stopped account with no successor keeps the move claim. This is the existing case,
+      extended to assert the claim.
+    - a look-alike first captured on or before the stop day is not called a replacement.
+    - an account missing its mask is never matched.
+    - a mix of replaced and unreplaced accounts gives each part its own sum, and the whole agrees
+      with the envelope.
+  - `tests/test_money_summary.py`, beside the re-link fixture:
+    - `query_transactions` scoped to an account the span is not on carries no superseded disclosure.
+      Scoped to the superseded account, it does.
+    - `money_summary` over a window that misses the span carries none. Over one that meets it, it
+      does.
+    - the existing wire test stays as it is.
+  - go-red cases, each seen RED:
+    - the successor lookup disabled
+    - the strictly-later comparison loosened to on-or-before
+    - the account filter removed from the disclosure scope
+    - the window-overlap filter removed from the disclosure scope
+- **Acceptance criteria:** on the sandbox store, relaunched on this build:
+  - `balance_history` names each of accounts 1–14 as replaced by its twin from 2026-09-11 and claims
+    no move. The whole figure still reads −7716415 and matches `coverage`.
+  - `query_transactions(account_id=21)` carries no superseded disclosure, and
+    `query_transactions(account_id=1)` does.
+  - `money_summary` from 2026-09-10 carries none.
+- **Visual change:** yes, the wording an agent reads about net worth and exclusions. VRF-023 step 3
+  is re-read by a fresh reader in a real client against the new text, and the result is appended to
+  its recorded session. No new entry.
+- **Result, recorded 2026-09-14:**
+  - **Sandbox store, read-only, through the query functions on this working tree.** The MCP server
+    still serves `f7d5d2a`, so the client re-read waits for a relaunch after the commit.
+    - `balance_history` names each of accounts 1–14 as "replaced by account" 15–28 "from
+      2026-09-11" at an identical balance. It claims no move, and the whole figure reads −7716415,
+      equal to `coverage`.
+    - `list_transactions(account_id=21)` names no superseded span, and `account_id=1` names only
+      account 1's. Unscoped, it names all five.
+    - `money_summary` from 2026-09-10 names none, and over the whole range it names all five.
+  - **Harness:** six new cases, for the successor assignment, the strictly-later comparison, the
+    tie, and the account, since and until filters. Each was seen RED in a subset run, together with
+    the two magnitude cases whose anchors the rewrite kept. The full harness then ran alone and
+    detached and caught all 223.
+  - **Tests first:** four of the six `balance_history` cases failed before the code changed. The
+    mask and tie cases pin behaviour the fix must keep, and passed before and after. 🔴 **The two
+    scoping tests were written in the same batch as the `query.py` fix and were never run against
+    the old code.** Their go-red cases are the evidence that they fail when the scoping is removed.
+  - **Moved during build:** the tie test was added beyond the listed tests. The replacement
+    decision's text was corrected from "exactly one account" to "the earliest first-captured, when
+    exactly one holds that day", which is what a chain of re-links needs. `lineage._group` became
+    `lineage.identity_partition`, and no caller outside `lineage` used it.
+  - **Gate:** green (`prawduct-hook test-status`).
+- **Type:** code
+- **Critic mode:** final
+- **Done when:**
+  1. Acceptance criteria met on the sandbox store, the harness run alone and detached, then the full
+     gate green
+  2. Committed, then `/prawduct:critic` run and blocking findings resolved
+  3. The chunk marked `[x]` in Status
 
 ## Early Feedback Milestone
 

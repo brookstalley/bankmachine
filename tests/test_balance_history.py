@@ -395,6 +395,172 @@ def test_an_account_no_longer_listed_counts_only_through_its_last_capture_and_is
     assert answer.coverage["not_active_balance_minor_units"] == [
         {"currency": "USD", "current_minor_units": last}
     ], "the figure the warning names and the envelope's figure disagree"
+    # Nothing replaced it, so a later net worth really does leave its balance out.
+    assert "replaced by" not in named[0]
+    assert (
+        f"1 account(s) with nothing replacing them, last balances summing to {last} USD"
+        in (named[0])
+    )
+    assert _MOVE_CLAIM in named[0], "an account that left with no successor lost its move claim"
+
+
+#: The sentence that tells a reader a later net worth moved with no activity behind it.
+_MOVE_CLAIM = "moves by that account's last balance"
+
+
+def _relisted(entries: list[dict[str, Any]], *, suffix: str = "relinked") -> list[dict[str, Any]]:
+    """The same accounts as a re-link lists them: re-issued ids, the same description.
+
+    What an aggregator that publishes no persistent account identity sends after
+    a re-link. The deriver inserts a second account row for each, and the first
+    stops being listed.
+    """
+    relisted = copy.deepcopy(entries)
+    for entry in relisted:
+        entry["account_id"] = f"{entry['account_id']}-{suffix}"
+    return relisted
+
+
+def _account_for(config: Config, source_account_id: str) -> int:
+    with reader_connection(config) as conn:
+        return int(
+            conn.execute(
+                select(accounts.c.account_id).where(
+                    accounts.c.source_account_id == source_account_id
+                )
+            ).scalar_one()
+        )
+
+
+def test_a_relinked_account_is_named_with_its_replacement_and_no_move_is_claimed(
+    two_connections: Config,
+) -> None:
+    """🔴 A re-link hands each balance to a new account row, so net worth does not move.
+
+    The old row stops counting after its last capture and the replacement counts
+    from its first. Telling the reader that a later net worth "moves by" the old
+    balance is false here, and a reader who believed it would report a drop that
+    never happened. The magnitude is still stated whole, and it still agrees with
+    the envelope.
+    """
+    listed = _first_connection()
+    _capture(two_connections, 1, _day(0), listed)
+    _capture(two_connections, 1, _day(2), _relisted(listed))
+    stored = _stored(two_connections)
+    first, third = _day(0).date().isoformat(), _day(2).date().isoformat()
+
+    answer = query_balances.balance_history(two_connections)
+
+    (named,) = _details(answer, "account_no_longer_active")
+    total = 0
+    for entry in listed:
+        old = _account_for(two_connections, entry["account_id"])
+        new = _account_for(two_connections, f"{entry['account_id']}-relinked")
+        (last,) = [minor for held, _, minor, _, _ in stored if held == old]
+        (opening,) = [minor for held, _, minor, _, _ in stored if held == new]
+        assert (
+            f"account {old} through {first}, last balance {last} USD, "
+            f"replaced by account {new} from {third} at {opening} USD"
+        ) in named, f"account {old} is not named with its replacement: {named!r}"
+        total += last
+    assert f"2 account(s) whose last balances sum to {total} USD" in named
+    assert f"2 account(s) replaced, last balances summing to {total} USD" in named
+    assert _MOVE_CLAIM not in named and "nothing replacing" not in named, (
+        f"a move is claimed across a handover that kept net worth where it was: {named!r}"
+    )
+    net = _net_worth(answer.rows)
+    assert net[first]["net_minor_units"] == net[third]["net_minor_units"], (
+        "the fixture's net worth moved across the re-link, so it does not show a handover"
+    )
+    assert answer.coverage["not_active_balance_minor_units"] == [
+        {"currency": "USD", "current_minor_units": total}
+    ], "the figure the warning names and the envelope's figure disagree"
+
+
+def test_a_look_alike_live_before_the_account_stopped_is_not_its_replacement(
+    two_connections: Config,
+) -> None:
+    """Resembling the account is not enough: a replacement starts after the old one stops.
+
+    Two rows the institution describes the same way and captured on the same day
+    are two accounts being counted together, not one handing over to the other.
+    """
+    listed = _first_connection()[:1]
+    twin = _relisted(listed)
+    _capture(two_connections, 1, _day(0), listed + twin)
+    _capture(two_connections, 1, _day(1), twin)
+    old = _account_for(two_connections, listed[0]["account_id"])
+    (last,) = [minor for held, _, minor, _, _ in _stored(two_connections) if held == old]
+
+    (named,) = _details(query_balances.balance_history(two_connections), "account_no_longer_active")
+
+    assert "replaced by" not in named, (
+        f"a look-alike live beside it was called its successor: {named!r}"
+    )
+    assert f"1 account(s) with nothing replacing them, last balances summing to {last} USD" in named
+    assert _MOVE_CLAIM in named
+
+
+def test_an_account_whose_mask_was_not_stated_is_never_matched_to_a_replacement(
+    two_connections: Config,
+) -> None:
+    """A missing mask means the aggregator did not say, never that two accounts agree."""
+    listed = _first_connection()[:1]
+    unmasked = _relisted(listed)
+    unmasked[0]["mask"] = None
+    _capture(two_connections, 1, _day(0), listed)
+    _capture(two_connections, 1, _day(2), unmasked)
+
+    (named,) = _details(query_balances.balance_history(two_connections), "account_no_longer_active")
+
+    assert "replaced by" not in named, f"an unstated mask was matched: {named!r}"
+    assert _MOVE_CLAIM in named
+
+
+def test_two_candidates_for_one_stopped_account_claim_no_replacement(
+    two_connections: Config,
+) -> None:
+    """A tie names nobody: a handover wrongly claimed hides a move the reader needed to see."""
+    listed = _first_connection()[:1]
+    _capture(two_connections, 1, _day(0), listed)
+    _capture(
+        two_connections,
+        1,
+        _day(2),
+        _relisted(listed, suffix="first-copy") + _relisted(listed, suffix="second-copy"),
+    )
+
+    (named,) = _details(query_balances.balance_history(two_connections), "account_no_longer_active")
+
+    assert "replaced by" not in named, f"one of two equal candidates was picked: {named!r}"
+    assert _MOVE_CLAIM in named
+
+
+def test_replaced_and_unreplaced_accounts_each_state_their_own_part_of_the_figure(
+    two_connections: Config,
+) -> None:
+    """The figure stays whole, and the move is claimed only of the part nothing replaced."""
+    listed = _first_connection()
+    _capture(two_connections, 1, _day(0), listed)
+    _capture(two_connections, 1, _day(2), _relisted(listed[:1]))
+    stored = _stored(two_connections)
+    kept = _account_for(two_connections, listed[0]["account_id"])
+    gone = _account_for(two_connections, listed[1]["account_id"])
+    (kept_last,) = [minor for held, _, minor, _, _ in stored if held == kept]
+    (gone_last,) = [minor for held, _, minor, _, _ in stored if held == gone]
+
+    answer = query_balances.balance_history(two_connections)
+
+    (named,) = _details(answer, "account_no_longer_active")
+    assert f"2 account(s) whose last balances sum to {kept_last + gone_last} USD" in named
+    assert f"1 account(s) replaced, last balances summing to {kept_last} USD" in named
+    assert (
+        f"1 account(s) with nothing replacing them, last balances summing to {gone_last} USD"
+    ) in named
+    assert f"account {gone} through" in named and _MOVE_CLAIM in named
+    assert answer.coverage["not_active_balance_minor_units"] == [
+        {"currency": "USD", "current_minor_units": kept_last + gone_last}
+    ]
 
 
 # --------------------------------------------------------------------------

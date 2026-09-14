@@ -109,7 +109,7 @@ class SupersededSpan:
 
 
 #: What two spans must share before either can supersede the other. Opaque by
-#: design: `_group` is the only thing that builds one and nothing reads inside it.
+#: design: `identity_partition` is the only thing that builds one and nothing reads inside it.
 #:
 #: 🔴 **`str | int`, never `object`, and the narrowness is the point.** These
 #: tuples are SORTED, so a `None` reaching one does not mis-group a total -- it
@@ -270,7 +270,7 @@ def _coverage(conn: SAConnection) -> list[_Coverage]:
             lineage_id=int(row.lineage_id),
             start=_day(row.start),
             end=_day(row.end),
-            group=_group(
+            group=identity_partition(
                 account_id=int(row.account_id),
                 institution_id=int(row.institution_id),
                 mask=row.mask,
@@ -318,7 +318,7 @@ def _still_reported(*, last_seen: object, roster_observed: object, retired_at: o
     return _day(last_seen) >= _day(roster_observed)
 
 
-def _group(
+def identity_partition(
     *,
     account_id: int,
     institution_id: int,

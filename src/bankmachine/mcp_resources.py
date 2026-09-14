@@ -295,7 +295,11 @@ _GUIDANCE: dict[str, _Guidance] = {
             "day they were captured in the same way, and `totals` states how many there are and "
             "what they are worth. On `balance_history`, it counts in a net-worth row only "
             "through its last capture, so a later net worth leaves it out, and `detail` names "
-            "that day and the last balance that stopped counting"
+            "that day and the last balance that stopped counting. Where a later account row "
+            "took that balance over, as a re-link leaves it, `detail` names that account too, "
+            "and net worth moves across the handover only by the difference between the two "
+            "balances -- the move with no activity behind it is claimed only of what nothing "
+            "replaced"
         ),
         act=(
             "quote the total as given AND quote the flagged magnitude beside it -- the total "

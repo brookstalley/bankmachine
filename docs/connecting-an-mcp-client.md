@@ -108,7 +108,7 @@ creates one, because an empty encrypted store would answer every question with a
 |---|---|
 | `list_accounts` | every account with its latest recorded balance |
 | `list_holdings` | every investment position, as its account's latest capture recorded it, with the date of the price it was valued at, and a per-currency totals block that decomposes balances rather than adding to them |
-| `balance_history` | net worth over time and each account's balance on the days one was captured, paged newest first; a day not every account was captured on has no net-worth row, and says why; an account no longer active counts only through its last capture, and the answer names that day and the balance that stopped counting |
+| `balance_history` | net worth over time and each account's balance on the days one was captured, paged newest first; a day not every account was captured on has no net-worth row, and says why; an account no longer active counts only through its last capture, and the answer names that day and the balance that stopped counting, and the account that took it over where a re-link replaced it |
 | `query_transactions` | transactions in a date window, newest first |
 | `money_summary` | money in and out over a window, grouped by category, merchant, account, month or flow class — split by flow class under every grouping, and carrying the totals block described below |
 | `get_pipeline_health` | every connection, when it last synced, what is wrong |

@@ -244,7 +244,12 @@ the balance-lifecycle norm names one unmigrated emitter it does not grandfather.
   exclude does not reach a series: an exclusion was rejected as invisible, since no field can point
   at what is not there. In a series the account's own rows end on its last day, and the answer names
   that day, its signed last balance, and the per-currency count and sum that stopped counting
-  (`account_no_longer_active`, beside `coverage.not_active_balance_minor_units`). What refusing
+  (`account_no_longer_active`, beside `coverage.not_active_balance_minor_units`). Where a later
+  account row in the same identity partition took the balance over, as a re-link leaves it, the
+  answer also names that account and its first day and balance. The claim that a later net worth
+  moves with no activity behind it is made only of the part nothing replaced, since across a
+  handover net worth moves only by the difference between the two balances. The figure stays
+  whole. What refusing
   would cost was measured first. On the sandbox store, 14 relinked accounts' last balances equal
   their 14 replacements' to the cent, so carrying them forward serves every later net worth at
   exactly 2×. That is a wrong figure with its correction beside it; the ruling serves the right
@@ -370,8 +375,10 @@ Every tool is safe and idempotent, trivially — nothing writes.
 
 > **Amendment (2026-09-13, investment sync, Chunk 08).** 🔴 **The lifecycle treatment is paid on
 > both new tools.** For each account no longer active, `balance_history` names the last day it
-> counted in net worth and its signed last balance. It also gives the per-currency count and sum
-> that stopped counting, on the ruling under § Direction's lifecycle norm. `list_holdings` now
+> counted in net worth and its signed last balance, and the account that took the balance over
+> where one did. It also gives the per-currency count and sum that stopped counting, split into
+> the replaced part and the part nothing replaced, on the ruling under § Direction's lifecycle
+> norm. `list_holdings` now
 > carries `totals`: per currency, the positions and their market value, with the part on accounts
 > that are not `active` counted and valued beside it (§ *The published field shapes*). 🔴 **A
 > holdings total DECOMPOSES the balances net worth already counts and is never added to them.**

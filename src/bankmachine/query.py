@@ -1484,7 +1484,13 @@ def _unmatched_transfer_caveat(
     ]
 
 
-def _superseded_caveat(spans: Sequence[SupersededSpan]) -> list[Caveat]:
+def _superseded_caveat(
+    spans: Sequence[SupersededSpan],
+    *,
+    account_id: int | None,
+    since: date | None,
+    until: date | None,
+) -> list[Caveat]:
     """The notice that this answer counted one lineage where the store holds two.
 
     🔴 **A silent correct total and a silent wrong total look identical to
@@ -1503,12 +1509,29 @@ def _superseded_caveat(spans: Sequence[SupersededSpan]) -> list[Caveat]:
     something untrue of the case it most often fires on.
 
     Rides `rule-applied`: rows excluded from this aggregate on purpose.
+
+    🔴 **The disclosure is scoped to the request; the exclusion is not.** The
+    caller filters with every span in the store, because narrowing what is
+    COMPARED would leave a re-issued account looking unsuperseded. What is NAMED is
+    only a span on the request's account whose range meets the requested window,
+    since a span outside either excluded nothing from this answer. Naming one
+    anyway would make a request-scoped kind ride answers it says nothing about,
+    and a reader would learn to ignore it.
     """
-    if not spans:
+    relevant = sorted(
+        (
+            span
+            for span in spans
+            if (account_id is None or span.account_id == account_id)
+            and (since is None or span.end >= since)
+            and (until is None or span.start <= until)
+        ),
+        key=lambda s: (s.account_id, s.start),
+    )
+    if not relevant:
         return []
     named = ", ".join(
-        f"{span.account_id} ({span.start.isoformat()}..{span.end.isoformat()})"
-        for span in sorted(spans, key=lambda s: (s.account_id, s.start))
+        f"{span.account_id} ({span.start.isoformat()}..{span.end.isoformat()})" for span in relevant
     )
     return [
         Caveat(
@@ -2765,7 +2788,7 @@ def list_transactions(
             ),
             extra_caveats=(
                 _uncovered_caveat(uncovered, listing=False)
-                + _superseded_caveat(spans)
+                + _superseded_caveat(spans, account_id=account_id, since=since, until=until)
                 + _not_active_caveat(not_active)
                 + _roster_observed_empty_caveat(not_active)
                 + _pending_caveat(pending)
@@ -3685,7 +3708,7 @@ def money_summary(
             # as settled.
             extra_caveats=(
                 _uncovered_caveat(uncovered, listing=False)
-                + _superseded_caveat(spans)
+                + _superseded_caveat(spans, account_id=None, since=since, until=until)
                 + _unmatched_transfer_caveat(conn, since=since, until=until)
                 + _window_coverage_caveat(all_coverage, since)
                 + _not_active_caveat(not_active)

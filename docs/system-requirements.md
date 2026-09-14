@@ -537,7 +537,9 @@ the other side. Stating the treatment is what both rulings have in common, and i
 criterion can be ratified before the ruling is.
 🔴 *Ruling at the edge (owner, 2026-09-13): net worth over time.* A series counts a non-active
 account through its last capture and not after. It names that day, the account's signed last
-balance, and the per-currency count and signed sum that stopped counting. Carrying a frozen balance
+balance, and the per-currency count and signed sum that stopped counting. Where a later account row
+the institution describes the same way took the balance over, it names that account, and it
+claims a move with no activity behind it only of the part nothing replaced. Carrying a frozen balance
 forward puts balances on days nobody captured and counts a relinked account's money twice; on the
 sandbox store that doubles every later net worth. A total at one instant (`coverage`,
 `money_summary`, `list_holdings`' `totals`) still includes and flags. Recorded in `api-contract.md`

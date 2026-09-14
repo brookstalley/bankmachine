@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
+from sqlalchemy import Connection as SAConnection
 from sqlalchemy import and_, func, select
 
 from bankmachine.config import Config
@@ -30,6 +31,7 @@ from bankmachine.query import (
     _undenominable_caveat,
     _unusable,
 )
+from bankmachine.store import lineage
 from bankmachine.store.engine import reader_connection
 from bankmachine.store.schema import accounts, balances_daily
 from bankmachine.store.types import CalendarDate, calendar_date
@@ -38,7 +40,119 @@ from bankmachine.store.types import CalendarDate, calendar_date
 _BALANCE_ROWS = "balance series rows"
 
 
-def _series_ends(stopped: dict[tuple[int, str], tuple[CalendarDate, int]]) -> str:
+@dataclass(frozen=True, slots=True)
+class _Successor:
+    """The account that took over a stopped account's balance, from its first capture."""
+
+    account_id: int
+    day: CalendarDate
+    minor: int
+
+
+def _successors(
+    conn: SAConnection, stopped: dict[tuple[int, str], tuple[CalendarDate, int]]
+) -> dict[tuple[int, str], _Successor]:
+    """Which stopped accounts a later account row took over from, keyed like `stopped`.
+
+    A successor shares the stopped account's identity partition and currency and
+    was first captured AFTER the stopped account's last capture. Of those, the one
+    first captured earliest is the successor, so a chain of re-links pairs each
+    stop with the account that followed it.
+
+    🔴 **The partition is `lineage`'s, not a second rule.** It already decides
+    which account rows are one real account for the transaction exclusion. A
+    second definition could disagree with it, and then one answer would call two
+    rows the same account while another treated them as two.
+
+    🔴 **Strictly after, and a tie names nobody.** A look-alike captured on or
+    before the stop day was live beside the account rather than replacing it. Two
+    candidates first captured on the same day cannot be told apart. Both cases
+    claim no handover, because a handover wrongly claimed hides a move the reader
+    needed to see, while a move wrongly flagged is only a figure they question.
+
+    Read over the WHOLE store, whatever the request's scope, for
+    `superseded_spans`'s reason: the two generations are different accounts, so
+    narrowing to either one leaves it looking unreplaced.
+    """
+    if not stopped:
+        return {}
+    first = (
+        select(
+            balances_daily.c.account_id,
+            balances_daily.c.currency,
+            func.min(balances_daily.c.as_of_date).label("first_day"),
+        )
+        .group_by(balances_daily.c.account_id, balances_daily.c.currency)
+        .subquery()
+    )
+    opening = balances_daily.alias("opening")
+    rows = conn.execute(
+        select(
+            first.c.account_id,
+            first.c.currency,
+            first.c.first_day,
+            opening.c.current_minor,
+            accounts.c.institution_id,
+            accounts.c.mask,
+            accounts.c.name,
+            accounts.c.account_type,
+            accounts.c.account_subtype,
+        ).select_from(
+            first.join(accounts, accounts.c.account_id == first.c.account_id).join(
+                opening,
+                (opening.c.account_id == first.c.account_id)
+                & (opening.c.currency == first.c.currency)
+                & (opening.c.as_of_date == first.c.first_day),
+            )
+        )
+    ).all()
+    partition_of: dict[int, tuple[str | int, ...]] = {}
+    openings: list[tuple[tuple[str | int, ...], str, _Successor]] = []
+    for row in rows:
+        held = int(row.account_id)
+        partition = lineage.identity_partition(
+            account_id=held,
+            institution_id=int(row.institution_id),
+            mask=row.mask,
+            name=row.name,
+            account_type=row.account_type,
+            account_subtype=row.account_subtype,
+        )
+        partition_of[held] = partition
+        openings.append(
+            (
+                partition,
+                str(row.currency),
+                _Successor(
+                    account_id=held,
+                    day=calendar_date(row.first_day),
+                    minor=int(row.current_minor),
+                ),
+            )
+        )
+    found: dict[tuple[int, str], _Successor] = {}
+    for (held, currency), (last_day, _) in stopped.items():
+        later = [
+            candidate
+            for partition, counted_in, candidate in openings
+            if partition == partition_of.get(held)
+            and counted_in == currency
+            and candidate.account_id != held
+            and candidate.day > last_day
+        ]
+        if not later:
+            continue
+        earliest = min(candidate.day for candidate in later)
+        on_that_day = [candidate for candidate in later if candidate.day == earliest]
+        if len(on_that_day) == 1:
+            found[(held, currency)] = on_that_day[0]
+    return found
+
+
+def _series_ends(
+    stopped: dict[tuple[int, str], tuple[CalendarDate, int]],
+    successors: dict[tuple[int, str], _Successor],
+) -> str:
     """What the lifecycle freeze means on an answer over the balance SERIES, with the figure.
 
     🔴 **A non-active account counts in net worth through its last capture and
@@ -55,26 +169,72 @@ def _series_ends(stopped: dict[tuple[int, str], tuple[CalendarDate, int]]) -> st
     per-currency count and signed sum follow. That sum is the figure
     `coverage.not_active_balance_minor_units` carries present-and-zero on every
     answer.
+
+    🔴 **Stopping counting is not the same as net worth moving.** When a later
+    account row took the balance over, as a re-link leaves it, net worth moves
+    across the handover only by the difference between the two balances. On the
+    sandbox store that difference is zero for every relinked account. So the
+    figure is split: a replaced account is named with its successor, and the move
+    is claimed only of the part nothing replaced. Claiming it of the whole would
+    have a reader report a drop that never happened.
     """
+
+    def named(account_id: int, currency: str, day: CalendarDate, minor: int) -> str:
+        text = f"account {account_id} through {day.isoformat()}, last balance {minor} {currency}"
+        successor = successors.get((account_id, currency))
+        if successor is None:
+            return text
+        return (
+            f"{text}, replaced by account {successor.account_id} from "
+            f"{successor.day.isoformat()} at {successor.minor} {currency}"
+        )
+
     each = "; ".join(
-        f"account {account_id} through {day.isoformat()}, last balance {minor} {currency}"
+        named(account_id, currency, day, minor)
         for (account_id, currency), (day, minor) in sorted(stopped.items())
     )
-    by_currency: dict[str, tuple[int, int]] = {}
-    for (_, currency), (_, minor) in stopped.items():
-        count, total = by_currency.get(currency, (0, 0))
-        by_currency[currency] = (count + 1, total + minor)
+    #: Per currency: every stopped account's count and sum, then the replaced part's.
+    by_currency: dict[str, tuple[int, int, int, int]] = {}
+    for key, (_, minor) in stopped.items():
+        count, total, replaced, replaced_total = by_currency.get(key[1], (0, 0, 0, 0))
+        if key in successors:
+            replaced, replaced_total = replaced + 1, replaced_total + minor
+        by_currency[key[1]] = (count + 1, total + minor, replaced, replaced_total)
+    ordered = sorted(by_currency.items())
     figure = "; ".join(
         f"{count} account(s) whose last balances sum to {total} {currency}"
-        for currency, (count, total) in sorted(by_currency.items())
+        for currency, (count, total, _, _) in ordered
     )
-    return (
+    handed_over = "; ".join(
+        f"{replaced} account(s) replaced, last balances summing to {replaced_total} {currency}"
+        for currency, (_, _, replaced, replaced_total) in ordered
+        if replaced
+    )
+    left = "; ".join(
+        f"{count - replaced} account(s) with nothing replacing them, last balances summing to "
+        f"{total - replaced_total} {currency}"
+        for currency, (count, total, replaced, replaced_total) in ordered
+        if count > replaced
+    )
+    text = (
         f"Each one counts in a net-worth row (`account_id` null) through the last day it was "
         f"captured and NOT after: {each} (MINOR UNITS, signed). What stopped counting after "
-        f"those days: {figure}. A net worth read across one of those days moves by that "
-        f"account's last balance with no activity behind it, so name those accounts and that "
-        f"figure beside any net worth you quote from a later day"
+        f"those days: {figure}"
     )
+    if handed_over:
+        text += (
+            f". Of that, {handed_over}: a later account row the institution describes the same "
+            f"way counts each balance from the day named, so across that handover net worth "
+            f"moves only by the difference between the two balances, and a net worth unchanged "
+            f"there is correct rather than a gap"
+        )
+    if left:
+        text += (
+            f". Of that, {left}: a net worth read across one of those days moves by that "
+            f"account's last balance with no activity behind it, so name those accounts and that "
+            f"figure beside any net worth you quote from a later day"
+        )
+    return text
 
 
 @dataclass(frozen=True, slots=True)
@@ -409,7 +569,9 @@ def balance_history(
             extra_caveats=(
                 _withheld_net_worth_caveat(withheld)
                 + _undenominable_caveat(undenominable)
-                + _not_active_caveat(not_active, consequence=_series_ends(stopped))
+                + _not_active_caveat(
+                    not_active, consequence=_series_ends(stopped, _successors(conn, stopped))
+                )
                 + _roster_observed_empty_caveat(not_active)
             ),
             lifecycle=lifecycle,
