@@ -292,7 +292,7 @@ surface included, which must never load the network layer at all. An import grap
 is a better guarantee of that than a rule about who calls what.
 
 **`derivers` is a required argument** on `deriver_for`, `derive`, `apply_response`
-and `rebuild`, and so is **`replay_passes`** on `rebuild`. `derivers` briefly had
+and `rebuild`, and so is **`replay_passes`** on `rebuild` and `apply_response`. `derivers` briefly had
 a default; once the composition moved up a layer that default had exactly one
 reachable outcome, so a caller could omit it, pass mypy strict and the whole
 suite, and fail on the first response of an unattended nightly sync.
@@ -302,7 +302,10 @@ omitting the passes fails *silently* — the rebuild runs, clears every
 investment-transaction soft delete, and reports success over a store holding rows
 the source had dropped. `store.rebuild.no_replay_passes` is the value a caller
 passes to say "this archive holds no such fact", so the absence is a decision in
-the call rather than an argument somebody left off.
+the call rather than an argument somebody left off. On `apply_response` it is
+required for the same reason one step earlier: a sync that omitted the window pass
+would conclude no window and retire no row, and every caller that archives
+nothing a pass reads says so with `()`.
 
 **Contract**, and every clause is load-bearing:
 
@@ -320,7 +323,8 @@ the call rather than an argument somebody left off.
 3. **Persist first, derive second, in two transactions.** A deriver that raises
    leaves the response kept and no half-derived rows. The asymmetry is
    deliberate: a response may be unfetchable afterwards, a derivation is always
-   re-runnable.
+   re-runnable. A replay pass's conclusion rides the second transaction, beside
+   the rows of the response that completed it (clause 8).
 4. **A response with no registered deriver is a refusal, not a skip.** A rebuild
    that stepped over an endpoint it could not interpret would report success over
    a dataset missing whatever that endpoint carried, and every number in it would
@@ -366,13 +370,23 @@ the call rather than an argument somebody left off.
    every archived response in order and writes at the one that completes what it
    was accumulating. **It is built fresh per replay**, because it is stateful —
    `rebuild` takes a factory rather than instances so a pass cannot carry one
-   replay's pages into the next one's window. On the LIVE path the same
-   conclusion is drawn by whoever owns the loop (`cli/sync_run.py` for the
-   investments window), against the same predicate and the same store function,
-   so the two paths cannot reach different verdicts: `connector/plaid/window.py`
-   holds the one reader of an archived page and `store/investments.py` the one
-   exhaustion predicate. The pass reassembles from the archive what the loop
-   knew by having made the calls, and nothing else differs.
+   replay's pages into the next one's window.
+
+   🔴 **The LIVE path runs the same pass, inside each response's derivation
+   transaction.** `apply_response` observes every response through the passes it
+   is given, right after the deriver, so a conclusion commits with the response
+   that completed it or not at all. No writer acquisition sits between a page and
+   what it establishes for a concurrent `store backup` to take, and a crash cannot
+   keep one without the other. `cli/sync_run.py` reads its passes from
+   `all_replay_passes`, the list `rebuild` runs, and refuses one it cannot run
+   inside a page's transaction rather than skipping it: a sync that concluded less
+   than a rebuild replays would leave every later rebuild refusing. The sync wraps
+   the window pass only to record the domain's measured range in the same
+   transaction, and that stamp is the sync's alone, because an archived body is
+   evidence about rows, never about how current a domain is. **Concluding in a
+   transaction of its own after the loop is the shape to avoid**: that separate
+   acquisition is exactly where an interrupted run leaves a complete window the
+   live store never concluded.
 
    🔴 **Run at the response that closes the accumulation, never once at the end
    of the replay.** After a full replay each surviving row carries the id of the

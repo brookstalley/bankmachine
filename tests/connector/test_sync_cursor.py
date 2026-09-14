@@ -101,6 +101,7 @@ def _apply(config: Config, body: bytes) -> None:
             body=body,
             received_at=now_utc(),
             derivers=ALL_DERIVERS,
+            replay_passes=(),
         )
 
 
@@ -160,6 +161,7 @@ def test_a_page_archived_against_no_connection_is_refused(initialized_config: Co
             body=_page(next_cursor=CURSOR_ONE),
             received_at=now_utc(),
             derivers=ALL_DERIVERS,
+            replay_passes=(),
         )
 
     assert "without a connection" in str(raised.value)
@@ -182,6 +184,7 @@ def test_the_archive_survives_a_deriver_that_raises(enrolled: Config) -> None:
                 body=_page(next_cursor=CURSOR_ONE),
                 received_at=now_utc(),
                 derivers=ALL_DERIVERS,
+                replay_passes=(),
             )
         archived = conn.exec_driver_sql("SELECT COUNT(*) FROM raw_responses").scalar_one()
 
@@ -221,6 +224,7 @@ _KILL_MID_DERIVATION = textwrap.dedent(
             body=body,
             received_at=now_utc(),
             derivers={TRANSACTIONS_SYNC.path: write_then_die},
+            replay_passes=(),
         )
     """
 )
@@ -366,6 +370,7 @@ def test_a_cursor_written_then_abandoned_does_not_survive_the_transaction(
             body=_page(next_cursor=CURSOR_TWO),
             received_at=now_utc(),
             derivers={TRANSACTIONS_SYNC.path: write_then_fail},
+            replay_passes=(),
         )
 
     assert _cursor(enrolled) == CURSOR_ONE, (
@@ -521,6 +526,7 @@ def test_a_body_the_deriver_cannot_read_refuses_one_response_not_the_run(
                 body=body,
                 received_at=now_utc(),
                 derivers=ALL_DERIVERS,
+                replay_passes=(),
             )
         archived = conn.exec_driver_sql("SELECT COUNT(*) FROM raw_responses").scalar_one()
 

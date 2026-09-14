@@ -449,6 +449,7 @@ def cli_env(initialized_config: Config, monkeypatch: pytest.MonkeyPatch) -> Iter
             body=_accounts_body(),
             received_at=now,
             derivers=ALL_DERIVERS,
+            replay_passes=(),
         )
     monkeypatch.setattr("bankmachine.cli.sync_run.PlaidClient", FakeClient)
     monkeypatch.setattr("bankmachine.cli.sync_run.time.sleep", lambda _s: None)
@@ -736,10 +737,12 @@ def test_a_datastore_failure_on_one_connection_leaves_the_others_to_sync(
     FakeClient.pages = [_page(added=[_txn("t1")], next_cursor="cursor-1")]
     real_persist = sync_run._persist
 
-    def persist(config: Config, fetched: FetchedResponse, connection_id: int) -> None:
+    def persist(
+        config: Config, fetched: FetchedResponse, connection_id: int, **passes: Any
+    ) -> None:
         if connection_id == 1:
             raise AnotherWriterRunningError("another writer holds the datastore")
-        real_persist(config, fetched, connection_id)
+        real_persist(config, fetched, connection_id, **passes)
 
     monkeypatch.setattr(sync_run, "_persist", persist)
 
@@ -2927,3 +2930,153 @@ def test_a_complete_and_empty_transactions_feed_is_not_reported_as_never_landed(
 
         FakeClient.pages = [_page()]
         assert run(["sync", "run"]) == 0
+
+
+# --------------------------------------------------------------------------
+# An interrupted run leaves a window the rebuild reproduces (AC-5.2)
+# --------------------------------------------------------------------------
+
+
+class _Killed(BaseException):
+    """Stands for the process dying: `run()` catches no `BaseException`."""
+
+
+def _interrupt_the_next_writer_after_the_window_closes(
+    monkeypatch: pytest.MonkeyPatch, interruption: BaseException
+) -> None:
+    """Raise `interruption` from the first writer acquisition after an investments page lands.
+
+    That acquisition is where a concurrent `store backup` wins the lock, and where a
+    run killed after the page stops. One-shot, and used with single-page windows, so
+    the page that lands is the page that closes the window.
+    """
+    real_persist = sync_run._persist
+    real_writer = writer_connection
+    armed = False
+
+    def persist(config: Config, fetched: FetchedResponse, connection_id: int, **passes: Any) -> Any:
+        nonlocal armed
+        response = real_persist(config, fetched, connection_id, **passes)
+        if fetched.endpoint.path == INVESTMENTS_TRANSACTIONS_GET.path:
+            armed = True
+        return response
+
+    def writer(*args: Any, **kwargs: Any) -> Any:
+        nonlocal armed
+        if armed:
+            armed = False
+            raise interruption
+        return real_writer(*args, **kwargs)
+
+    monkeypatch.setattr(sync_run, "_persist", persist)
+    monkeypatch.setattr(sync_run, "writer_connection", writer)
+
+
+def _a_second_window_that_retires_the_older_row(cli_env: Config) -> UtcInstant:
+    """Sync a window of two rows, then script a second window that returns only the newer.
+
+    Returns the second window's closing instant, which its removal must carry. The
+    retired row is the older one, so the range measured after the removal moves.
+    """
+    first_window = utc_instant(datetime(2026, 9, 3, 11, 0, tzinfo=UTC))
+    second_window = utc_instant(datetime(2026, 9, 6, 17, 30, tzinfo=UTC))
+    _capable_connection(cli_env)
+    FakeClient.pages = [_page()]
+    FakeClient.investment_transaction_pages = [
+        _investment_transactions_body(
+            [
+                _investment_txn("inv-new", date="2026-09-07"),
+                _investment_txn("inv-old", date="2026-08-01"),
+            ]
+        )
+    ]
+    FakeClient.investment_transaction_received_ats = [first_window]
+    assert run(["sync", "run", "--no-wait"]) == 0
+
+    FakeClient.pages = [_page(next_cursor="cursor-2")]
+    FakeClient.investment_transaction_pages = [
+        _investment_transactions_body([_investment_txn("inv-new", date="2026-09-07")])
+    ]
+    FakeClient.investment_transaction_received_ats = [second_window]
+    return second_window
+
+
+def _removed_at_by_id(config: Config) -> dict[str, Any]:
+    return {
+        row["source_investment_transaction_id"]: row["removed_at"]
+        for row in _investment_transaction_rows(config)
+    }
+
+
+def test_a_backup_taking_the_lock_after_the_closing_page_leaves_the_store_rebuildable(
+    cli_env: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 The interruption production will meet: `store backup` beside the nightly sync.
+
+    A window's removals commit with the page that closed it, so no writer acquisition
+    sits between them for a backup to win. If one did, the archive would hold a
+    complete window the live store never concluded, the rebuild's replay would
+    conclude it at the closing page's instant, and `store rebuild` would refuse.
+    """
+    second_window = _a_second_window_that_retires_the_older_row(cli_env)
+    _interrupt_the_next_writer_after_the_window_closes(
+        monkeypatch, AnotherWriterRunningError("store backup holds the writer lock")
+    )
+
+    run(["sync", "run", "--no-wait"])
+
+    assert _removed_at_by_id(cli_env) == {"inv-new": None, "inv-old": second_window}, (
+        "the window's removal did not commit with the page that closed it"
+    )
+    report = _rebuild(cli_env)
+    assert not report.content_changed
+
+
+def test_a_run_killed_after_the_closing_page_leaves_its_window_concluded(
+    cli_env: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 The other interruption: the process dies after the page that closes a window.
+
+    The removal and the range measured after it are established by that page, so
+    they are in the store the moment its transaction commits, and a rebuild
+    reproduces exactly that store.
+    """
+    second_window = _a_second_window_that_retires_the_older_row(cli_env)
+    _interrupt_the_next_writer_after_the_window_closes(monkeypatch, _Killed())
+
+    with pytest.raises(_Killed):
+        run(["sync", "run", "--no-wait"])
+
+    assert _removed_at_by_id(cli_env) == {"inv-new": None, "inv-old": second_window}
+    history_start = _domain_row(cli_env, 2, INVESTMENTS_DOMAIN)["history_start_date"]
+    assert history_start == date(2026, 9, 7), (
+        "the range measured after the removal did not commit with it"
+    )
+    report = _rebuild(cli_env)
+    assert not report.content_changed
+
+
+class _APassTheSyncCannotRun:
+    """A replay pass this build's sync has no way to run inside a page's transaction."""
+
+    def observe(self, conn: Any, response: Any) -> None:
+        raise AssertionError("a pass the sync refuses is never shown a response")
+
+
+def test_the_sync_runs_the_replay_passes_a_rebuild_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """🔴 One list of replay passes, read by both paths.
+
+    A sync that concluded less than a rebuild replays would leave `store rebuild`
+    concluding what the live store never did. The sync reads the rebuild's list,
+    and a pass it cannot run inside a page's transaction is refused, not skipped.
+    """
+    concluding = sync_run._window_pass_for_this_run()
+    assert [type(concluding.replay)] == [type(p) for p in all_replay_passes()]
+
+    monkeypatch.setattr(
+        sync_run,
+        "all_replay_passes",
+        lambda: (*all_replay_passes(), _APassTheSyncCannotRun()),
+    )
+    with pytest.raises(TypeError, match="_APassTheSyncCannotRun"):
+        sync_run._window_pass_for_this_run()

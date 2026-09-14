@@ -164,6 +164,7 @@ def _enroll(config: Config, *, institution: str, item_id: str) -> int:
             body=_accounts_body(f"acct-{item_id}", item_id),
             received_at=now,
             derivers=ALL_DERIVERS,
+            replay_passes=(),
         )
     return connection_id
 
@@ -185,6 +186,7 @@ def _feed(
             body=_sync_body(f"acct-{item_id}", entries, cursor=cursor),
             received_at=now_utc(),
             derivers=ALL_DERIVERS,
+            replay_passes=(),
         )
 
 

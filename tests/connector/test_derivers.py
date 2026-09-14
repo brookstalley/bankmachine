@@ -152,6 +152,7 @@ def derive(
             body=body,
             received_at=received_at,
             derivers=PLAID_DERIVERS,
+            replay_passes=(),
         )
 
 

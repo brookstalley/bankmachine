@@ -495,6 +495,7 @@ def cmd_enroll(config: Config, args: argparse.Namespace) -> int:
                 body=item.body,
                 received_at=item.received_at,
                 derivers=ALL_DERIVERS,
+                replay_passes=(),
                 request_context=item.request_context,
             )
             source_institution_id, _ = institution_ref_of(item.body)

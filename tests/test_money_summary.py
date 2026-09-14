@@ -157,6 +157,7 @@ def _seed_every_flow_class(config: Config) -> None:
             ).encode(),
             received_at=now,
             derivers=ALL_DERIVERS,
+            replay_passes=(),
         )
 
 
@@ -879,6 +880,7 @@ def _second_account(
             ).encode(),
             received_at=now,
             derivers=ALL_DERIVERS,
+            replay_passes=(),
         )
 
 
@@ -938,6 +940,7 @@ def _relink_splitting_the_account(config: Config) -> None:
                 body=body,
                 received_at=later,
                 derivers=ALL_DERIVERS,
+                replay_passes=(),
             )
 
 
@@ -1303,6 +1306,7 @@ def _seed_the_review_scenario(config: Config) -> None:
             ).encode(),
             received_at=now,
             derivers=ALL_DERIVERS,
+            replay_passes=(),
         )
 
 

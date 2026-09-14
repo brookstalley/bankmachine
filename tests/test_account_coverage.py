@@ -182,6 +182,7 @@ def _seed(
                 body=body,
                 received_at=now,
                 derivers=ALL_DERIVERS,
+                replay_passes=(),
             )
     return days
 
@@ -232,6 +233,7 @@ def _cover_the_empty_account(config: Config) -> None:
             body=body,
             received_at=now,
             derivers=ALL_DERIVERS,
+            replay_passes=(),
         )
 
 
@@ -302,6 +304,7 @@ def _seed_investment_activity(config: Config) -> dict[str, Any]:
                 body=json.dumps(body).encode(),
                 received_at=now,
                 derivers=ALL_DERIVERS,
+                replay_passes=(),
             )
         ids = dict(
             conn.execute(select(accounts.c.source_account_id, accounts.c.account_id)).tuples().all()

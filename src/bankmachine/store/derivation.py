@@ -41,11 +41,16 @@ afterwards (an aggregator's history window does not come back), while the
 derivation can be re-run at any time by `store rebuild`. So a crash mid-derive
 leaves the response kept and no half-derived rows, which is the state a rebuild
 repairs.
+
+A conclusion a replay pass draws from a SEQUENCE of responses rides that second
+transaction too, beside the rows of the response that completed it. That is the
+point `store.rebuild` observes each response at, so the live path and the
+replay conclude at the same response.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -159,7 +164,7 @@ class ReplayPass(Protocol):
     accumulates across the responses it is shown, so one carried over from a
     previous replay would attribute that replay's pages to this one's window.
     `store.rebuild.rebuild` takes a factory rather than instances for exactly
-    that reason.
+    that reason, and a sync builds a fresh one for each run.
     """
 
     def observe(self, conn: SAConnection, response: RawResponse) -> None:
@@ -252,6 +257,7 @@ def apply_response(
     body: bytes,
     received_at: UtcInstant,
     derivers: Mapping[str, Deriver],
+    replay_passes: Sequence[ReplayPass],
     request_context: str | None = None,
 ) -> RawResponse:
     """Persist a response, commit it, then derive from it. The sync path's one entry point.
@@ -273,6 +279,14 @@ def apply_response(
 
     Logged and re-raised, never absorbed: the caller is the one that decides
     whether this ends a connection or a run.
+
+    🔴 **`replay_passes` is required, with no default.** A pass concludes
+    something from a sequence of responses -- an investments window's removals
+    -- and it runs here, in the derivation's transaction, so the conclusion
+    commits with the response that completed it or not at all. A sync that
+    omitted the window pass would conclude no window and retire no row, and would
+    report history still owed on every run, so every caller says what it passes,
+    and nearly all pass `()`.
     """
     with transaction(conn):
         response = record_response(
@@ -287,6 +301,12 @@ def apply_response(
         context = DerivationContext(derivation_version_id=ensure_derivation_version(conn))
         try:
             derive(conn, response, context, derivers=derivers)
+            # 🔴 In the derivation's transaction, right after the rows it can see:
+            # the point `store.rebuild` observes each response at. Nothing can
+            # take the writer lock between a response and what it completes, and
+            # a crash cannot keep one without the other.
+            for replay_pass in replay_passes:
+                replay_pass.observe(conn, response)
         except StoreError:
             logger.warning(
                 "raw response %d (%s) on connection %s was archived but could not be derived; "

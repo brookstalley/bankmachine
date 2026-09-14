@@ -58,6 +58,38 @@ ruled it fixed before the first release. (#123)
 **Tests added:** a complete page with no cursor lands the domain without storing the cursor, keeps
 the cursor it had, and an unfinished page with no cursor lands nothing (`tests/connector/test_sync_cursor.py`);
 a complete and empty feed raises no never-landed caveat across two runs (`tests/cli/test_sync_run.py`).
+## 2026-09-14: An investments window is concluded with the page that closes it
+
+<!-- prawduct: scope=window-concluded-with-its-page -->
+
+**Why:** #113. A sync archived and derived each investments page under one writer handle. Then it
+acquired a second handle to conclude the window: soft-delete what the window did not return, and
+record the range measured after. A `store backup` taking the lock at that acquisition, or a process
+killed there, left a complete window archived and never concluded. `store rebuild` replays through
+`InvestmentWindowReplay`, which concluded that window at its closing page's instant while the live
+store never did, so the digest differed and the rebuild refused from then on. Production will run a
+backup beside the nightly sync, which makes the lock route the likely one.
+
+**What changed (build-plan-window-concluded-with-its-page, Chunk 01):** the owner chose option (a).
+`apply_response` takes `replay_passes` as a required keyword argument with no default, and observes
+each response through them inside the derivation transaction, right after the deriver. The sync runs
+the rebuild's own `InvestmentWindowReplay` there, wrapped by `_WindowConcludedBySync`, which records the
+domain's history start in the same transaction. So a window's removals and range commit with the page
+that closed it, and a rebuild concludes every window with the same code, at the same response and
+archived instant. The separate conclusion transaction is gone. `InvestmentWindowReplay.last_conclusion`
+is how the sync reads back what that commit established. Every other `apply_response` caller passes
+`()`. No stored value changes, so `DERIVATION_VERSION` does not move.
+
+**Tests:** two through the real `sync run`: a backup taking the writer lock after the closing page, and
+a run killed there. Each asserts the removal and the measured range committed with the page, and that
+the store rebuilds without content change. Both fail against the old two-transaction shape. Two
+seam tests cover `apply_response`: a pass sees the response's own rows, and a pass that fails takes
+the page's rows with it while the archive stays. A new property test interrupts a run after any page of
+any window. `sync_a_window` now concludes through the sync's pass rather than beside it.
+
+**Not closed, and filed:** a crash between any page's archive commit and its derivation commit still
+leaves a page the live store never derived. That applies to every endpoint, not only investments
+windows, and is #122 (`stage: research`).
 
 ## 2026-09-14: Five records an unattended run left untrue, fixed before production
 

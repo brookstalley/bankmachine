@@ -130,6 +130,7 @@ def _apply(
             body=body,
             received_at=received_at,
             derivers=ALL_DERIVERS,
+            replay_passes=(),
             request_context=None,
         )
     return response.raw_response_id
