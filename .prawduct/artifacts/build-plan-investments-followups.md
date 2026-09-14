@@ -111,9 +111,10 @@ shell. #116: a store derived at an older version answers with nothing saying so.
 Context: all three chunks are committed: `0568c96` (01), `9c4ca16` (02), `32d0966` (03), and the
 cumulative review's resolutions `9bbc404`. The cumulative review raised 2 blocking; both are fixed,
 and so are both warnings. The two notes were accepted with their terms in the handoff notes. The
-verify-resolutions pass found 0 blocking. Suite green (1,824). Owed before or at the PR: re-raise
-VRF-025 (#22) and VRF-026 (#23), production-only; VRF-027 (the search reading test) unless it is run
-against the sandbox first; close #106 (price box unmet), #112 and #116 at ship.
+verify-resolutions pass found 0 blocking. Suite green (1,826). VRF-025 and VRF-026 were re-raised
+as VRF-028 (#22) and VRF-029 (#23) and accepted to open the PR, to be raised again on the next
+branch. VRF-027 was run against the sandbox as VRF-030 and VRF-031, both verified. Owed at ship:
+close #106 (price box unmet), #112 and #116.
 
 `[DECISION: Chunk 03 also changes \`rebuild\`'s content-change expectation to count the dimension
 tables' derivation versions | found while verifying AC-5.4's remedy on the product: a store whose
@@ -235,7 +236,7 @@ of the new check is measured on a synthetic two-year store, in the same form as
     `detail` distinguishing older rows (run `bankmachine store rebuild`) from newer ones (this server
     is older than the build that derived them). `_GUIDANCE` entry in `mcp_resources.py`; the handshake
     text picks it up from the tuple.
-  - `coverage.derivation` on `get_pipeline_health` and its `outputSchema`; a `derivation versions:`
+  - `coverage.derivation` on `get_pipeline_health` and its `outputSchema`; a `derivation:`
     line in `store status`.
   - `api-contract.md` vocabulary table, `data-model.md` (migration 012, the indexes), change-log.
 - **Tests:** unit — absent when every row is current; present on every tool's answer when one row
