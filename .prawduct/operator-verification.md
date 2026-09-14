@@ -1391,3 +1391,92 @@ first — confirm by `build.commit` in any answer.
 **Drain with:** `prawduct-hook verify-operator-verification VRF-027`
 
 **Accepted:** 2026-09-14 — rationale: Accepted to open the transaction-filters PR. VRF-025 and VRF-026 cannot run before the production cutover (the sandbox holds no pending row and one enrolled institution) and are raised again on the next branch on the same term. VRF-027 is accepted to open the PR and remains owed as the reading test for search: raise it again on the next branch unless it has been run in a real client against the sandbox by then.
+
+🔴 **VRF-028 and VRF-029 re-raise VRF-025 and VRF-026 on the investments-followups branch, on the
+term they were accepted under — the eighth raising of each.** Checked again on 2026-09-14 before
+re-raising, not assumed: the production MCP server (relaunched on `216c756`) answers `partial` with
+"the production datastore is not readable (datastore missing)", with 0 connections. The cutover has
+still not happened, so neither check can run. VRF-027 was run against the sandbox on this branch, so
+per its acceptance it is carried by VRF-030 rather than re-raised as owed.
+
+## VRF-028 — one real pending transaction watched across settlement
+
+**Status:** pending
+
+**Chunk:** production-data semantics (#22) · **Raised:** 2026-09-14
+
+**Why a human:** unchanged from **VRF-005**, which carries the full procedure and is the entry to
+follow. Re-raised from VRF-025, which was accepted to open the transaction-filters PR on the term
+that it be raised again on the next branch. This branch changes no pending-hold handling. The
+production datastore does not exist yet, and the sandbox has never held a pending row. The
+obligation is **#22**, and it blocks production.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-028`
+
+## VRF-029 — the sign convention on a real inflow, across two institutions
+
+**Status:** pending
+
+**Chunk:** production-data semantics (#23) · **Raised:** 2026-09-14
+
+**Why a human:** unchanged from **VRF-006**, which carries the full procedure and is the entry to
+follow. Re-raised from VRF-026 on the same term as VRF-028. One feed obeying the sign convention is
+not evidence about another, so this needs a second real institution enrolled and a real inflow; the
+sandbox is one connection (its `sign_convention` reads `consistent`, 0 of 441 judged rows positive,
+which says nothing about a second feed). The obligation is **#23**, and it blocks production.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-029`
+
+## VRF-030 — a search answer read by a model in a real client
+
+**Status:** verified
+
+**Chunk:** transaction filters, Chunk 02 (re-raised from VRF-027) · **Raised:** 2026-09-14
+
+**Why a human:** unchanged from **VRF-027**, which carries the procedure. VRF-027 was accepted to
+open the transaction-filters PR on the term that it be raised again unless it had been run in a real
+client against the sandbox. It was run on this branch, so this entry carries that run.
+
+**Where verified:** the real sandbox store, backed up at schema 11, migrated to schema 12 by
+`store init` and rebuilt (106 raw responses replayed, 2020 rows, `content: identical to what it
+replaced`). The sandbox MCP server was relaunched on `216c756`, `dirty: false`, and every answer
+confirmed that build.
+
+**Recorded session** (2026-09-14). The reader was a fresh Claude Code agent that had not seen this
+entry or VRF-027. It had only the `bankmachine-sandbox` tools, was barred from the repo, and was
+not told that `search` exists. It was asked: "Did I ever get a refund from United Airlines?", "Have
+I been getting any interest on my savings? How much over the last year?" and "After refunds, what
+did travel actually cost me over the last year?". The sandbox holds United Airlines as a +$500
+monthly credit to checking and a −$500 monthly charge to the card, and holds savings interest only
+as `INTRST PYMNT` (+$4.22 a month), which a literal search for "interest" does not match.
+
+**Step 1 — observed.** The reader's first call was `query_transactions` with `search: "united"`,
+not a hand-paged window. It reported 25 credits of $500 ($12,500) to checking and 24 charges of $500
+($12,000) to the card since coverage began on 2024-09-16. Both counts check against the store. It
+said the bank does not call the credits refunds and that it was reading them as refunds from their
+labels, and it flagged unprompted that refunds landing in checking on a monthly schedule are
+unusual.
+
+**Step 2 — observed.** `search: "interest"` returned 0 rows with `search_is_literal`. The reader did
+not conclude there was no interest. It read the savings account's rows and the `TRANSFER_IN`
+category, found `INTRST PYMNT`, and reported 12 payments of $4.22, $50.64, from 2025-09-15, which
+checks against the store. It told the operator in plain words: "A search for the word 'interest'
+finds nothing because the bank abbreviates it." For the money market and CD accounts it said that
+finding no interest payment "doesn't prove they earned nothing". It went past the step's bar,
+which asks only for an offer of a wider search or a read of the rows: it did the read itself.
+
+**Step 3 — observed, condition not triggered.** The reader did not build the travel figure from
+searched rows. It used `category: "TRAVEL"` over 2025-09-15..2026-09-14 and reported $6,000 of
+charges against $6,000 of credits, net $0, with the counts shown. That checks against the store.
+It said the answer depends on treating the credits as refunds ("your travel spending for the year
+was $6,000" otherwise), and named the 2025-09-14 credit and the 2025-09-01 charge that fall just
+before its window. Because the figure came from a complete category filter, this run cannot show
+whether a model would present a total over *searched* rows as the whole amount.
+
+**Noted, outside the steps.** The reader could not read `bankmachine://reference/*`, because the
+resource tool was not loaded in its session. Every judgement above came from the tool descriptions
+and the warnings alone.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-030`
+
+**Verified:** 2026-09-14
