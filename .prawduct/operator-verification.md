@@ -1327,3 +1327,34 @@ excluded as "have trades and holdings".
 **Drain with:** `prawduct-hook verify-operator-verification VRF-024`
 
 **Verified:** 2026-09-13
+
+## VRF-025 — one real pending transaction watched across settlement
+
+**Status:** pending
+
+**Chunk:** production-data semantics (#22) · **Raised:** 2026-09-14
+
+**Why a human:** unchanged from **VRF-005**, which carries the full procedure and is the entry to
+follow. Re-raised from VRF-020, which was accepted to open the investment-sync PR on the stated term
+that it be raised again on the next branch. This is its seventh raising, for the same reason as
+every earlier one: the sandbox has never held a pending row and the production cutover has not
+happened. This branch adds filters to `query_transactions` and changes no pending-hold handling.
+The obligation is **#22**, and it blocks production.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-025`
+
+## VRF-026 — the sign convention on a real inflow, across two institutions
+
+**Status:** pending
+
+**Chunk:** production-data semantics (#23) · **Raised:** 2026-09-14
+
+**Why a human:** unchanged from **VRF-006**, which carries the full procedure and is the entry to
+follow. Re-raised from VRF-021 on the same term as VRF-025, and for its seventh time. One feed
+obeying the sign convention is not evidence about another, so this needs a second real institution
+enrolled and a real inflow. 🔴 This branch's amount range compares against the SIGNED amount, so an
+inverted feed would be filtered the wrong way as well as summed the wrong way — which makes the
+check more relevant here, not less, and still not runnable before the cutover. The obligation is
+**#23**, and it blocks production.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-026`
