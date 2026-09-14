@@ -55,7 +55,7 @@ from bankmachine.connector.plaid.window import (
     InvestmentWindowReplay,
     read_investment_transaction_page,
 )
-from bankmachine.derivers import ALL_DERIVERS
+from bankmachine.derivers import ALL_DERIVERS, all_replay_passes
 from bankmachine.logging_setup import FILE_ONLY, get_logger
 from bankmachine.secrets import SecretsError, get_access_token, get_plaid_secret
 from bankmachine.store.connection import (
@@ -954,6 +954,29 @@ class _WindowConcludedBySync:
             )
 
 
+def _window_pass_for_this_run() -> _WindowConcludedBySync:
+    """The rebuild's replay passes, as the sync runs them, built fresh for one pull.
+
+    🔴 **Read from `all_replay_passes`, the list a rebuild runs, never kept beside
+    it.** A sync that concluded less than a rebuild replays would leave the rebuild
+    concluding what the live store never did, and `store rebuild` would refuse from
+    then on. This build knows how to run one pass inside a page's transaction, so a
+    pass it does not know is refused here, loudly, on the first sync that reaches
+    it, rather than skipped until someone next rebuilds.
+    """
+    passes = all_replay_passes()
+    windows = [p for p in passes if isinstance(p, InvestmentWindowReplay)]
+    unknown = [type(p).__name__ for p in passes if not isinstance(p, InvestmentWindowReplay)]
+    if unknown or len(windows) != 1:
+        raise TypeError(
+            f"store rebuild replays {[type(p).__name__ for p in passes]}, and sync run knows how "
+            f"to run exactly one InvestmentWindowReplay inside a page's transaction. Wire "
+            f"{unknown or 'the window pass'} into the sync, or every rebuild will conclude what "
+            f"the live store never did"
+        )
+    return _WindowConcludedBySync(replay=windows[0])
+
+
 def _pull_investment_transactions(
     config: Config,
     client: PlaidClient,
@@ -979,7 +1002,7 @@ def _pull_investment_transactions(
     """
     end = now_utc().date()
     start = end - timedelta(days=config.history_days)
-    concluding = _WindowConcludedBySync()
+    concluding = _window_pass_for_this_run()
     page_response_ids: list[int] = []
     rows_seen = 0
     stated_total: int | None = None

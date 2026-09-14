@@ -281,10 +281,10 @@ def apply_response(
     🔴 **`replay_passes` is required, with no default.** A pass concludes
     something from a sequence of responses -- an investments window's removals
     -- and it runs here, in the derivation's transaction, so the conclusion
-    commits with the response that completed it or not at all. Omitting the
-    window pass from the sync would leave every window unconcluded and still
-    report success, so every caller says what it passes, and nearly all pass
-    `()`.
+    commits with the response that completed it or not at all. A sync that
+    omitted the window pass would conclude no window and retire no row, and would
+    report history still owed on every run, so every caller says what it passes,
+    and nearly all pass `()`.
     """
     with transaction(conn):
         response = record_response(

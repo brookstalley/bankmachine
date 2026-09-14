@@ -2982,10 +2982,10 @@ def test_a_backup_taking_the_lock_after_the_closing_page_leaves_the_store_rebuil
 ) -> None:
     """🔴 The interruption production will meet: `store backup` beside the nightly sync.
 
-    A window's removals used to be concluded under a writer acquired after the page
-    loop, so a backup winning that acquisition left a complete window archived and
-    never concluded. The rebuild's replay then concluded it at the closing page's
-    instant, the live store never did, and `store rebuild` refused from then on.
+    A window's removals commit with the page that closed it, so no writer acquisition
+    sits between them for a backup to win. If one did, the archive would hold a
+    complete window the live store never concluded, the rebuild's replay would
+    conclude it at the closing page's instant, and `store rebuild` would refuse.
     """
     second_window = _a_second_window_that_retires_the_older_row(cli_env)
     _interrupt_the_next_writer_after_the_window_closes(
@@ -3023,3 +3023,29 @@ def test_a_run_killed_after_the_closing_page_leaves_its_window_concluded(
     )
     report = _rebuild(cli_env)
     assert not report.content_changed
+
+
+class _APassTheSyncCannotRun:
+    """A replay pass this build's sync has no way to run inside a page's transaction."""
+
+    def observe(self, conn: Any, response: Any) -> None:
+        raise AssertionError("a pass the sync refuses is never shown a response")
+
+
+def test_the_sync_runs_the_replay_passes_a_rebuild_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """🔴 One list of replay passes, read by both paths.
+
+    A sync that concluded less than a rebuild replays would leave `store rebuild`
+    concluding what the live store never did. The sync reads the rebuild's list,
+    and a pass it cannot run inside a page's transaction is refused, not skipped.
+    """
+    concluding = sync_run._window_pass_for_this_run()
+    assert [type(concluding.replay)] == [type(p) for p in all_replay_passes()]
+
+    monkeypatch.setattr(
+        sync_run,
+        "all_replay_passes",
+        lambda: (*all_replay_passes(), _APassTheSyncCannotRun()),
+    )
+    with pytest.raises(TypeError, match="_APassTheSyncCannotRun"):
+        sync_run._window_pass_for_this_run()

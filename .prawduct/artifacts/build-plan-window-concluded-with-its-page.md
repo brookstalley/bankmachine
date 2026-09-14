@@ -19,13 +19,18 @@ governed_by:
       - "a transaction is never hard-deleted; removal is a soft delete → conforms; the removal is still `removed_at`, stamped at the closing page's archived instant exactly as before. Only the transaction it commits in moves"
       - "a source value is never overwritten in place → inapplicable because no source column is written differently"
       - "every silver row carries its evidence and derivation version → conforms; no row is written differently, so `DERIVATION_VERSION` does not move. A live store and its rebuild conclude the same removals at the same instants, which is the property the version exists to make checkable"
-      - "all monetary values are integer minor units; amounts are operator-signed; dates and instants never mix → inapplicable because no amount, date or instant is derived differently"
+      - "every stored amount is signed from the operator's point of view → inapplicable because no amount is derived differently"
+      - "all monetary values are stored as integer minor units → inapplicable because no amount is derived differently"
+      - "calendar dates and UTC instants are distinct types and never mix → conforms; `removed_at` is still the closing page's archived instant, and the measured range is still a calendar date, each written by the same code as before"
       - "the daily balance and holdings series are append-only → inapplicable because neither series is touched"
       - "a migration's DDL is frozen once written → inapplicable because no migration is added"
   - artifact: api-contract
     dispositions:
       - "the CLI's three-way exit code is a contract → conforms; a sync's exit codes are unchanged, including when the writer lock is taken mid-run"
-      - "the MCP surface is read-only; every response carries a freshness stamp; tool boundaries; balance lifecycle → inapplicable because no answer changes"
+      - "the MCP surface is read-only → inapplicable because no tool is added or changed"
+      - "every response carries a freshness stamp, and incompleteness rides the success path as a warning → inapplicable because no answer's shape or warning set changes"
+      - "a tool's boundary is drawn where the answer shape changes → inapplicable because no tool is added"
+      - "a stored balance is reported with its lifecycle → inapplicable because no balance path is touched"
 partition: serial — one chunk. The signature change to `apply_response` and every call site must land in one commit or the suite does not import, and the sync change is meaningless without it
 last_validated: 2026-09-14
 ---
@@ -160,3 +165,6 @@ green (147), and mypy clean across source and tests.
 
 One finding from building: mypy refused the test reading `writer_connection` through `sync_run`,
 which does not re-export it. The helper reads it from `store.engine` directly.
+
+Verified: `verify_norms_go_red.py` caught all 227 norm breaks, run detached. The full gated suite is
+green (`test-status` current). #121's comment fix is folded in (`6e0fd7c`), and VRF-034/035 are raised.
