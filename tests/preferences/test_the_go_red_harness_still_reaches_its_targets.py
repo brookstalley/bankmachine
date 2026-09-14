@@ -62,6 +62,24 @@ def stale_anchors(cases: Sequence[Case], root: Path) -> list[str]:
     ]
 
 
+def ambiguous_anchors(cases: Sequence[Case], root: Path) -> list[str]:
+    """Cases whose anchor occurs more than once, so the harness breaks an arbitrary copy.
+
+    🔴 The mutation is applied to the FIRST occurrence. When the code carries the
+    same line twice -- two handlers ending alike, two tables declaring one column --
+    the first copy need not be the one the named test drives, and the case then
+    reports on a path nobody exercised. Measured: AC-4.1's anchor also closed the
+    expired-login handler above the catch it meant, and the harness reported the
+    norm unguarded while the guard was fine.
+    """
+    found: list[str] = []
+    for name, path, old, _new, _test in cases:
+        count = (root / path).read_text(encoding="utf-8").count(old)
+        if count > 1:
+            found.append(f"{name}\n      {path}: {old!r} occurs {count} times")
+    return found
+
+
 def inert_or_unparsable(cases: Sequence[Case], root: Path) -> tuple[list[str], list[str]]:
     """Cases whose mutation changes nothing, or does not parse.
 
@@ -125,6 +143,17 @@ def test_every_case_can_still_find_the_text_it_breaks() -> None:
     )
 
 
+def test_every_case_breaks_exactly_one_place() -> None:
+    """An anchor that names two places breaks whichever comes first, not the one meant."""
+    ambiguous = ambiguous_anchors(_harness().CASES, REPO_ROOT)
+
+    assert not ambiguous, (
+        "these go-red cases anchor on text that occurs more than once, so the harness breaks "
+        "the first copy whether or not the named test exercises it:\n"
+        + "\n".join(f"  - {entry}" for entry in ambiguous)
+    )
+
+
 def test_every_mutation_still_changes_the_file_and_still_parses() -> None:
     """A mutation that changes nothing, or breaks the parse, reports a false RED.
 
@@ -180,6 +209,11 @@ def test_the_detectors_report_a_case_broken_in_each_of_the_three_ways(tmp_path: 
     renamed: list[Case] = [("renamed", subject, "value = 1", "value = 2", "t.py::test_gone")]
 
     assert stale_anchors(drifted, tmp_path), "a drifted anchor was not reported"
+
+    (tmp_path / "twice.py").write_text("value = 1\nvalue = 1\n", encoding="utf-8")
+    doubled: list[Case] = [("doubled", Path("twice.py"), "value = 1", "value = 2", "t.py::test_x")]
+    assert ambiguous_anchors(doubled, tmp_path), "an anchor occurring twice was not reported"
+    assert not ambiguous_anchors(inert_case, tmp_path), "a unique anchor was reported"
     assert not stale_anchors(inert_case, tmp_path), "a present anchor was reported as drifted"
 
     inert, unparsable = inert_or_unparsable(inert_case, tmp_path)

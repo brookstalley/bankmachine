@@ -66,6 +66,7 @@ from bankmachine.store.schema import (
     holdings,
     institutions,
     investment_transactions,
+    refused_holdings,
     securities,
     transactions,
 )
@@ -1595,10 +1596,14 @@ def _write_balance(
 
     if not _claim_capture_day(
         conn,
-        table=balances_daily,
-        where=(
-            balances_daily.c.account_id == account_id,
-            balances_daily.c.as_of_date == as_of,
+        keys=(
+            (
+                balances_daily,
+                (
+                    balances_daily.c.account_id == account_id,
+                    balances_daily.c.as_of_date == as_of,
+                ),
+            ),
         ),
         response=response,
     ):
@@ -1606,13 +1611,44 @@ def _write_balance(
     conn.execute(insert(balances_daily).values(account_id=account_id, as_of_date=as_of, **values))
 
 
+def _position_keys(
+    *tables: Table, account_id: int, security_id: int, as_of: CalendarDate
+) -> tuple[tuple[Table, tuple[Any, ...]], ...]:
+    """One position's day, as a key in each table that can record it.
+
+    🔴 A position's day is ONE key across `holdings` and `refused_holdings`: a
+    capture either records the position or refuses it, and the day's first
+    capture decides which. Claimed per table, each would keep its own first
+    capture, and two captures disagreeing about a unit would leave a row in
+    both -- a position served beside a disclosure calling it absent, and a
+    total over positions left to guess which one counts. The caller names its
+    own table first and the rival after it.
+    """
+    return tuple(
+        (
+            table,
+            (
+                table.c.account_id == account_id,
+                table.c.security_id == security_id,
+                table.c.as_of_date == as_of,
+            ),
+        )
+        for table in tables
+    )
+
+
 def _claim_capture_day(
-    conn: SAConnection, *, table: Table, where: Sequence[Any], response: RawResponse
+    conn: SAConnection,
+    *,
+    keys: Sequence[tuple[Table, Sequence[Any]]],
+    response: RawResponse,
 ) -> bool:
     """Whether this response is the capture an append-only day-keyed row keeps.
 
-    True once the day is this response's to write -- a row belonging to a later
-    capture having been removed first. False when what is already there stands.
+    True once the day is this response's to write -- any row belonging to a
+    later capture having been removed first. False when what is already there
+    stands. `keys` is every (table, key) the one day can be recorded under: one
+    for a balance, and both holdings tables for a position.
 
     🔴 **One capture per key per day, and the first one wins.** `data-model.md`
     says it of the daily balance series and of the holdings series in one breath,
@@ -1641,28 +1677,32 @@ def _claim_capture_day(
     turn it into an aggregator row that the next rebuild deletes, since a rebuild
     empties exactly the rows carrying a `raw_response_id`.
     """
-    existing = conn.execute(
-        select(table.c.captured_at, table.c.raw_response_id).where(*where)
-    ).one_or_none()
-    if existing is None:
-        return True
-    captured_at, raw_response_id = existing
-    if (captured_at, raw_response_id or 0) <= (response.received_at, response.raw_response_id):
-        return False
-    if raw_response_id is None:
-        # 🔴 A row this deriver did not write, and must not remove.
-        # `manual_import_id` rows come from FR-7's import path -- the operator's
-        # own statement -- and a rebuild deletes exactly the rows carrying a
-        # `raw_response_id`. Replacing one with an aggregator row would make it
-        # disappear a rebuild later, with nothing connecting the loss to the sync
-        # that caused it. The comparison above already covers ties and later
-        # captures; this covers the *earlier* archived response, which is the
-        # case the comparison would otherwise let through.
-        return False
-    # The archive holds an earlier capture for this day than the row that is
+    held = [
+        (table, where)
+        for table, where in keys
+        if conn.execute(select(table.c.captured_at).where(*where)).one_or_none() is not None
+    ]
+    for table, where in held:
+        captured_at, raw_response_id = conn.execute(
+            select(table.c.captured_at, table.c.raw_response_id).where(*where)
+        ).one()
+        if (captured_at, raw_response_id or 0) <= (response.received_at, response.raw_response_id):
+            return False
+        if raw_response_id is None:
+            # 🔴 A row this deriver did not write, and must not remove.
+            # `manual_import_id` rows come from FR-7's import path -- the operator's
+            # own statement -- and a rebuild deletes exactly the rows carrying a
+            # `raw_response_id`. Replacing one with an aggregator row would make it
+            # disappear a rebuild later, with nothing connecting the loss to the sync
+            # that caused it. The comparison above already covers ties and later
+            # captures; this covers the *earlier* archived response, which is the
+            # case the comparison would otherwise let through.
+            return False
+    # The archive holds an earlier capture for this day than every row that is
     # here. Replaying it must still land on the earliest, or a rebuild would
     # depend on the order rows happened to be written in the first place.
-    conn.execute(delete(table).where(*where))
+    for table, where in held:
+        conn.execute(delete(table).where(*where))
     return True
 
 
@@ -1726,27 +1766,14 @@ def derive_investments_holdings(
 
     known_accounts = _account_ids(conn, response.connection_id)
     for entry in _entries(payload, "holdings", response):
-        try:
-            _write_holding(
-                conn,
-                response=response,
-                context=context,
-                entry=entry,
-                known_accounts=known_accounts,
-                local_security=local_security,
-            )
-        except UndenominableAmountError as exc:
-            # 🔴 One position's currency costs that position, never the account's
-            # other holdings. A portfolio holding one instrument in a unit this
-            # build has no exponent for would otherwise report nothing at all,
-            # and the rest of it is perfectly denominable.
-            _log.warning(
-                "raw response %s: a position is held in a unit this build cannot express in "
-                "minor units, so it is not recorded and the rest of the account's positions "
-                "are kept -- %s",
-                response.raw_response_id,
-                exc,
-            )
+        _write_holding(
+            conn,
+            response=response,
+            context=context,
+            entry=entry,
+            known_accounts=known_accounts,
+            local_security=local_security,
+        )
 
 
 def _upsert_security(
@@ -1921,17 +1948,30 @@ def _write_holding(
             f"carry. The instrument a position is in is not something this system can "
             f"supply for it"
         )
+    account_id = known_accounts[source_account_id]
+    security_id = local_security[source_security_id]
+    as_of = _as_of(response.received_at)
     currency = _stated_currency(entry)
     if currency is None:
         # 🔴 `holdings.currency` is NOT NULL, and for the same reason
         # `balances_daily.currency` is: one amount with no unit is unusable, and
         # a unit borrowed from another response is how a total silently mixes
-        # two. The position is not recorded; the archive keeps it, so a later
+        # two. The position is not recorded -- its refusal is, so a read can say
+        # which position is missing -- and the archive keeps the body, so a later
         # capture that states a currency derives it.
         _log.warning(
             "raw response %s: a position in security %s states no currency, so it is not recorded",
             response.raw_response_id,
             source_security_id,
+        )
+        _record_refused_holding(
+            conn,
+            response=response,
+            context=context,
+            account_id=account_id,
+            security_id=security_id,
+            as_of=as_of,
+            currency=None,
         )
         return
     market_value = entry.get("institution_value")
@@ -1942,31 +1982,64 @@ def _write_holding(
             f"is NOT NULL and a position of unstated value is not a zero"
         )
     cost_basis = entry.get("cost_basis")
-    values: dict[str, Any] = {
-        "quantity": _exact_quantity(entry.get("quantity"), response),
-        "market_value_minor": to_minor(market_value, currency, "a position value", response),
-        "cost_basis_minor": (
+    quantity = _exact_quantity(entry.get("quantity"), response)
+    try:
+        market_value_minor = to_minor(market_value, currency, "a position value", response)
+        cost_basis_minor = (
             None
             if cost_basis is None
             else to_minor(cost_basis, currency, "a position cost basis", response)
-        ),
+        )
+    except UndenominableAmountError as exc:
+        # 🔴 One position's currency costs that position, never the account's
+        # other holdings. A portfolio holding one instrument in a unit this
+        # build has no exponent for would otherwise report nothing at all,
+        # and the rest of it is perfectly denominable.
+        _log.warning(
+            "raw response %s: a position is held in a unit this build cannot express in "
+            "minor units, so it is not recorded and the rest of the account's positions "
+            "are kept -- %s",
+            response.raw_response_id,
+            exc,
+        )
+        _record_refused_holding(
+            conn,
+            response=response,
+            context=context,
+            account_id=account_id,
+            security_id=security_id,
+            as_of=as_of,
+            currency=currency,
+        )
+        return
+    # 🔴 The price's date, not the position's: a capture today can value a
+    # position at a price years old *(§22)*. Absent stays absent -- never the
+    # capture day, which is the one reading this column exists to refuse.
+    price_as_of = _optional(entry.get("institution_price_as_of"))
+    values: dict[str, Any] = {
+        "quantity": quantity,
+        "market_value_minor": market_value_minor,
+        "cost_basis_minor": cost_basis_minor,
         "currency": currency,
         "captured_at": response.received_at,
         "source": "aggregator",
         "raw_response_id": response.raw_response_id,
         "manual_import_id": None,
         "derivation_version_id": context.derivation_version_id,
+        "price_as_of": (
+            None
+            if price_as_of is None
+            else _parse_calendar(price_as_of, "a position price date", response)
+        ),
     }
-    account_id = known_accounts[source_account_id]
-    security_id = local_security[source_security_id]
-    as_of = _as_of(response.received_at)
     if not _claim_capture_day(
         conn,
-        table=holdings,
-        where=(
-            holdings.c.account_id == account_id,
-            holdings.c.security_id == security_id,
-            holdings.c.as_of_date == as_of,
+        keys=_position_keys(
+            holdings,
+            refused_holdings,
+            account_id=account_id,
+            security_id=security_id,
+            as_of=as_of,
         ),
         response=response,
     ):
@@ -1974,6 +2047,57 @@ def _write_holding(
     conn.execute(
         insert(holdings).values(
             account_id=account_id, security_id=security_id, as_of_date=as_of, **values
+        )
+    )
+
+
+def _record_refused_holding(
+    conn: SAConnection,
+    *,
+    response: RawResponse,
+    context: DerivationContext,
+    account_id: int,
+    security_id: int,
+    as_of: CalendarDate,
+    currency: str | None,
+) -> None:
+    """A position this build refused, kept where a read can name it.
+
+    🔴 **The refusal, not the position.** Skipping the row keeps an unexpressible
+    value out of `holdings`, and until this record existed the only trace was a
+    log line no caller of any surface ever sees -- so `list_holdings` served the
+    account's other positions as if they were all of them. `data-model.md`'s
+    valuation norm requires the refusal NAMED under `rule-applied`, and a read
+    can only name what the store records.
+
+    The same first-capture-of-the-day rule the position would have obeyed, and
+    over the SAME key: the day is claimed across both tables, so a capture that
+    refuses a position the day already recorded changes nothing, and an earlier
+    one replaces the row it disagrees with. A rebuild lands on the same record
+    whatever order it replays the day's captures in. `currency` is None where
+    the aggregator stated none.
+    """
+    if not _claim_capture_day(
+        conn,
+        keys=_position_keys(
+            refused_holdings,
+            holdings,
+            account_id=account_id,
+            security_id=security_id,
+            as_of=as_of,
+        ),
+        response=response,
+    ):
+        return
+    conn.execute(
+        insert(refused_holdings).values(
+            account_id=account_id,
+            security_id=security_id,
+            as_of_date=as_of,
+            currency=currency,
+            captured_at=response.received_at,
+            raw_response_id=response.raw_response_id,
+            derivation_version_id=context.derivation_version_id,
         )
     )
 

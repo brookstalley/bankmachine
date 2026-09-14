@@ -39,6 +39,7 @@ from bankmachine.store.migrations import MIGRATIONS, Migration, migrate
 from bankmachine.store.migrations.core_schema import CORE_SCHEMA_DDL, CORE_SCHEMA_DDL_SHA256
 from bankmachine.store.schema import (
     CORE_TABLES,
+    LATER_TABLES,
     PROVENANCE_SOURCES,
     account_rules,
     accounts,
@@ -51,6 +52,7 @@ from bankmachine.store.schema import (
     manual_imports,
     metadata,
     raw_responses,
+    refused_holdings,
     securities,
     sync_state,
     transactions,
@@ -247,13 +249,19 @@ def test_the_thirteen_core_tables_exist_at_the_declared_schema_version(
     }
     assert set(CORE_TABLES) <= present
     assert len(CORE_TABLES) == 13
+    assert set(LATER_TABLES) <= present
     version = writer.execute(text("SELECT MAX(version) FROM schema_version")).scalar_one()
     assert version == SUPPORTED_SCHEMA_VERSION
 
 
 def test_the_metadata_names_exactly_the_tables_the_requirement_lists(writer: SAConnection) -> None:
-    """A table added to the metadata alone is a contract widened without a migration."""
-    assert set(metadata.tables) == set(CORE_TABLES)
+    """A table added to the metadata alone is a contract widened without a migration.
+
+    FR-6's list is a minimum, so a later migration may add a table beside it --
+    and `LATER_TABLES` is where one is declared. A table neither literal names is
+    still a failure here.
+    """
+    assert set(metadata.tables) == set(CORE_TABLES) | set(LATER_TABLES)
 
 
 def test_the_metadata_matches_the_migrated_database(writer: SAConnection) -> None:
@@ -265,9 +273,9 @@ def test_the_metadata_matches_the_migrated_database(writer: SAConnection) -> Non
     column, rather than in a query that silently returns nothing six chunks
     from now.
     """
-    for name in CORE_TABLES:
+    for name in (*CORE_TABLES, *LATER_TABLES):
         assert _metadata_columns(metadata.tables[name]) == _database_columns(writer, name), (
-            f"{name}: store/schema.py and migration 002 describe different tables"
+            f"{name}: store/schema.py and the migrations describe different tables"
         )
 
 
@@ -293,7 +301,7 @@ def _normalized_predicate(predicate: str | None, table_name: str) -> str | None:
 
 def _database_indexes(conn: SAConnection) -> set[IndexShape]:
     found: set[IndexShape] = set()
-    for table_name in CORE_TABLES:
+    for table_name in (*CORE_TABLES, *LATER_TABLES):
         for index in conn.execute(text(f"PRAGMA index_list('{table_name}')")).fetchall():
             if index.origin != "c":  # 'u' and 'pk' are constraint autoindexes
                 continue
@@ -1170,6 +1178,49 @@ def test_an_aggregator_row_must_name_the_response_it_came_from(writer: SAConnect
                 derivation_version_id=s.derivation_version_id,
             )
         )
+
+
+def test_a_refused_position_points_at_the_capture_that_refused_it(writer: SAConnection) -> None:
+    """Migration 011's guarantees, asserted through the file rather than the type.
+
+    A refusal is only ever derived from an archived capture, so one with no raw
+    response behind it is a claim nothing can check. And `sync shell` reaches
+    this table with no type decorator between the operator and the file, so the
+    calendar-date CHECK has to hold on its own.
+    """
+    s = seed(writer)
+    refusal = {
+        "account_id": s.account_id,
+        "security_id": s.security_id,
+        "currency": "ZZZ",
+        "captured_at": now_utc(),
+        "derivation_version_id": s.derivation_version_id,
+    }
+
+    with pytest.raises(IntegrityError):
+        writer.execute(insert(refused_holdings).values(**refusal, as_of_date=TODAY))
+    with pytest.raises(IntegrityError):
+        writer.execute(
+            text(
+                "INSERT INTO refused_holdings (account_id, security_id, as_of_date, currency, "
+                "captured_at, raw_response_id, derivation_version_id) VALUES (:account, "
+                ":security, '2026-09-12T00:00:00+00:00', 'ZZZ', '2026-09-12T00:00:00+00:00', "
+                ":raw, :version)"
+            ),
+            {
+                "account": s.account_id,
+                "security": s.security_id,
+                "raw": s.raw_response_id,
+                "version": s.derivation_version_id,
+            },
+        )
+
+    writer.execute(
+        insert(refused_holdings).values(
+            **refusal, as_of_date=TODAY, raw_response_id=s.raw_response_id
+        )
+    )
+    assert writer.execute(select(func.count()).select_from(refused_holdings)).scalar_one() == 1
 
 
 def test_the_provenance_constant_still_agrees_with_the_ddl() -> None:

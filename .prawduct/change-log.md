@@ -34,6 +34,206 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-13: A stopped balance names the account that took it over, and a disclosure names only what the request reaches
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** a real client read of the sandbox store (VRF-023) found two warnings stating something
+false. `account_no_longer_active` on `balance_history` said a net worth read across a stopped
+account's last day "moves by that account's last balance". All 14 stopped accounts there were
+re-linked at the same balances, so the net worth is flat. And the superseded-generation `rule-applied`
+disclosure named every span in the store, so `query_transactions(account_id=21)` named accounts 1–5.
+
+**What changed (Chunk 11):**
+
+- **`account_no_longer_active` names each stopped account's successor.** A successor shares the
+  stopped account's `lineage` identity partition and currency and was first captured strictly later.
+  Each stopped account is named with that account, its first day and its first balance. Across the
+  handover net worth moves only by the difference. A successor two stopped accounts share, or a tie,
+  claims no handover. A net-worth day between a stop and its successor is named with the balance it
+  leaves out. The figure that stopped counting stays whole and still agrees with
+  `coverage.not_active_balance_minor_units`. The move claim is made only of the unreplaced part.
+- **The superseded disclosure is request-scoped.** It names only spans on the request's account whose
+  range meets the requested window. The exclusion still sees every span, so an answer's totals are
+  unchanged. This behaviour predates the branch and is fixed here.
+
+## 2026-09-13: An investment account's trades and positions count as coverage
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** an account whose only activity is trades and positions read `transaction_count` 0, and both
+listings raised `accounts_without_coverage` for it. That told an agent to distrust an account whose
+data is in the store (#107).
+
+**What changed (Chunk 10):**
+
+- **`list_accounts` and `get_coverage_report` gain `investment_transaction_count`** (soft-deleted trades
+  excluded, 0 not null) and **`holdings_as_of`** (the newest captured holdings day, nullable; a refused
+  position is not a capture). Both come from per-account grouped subqueries, never a widened join.
+- **Both listings raise `accounts_without_coverage` only for accounts with nothing in any feed.**
+  `query_transactions(account_id=N)` and `money_summary` keep the transactions-feed predicate, because
+  an empty answer from either really is "no data for this tool".
+- **The envelope reference's cannot-answer list now says trades are counted per account and served as
+  rows by no tool.** Its guard test was re-aimed at that claim, and it can still fail.
+- `list_holdings` and `balance_history` moved out of `query.py` into their own modules (#115, Chunk
+  09). Nothing a client sees changed.
+
+## 2026-09-13: Net worth that says what stopped counting, and a holdings total that is not a second balance
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** a net-worth total is the most believable wrong number this product can emit, and it goes
+wrong silently in two ways. It can count an investment account twice, once as its balance and again
+as its positions. And a non-active account's frozen balance can enter or leave the figure with
+nothing said. Chunk 07 stated that exclusion without the figure, and the lifecycle norm requires the
+figure.
+
+**What changed (Chunk 08):**
+
+- **Net worth over time, on the owner's ruling.** An account no longer active counts through its last
+  capture and not after. `account_no_longer_active` names each such account's last day and signed last
+  balance, plus the per-currency count and sum that stopped counting. The alternative, carrying the last
+  balance forward, was measured first: on the sandbox store, 14 relinked accounts' last balances
+  equal their replacements', so every later net worth would read exactly 2×. The ruling is recorded
+  at the edge of the lifecycle norm in `api-contract.md` and under AC-12.8.
+- **`list_holdings` carries `totals`**, the owner's choice over settling the ruling with no total. It
+  has one entry per currency (`positions`, `market_value_minor_units`, `not_active_positions`,
+  `not_active_market_value_minor_units`), every key present and zero where nothing qualifies.
+  Positions on non-active accounts stay in the total, with their count and value stated beside it.
+  The total decomposes balances that net worth already counts, and the schema, the tool description
+  and the contract all say never to add it to one. `_output_schema` now takes each tool's own totals
+  schema under one shared `totals` description.
+- **The double-count guard.** Net worth reads the balance series alone. A test and a property hold it
+  unmoved by any positions, and a go-red case that adds the positions in goes red.
+- **Five review findings carried from Chunk 07:**
+  - **R-1:** the balance-history cursor is walked through the MCP boundary, with cross-tool refusal.
+  - **R-2:** completeness is judged for every currency on every captured day.
+  - **R-3:** "stopped" means the last investments attempt archived no holdings reply, and a
+    left-out account is judged against the newest archived reply's own day, so a sync crossing
+    midnight UTC names nothing.
+  - **R-4:** a position's day is claimed across `holdings` and `refused_holdings` at write time
+    (`DERIVATION_VERSION` 11), so `list_holdings` no longer tie-breaks two tables.
+  - **R-5:** `SeriesCursor.position()` delegates to `series_position`.
+
+Run `bankmachine store rebuild` after pulling this, so rows derived at version 10 converge on one
+record per position per day.
+
+## 2026-09-13: Net worth over time, and each account's balance history, from one series
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** the server had no answer to "what was my net worth last month". Only the latest balance per
+account was served, and the primer told an agent the question was unanswerable, although every
+day's capture has been kept in `balances_daily` since build step 3.
+
+**What changed (Chunk 07):** `balance_history` is built and keeps its name. The owner accepted the
+cost of a name that is harder to find for the net-worth question; the tool description opens with
+that question to compensate. One read returns the series two ways under one strict row shape: a row
+per account per day a balance was captured, and a net-worth row per day per currency, marked by a
+null `account_id`. Assets and liabilities split by `balance_class` rather than by the sign of the
+balance, so an overdraft is negative assets. `net = assets - liabilities` holds at both levels.
+
+- **A net-worth row is given only for a complete day.** Every account it counts must have been
+  captured that day. Otherwise the row is withheld and named under `rule-applied`, and the account
+  rows for that day remain.
+- **Which accounts a day counts.** An active account counts from its first capture onward, so a
+  connection that stopped syncing withholds every later net worth instead of dropping out of it.
+  An account no longer active counts only through its last capture, and `account_no_longer_active`
+  says so. Both refine the owner's option ("between its first and last capture") and are recorded
+  in the plan as vetoable.
+- **A day with no capture is absent at both levels.**
+
+The tool is windowed, capped and paged like `query_transactions`, which meant the envelope had to
+learn which series it describes:
+
+- `resolve_window` clamps against the days balances were captured, not the transactions' span.
+- `SeriesCursor` is a keyset over the series order, with its own scheme tag, so each tool refuses
+  the other's cursor.
+- `Truncation` names what it counts. That also corrects `money_summary`, whose `rows_truncated`
+  sentence called its groups "transactions".
+- `transactions_in_effective_window` rides only a window over transactions.
+
+`find_recurring` is now the one unbuilt tool on the wire, in the primer and in every document. The
+tool-surface guard's build-status regex accepts "one is specification only". Carried from Chunk 06:
+`list_holdings` now also names a stopped investments feed for an account left out of a newer
+capture, rather than calling that feed working.
+
+## 2026-09-13: A holdings answer says what it cannot vouch for, and names the positions it refused
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** `list_holdings` served three well-formed answers that were quietly wrong. It presented a
+2021 price on a 2026 capture as a current value. It dropped any position in a unit this build
+cannot denominate and left only a log line nobody calling a tool can see, so the account read as
+a smaller portfolio than it was. And it said nothing about a position on an account that had
+stopped being reported. Separately, the coverage surface counts the transactions feed alone, so it
+reported an investment account holding positions as having no data. Nothing said which feed it
+counted.
+
+**What changed (Chunk 06):** a new request-scoped warning, `positions_not_current`, names every
+account holding a position that is not a current value. It keeps three reasons apart: a price more
+than four calendar days older than the day it was captured, a price date the store does not have,
+and a capture older than the day the connection's transactions last landed. The four days are an
+assumption the owner can override. Migration 011 adds `refused_holdings`, so a position refused
+for its unit (or for stating none) is recorded where a read can see it. `DERIVATION_VERSION` 9 → 10
+lets `store rebuild` fill it from the archive. `list_holdings` names each refusal under
+`rule-applied` by account, security and unit, and reads an account's latest capture day across both
+tables, so an account whose newest capture refused everything answers from that day. The answer
+also carries `account_no_longer_active` and `roster_observed_empty` for positions on accounts in its
+scope. `transaction_count`, `accounts_without_coverage`, their guidance and the client guide now say
+they speak for the transactions feed; the fix that changes those row shapes stays open as #107. The
+new kind reached the scope tuple, the guidance map, the contract table and the client guide
+together. The new table is declared in `LATER_TABLES` beside FR-6's thirteen. The populated-store
+upgrade tests track 011 and keep 010's fixture. The go-red harness has a case for each new guard,
+and all 183 go red.
+
+**Verified against the sandbox:** migrated to schema 11 and rebuilt (content changed as expected at
+derivation version 10). `list_holdings` returned all 13 positions, captured 2026-09-13 at a
+2021-05-25 price, and `positions_not_current` named both investment accounts with their position
+counts. No `rule-applied` fired, which is correct: every sandbox position is in USD.
+
+**Fixed after the cumulative review:** `list_holdings` read every day of holdings history and
+filtered to each account's latest in Python; the latest day is now a union of both tables in SQL,
+and both reads join it. The capture clause of `positions_not_current` blamed a stopped investments
+feed for an account a newer capture of its own connection simply listed no position for, and for a
+closed account; it now names the first as positions the account may no longer hold and leaves the
+second to `account_no_longer_active`. And when two captures on one day disagreed about a
+position's unit, the answer could serve the position while naming it absent; the day's first
+capture now decides.
+
+## 2026-09-13: `list_holdings` serves positions, with the date of the price each is valued at
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** wave 1 stored what is inside an investment account and no tool read it, so an agent asked
+about positions was told the server could not answer. And the one date the aggregator puts on a
+position, `institution_price_as_of`, was dropped: every sandbox position is valued at a 2021 price,
+while `holdings.as_of_date` is always the sync day, so a stored row presented a years-old value as
+current and nothing downstream could say otherwise.
+
+**What changed:** migration 010 adds nullable `holdings.price_as_of` in its own module, and the
+holdings deriver fills it (`DERIVATION_VERSION` 8 → 9, so `store rebuild` fills existing rows from
+the archive). `list_holdings` reads each account's latest capture day, not today's and not one day
+store-wide, and returns one strict row per position: security identity, quantity as exact decimal
+text, value and cost basis in minor units (cost basis present and null when unknown), currency,
+capture date, price date (served null, never coalesced to the capture date) and the account's
+lifecycle. No total. The tool left `UNBUILT_TOOLS`, the primer stopped calling positions
+unanswerable, and the contract, client guide, requirements and README now count six built tools.
+The populated-store upgrade tests now track migration 010, and their newest-version check reads the
+highest version rather than the last row, which sorts `(10, …)` before `(9, …)`.
+
+**Verified against the sandbox:** migrate, rebuild and sync, then `list_holdings` returned all 13
+positions across both investment accounts with `price_as_of` 2021-05-25 beside a 2026-09-13
+capture date.
+
+**Also fixed, found by re-proving the norms red:** the go-red harness reported AC-4.1 (one
+connection's failure never aborts another) as unguarded. The guard was fine; the case was not. Its
+anchor, the `_degrade` return line, also closes the expired-login handler just above the broad
+catch, and the harness breaks only the FIRST occurrence, so it mutated a path the named test never
+takes. Ten of the harness's cases anchored on text that occurs twice; the other nine happened to hit
+the right copy. Every anchor is now widened until it names one place, the harness refuses an
+ambiguous anchor as `AMBIGUOUS`, and the sub-second reach test fails on one.
+
 ## 2026-09-13: Stop telling every agent that holdings are not stored
 
 <!-- prawduct: scope=investments-v1 -->

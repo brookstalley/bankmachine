@@ -163,7 +163,8 @@ COUNTED_CLAIMS = (
         API_CONTRACT,
         "the build-status paragraph",
         re.compile(
-            r"(\w+) of the (\w+) tools below are implemented and (\w+) are specification only"
+            r"(\w+) of the (\w+) tools below are implemented and "
+            r"(\w+) (?:is|are) specification only"
         ),
         ("built", "specified", "unbuilt"),
     ),

@@ -43,6 +43,7 @@ from bankmachine.envelope import (
     Cursor,
     Truncation,
     Window,
+    WindowSeries,
     iso_or_none,
     resolve_window,
 )
@@ -62,7 +63,9 @@ from bankmachine.store.schema import (
     accounts,
     balances_daily,
     connections,
+    holdings,
     institutions,
+    investment_transactions,
     sync_state,
     transactions,
 )
@@ -730,6 +733,13 @@ class AccountCoverage:
     first_transaction_date: CalendarDate | None
     last_transaction_date: CalendarDate | None
     transaction_count: int
+    #: How many investment trades the store holds for the account, removed ones
+    #: excluded. Counted from their own table, never through the transactions
+    #: join, and served as rows by no tool.
+    investment_transaction_count: int
+    #: The newest day this account's positions were captured; null when none ever
+    #: was. A position refused for its unit is not a capture.
+    holdings_as_of: CalendarDate | None
     #: Where this account's CONNECTION was granted history from. Null when the
     #: grant has not been measured yet, or for an import-only account that has
     #: no connection -- two different reasons, both meaning the comparison below
@@ -781,12 +791,33 @@ class AccountCoverage:
         """
         return self.transaction_count == 0
 
+    @property
+    def no_data_in_any_feed(self) -> bool:
+        """Nothing has been recorded for this account in ANY feed.
+
+        🔴 What the LISTINGS name, where `uncovered` is what the transactions tools
+        name. `list_accounts` and `get_coverage_report` describe the account
+        itself, so an investment account whose trades or positions are stored has
+        data, and naming it told an agent to distrust a true answer (#107).
+        `query_transactions` and `money_summary` answer only from the transactions
+        feed, and for them the same account's empty answer really is data not
+        present -- so they keep `uncovered`. Two predicates because there are two
+        questions, not one rule spelled twice.
+        """
+        return (
+            self.transaction_count == 0
+            and self.investment_transaction_count == 0
+            and self.holdings_as_of is None
+        )
+
     def to_wire(self) -> dict[str, Any]:
         """The fields every account row carries, in every tool that carries them."""
         return {
             "first_transaction_date": iso_or_none(self.first_transaction_date),
             "last_transaction_date": iso_or_none(self.last_transaction_date),
             "transaction_count": self.transaction_count,
+            "investment_transaction_count": self.investment_transaction_count,
+            "holdings_as_of": iso_or_none(self.holdings_as_of),
             # Present on every row, null where there is nothing to compare
             # against. It is what makes `first_transaction_date` READABLE: on its
             # own that date cannot say whether anything existed before it.
@@ -818,7 +849,30 @@ def _account_coverage(conn: SAConnection) -> dict[int, AccountCoverage]:
 
     One grouped read against `transactions_by_account_date`, which is the index
     `data-model.md` names for exactly this walk.
+
+    🔴 **The investment facts come from grouped subqueries joined per account,
+    never from joining their tables beside `transactions`.** Each subquery yields
+    at most one row per account, so the outer grouping is untouched. Joining the
+    trade table directly would multiply each account's transaction count by its
+    trades and its trades by its transactions, and a multiplied count looks
+    exactly like a busy account.
     """
+    trades = (
+        select(
+            investment_transactions.c.account_id,
+            func.count(investment_transactions.c.investment_transaction_id).label("trades"),
+        )
+        # Removed trades are excluded for the reason removed transactions are: a
+        # count of rows no reader can see promises data.
+        .where(investment_transactions.c.removed_at.is_(None))
+        .group_by(investment_transactions.c.account_id)
+        .subquery()
+    )
+    positions = (
+        select(holdings.c.account_id, func.max(holdings.c.as_of_date).label("captured"))
+        .group_by(holdings.c.account_id)
+        .subquery()
+    )
     result = conn.execute(
         select(
             accounts.c.account_id,
@@ -826,35 +880,40 @@ def _account_coverage(conn: SAConnection) -> dict[int, AccountCoverage]:
             func.max(transactions.c.posted_date),
             func.count(transactions.c.transaction_id),
             sync_state.c.history_start_date,
+            trades.c.trades,
+            positions.c.captured,
         )
         .select_from(
             accounts.outerjoin(
                 transactions,
                 (transactions.c.account_id == accounts.c.account_id)
                 & transactions.c.removed_at.is_(None),
-            ).outerjoin(
+            )
+            .outerjoin(
                 sync_state,
                 (sync_state.c.connection_id == accounts.c.connection_id)
                 # 🔴 The transactions domain BY MEANING, not for want of a
-                # second one. Every fact this function computes is drawn from
-                # the `transactions` table, and `history_start_date` is the
-                # bound those counts are read against -- a second domain's
-                # start date would be a different history compared to the same
-                # rows. Widening the join instead would multiply every account
-                # row by the number of domains its connection has and take the
-                # counts with it.
-                #
-                # 🔴 **What this DOES leave unsaid**, recorded rather than
-                # discovered later: an account whose activity is investment
-                # transactions reports `transaction_count` 0 here and is
-                # reported `uncovered`. Reporting investment coverage per
-                # account changes the meaning of a field on two published row
-                # shapes, so it belongs with the tools that answer about
-                # positions rather than in the sync work that created the rows.
+                # second one. Every transaction fact this function computes is
+                # drawn from the `transactions` table, and `history_start_date`
+                # is the bound those counts are read against -- a second
+                # domain's start date would be a different history compared to
+                # the same rows. Widening the join instead would multiply every
+                # account row by the number of domains its connection has and
+                # take the counts with it. The investment facts are not read
+                # against this bound at all.
                 & (sync_state.c.domain == TRANSACTIONS_DOMAIN),
             )
+            .outerjoin(trades, trades.c.account_id == accounts.c.account_id)
+            .outerjoin(positions, positions.c.account_id == accounts.c.account_id)
         )
-        .group_by(accounts.c.account_id, sync_state.c.history_start_date)
+        # One row per account on each subquery's side, so grouping by them splits
+        # nothing; they are named because a grouped select must name them.
+        .group_by(
+            accounts.c.account_id,
+            sync_state.c.history_start_date,
+            trades.c.trades,
+            positions.c.captured,
+        )
     ).all()
     return {
         int(row[0]): AccountCoverage(
@@ -870,6 +929,8 @@ def _account_coverage(conn: SAConnection) -> dict[int, AccountCoverage]:
             first_transaction_date=None if row[1] is None else calendar_date(row[1]),
             last_transaction_date=None if row[2] is None else calendar_date(row[2]),
             transaction_count=int(row[3]),
+            investment_transaction_count=0 if row[5] is None else int(row[5]),
+            holdings_as_of=None if row[6] is None else calendar_date(row[6]),
             history_starts=None if row[4] is None else calendar_date(row[4]),
         )
         for row in result
@@ -1276,7 +1337,19 @@ def _connections_with_an_empty_roster(
     return {connection_id for connection_id in observed if connection_id not in matched}
 
 
-def _not_active_caveat(lifecycle: list[AccountLifecycle]) -> list[Caveat]:
+#: What a non-active account means for an answer over BALANCES: the figure froze,
+#: and any total includes it and states what it contributed.
+_BALANCES_FROZE = (
+    "Their balances froze on the date each row names and are not facts about today. Any total "
+    "over balances INCLUDES them on purpose -- `coverage.accounts_not_active` and "
+    "`coverage.not_active_balance_minor_units` are what they contributed, so quote that "
+    "magnitude beside the total rather than presenting the total alone"
+)
+
+
+def _not_active_caveat(
+    lifecycle: list[AccountLifecycle], *, consequence: str = _BALANCES_FROZE
+) -> list[Caveat]:
     """The warning that names the accounts whose balances stopped being facts.
 
     🔴 Request-scoped, and deliberately not connection-scoped even though "this
@@ -1292,6 +1365,12 @@ def _not_active_caveat(lifecycle: list[AccountLifecycle]) -> list[Caveat]:
     declaration, and `no_longer_reported` is only the institution having stopped
     listing the account, which is equally consistent with de-selection from
     sharing. A caller told "some accounts are inactive" can act on neither.
+
+    `consequence` says what the freeze means for THIS answer's figures: an answer
+    over balances includes such accounts in its totals and says what they
+    contributed, one over positions says the positions froze and that its
+    `totals` count and value them, and one over the balance series names what
+    stopped counting.
     """
     if not lifecycle:
         return []
@@ -1317,18 +1396,12 @@ def _not_active_caveat(lifecycle: list[AccountLifecycle]) -> list[Caveat]:
     return [
         Caveat(
             kind="account_no_longer_active",
-            detail=(
-                "; ".join(parts) + ". Their balances froze on the date each row names and are "
-                "not facts about today. Any total over balances INCLUDES them on purpose -- "
-                "`coverage.accounts_not_active` and "
-                "`coverage.not_active_balance_minor_units` are what they contributed, so quote "
-                "that magnitude beside the total rather than presenting the total alone"
-            ),
+            detail="; ".join(parts) + ". " + consequence,
         )
     ]
 
 
-def _uncovered_caveat(uncovered: list[AccountCoverage]) -> list[Caveat]:
+def _uncovered_caveat(uncovered: list[AccountCoverage], *, listing: bool) -> list[Caveat]:
     """The warning that names the accounts an answer could not have data for.
 
     🔴 Request-scoped: it fires only when THIS request's scope holds an
@@ -1339,21 +1412,32 @@ def _uncovered_caveat(uncovered: list[AccountCoverage]) -> list[Caveat]:
 
     Names the ids, because "some accounts have no data" is a warning nobody can
     act on and the caller's next move is to ask about a different account.
+
+    `listing` says which question the scope asked, and it has no default because
+    every caller must choose. A listing passes the accounts with nothing in any
+    feed (`AccountCoverage.no_data_in_any_feed`); a tool answering from the
+    transactions feed passes the accounts with no transaction
+    (`AccountCoverage.uncovered`), and its detail says where an investment
+    account's activity is recorded instead.
     """
     if not uncovered:
         return []
     ids = ", ".join(
         str(coverage.account_id) for coverage in sorted(uncovered, key=lambda c: c.account_id)
     )
-    return [
-        Caveat(
-            kind="accounts_without_coverage",
-            detail=(
-                f"no transaction has ever been recorded for account(s) {ids}; an empty or "
-                f"absent result for them means DATA NOT PRESENT, never no activity"
-            ),
-        )
-    ]
+    detail = (
+        f"nothing has ever been recorded for account(s) {ids} in any feed -- no transaction, "
+        f"no investment trade and no captured position -- so an empty or absent result for "
+        f"them means DATA NOT PRESENT, never no activity"
+        if listing
+        else f"no transaction has ever been recorded for account(s) {ids}; an empty or "
+        f"absent result for them means DATA NOT PRESENT, never no activity. This counts "
+        f"the TRANSACTIONS feed alone -- an investment account's trades and positions are "
+        f"recorded apart from it: `investment_transaction_count` and `holdings_as_of` on "
+        f"`list_accounts` say what the store holds for it, and `list_holdings` serves its "
+        f"positions"
+    )
+    return [Caveat(kind="accounts_without_coverage", detail=detail)]
 
 
 def _unmatched_transfer_caveat(
@@ -1400,7 +1484,13 @@ def _unmatched_transfer_caveat(
     ]
 
 
-def _superseded_caveat(spans: Sequence[SupersededSpan]) -> list[Caveat]:
+def _superseded_caveat(
+    spans: Sequence[SupersededSpan],
+    *,
+    account_id: int | None,
+    since: date | None,
+    until: date | None,
+) -> list[Caveat]:
     """The notice that this answer counted one lineage where the store holds two.
 
     🔴 **A silent correct total and a silent wrong total look identical to
@@ -1419,12 +1509,29 @@ def _superseded_caveat(spans: Sequence[SupersededSpan]) -> list[Caveat]:
     something untrue of the case it most often fires on.
 
     Rides `rule-applied`: rows excluded from this aggregate on purpose.
+
+    🔴 **The disclosure is scoped to the request; the exclusion is not.** The
+    caller filters with every span in the store, because narrowing what is
+    COMPARED would leave a re-issued account looking unsuperseded. What is NAMED is
+    only a span on the request's account whose range meets the requested window,
+    since a span outside either excluded nothing from this answer. Naming one
+    anyway would make a request-scoped kind ride answers it says nothing about,
+    and a reader would learn to ignore it.
     """
-    if not spans:
+    relevant = sorted(
+        (
+            span
+            for span in spans
+            if (account_id is None or span.account_id == account_id)
+            and (since is None or span.end >= since)
+            and (until is None or span.start <= until)
+        ),
+        key=lambda s: (s.account_id, s.start),
+    )
+    if not relevant:
         return []
     named = ", ".join(
-        f"{span.account_id} ({span.start.isoformat()}..{span.end.isoformat()})"
-        for span in sorted(spans, key=lambda s: (s.account_id, s.start))
+        f"{span.account_id} ({span.start.isoformat()}..{span.end.isoformat()})" for span in relevant
     )
     return [
         Caveat(
@@ -1657,8 +1764,15 @@ def _answer(
     totals: list[dict[str, Any]] | None = None,
     extra_caveats: list[Caveat] | None = None,
     lifecycle: dict[int, AccountLifecycle] | None = None,
+    window_series: WindowSeries = "transactions",
 ) -> Answer:
     """One answer, and the one place a window is reconciled against coverage.
+
+    `window_series` says which series a windowed answer read. 🔴 A balance window
+    is clamped to the days balances were captured, never to the transactions'
+    span, and carries no `transactions_in_effective_window`: that sibling counts
+    transactions, and beside a balance series it would read as a count of the
+    rows this answer is about.
 
     `requested_window` is a required keyword with no default: `None` means this
     tool is not windowed, and it has to be written. Resolution lives here rather
@@ -1680,6 +1794,15 @@ def _answer(
     """
     now = now_utc()
     coverage = _coverage(conn, lifecycle=lifecycle)
+    span: tuple[date | None, date | None] | None = None
+    if requested_window is not None and window_series == "balances":
+        first, last = conn.execute(
+            select(func.min(balances_daily.c.as_of_date), func.max(balances_daily.c.as_of_date))
+        ).one()
+        span = (
+            None if first is None else calendar_date(first),
+            None if last is None else calendar_date(last),
+        )
     window = (
         None
         if requested_window is None
@@ -1688,10 +1811,11 @@ def _answer(
             until=requested_window[1],
             coverage=coverage,
             as_of=now,
+            span=span,
         )
     )
     covered = None if window is None else window.covered_bounds()
-    if window is not None:
+    if window is not None and window_series == "transactions":
         # 🔴 A SIBLING, never a narrowing of `coverage["transactions"]`, which
         # keeps its store-wide meaning. `api-contract.md` forbids repurposing a
         # field in red for the reason that bites here: a consumer still reading
@@ -1735,6 +1859,7 @@ def _unusable(
     requested_window: tuple[date | None, date | None] | None,
     truncation: Truncation | None,
     totals: list[dict[str, Any]] | None = None,
+    window_series: WindowSeries = "transactions",
 ) -> Answer:
     """🔴 An answer about a datastore that cannot be read. AC-ARCH.3.
 
@@ -1811,7 +1936,12 @@ def _unusable(
             # dropped this sibling would move the wire shape precisely when the
             # store is unreadable, and a consumer branching on the key would
             # take the "unwindowed tool" branch for a tool that has a window.
-            **({} if requested_window is None else {"transactions_in_effective_window": 0}),
+            # Only on a window over transactions, which is what the count counts.
+            **(
+                {"transactions_in_effective_window": 0}
+                if requested_window is not None and window_series == "transactions"
+                else {}
+            ),
         },
     )
 
@@ -2029,7 +2159,10 @@ def list_accounts(config: Config) -> Answer:
             }
             for r in result
         ]
-        uncovered = [c for c in coverage.values() if c.uncovered]
+        # 🔴 A listing describes the ACCOUNT, so it names only the accounts with
+        # nothing in any feed; an investment account's trades and positions are
+        # data (#107).
+        no_data = [c for c in coverage.values() if c.no_data_in_any_feed]
         not_active = [entry for entry in lifecycle.values() if not entry.active]
         return _answer(
             config,
@@ -2038,7 +2171,7 @@ def list_accounts(config: Config) -> Answer:
             requested_window=None,
             truncation=None,
             extra_caveats=(
-                _uncovered_caveat(uncovered)
+                _uncovered_caveat(no_data, listing=True)
                 + _not_active_caveat(not_active)
                 + _roster_observed_empty_caveat(not_active)
             ),
@@ -2465,7 +2598,9 @@ def list_transactions(
             # matched and nothing was dropped. The key stays present because its
             # absence would say this tool returns everything it finds, and there
             # is no page to resume from because there was no page.
-            truncation=Truncation.over(returned=0, remaining=0, matching=0, resume_from=None),
+            truncation=Truncation.over(
+                counting="transactions", returned=0, remaining=0, matching=0, resume_from=None
+            ),
         )
     with reader_connection(config) as conn:
         # 🔴 Ordered AFTER the readability check on purpose: an unreadable store
@@ -2645,14 +2780,15 @@ def list_transactions(
             # `returned` is derived from the rows themselves rather than from
             # `limit`, so it cannot claim a count the payload does not contain.
             truncation=Truncation.over(
+                counting="transactions",
                 returned=len(rows),
                 remaining=remaining,
                 matching=matching,
                 resume_from=resume_from,
             ),
             extra_caveats=(
-                _uncovered_caveat(uncovered)
-                + _superseded_caveat(spans)
+                _uncovered_caveat(uncovered, listing=False)
+                + _superseded_caveat(spans, account_id=account_id, since=since, until=until)
                 + _not_active_caveat(not_active)
                 + _roster_observed_empty_caveat(not_active)
                 + _pending_caveat(pending)
@@ -2970,7 +3106,9 @@ def coverage_report(config: Config) -> Answer:
             requested_window=None,
             truncation=None,
             extra_caveats=(
-                _uncovered_caveat([c for c in coverage.values() if c.uncovered])
+                _uncovered_caveat(
+                    [c for c in coverage.values() if c.no_data_in_any_feed], listing=True
+                )
                 # Both fire together on a closed account that never had a
                 # transaction. They are both true and they say different things,
                 # and neither suppresses the other.
@@ -3309,7 +3447,9 @@ def money_summary(
             config,
             problem,
             requested_window=(since, until),
-            truncation=Truncation.over(returned=0, remaining=0, matching=0, resume_from=None),
+            truncation=Truncation.over(
+                counting="groups", returned=0, remaining=0, matching=0, resume_from=None
+            ),
             totals=[],
         )
     with reader_connection(config) as conn:
@@ -3540,6 +3680,7 @@ def money_summary(
             # the group count approaches the TRANSACTION count, and the answer
             # grows without limit while `capped` reads false.
             truncation=Truncation.over(
+                counting="groups",
                 returned=len(rows),
                 remaining=len(every_group),
                 matching=len(every_group),
@@ -3566,8 +3707,8 @@ def money_summary(
             # at once, and a reader given only one of them would treat the other
             # as settled.
             extra_caveats=(
-                _uncovered_caveat(uncovered)
-                + _superseded_caveat(spans)
+                _uncovered_caveat(uncovered, listing=False)
+                + _superseded_caveat(spans, account_id=None, since=since, until=until)
                 + _unmatched_transfer_caveat(conn, since=since, until=until)
                 + _window_coverage_caveat(all_coverage, since)
                 + _not_active_caveat(not_active)

@@ -177,12 +177,18 @@ _GUIDANCE: dict[str, _Guidance] = {
             "rows were deliberately excluded from an aggregate, so the total excludes them. "
             "🔴 `detail` names which rows and why, and the reasons are NOT a closed list -- read "
             "it rather than matching on one you know. Today they include a currency this store "
-            "was never told, an amount it cannot represent exactly, and history from a "
-            "connection that was linked again and superseded by a newer one"
+            "was never told, an amount it cannot represent exactly, history from a "
+            "connection that was linked again and superseded by a newer one, a net-worth row "
+            "on `balance_history` for a day an account it counts was not captured on, and -- on "
+            "`list_holdings` -- a position the store could not record, which its `totals` "
+            "cannot include"
         ),
         for_this_answer=(
             "the figure is smaller than the raw sum over the same window, and deliberately so; "
-            "it will not reconcile against a total computed without the rule"
+            "it will not reconcile against a total computed without the rule. On "
+            "`list_holdings` the named positions are ABSENT from `rows`, so each named account "
+            "holds more than its rows show. On `balance_history` a named day has account rows "
+            "and NO net-worth row, and adding those rows up is the figure the rule refused"
         ),
         act=(
             "🔴 say the exclusion out loud when you report the total. An exclusion silently "
@@ -191,8 +197,10 @@ _GUIDANCE: dict[str, _Guidance] = {
     ),
     "window_starts_before_coverage": _Guidance(
         means=(
-            "the window you asked for reaches back past the first date the store covers; "
-            "`detail` names where coverage begins and what this answer covered instead"
+            "the window you asked for reaches back past the first date the store covers -- on "
+            "`balance_history`, the first day a balance was captured, which is usually far "
+            "later than the first transaction; `detail` names where coverage begins and what "
+            "this answer covered instead"
         ),
         for_this_answer=(
             "the figure is computed over the covered part of your window only. "
@@ -207,8 +215,8 @@ _GUIDANCE: dict[str, _Guidance] = {
     ),
     "window_extends_past_coverage": _Guidance(
         means=(
-            "the window reaches past the covered end -- today, or the last transaction when "
-            "that is later; `detail` names it"
+            "the window reaches past the covered end -- today, or the last transaction (on "
+            "`balance_history`, the last captured day) when that is later; `detail` names it"
         ),
         for_this_answer=(
             "the same clamp from the other end: the tail of your window contributed nothing "
@@ -238,8 +246,11 @@ _GUIDANCE: dict[str, _Guidance] = {
     ),
     "accounts_without_coverage": _Guidance(
         means=(
-            "an account inside the scope of this request has NEVER had a transaction "
-            "recorded -- not none in this window, none at all, ever"
+            "an account inside the scope of this request has NO DATA for what this tool "
+            "answers from -- not none in this window, none at all, ever. On `list_accounts` "
+            "and `get_coverage_report` that is nothing in any feed: no transaction, investment "
+            "trade or captured position. On `query_transactions` and `money_summary` it is no "
+            "transaction, so an investment account whose trades are stored can carry it there"
         ),
         for_this_answer=(
             "any row count, total or empty result touching that account describes ABSENT "
@@ -249,9 +260,10 @@ _GUIDANCE: dict[str, _Guidance] = {
         ),
         act=(
             "never report zero activity for a named account carrying this warning. Say the "
-            "account has no transaction data at all, and call `get_coverage_report` for the "
-            "per-account picture -- `transaction_count`, the first and last transaction, and "
-            "how long it has been silent against its own cadence."
+            "store has no data for it on this question, and call `get_coverage_report` for "
+            "the per-account picture -- `transaction_count`, `investment_transaction_count`, "
+            "`holdings_as_of`, and how long it has been silent against its own cadence. For "
+            "an investment account, call `list_holdings` for what it holds."
         ),
     ),
     "counted_during_change": _Guidance(
@@ -279,7 +291,15 @@ _GUIDANCE: dict[str, _Guidance] = {
             "today. A liability that was paid off still reads as debt owed; an asset that was "
             "emptied into another enrolled account still reads as money held, and is counted "
             "twice. Any total over balances carrying this warning states how much of itself "
-            "came from such accounts"
+            "came from such accounts. On `list_holdings`, that account's positions froze on the "
+            "day they were captured in the same way, and `totals` states how many there are and "
+            "what they are worth. On `balance_history`, it counts in a net-worth row only "
+            "through its last capture, so a later net worth leaves it out, and `detail` names "
+            "that day and the last balance that stopped counting. Where a later account row "
+            "took that balance over, as a re-link leaves it, `detail` names that account too, "
+            "and net worth moves across the handover only by the difference between the two "
+            "balances, except on a net-worth day `detail` names as counting neither account. "
+            "The move with no activity behind it is claimed only of what nothing replaced"
         ),
         act=(
             "quote the total as given AND quote the flagged magnitude beside it -- the total "
@@ -289,6 +309,28 @@ _GUIDANCE: dict[str, _Guidance] = {
             "the row to see which it is: `closed` is the operator's own declaration, while "
             "`no_longer_reported` only means the institution stopped listing it, which is "
             "equally consistent with the account being de-selected from sharing."
+        ),
+    ),
+    "positions_not_current": _Guidance(
+        means=(
+            "a position in this answer is not a current value, and `detail` keeps the reasons "
+            "apart: its price is more than four calendar days older than the day it was "
+            "captured; its price date is UNKNOWN; a newer capture of its connection listed no "
+            "position for its account, which may hold none of it now; or the connection's "
+            "investments feed has stopped: its last attempt brought no holdings reply back"
+        ),
+        for_this_answer=(
+            "`market_value_minor_units` on those rows is the price as of `price_as_of` times "
+            "the quantity held on `as_of_date` -- a figure that can be years old while every "
+            "field on the row is well-formed. A null `price_as_of` is unknown, never recent"
+        ),
+        act=(
+            "report each such value with its `as_of_date` and `price_as_of` beside it, and never "
+            "call it today's value. Where a newer capture listed nothing for an account, say it "
+            "may hold none of those positions now -- its feed is working unless `detail` also "
+            "names that account's investments as stopped. Where the investments have stopped "
+            "arriving, read that connection's `rows[].domains[]` in `get_pipeline_health` for "
+            "why."
         ),
     ),
     "roster_observed_empty": _Guidance(
@@ -641,11 +683,11 @@ _ENVELOPE_ALWAYS = (
 _ENVELOPE_SOMETIMES = (
     "## Carried only where they are true of the tool\n\n"
     "🔴 Absence is information. No `effective_window` means that tool takes no window; no "
-    "`truncation` means it returns every row it found; no `totals` means it does not classify "
-    "the money it reports. A key is never omitted because the "
+    "`truncation` means it returns every row it found; no `totals` means it computes no total "
+    "over what it reports. A key is never omitted because the "
     "answer was empty — a windowed tool that could read nothing still carries the key, with "
     "null effective bounds, because 'your window and this store do not overlap' is the true "
-    "statement about a store that cannot be read, and a classifying tool that could read "
+    "statement about a store that cannot be read, and a totalling tool that could read "
     "nothing still carries an empty `totals` for the same reason. The list under this heading "
     "is derived from what the tools publish; this sentence names the cases that exist today "
     "and the list is the authority on which they are."
@@ -653,35 +695,37 @@ _ENVELOPE_SOMETIMES = (
 
 #: The tools `api-contract.md` specifies and this server does not serve. 🔴 They
 #: are named ON THE WIRE, not only in the documents a person reads: the human
-#: surfaces all say the surface is five of eight, and an agent receives none of
-#: them. Asked "what was my net worth a year ago", an agent with no notice that
-#: the tool is absent improvises from today's balances and answers with a number
-#: that has no basis -- which is the failure this whole surface exists to refuse,
-#: arriving through the one door nothing was watching.
-UNBUILT_TOOLS: tuple[str, ...] = ("balance_history", "list_holdings", "find_recurring")
+#: surfaces all say which tools are missing, and an agent receives none of
+#: them. Asked "which subscriptions am I paying for", an agent with no notice that
+#: the tool is absent improvises from a page of transactions and answers with a
+#: list that has no basis -- which is the failure this whole surface exists to
+#: refuse, arriving through the one door nothing was watching.
+UNBUILT_TOOLS: tuple[str, ...] = ("find_recurring",)
 
 _CANNOT_ANSWER = (
     "## What this server cannot answer\n\n"
     "🔴 **Say so rather than deriving it.** Each of these is a question this surface has no "
     "data path for, and every one of them can be given a plausible-looking answer by "
     "improvising over the tools that do exist.\n\n"
-    # 🔴 Written for the finished investments surface, so it names `list_holdings` as
-    # serving positions while `UNBUILT_TOOLS` below still lists it: the two agree once
-    # the tool registers, and neither ships to an operator before then. What stays
-    # true after it lands is the part a model would otherwise improvise -- a lot no
-    # table extracts, and trades stored but read by no query. Tests hold both claims
-    # against the code.
+    # 🔴 Positions ARE served, so this bullet is about what sits behind one -- the
+    # part a model would otherwise improvise: a lot no table extracts, and trades
+    # stored and counted but served by no query. Tests hold both claims against the code.
     "- **Tax lots, and the trades behind a position.** Positions are served by "
     "`list_holdings` as they stood on the day they were captured: quantity, market value, "
     "and cost basis where the institution supplied one. What sits behind a position is not "
     "served. Its tax lots are not extracted: the aggregator sends them and only the verbatim "
     "response archive keeps them, so anything asked per lot has no data path. Its buys, "
-    "sells, dividends and fees are stored and read by no tool; `query_transactions` does "
-    "not return them, so an investment account with no rows there may still have traded.\n"
-    "- **Balance history, or net worth over time.** Only the LATEST recorded balance per "
-    "account is served. Summing transactions backwards from it is not a balance series: it "
-    "misses everything outside the granted history window, and the store says so with "
-    "`gapped`.\n"
+    "sells, dividends and fees are stored and counted per account as "
+    "`investment_transaction_count` on `list_accounts`, and served as rows by no tool; "
+    "`query_transactions` does not return them, so an investment account with no rows there "
+    "may still have traded.\n"
+    # 🔴 The series IS served, so this bullet is about the days it does not hold --
+    # the gap a model would otherwise fill by arithmetic.
+    "- **A balance on a day nothing captured it, or before its first capture.** "
+    "`balance_history` serves the balances recorded on the days a sync ran, and a day with "
+    "no capture is ABSENT from it rather than filled in. Carrying a balance across that day, "
+    "or summing transactions backwards from a later one, is not a balance: the second misses "
+    "everything outside the granted history window, and the store says so with `gapped`.\n"
     "- **Recurring-charge or subscription detection.** Nothing groups repeated charges. A "
     "hand-rolled guess over `query_transactions` is a guess, and presenting it as a "
     "subscription list is presenting an inference as a record.\n"
@@ -720,12 +764,13 @@ _ENVELOPE_NOTES = (
     "rather than re-read per call. A null `commit` means the build could not be identified, "
     "and `dirty` is then null too rather than a false claim that the tree was clean.\n"
     "- **`coverage.transactions` is always store-wide** and never narrows with the question "
-    "asked. A windowed answer adds `transactions_in_effective_window`, which is the count to "
+    "asked. A windowed answer over transactions adds `transactions_in_effective_window`, which "
+    "is the count to "
     "read against a windowed question — it is not narrowed by `account_id` either, so it is a "
     "fact about the window rather than about your filters. `truncation.matching` is the one "
     "that reflects your filters, so compare the two rather than either alone.\n"
     "- **`truncation.matching` counts the WHOLE request and does not move as you page**, so it "
-    "is the figure to quote for 'how many transactions match'. `truncation.remaining` is what "
+    "is the figure to quote for 'how many rows match'. `truncation.remaining` is what "
     "was still ahead of this page and falls page by page; `truncated` is "
     "`returned < remaining`. 🔴 Never page on `returned < matching` — that stays true on the "
     "last page of every walk, and a caller looping on it asks forever for a page that does not "

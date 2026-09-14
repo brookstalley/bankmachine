@@ -226,6 +226,14 @@ When a test's setup names a string, a token or a status the production code bran
 it from the constant (`sync_run.NOT_READY`) rather than by hand; a near-miss spelling is a
 fixture that silently covers a different path.
 
+**Instance (2026-09-13, the derivation-version go-red case):** it reverted `DERIVATION_VERSION` by
+one and pointed at an upgrade test whose fixture stamps rows at a fixed literal version, which was
+correct when written. Two bumps later the fixture sat two versions back, so a single reverted bump
+still read as an expected content change, and the case printed GREEN for the one bump that chunk
+made. 🔴 **A guard pinned to a literal goes blind as the value it guards moves past it.** Each
+version bump needs its own fixture exactly one version back, and the go-red case must be retargeted
+on every bump. The harness caught it only because it counts a GREEN as a survivor.
+
 ---
 
 ## A refactor is judged by what the old code stopped doing, not by what the new code does: enumerate the branches the replaced expression had, and name where each one went
@@ -321,3 +329,23 @@ with several. And when a chunk adds a column whose storage type contradicts what
 number as TEXT, a date as an integer, an identifier as a blob — treat every shape-based rule that
 keys on type as newly unproven, because the premise those rules rest on is a fact about the
 schema, and the schema just changed.
+
+---
+
+## A harness that edits source in place must never run under a tool timeout: run it detached, and after any interrupted run check the tree against the files the chunk changed
+
+**Instance (2026-09-13, Chunk 09):** `verify_norms_go_red.py` was launched as a background tool
+command with a 10-minute timeout, and the run takes about 25 minutes. The harness restores each
+mutated file in a `finally`, and a SIGKILL skips it, so the timeout would have left a deliberately
+broken source file in the tree. Nothing marks that file, and the next gate would have failed, or
+worse, passed, over it. It was noticed 20 seconds in. SIGINT stopped the harness, which does run the
+`finally`. `git status` showed only the chunk's own files, and the run was relaunched with
+`nohup … &` plus a separate waiter whose own timeout cannot touch the tree.
+
+**How to apply:** anything that mutates the working tree and restores it on the way out (the go-red
+harness, a formatter over a stash, a migration dry-run) runs detached from any tool timeout. The
+thing that waits on it is a separate loop that only watches the pid, so if the waiter times out it
+is simply re-armed. Run it with `python -u`, or its log stays empty until exit. After any interrupted
+run, compare `git status` against the exact files the chunk changed before trusting the tree, and
+repeat a byte-level check that the run would have disturbed, such as the published-surface dump,
+once it finishes.

@@ -24,11 +24,13 @@ from bankmachine.store.connection import (
 )
 from bankmachine.store.migrations.account_last_seen import apply_account_last_seen
 from bankmachine.store.migrations.core_schema import apply_core_schema
+from bankmachine.store.migrations.holdings_price_as_of import apply_holdings_price_as_of
 from bankmachine.store.migrations.item_consent import apply_item_consent
 from bankmachine.store.migrations.ledger_date import apply_ledger_date
 from bankmachine.store.migrations.nullable_account_currency import (
     apply_nullable_account_currency,
 )
+from bankmachine.store.migrations.refused_holdings import apply_refused_holdings
 from bankmachine.store.migrations.roster_observed import apply_roster_observed
 from bankmachine.store.migrations.transaction_lineage import apply_transaction_lineage
 from bankmachine.store.migrations.transfer_pairs import apply_transfer_pairs
@@ -103,6 +105,16 @@ MIGRATIONS: Sequence[Migration] = (
         version=9,
         name="record which rows are the two legs of one transfer",
         apply=apply_transfer_pairs,
+    ),
+    Migration(
+        version=10,
+        name="record the date of the price a position is valued at",
+        apply=apply_holdings_price_as_of,
+    ),
+    Migration(
+        version=11,
+        name="record the positions a capture listed and this build could not denominate",
+        apply=apply_refused_holdings,
     ),
 )
 

@@ -21,6 +21,7 @@ from bankmachine import mcp, query
 from bankmachine.config import Config
 from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS
+from bankmachine.store import lineage
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
 from bankmachine.store.schema import accounts, transactions
@@ -982,6 +983,80 @@ def test_a_superseded_generation_is_named_on_the_wire_with_its_account_and_range
         "the warning still claims two connections, which is false here: this re-link converged "
         "its connection in place and there is only one"
     )
+
+
+def _superseded_disclosure(wire: dict[str, Any]) -> list[str]:
+    return [w["detail"] for w in _rule_applied(wire) if "SUPERSEDED generation" in w["detail"]]
+
+
+def _relinked_store(config: Config) -> tuple[int, int, lineage.SupersededSpan]:
+    """A store after a splitting re-link: (superseded account, its replacement, the span)."""
+    _seed(config)
+    _relink_splitting_the_account(config)
+    with reader_connection(config) as conn:
+        superseded = conn.execute(
+            select(accounts.c.account_id).where(accounts.c.source_account_id == "acct-1")
+        ).scalar_one()
+        replacement = conn.execute(
+            select(accounts.c.account_id).where(accounts.c.source_account_id == "acct-1-reissued")
+        ).scalar_one()
+        spans = lineage.superseded_spans(conn)
+    assert [span.account_id for span in spans] == [superseded], (
+        "the re-link superseded nothing, or more than one span, so the scoping is not under test"
+    )
+    return int(superseded), int(replacement), spans[0]
+
+
+def test_the_superseded_disclosure_names_only_an_account_the_request_is_scoped_to(
+    initialized_config: Config,
+) -> None:
+    """🔴 A request-scoped kind fires only when THIS request's scope holds the boundary.
+
+    A `query_transactions` answer about one account that names a superseded span on
+    another describes nothing it excluded, and it teaches a reader that the kind's
+    presence is noise -- the contract's reason for splitting request-scoped kinds
+    from pipeline ones.
+    """
+    superseded, replacement, _ = _relinked_store(initialized_config)
+
+    def transactions_for(**arguments: Any) -> dict[str, Any]:
+        wire: dict[str, Any] = _call(initialized_config, "query_transactions", arguments)[
+            "structuredContent"
+        ]
+        return wire
+
+    assert _superseded_disclosure(transactions_for(account_id=replacement)) == [], (
+        "an answer about the replacement named a span on an account it never asked about"
+    )
+    (named,) = _superseded_disclosure(transactions_for(account_id=superseded))
+    assert f"account(s) {superseded} (" in named
+    assert len(_superseded_disclosure(transactions_for())) == 1, (
+        "an unscoped request lost the disclosure the exclusion still applies to"
+    )
+
+
+def test_the_superseded_disclosure_names_only_a_span_the_requested_window_meets(
+    initialized_config: Config,
+) -> None:
+    """A window that misses the span excluded nothing from its total, so it says nothing."""
+    _, _, span = _relinked_store(initialized_config)
+    before = (span.start - timedelta(days=2)).isoformat()
+    day_before = (span.start - timedelta(days=1)).isoformat()
+    after = (span.end + timedelta(days=1)).isoformat()
+
+    assert _superseded_disclosure(_wire(initialized_config, since=before, until=day_before)) == []
+    assert _superseded_disclosure(_wire(initialized_config, since=after)) == []
+    assert (
+        len(
+            _superseded_disclosure(
+                _wire(initialized_config, since=day_before, until=span.start.isoformat())
+            )
+        )
+        == 1
+    ), "a window ending on the span's first day lost the disclosure"
+    assert (
+        len(_superseded_disclosure(_wire(initialized_config, since=span.end.isoformat()))) == 1
+    ), "a window starting on the span's last day lost the disclosure"
 
 
 def test_an_ordinary_store_carries_no_exclusion_warning_at_all(

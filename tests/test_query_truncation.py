@@ -81,7 +81,11 @@ def test_truncated_is_true_exactly_when_rows_are_missing(
     """
     returned, matching = counts
     truncation = Truncation.over(
-        returned=returned, remaining=matching, matching=matching, resume_from=resume_from
+        counting="transactions",
+        returned=returned,
+        remaining=matching,
+        matching=matching,
+        resume_from=resume_from,
     )
 
     assert truncation.truncated == (returned < matching)
@@ -103,7 +107,11 @@ def test_a_caveat_rides_every_truncated_answer_and_no_complete_one(
     """
     returned, matching = counts
     truncation = Truncation.over(
-        returned=returned, remaining=matching, matching=matching, resume_from=resume_from
+        counting="transactions",
+        returned=returned,
+        remaining=matching,
+        matching=matching,
+        resume_from=resume_from,
     )
 
     kinds = [c.kind for c in truncation.caveats]
@@ -124,7 +132,11 @@ def test_the_caveat_never_quotes_a_figure_the_block_beside_it_denies(
     """
     returned, matching = counts
     truncation = Truncation.over(
-        returned=returned, remaining=matching, matching=matching, resume_from=resume_from
+        counting="transactions",
+        returned=returned,
+        remaining=matching,
+        matching=matching,
+        resume_from=resume_from,
     )
 
     for caveat in truncation.caveats:
@@ -151,6 +163,7 @@ def test_the_caveat_names_the_whole_request_and_what_is_left_of_it(
     """
     remaining = returned + unread
     truncation = Truncation.over(
+        counting="transactions",
         returned=returned,
         remaining=remaining,
         matching=remaining + behind,
@@ -189,7 +202,11 @@ def test_a_count_that_lags_the_rows_is_reconciled_rather_than_refused(
     """
     counted = max(0, returned - removed)
     truncation = Truncation.over(
-        returned=returned, remaining=counted, matching=counted, resume_from=None
+        counting="transactions",
+        returned=returned,
+        remaining=counted,
+        matching=counted,
+        resume_from=None,
     )
 
     assert truncation.remaining == returned, "a count below the rows contradicts the payload"
@@ -207,7 +224,11 @@ def test_a_count_that_matches_or_exceeds_the_rows_reports_no_change() -> None:
     """
     for returned, counted in ((0, 0), (3, 3), (100, 144), (500, 500)):
         truncation = Truncation.over(
-            returned=returned, remaining=counted, matching=counted, resume_from=None
+            counting="transactions",
+            returned=returned,
+            remaining=counted,
+            matching=counted,
+            resume_from=None,
         )
 
         assert truncation.counted_during_change is False, (returned, counted)
@@ -232,7 +253,11 @@ def test_the_remedy_is_one_the_caller_can_actually_follow(
     """
     returned, matching = counts
     truncation = Truncation.over(
-        returned=returned, remaining=matching, matching=matching, resume_from=resume_from
+        counting="transactions",
+        returned=returned,
+        remaining=matching,
+        matching=matching,
+        resume_from=resume_from,
     )
 
     for caveat in truncation.caveats:
@@ -253,7 +278,11 @@ def test_the_remedy_names_the_ceiling_the_code_enforces() -> None:
     constant the query clamps against.
     """
     detail = (
-        Truncation.over(returned=1, remaining=2, matching=2, resume_from=None).caveats[0].detail
+        Truncation.over(
+            counting="transactions", returned=1, remaining=2, matching=2, resume_from=None
+        )
+        .caveats[0]
+        .detail
     )
 
     assert f"at most {MAX_ROWS}" in detail
@@ -1283,7 +1312,11 @@ def test_a_cursor_rides_exactly_the_answers_that_have_a_next_page(
     """
     returned, matching = counts
     truncation = Truncation.over(
-        returned=returned, remaining=matching, matching=matching, resume_from=resume_from
+        counting="transactions",
+        returned=returned,
+        remaining=matching,
+        matching=matching,
+        resume_from=resume_from,
     )
 
     assert (truncation.next_cursor is not None) == (

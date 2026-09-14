@@ -208,7 +208,7 @@ def _tools_requiring(key: str) -> tuple[str, ...]:
     🔴 Read from what each tool publishes, not listed here. `api-contract.md`
     fixes a key's absence as information — no `effective_window` means the tool
     takes no window, no `truncation` means it returns every row it found, no
-    `totals` means it does not classify money — and the tests below assert the
+    `totals` means it computes no total — and the tests below assert the
     WIRE against exactly that claim. Derived, they hold every tool to its own
     published contract and a new one is covered the day it registers; listed,
     they hold whichever tools someone remembered.
@@ -888,6 +888,8 @@ def test_no_tool_mutates_anything(initialized_config: Config) -> None:
     tools = mcp._tool_definitions()
     assert {t["name"] for t in tools} == {
         "list_accounts",
+        "list_holdings",
+        "balance_history",
         "query_transactions",
         "money_summary",
         "get_pipeline_health",
@@ -944,13 +946,21 @@ def _cannot_answer_text() -> str:
 def test_the_unserved_trades_claim_holds_against_what_every_tool_reads(
     initialized_config: Config,
 ) -> None:
-    """🔴 The reference says trades are stored and read by no tool; this holds that to the SQL.
+    """🔴 The reference says trades are counted but served as rows by no tool; held to the SQL.
 
     Checked against the statements every registered tool actually executes, not
     against a list of files: a tool's query already runs through store helpers
     beyond `query.py`, and the next one to read trades could arrive through any of
     them. The store holds real trades first, because a query that reads them only
     when an investment account exists would issue nothing over a store without one.
+
+    🔴 Counting a trade is not serving one. The coverage rows count each account's
+    trades so an investment account is not reported as holding no data, and that
+    count needs only the account a trade belongs to and whether it was removed.
+    Serving a trade means reading what it IS -- its amount, date, security or
+    description -- so the claim is held against the trade's CONTENT columns,
+    derived from the table rather than listed here, so a column a migration adds
+    is content until someone says otherwise.
     """
     _seed(initialized_config)
     _seed_investments(initialized_config)
@@ -983,13 +993,30 @@ def test_the_unserved_trades_claim_holds_against_what_every_tool_reads(
         "no tool's query was captured, so this cannot tell a tool that reads trades from one "
         "that does not"
     )
-    reads_trades = any("investment_transactions" in s for s in statements)
-    says_unserved = "read by no tool" in _cannot_answer_text()
+    # The columns a count may touch. Everything else on a trade is what it IS.
+    counted_by = {"investment_transaction_id", "account_id", "removed_at"}
+    content = [c.name for c in investment_transactions.columns if c.name not in counted_by]
+    assert content, "the trade table has no content columns, so this checks nothing"
+    # Positive control for the second half: the coverage rows DO count trades, so
+    # the column check below judges statements that reach the table at all.
+    assert any("investment_transactions" in s for s in statements), (
+        "no tool's query reaches the trade table, so a tool that serves trades cannot be told "
+        "from one that only counts them"
+    )
+    serves_trades = any(
+        f"investment_transactions.{column}" in s for s in statements for column in content
+    )
+    text = _cannot_answer_text()
+    says_unserved = "served as rows by no tool" in text
 
-    assert says_unserved != reads_trades, (
-        "the cannot-answer list says no tool reads trades, and a tool now does"
+    assert says_unserved != serves_trades, (
+        "the cannot-answer list says no tool serves trades, and a tool now reads what one is"
         if says_unserved
-        else "no tool reads trades, and the list an agent is sent to no longer says so"
+        else "no tool serves trades, and the list an agent is sent to no longer says so"
+    )
+    assert "investment_transaction_count" in text, (
+        "trades are counted on the coverage rows, and the list that says they are not served "
+        "does not point at where they ARE counted"
     )
 
 
@@ -2801,13 +2828,16 @@ def test_the_window_scoped_count_rides_beside_the_store_wide_one(
 def test_the_capped_tool_describes_its_cap_and_the_aggregate_does_not() -> None:
     """AC-9.4: a tool description states its conventions.
 
-    The note belongs to `query_transactions` alone — saying it on the aggregate
-    would describe a cap that tool does not have.
+    The note belongs to the two PAGED tools alone — `query_transactions` and
+    `balance_history` — and saying it on the aggregate would describe a cursor
+    that tool does not issue.
     """
     described = {d["name"]: d["description"] for d in mcp._tool_definitions()}
+    paged = ("query_transactions", "balance_history")
 
-    assert mcp._TRUNCATION_NOTE in described["query_transactions"]
-    for name in _every_tool_except("query_transactions"):
+    for name in paged:
+        assert mcp._TRUNCATION_NOTE in described[name], name
+    for name in _every_tool_except(*paged):
         assert mcp._TRUNCATION_NOTE not in described[name], name
 
 
@@ -3005,6 +3035,70 @@ def test_a_cursor_from_a_different_question_is_refused_rather_than_answered(
     assert "cursor" in changed["content"][0]["text"]
 
 
+def _walk_the_series(config: Config, *, limit: int) -> tuple[list[dict[str, Any]], int]:
+    """Page `balance_history` over stdio until it stops offering a next page."""
+    rows: list[dict[str, Any]] = []
+    pages = 0
+    cursor: str | None = None
+    while True:
+        sent: dict[str, Any] = {"limit": limit}
+        if cursor is not None:
+            sent["cursor"] = cursor
+        result = _call(config, "balance_history", sent)
+        assert result["isError"] is False, result["content"][0]["text"]
+        wire = result["structuredContent"]
+        pages += 1
+        rows.extend(wire["rows"])
+        cursor = wire["truncation"].get("next_cursor")
+        if cursor is None:
+            break
+        # A cursor that fails to advance hangs the test rather than reddening it.
+        assert pages <= 40, "the walk did not terminate"
+    return rows, pages
+
+
+def test_a_balance_history_walk_over_the_wire_reaches_every_row_exactly_once(
+    initialized_config: Config,
+) -> None:
+    """🔴 The series cursor, sent back through the JSON-RPC boundary as a consumer sends it.
+
+    Every other paging test for this tool calls the query layer, so a dispatch
+    that decoded the cursor and never handed it on would leave them all green
+    while every caller re-read page one forever.
+    """
+    _seed(initialized_config)
+    _seed_investments(initialized_config)
+    whole = _call(initialized_config, "balance_history", {"limit": 500})["structuredContent"]
+    assert len(whole["rows"]) > 6, "too few rows to page, so the walk proves nothing"
+
+    rows, pages = _walk_the_series(initialized_config, limit=3)
+
+    assert rows == whole["rows"], "the walk did not reassemble the series, each row once"
+    assert pages == -(-len(whole["rows"]) // 3)
+
+
+def test_each_paged_tool_refuses_the_other_tools_cursor_at_the_boundary(
+    initialized_config: Config,
+) -> None:
+    """A page position from one series never resumes a walk over the other."""
+    _seed_many(initialized_config, 30)
+    _seed_investments(initialized_config)
+    issued = {
+        tool: _call(initialized_config, tool, {"limit": 1})["structuredContent"]["truncation"][
+            "next_cursor"
+        ]
+        for tool in ("query_transactions", "balance_history")
+    }
+
+    for tool, foreign in (
+        ("balance_history", issued["query_transactions"]),
+        ("query_transactions", issued["balance_history"]),
+    ):
+        result = _call(initialized_config, tool, {"limit": 1, "cursor": foreign})
+        assert result["isError"] is True, f"{tool} answered with the other tool's cursor"
+        assert "cursor" in result["content"][0]["text"], tool
+
+
 def test_the_cursor_is_advertised_on_the_capped_tool_and_nowhere_else() -> None:
     """A caller learns the argument from the schema, and a misspelling is refused by name.
 
@@ -3013,8 +3107,10 @@ def test_the_cursor_is_advertised_on_the_capped_tool_and_nowhere_else() -> None:
     make the escape route unreachable to a caller reading the tool definition,
     which is the only thing an agent reads.
     """
-    assert "cursor" in mcp._permitted_arguments("query_transactions")
-    for name in _every_tool_except("query_transactions"):
+    paged = ("query_transactions", "balance_history")
+    for name in paged:
+        assert "cursor" in mcp._permitted_arguments(name), name
+    for name in _every_tool_except(*paged):
         assert "cursor" not in mcp._permitted_arguments(name), name
 
 
@@ -3134,6 +3230,8 @@ def _keywords(schema: dict[str, Any]) -> set[str]:
 #: whose every optional half is absent checks only the half that cannot fail.
 _LIVE_CALLS: tuple[tuple[str, dict[str, Any]], ...] = (
     ("list_accounts", {}),
+    ("list_holdings", {}),
+    ("balance_history", {"since": "2020-01-01", "until": "2030-12-31"}),
     ("query_transactions", {"since": "2020-01-01", "until": "2030-12-31"}),
     ("money_summary", {"since": "2020-01-01", "until": "2030-12-31"}),
     ("get_pipeline_health", {}),
@@ -3205,6 +3303,8 @@ def test_a_real_answer_from_every_tool_validates_against_its_own_schema(
     schema at all: the client rejects a good answer.
     """
     _seed(initialized_config)
+    # Positions, so `list_holdings` answers with rows its row schema can check.
+    _seed_investments(initialized_config)
     schemas = {d["name"]: d["outputSchema"] for d in mcp._tool_definitions()}
     seen: list[dict[str, Any]] = []
 

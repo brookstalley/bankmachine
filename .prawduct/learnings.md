@@ -819,3 +819,7 @@ verified, it has been demonstrated.
 ## A fixture built from the mechanism you are reasoning about cannot tell apart the worlds your reasoning separates: reproduce the state the real producer leaves, not the state your helper leaves
 
 ## A conformance note clears a rule on the surface it was checked against, and a rule with two entry points is cleared on neither by checking one: name the surface, and re-check a shape rule whenever a new column stores a value whose type contradicts its meaning
+
+## An option you offer the owner is a requirement they sign: before writing a rule into a question, run it against the real store's shape, because the case that breaks it is usually already sitting in the data
+
+## A harness that edits source in place must never run under a tool timeout: run it detached, and after any interrupted run check the tree against the files the chunk changed

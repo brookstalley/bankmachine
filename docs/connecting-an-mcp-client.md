@@ -107,20 +107,24 @@ creates one, because an empty encrypted store would answer every question with a
 | Tool | Answers |
 |---|---|
 | `list_accounts` | every account with its latest recorded balance |
+| `list_holdings` | every investment position, as its account's latest capture recorded it, with the date of the price it was valued at, and a per-currency totals block that decomposes balances rather than adding to them |
+| `balance_history` | net worth over time and each account's balance on the days one was captured, paged newest first; a day not every account was captured on has no net-worth row, and says why; an account no longer active counts only through its last capture, and the answer names that day and the balance that stopped counting, and the account that took it over where a re-link replaced it |
 | `query_transactions` | transactions in a date window, newest first |
 | `money_summary` | money in and out over a window, grouped by category, merchant, account, month or flow class — split by flow class under every grouping, and carrying the totals block described below |
 | `get_pipeline_health` | every connection, when it last synced, what is wrong |
 | `get_coverage_report` | per account: what data exists, and how long it has been silent |
 
-🔴 **Five of the eight specified tools.** `balance_history`, `list_holdings` and `find_recurring`
-are not built yet — the descope is recorded in `.prawduct/artifacts/api-contract.md`.
+🔴 **Seven of the eight specified tools.** The ones missing from this table — `find_recurring` —
+are not built yet; the descope is recorded in `.prawduct/artifacts/api-contract.md`.
 
 🔴 **The verification surface is now whole.** `get_pipeline_health` tells you whether the pipeline
 is healthy; `get_coverage_report` tells you what data actually exists, per account. Nine of the
 fourteen sandbox accounts have never had a transaction recorded, and before this pair an empty
 answer about one of them was indistinguishable from a quiet month — so "am I paying down my
 mortgage?" answered "no payments found", which looked honest and was false. Any answer touching
-such an account now carries an `accounts_without_coverage` warning naming it.
+such an account now carries an `accounts_without_coverage` warning naming it. An investment
+account's trades and positions count as data on the account listings, where they appear as
+`investment_transaction_count` and `holdings_as_of`.
 
 The server also starts against a **missing or empty datastore** and reports that through
 `get_pipeline_health` rather than refusing (AC-ARCH.3) — so a tool that returns nothing tells you
@@ -144,10 +148,15 @@ uncommitted changes, so the commit alone does not describe it.
 
 Every response carries `environment`, `as_of`, `build`, `coverage`, `warnings` and `rows`. A
 **windowed** tool also carries `effective_window`; a **capped** tool also carries `truncation`; a
-**classifying** tool also carries `totals`. Absence of a key means that tool takes no window,
-returns every row it finds, or does not classify the money it reports.
+**totalling** tool (`money_summary`, `list_holdings`) also carries `totals`. Absence of a key
+means that tool takes no window, returns every row it finds, or computes no total.
 
-🔴 **`totals` is the one to read before quoting a money figure.** Each entry carries the window's
+🔴 **`list_holdings`' `totals` is not a second balance.** One entry per currency: `positions`,
+`market_value_minor_units`, and the part on accounts that are not `active` (`not_active_positions`,
+`not_active_market_value_minor_units`), present and zero. Positions decompose an investment
+account's balance, which net worth already counts, so never add the two.
+
+🔴 **`money_summary`'s `totals` is the one to read before quoting a money figure.** Each entry carries the window's
 `inflow_minor_units` and `outflow_minor_units` for one currency, and then splits that outflow by
 `flow_class` — `external_spend`, `internal_transfer`, `debt_service`. Quote `outflow_minor_units`
 when asked how much went out and `external_spend_outflow_minor_units` when asked about external
@@ -191,7 +200,10 @@ authorisation lifetime, with `oldest_stranded_hold` naming the one to go look at
 are none, and null for a closed account, whose holds nobody can clear). **`get_pipeline_health` rows
 carry `sign_convention`** per connection, with the counts it was judged on. **Every account row
 carries `lifecycle`** with the dates behind it, and `coverage` states `accounts_not_active` and what
-those accounts contributed — totals **include** them, so quote that figure beside any net worth.
+those accounts contributed — totals **include** them, so quote that figure beside any total.
+`balance_history` is the exception, on the owner's ruling: a non-active account counts in net
+worth only through its last capture, and the answer names that day and the balance that stopped
+counting, because carrying a relinked account's old balance forward counts the same money twice.
 
 The server's own `instructions` **plus the two resources below** are the authority on that list — a
 test holds their union against every tool's live envelope and against the warning vocabulary, so
@@ -288,7 +300,9 @@ boundary it names — so the *absence* of one is information too:
   reasons are **not a closed list** — read it rather than matching on one you know. Today they
   include a currency this store was never told, an amount it cannot represent exactly in minor
   units, and history from a connection that was linked again and superseded by a newer one. Say
-  the exclusion out loud when you report the total.
+  the exclusion out loud when you report the total. On `list_holdings`, whose `totals` sum only the rows, a
+  position the store could not record is **absent from the rows**, and `detail` names its account,
+  security and unit.
 
 - `window_starts_before_coverage` — the window you asked for reaches back past the first covered
   date. Anything before it is *absent rather than zero*.
@@ -299,13 +313,23 @@ boundary it names — so the *absence* of one is information too:
   unread, and what to do about it.
 - `counted_during_change` — a write landed between the row read and the count read, so the two
   describe moments a fraction apart. The rows are accurate as of the `as_of` stamp.
-- `accounts_without_coverage` — an account in scope has **never** had a transaction recorded. Its
-  empty result means *data not present*, never *no activity*; call `get_coverage_report` for the
-  per-account picture.
+- `accounts_without_coverage` — an account in scope has **no data** for what the tool answers from.
+  Its empty result means *data not present*, never *no activity*; call `get_coverage_report` for
+  the per-account picture. On `list_accounts` and `get_coverage_report` it names an account with
+  nothing in any feed. On `query_transactions` and `money_summary` it names an account with no
+  transaction, so an investment account can carry it there — call `list_holdings` for what such an
+  account holds.
 - `account_no_longer_active` — an account in scope is closed, or its institution stopped listing it.
   Its balance froze on the date the row carries and is **not a fact about today**. Totals over
   balances *include* it and say by how much, so quote that magnitude beside the total — the reader
   can subtract it and you cannot.
+- `positions_not_current` — a position in the answer is **not a current value**: its price is more
+  than four calendar days older than the day it was captured, its price date is unknown, a newer
+  capture of its connection listed nothing for its account (it may hold none of it now), or the
+  connection's investments feed stopped (its last investments attempt brought no holdings reply
+  back). `detail` keeps the
+  four apart. Quote `as_of_date` and `price_as_of` beside any value you report; a null price date
+  is unknown, never recent.
 - `includes_pending_rows` — some contributing rows are authorisation holds that have not settled, so
   the figure can change **with no new activity at all**. Quote settled and pending separately; never
   present their sum as money spent.

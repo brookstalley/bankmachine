@@ -264,6 +264,9 @@ this migration and simply was not written down.
 > the unstamped rows: it is a floor, not a measurement. The answers disclose that with a
 > `partial` warning naming the count and this command, but a disclosure is not the fix.
 > *Retroactivity:* none owed — the condition was true of the migration it was written for.
+> Migration 011 has the same shape in a table: a sync records a refused position only for the
+> captures it derives, so every capture already archived stays unnamed on `list_holdings` until the
+> rebuild runs.
 
 The MCP server and the CLI must be upgraded *with* the datastore — an older reader
 refuses to serve, which is the norm working rather than a fault.

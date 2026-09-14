@@ -408,9 +408,9 @@ def test_a_transaction_for_an_account_nothing_names_refuses_the_page(
     """A row with nowhere to hang refuses rather than being dropped.
 
     🔴 The body's own `accounts` array is derived first, so a transaction for an
-    account missing from the ROSTER still lands -- that is the case Chunk 01's
-    review forced, and it is why this test has to strip the account from the
-    carried array too. Only then is the refusal reachable, and a test that
+    account missing from the ROSTER still lands -- which is why this test has to
+    strip the account from the carried array too. Only then is the refusal
+    reachable, and a test that
     skipped that step would pass while proving nothing.
     """
     payload = recorded()

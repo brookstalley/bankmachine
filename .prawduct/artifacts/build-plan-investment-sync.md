@@ -13,20 +13,20 @@ governed_by:
   - artifact: data-model
     dispositions:
       - "Every stored amount is signed from the operator's point of view → conforms, and this plan is the second feed's worth of evidence the norm's own Scope (2026-09-09) says it does not have. Holdings carry a market value and investment transactions carry an amount; both go through the connector's existing normalization rather than a second one written beside it. 🔴 The norm's amendment about VALUATIONS is the clause that actually binds here: an investment `institution_value` is price times quantity and arrives at whatever precision that arithmetic produced (measured: a sandbox 401k at 23631.9805 USD), so it is rounded half-even and logged, while a ledger amount is still converted exactly or refused"
-      - "A valuation is rounded to a minor unit this build KNOWS, else refused per ROW (amendment 2026-09-10) → conforms and is exercised for the first time by a table other than balances. `securities.close_price_minor`, `holdings.market_value_minor` and `holdings.cost_basis_minor` all pass through `store/types.py::minor_digits`; a security denominated in an `unofficial_currency_code` this build has no exponent for is refused ROW-WISE, keeping the rest of the account's positions"
+      - "A valuation is rounded to a minor unit this build KNOWS, else refused per ROW (amendment 2026-09-10) → conforms and is exercised for the first time by a table other than balances. `securities.close_price_minor`, `holdings.market_value_minor` and `holdings.cost_basis_minor` all pass through `store/types.py::minor_digits`; a security denominated in an `unofficial_currency_code` this build has no exponent for is refused ROW-WISE, keeping the rest of the account's positions. 🔴 The norm's other half -- the refusal NAMED under `rule-applied` -- was unbuilt for holdings through wave 1: a refused position reached a log line and nothing a read can see. Chunk 06 records it (migration 011, `refused_holdings`) so `list_holdings` can name it"
       - "All monetary values are integer minor units, no floats → conforms. 🔴 And the counterpart the schema already draws is the one to hold onto: a QUANTITY is not money. `holdings.quantity` and `investment_transactions.quantity` are exact decimal TEXT, parsed to `Decimal` and never through a float, because fractional shares are routine and a scaled integer's scale would be a guess"
       - "Calendar dates and UTC instants are distinct and never mix → conforms. `as_of_date`, `trade_date`, `settlement_date` and `close_price_as_of` are calendar dates; `captured_at`, `first_seen_at`, `updated_at` are UTC instants"
       - "Every silver row carries exclusive provenance and its derivation version → conforms. Every row this plan writes is `source='aggregator'` with a `raw_response_id` and no `manual_import_id`, which the tables' own CHECK constraints already enforce. The derivation version is bumped when the derivation changes, per the norm"
       - "🔴 The daily balance and HOLDINGS series are append-only → this plan is the first code that writes the holdings half, so the norm stops being partly hypothetical here. The composite PK is the structural half; the behavioural half is the rule `_write_balance` already implements and holdings must reuse rather than reimplement — FIRST capture of the day wins, decided by COMPARING captures rather than by arrival order, and a row with no `raw_response_id` (a manual import) is never replaced. Copying that logic into a second deriver is how the two drift; the plan factors it (Chunk 01)"
       - "A source value is never overwritten in place → conforms; this plan adds no override column and writes no interpretation over a source field"
       - "A transaction is never hard-deleted; removal is a soft delete → conforms in SHAPE, and by a different mechanism than `transactions`. `investment_transactions.removed_at` carries the same column and the same never-a-DELETE rule, but 🔴 the feed sends **no removal signal of any kind** — measured, `api-notes-plaid.md` §26: `/investments/transactions/get` is a windowed read, not a delta, so there is no `removed` array to read and `cancel_transaction_id` is a cancellation reference rather than a tombstone. What makes the norm satisfiable anyway is that the window comes back WHOLE: a stored row inside the requested window whose id did not return has gone away, and that is the removal signal. It is only trustworthy when the run actually exhausted the window, so the reconciliation is guarded on exhaustion and a partial run marks nothing — an unguarded one would soft-delete every row it merely had not reached yet"
-      - "A migration's DDL is frozen once written → conforms, and is the reason this plan adds NO migration. `securities`, `holdings` and `investment_transactions` were created in `core_schema.py` at build step 1 and are untouched here. If the real API shape turns out to need a column, that is a new migration and a recorded decision, never an edit to the frozen DDL"
+      - "A migration's DDL is frozen once written → conforms. Wave 1 added no migration: `securities`, `holdings` and `investment_transactions` were created in `core_schema.py` at build step 1 and are untouched. The one column the real API shape turned out to need, `holdings.price_as_of`, is migration 010 in its own module -- a new migration and a recorded decision (the trajectory checkpoint's, built in Chunk 05), never an edit to the frozen DDL. Migration 011 (`refused_holdings`, Chunk 06, owner's decision 2026-09-13) is the second, in its own module on the same rule"
   - artifact: architecture
     dispositions:
       - "Every writable handle comes from the one writer factory, which takes the exclusive lock before it returns → conforms; the investments pull persists through the same `_persist` path every other endpoint uses and opens no handle of its own"
       - "Read-role handles are `mode=ro`, hold no snapshot beyond the statement, never fall back → conforms. The health-surface work in Chunk 03 is read-only and goes through the existing reader"
       - "No component creates the datastore implicitly → conforms; nothing here opens a datastore path"
-      - "A process that does not recognize the schema version refuses to serve → conforms; no schema version moves"
+      - "A process that does not recognize the schema version refuses to serve → conforms; migrations 010 and 011 move the served schema version to 11, and a store behind it is refused until `bankmachine store init` migrates it"
   - artifact: api-contract
     dispositions:
       - "The MCP surface is read-only, and the one permitted write class is agent-authored rows in a declared sidecar table → conforms. Both new tools are reads. No handle in the server process becomes writable, and neither tool reaches a table carrying `raw_response_id` or `derivation_version_id` — `holdings` and `balances_daily` carry both and are read-only to this surface whatever the column"
@@ -46,7 +46,7 @@ governed_by:
       - "No filesystem path is hardcoded → conforms"
       - "A backup destination is never created implicitly and never overwritten → inapplicable because this plan touches no backup path"
       - "🔴 `bankmachine store rebuild` after step 5 if any connection is not syncing (§ the operational note this plan discharges) → conforms and is the reason Chunk 04 exists. The spec already warns that a rebuild is owed once investments land; this plan makes the replay a tested property rather than an instruction the operator has to remember"
-partition: serial, and examined per wave rather than once. Wave 1 (01–04): every chunk writes into `connector/plaid/derivers.py` and `cli/sync_run.py`, and 03 widens the same `query.py` domain filters that 01 and 02 create rows behind — two delegates collide in all three files on their first commit. Waves 2–3 (05–08) look parallelizable and are not: 05 and 07 both add a definition to the one `_tool_definitions()` function, 06 and 08 both touch the warning vocabulary and the instructions primer that a budget test holds, and every wave depends on the one before it for its fixtures. The wall-clock saving is smaller than the merge in all three cases
+partition: serial, and examined per wave rather than once. Wave 1 (01–04): every chunk writes into `connector/plaid/derivers.py` and `cli/sync_run.py`, and 03 widens the same `query.py` domain filters that 01 and 02 create rows behind — two delegates collide in all three files on their first commit. Waves 2–3 (05–08) look parallelizable and are not: 05 and 07 both add a definition to the one `_tool_definitions()` function, 06 and 08 both touch the warning vocabulary and the instructions primer that a budget test holds, and every wave depends on the one before it for its fixtures. The wall-clock saving is smaller than the merge in all three cases. Chunks 09–10: serial — 10 edits `query.py`, whose shape 09 changes, and both re-point cases in `verify_norms_go_red.py`, which must run alone
 last_validated: 2026-09-12
 ---
 
@@ -171,24 +171,79 @@ waves 2–3 that is **not** Medium: it was derived and argued in
 - [x] Chunk 02: Investment transactions, and the window that actually came back
 - [x] Chunk 03: Investments fails on its own, and the health surface says so
 - [x] Chunk 04: Rebuild, idempotency, and the properties that hold across both
-- [ ] Chunk 05: `list_holdings` — positions, under one strict row shape
-- [ ] Chunk 06: What a holdings answer must disclose about itself
-- [ ] Chunk 07: `balance_history` — one series, read two ways
-- [ ] Chunk 08: Net worth, and the two ways it can be quietly wrong
+- [x] Chunk 05: `list_holdings` — positions, under one strict row shape
+- [x] Chunk 06: What a holdings answer must disclose about itself
+- [x] Chunk 07: `balance_history` — one series, read two ways
+- [x] Chunk 08: Net worth, and the two ways it can be quietly wrong
+- [x] Chunk 09: Holdings and the balance series leave `query.py` (a pure move, #115)
+- [x] Chunk 10: An investment account's activity counts as coverage (#107)
+- [x] Chunk 11: Two warnings that claim more than the request or the store supports
 
-Context: Wave 1 (chunks 01-04) is built, reviewed and verified, and its PR is open. Chunk 04
-closed the one direction of AC-5.2 no Chunk 02 test could see: a rebuild replaying the archive
-through the derivers alone cleared every investment-transaction soft delete. `connector/plaid/window.py`
-now re-runs each window's reconciliation 🔴 at the page that CLOSED that window, through one seam
-in `store.rebuild` (`ReplayPass`). The sandbox pass (VRF-017/018/019) found that `sync shell`
-masked high-precision quantities as account numbers; fixed. VRF-014 was verified in a real client
-on the build under test; VRF-015/016 were accepted to open the PR (they need production) and are
-re-raised as VRF-020/021. Wave 1's `cumulative` review (`rev-20260913T021056Z-81d120ad`) closed
-with #113 filed and R-9 accepted to #93.
-🔴 **The trajectory checkpoint ran 2026-09-13 and moved chunks 05 and 06** (see Governance
-Checkpoints): the aggregator's only date on a position, `institution_price_as_of`, was being
-dropped, so Chunk 05 now stores it and Chunk 06's staleness warning reads it.
-Next: Chunk 05, built on this branch and pushed only after the wave 1 PR merges.
+Context: Wave 1 (chunks 01-04) merged to `develop` as PR #114 on 2026-09-13; the branch
+continues. VRF-020/021 (production-only) are re-raised and pending, and with VRF-022 (the holdings
+warnings read in a real client) they block the wave 2 PR. Chunk 05 is committed (`fd47661`).
+Chunk 06 is committed as `eec7af8` plus `f59ec2c`, which settles its cumulative review. Changes:
+- `positions_not_current`, a new request-scoped kind: an old or unknown price, an account a newer
+  capture of its connection listed nothing for, or a stopped investments feed.
+- `rule-applied` naming each position refused for its unit. The refusal is recorded by migration
+  011's `refused_holdings` (`DERIVATION_VERSION` 10), and a day's first capture decides a key both
+  tables hold.
+- `account_no_longer_active` extended to positions.
+- The coverage surface now names the transactions feed. #107 stays open as a design question.
+
+The review raised 0 blocking and 4 warnings, all fixed, and the verify-resolutions pass
+found nothing further. Verified on the sandbox store at schema 11
+after rebuild.
+
+Chunk 07 is committed as `23d0245`: `balance_history` on the owner's four decisions, with the three
+refinements recorded under its deliverables, plus the carried `list_holdings` fix. Its review
+(`rev-20260913T201311Z-35ac5f2c`) raised 0 blocking, 3 warnings and 4 notes. R-1 to R-5 are carried
+into Chunk 08's deliverables, R-6 is fixed in a doc-only commit, and R-7 is informational. Verified
+on the sandbox store. The gate passed; all 198 norm breaks are caught.
+Chunk 08 is built on the owner's two decisions of 2026-09-13, recorded under its deliverables:
+- A non-active account stops counting in net worth after its last capture, and the answer names
+  what stopped counting, with the figure.
+- `list_holdings` carries a `totals` block.
+
+It also carries R-1 to R-5, the double-count guard and the magnitude go-red cases, and moves
+`DERIVATION_VERSION` to 11. Verified on the sandbox store rebuilt at 11: net worth is unchanged at
+-7716415 on four complete days, the 14 relinked accounts are named with that sum, and holdings
+total 2544640 over 13 positions. The go-red harness caught 210 of 211. The survivor was the
+version-bump case, which went blind because its fixture sat two versions back; it is retargeted at a
+rebuild test for this bump.
+
+Chunk 08 is committed as `30a28cf` plus `d1d9a96`. Its cumulative review
+(`rev-20260913T213037Z-b39388c0`, waves 2 and 3 together) raised 1 blocking, 3 warnings and 5 notes:
+
+- **R-6 (blocking):** a record-lint false positive.
+- **R-1:** a midnight-UTC false warning in `positions_not_current`. Its fix changed R-3's rule to
+  "the last attempt archived no holdings reply", recorded as a decision above.
+- **R-3, R-4, R-5/R-7:** fixed in `d1d9a96`.
+- **R-2 and R-8:** filed as #115 and #116.
+
+The `verify-resolutions` pass (`rev-20260913T215727Z-da2ca441`) found nothing further. The gate passed
+at 1583, and the PR coverage gate is satisfied. All eight chunks are done. The PR (one for waves 2
+and 3, or two) is the owner's call. It blocks on VRF-020/021 (production-only), VRF-022 and VRF-023.
+🔴 A wave 2 PR opened before wave 3 lands is cut from `1320344`.
+
+**Reopened 2026-09-13 with chunks 09 and 10, on the owner's decision.** Waves 2 and 3 ship as ONE
+PR, and #115 and #107 land on this branch before it opens. #115 goes here because `list_holdings`
+and `balance_history` have never been on `develop`: moved now, the PR shows them arriving in their
+own modules, and nobody reviews a 900-line move. #107 goes here because it edits the coverage code
+beside that move, and the VRF-022/023 client session can read its answer in the same sitting. The
+PR still blocks on VRF-020/021, VRF-022 and VRF-023, and chunk 10 adds its own client reading.
+
+Chunk 09 is committed as `66ab96a`, and its review (`rev-20260913T234353Z-a12c5cf0`) raised 0
+blocking, 1 warning and 5 notes. R-5 and R-6 were accepted, and R-1 to R-4 were fixed in Chunk 10's
+commit. Chunk 10 is committed as `27f627f`. Its review ran as a cumulative over the branch
+(`rev-20260914T001645Z-4026ed54`) and raised 0 blocking, 0 warnings and 7 notes. R-3, R-4, R-5 and
+R-7 were accepted. R-1, R-2 and R-6 were fixed in `1ebe24f`, which a `verify-resolutions` pass
+covers. The gate passed at each commit, and the go-red harness caught all 217. Both chunks are done.
+Chunk 11 is committed as `2cb0d78` plus `e9618da`, and its Result records the review census. The
+operator-verification queue is clear. VRF-022 to VRF-024 were verified in a real client on
+2026-09-13, including VRF-023 step 3 re-read on `186857f`. VRF-020/021 (production-only) were
+accepted for this PR, on the owner's word, in `c04a82c`. The one PR for waves 2 and 3 plus 09–11
+is opening.
 
 ## The Program
 
@@ -201,6 +256,13 @@ and `balance_history` — in three waves, drawn in full here on the owner's deci
 | 1 | 01–04 | Investment sync: capability-gated pulls, derivation, per-domain sync state, health visibility | its own PR |
 | 2 | 05–06 | `list_holdings` — current positions, one new tool, one new row shape | its own PR |
 | 3 | 07–08 | `balance_history` — value over time per account and as net worth | its own PR |
+| — | 09–10 | #115's move out of `query.py`, and #107's investment coverage | with waves 2 and 3 |
+
+🔴 **Amended 2026-09-13 (owner): waves 2 and 3 ship as one PR, and chunks 09–10 ride in it.** The
+three-PR shape below held for wave 1 (PR #114). Wave 3 was committed before wave 2's PR opened, so
+a separate wave 2 PR would now be cut from an old commit for no review benefit. Chunk 10 closes
+with a `final` review over 09 and 10. That review composes with Chunk 08's cumulative to cover the
+PR, and the PR gate is re-run to confirm it rather than assumed.
 
 🔴 **One branch, three PRs — not one PR at the end.** `project-preferences.md` sets the
 merge strategy to merge commit precisely so a reused branch's merge-base stays correct, so
@@ -548,18 +610,41 @@ Tests are the floor, and three things here are not testable from a fixture:
 - **Artifacts consumed:** `api-contract.md` § Direction (freshness stamp and warnings;
   balance lifecycle), `.prawduct/artifacts/api-contract.md` § warning vocabulary
 - **Deliverables:**
-  - a request-scoped warning kind for **a stale position**, raised on two triggers kept distinct
+  - a request-scoped warning kind for **a stale position** (`positions_not_current`), raised on two triggers kept distinct
     in its detail. *(Amended at the trajectory checkpoint, 2026-09-13.)* First and commonest:
     `price_as_of` more than 4 calendar days before the row's `as_of_date` — the sandbox serves a
     2021 price on a 2026 capture, and a capture date alone can never show it
     `[ASSUMPTION: 4 calendar days, enough to clear a long weekend | MED impact | owner can
     override]`. Second: the latest holdings capture is older than the connection's transactions
-    freshness, which Chunk 03's independent domain failure can produce. A null `price_as_of`
+    freshness, which Chunk 03's independent domain failure can produce. *(Split after the cumulative
+    review, 2026-09-13: an account behind its OWN connection's newest capture was listed with no
+    position and may hold none now -- a working feed, named apart from a stopped one -- and a
+    non-active account is left to `account_no_longer_active`.)* A null `price_as_of`
     is named as unknown, not treated as fresh
-  - `rule-applied` carrying any security excluded from a minor-units figure because its
-    currency has no known exponent — the per-row refusal wave 1 built, made visible here
+  - `rule-applied` naming every position refused at derivation because its currency has no
+    known exponent **or states none** — account, security and currency — on the capture day
+    the answer reads. *(Amended while building, 2026-09-13.)* 🔴 The refusal wave 1 built was
+    visible nowhere: `derive_investments_holdings` skips the row and logs it, and
+    `holdings.market_value_minor` is NOT NULL, so nothing a read can see recorded it. And
+    `list_holdings` emits no total, so "excluded from the total" has no figure to apply to —
+    the position is absent from the ROWS, and that is what is named
+  - 🔴 **the refusal recorded, so it can be named.** `[DECISION: migration 011 adds
+    `refused_holdings` — (account, security, capture day, currency, provenance) — derived from
+    the archived bodies | owner, 2026-09-13 | chosen over inferring refusals from
+    `securities.currency` (names the instrument, not the account, and misfires on a security
+    seen only in investment transactions) and over descoping with the norm departure recorded]`.
+    The table obeys the holdings append rule through the shared `_claim_capture_day`, carries a
+    raw response as its only provenance (nothing but a sync can refuse a position), and is
+    rebuildable by the classification `store.rebuild` already derives. It is not one of FR-6's
+    thirteen, which are a minimum: it is declared beside them as a later table, so the metadata
+    guard still refuses a table nobody declared. `DERIVATION_VERSION` moves to 10. The latest
+    capture day per account is read across BOTH tables, so an account whose only position was
+    refused is named rather than read as holding nothing. The populated-store upgrade module
+    re-points at 011, keeping 010's fixture and rewind
   - `account_no_longer_active` reaching holdings, not only balances: the existing kind
-    already means what is needed, so this is an emitter, not a new kind
+    already means what is needed, so this is an emitter, not a new kind. It rides beside
+    `roster_observed_empty`, as on every other answer surface, and its detail says a POSITION
+    froze rather than a balance
   - 🔴 **say on the coverage surface that its measurements are the TRANSACTIONS domain's.**
     `query._account_coverage` is pinned to that domain, so a brokerage account whose only
     activity is investment transactions reports `transaction_count` 0 and draws
@@ -569,7 +654,8 @@ Tests are the floor, and three things here are not testable from a fixture:
     positions, and indefensible the moment `list_holdings` ships. So either the
     `get_coverage_report` field table and `accounts_without_coverage`'s guidance say which
     domain they speak for, or #107 is resolved here; what is not available any more is
-    silence
+    silence. **Route taken (2026-09-13): the domain is named, and #107 stays open** for the fix
+    that changes two published row shapes
   - 🔴 **the new kind landed across every surface in ONE commit.** A warning kind is a shared
     closed set, and the surfaces are: `envelope.REQUEST_SCOPED_KINDS`; the guidance map in
     `src/bankmachine/mcp_resources.py` (a kind with no section fails
@@ -581,8 +667,12 @@ Tests are the floor, and three things here are not testable from a fixture:
 - **Tests:** unit — the kind is in the request-scoped tuple and not the connection-scoped
   one, and its absence is information (a fresh capture raises nothing); the guidance map
   covers every kind in the vocabulary. Integration — a store whose last holdings capture is
-  old answers with the warning and still returns the rows; an unpriceable security is named
-  under `rule-applied` and excluded from the total rather than silently rounded.
+  old answers with the warning and still returns the rows; an unpriceable position is named
+  under `rule-applied` — account, security and currency — and is absent from the rows rather than
+  silently rounded (the tool emits no total, so there is none to exclude it from); an account whose
+  only position was refused still names it. Migration 011 — a populated store upgrades with the
+  table empty and `store rebuild` fills it from the archive; a refusal obeys the append rule as a
+  position does. Schema and rebuild both change, so the norm tests are re-proven red.
 - **Acceptance criteria:** every degraded holdings answer says so on the success path; no
   answer raises an exception for incompleteness; the primer is within budget.
 - **Critic mode:** cumulative
@@ -609,6 +699,11 @@ Tests are the floor, and three things here are not testable from a fixture:
 - **Artifacts consumed:** `discovery-mcp-tool-surface.md` (the unifying row shape and why the
   merge was admitted), `api-contract.md` § Direction (tool boundary)
 - **Deliverables:**
+  - 🔴 **carried from Chunk 06's verify-resolutions** (an observation, not a finding): in
+    `query.list_holdings`, an account left out of a newer capture, on a connection whose newest
+    capture is itself behind its transactions, gets only the "the feed is working" wording, which
+    is false there. Name both facts for that account, with a test for the combination and a go-red
+    case. It rides this chunk's commit rather than buying a review round of its own
   - the series query over `balances_daily` in `src/bankmachine/query.py`, keyed
     `(account_id, as_of_date)` so both readings come from one series rather than two queries
     that can disagree
@@ -622,6 +717,47 @@ Tests are the floor, and three things here are not testable from a fixture:
     selection cost was accepted and what buys it back (the tool description is the lever)
   - a gap in the series reported rather than interpolated — a day with no capture is a day
     nobody looked, and drawing a line through it invents a balance
+  - 🔴 **Decisions taken at this chunk's start (owner, 2026-09-13), all four on the recommendation
+    offered:**
+    - `[DECISION: the name stays `balance_history` | owner | chosen over `net_worth_history`]` —
+      the contract table, §5, the surface inventory and the wire's unbuilt roster all name it, so a
+      rename is a same-commit sweep that buys selection for one reading and costs it for the other.
+      The selection cost for "net worth over time" is ACCEPTED, and the tool description is what buys
+      it back: it opens with that question
+    - `[DECISION: an aggregate row is emitted only for a COMPLETE day | owner | chosen over summing
+      what was captured with a warning, and over carrying a balance forward]` — the net-worth row for
+      `(date, currency)` exists only when every account holding a balance in that currency, whose
+      first capture is on or before that date, was captured that day. Otherwise it is withheld and the
+      withholding is named under `rule-applied` (accounts and days): a partial net worth is the most
+      believable wrong number this tool could emit. 🔴 **Corrected while building, from the option's
+      own wording** ("between its own first and LAST capture"): ending an account's span at its last
+      capture makes a connection whose sync stopped three days ago drop out of the last three days'
+      totals silently — the exact failure the option was chosen to prevent. So an ACTIVE account's span
+      is open-ended from its first capture, and only an account NO LONGER ACTIVE (closed, or no longer
+      listed) keeps the option's "through its last capture" — refined again while building, because the
+      sandbox store holds fourteen accounts replaced by relinked ones, and an open-ended span for them
+      would withhold every net worth since. Their exclusion is STATED under `account_no_longer_active`;
+      Chunk 08 turns it into include-and-flag with the magnitude. `[user can veto]`
+    - `[DECISION: windowed, capped and paged like `query_transactions` | owner | chosen over interval
+      sampling and over deferring the cap]` — `since`, `until`, `account_id`, `limit`, `cursor`; at
+      most `MAX_ROWS` rows, newest day first, the day's net-worth rows before its account rows. The
+      window is reconciled against the BALANCE series' own span, never the transactions' (balances
+      begin at enrollment, transactions two years earlier, so a transactions clamp would claim coverage
+      no balance has). So the window, the cursor and the `rows_truncated` wording each learn which
+      series they describe; `transactions_in_effective_window` is not carried. (`gapped` is phrased
+      against the requested window as on every windowed answer — corrected while building from "keeps
+      its unwindowed phrasing", whose "this request named no window" would be false.) With
+      `account_id`, the answer is that account's rows and no aggregate row. The wire spells the amounts
+      `*_minor_units`, the surface's convention, where discovery's shape used the column spelling
+    - `[DECISION: assets and liabilities split by `balance_class` | owner | chosen over the sign of the
+      balance]` — `data-model.md` records `balance_class` as existing because net worth is its
+      consumer, and an operator's reclassification then reaches the report. An asset-class account's
+      balance is `assets_minor` (an overdraft reads negative there); a liability-class account's is
+      `liabilities_minor` as the magnitude owed (a credit balance reads negative there). `net_minor` is
+      the signed balance, so `net = assets - liabilities` at both levels by construction
+  - both readings from ONE statement: each (account, currency)'s first capture across the whole
+    store, left-joined to its captures inside the window, so the completeness test and the rows it
+    judges come from one snapshot
   - the same unforced half as for `list_holdings`: drop "balance history or net worth over
     time" from the primer in `mcp._instructions()` and the balance-history bullet from
     `mcp_resources._CANNOT_ANSWER` — the test only moves `UNBUILT_TOOLS`
@@ -648,7 +784,7 @@ Tests are the floor, and three things here are not testable from a fixture:
 - **Deliverables:**
   - 🔴 **the double-count guard, and it is the finding this plan most wants on the record.**
     The contract says the series has "investments included" — and an investment account's
-    value is **already in `balances_daily`**, because `/accounts/get` reports a brokerage
+    value is **already in `balances_daily`**, because the aggregator's accounts-get endpoint reports a brokerage
     account's `current` balance like any other account's (wave 1 measured a sandbox 401k at
     23631.9805 there). `holdings` **decomposes** that balance; it does not add to it. Summing
     both counts the same money twice. This project has already shipped an exactly-2× total
@@ -662,9 +798,72 @@ Tests are the floor, and three things here are not testable from a fixture:
     do anything about it
   - the same treatment extended to a holdings total, which is the ruling Chunk 03 declined to
     settle and this chunk owes
-  - `docs/system-requirements.md` and `api-contract.md` amended: the three-tools-not-built
-    note drops to one (`find_recurring`), and the § Surface Inventory rows stay as they are
-    because both tools were always specified
+  - `docs/system-requirements.md` and `api-contract.md` amended for the lifecycle treatment. *(The
+    unbuilt note already dropped to `find_recurring` alone in Chunk 07, because the documented
+    tool-surface guard holds every counted document to the built set in the same commit.)*
+  - 🔴 **carried from Chunk 07's review (`rev-20260913T201311Z-35ac5f2c`)**, riding this chunk's
+    commit rather than buying a round of its own. Each was accepted there with this deliverable as
+    its reason, so dropping one is dropping a recorded commitment:
+    - **R-1:** walk `balance_history`'s cursor through the MCP boundary (`_call`) until it is gone,
+      every row arriving once. Show each tool refusing the other's cursor there. Add a go-red case
+      that removes `after=series_cursor`.
+    - **R-2:** judge completeness over every captured day crossed with the currencies counted, so a
+      currency whose accounts all missed a day the sync ran is withheld and named, not silently
+      absent. Add a two-currency case.
+    - **R-3:** decide `positions_not_current`'s "stopped" from the INVESTMENTS domain's own
+      `sync_state`: its `last_success_at` older than the transactions domain's, or a
+      `last_error_code`. Stop inferring it from capture dates, since a successful pull that lists no
+      position writes none. Add a test where such a pull emits no "stopped" wording.
+    - **R-4:** claim a position's `(account, security, day)` key across `holdings` and
+      `refused_holdings` at WRITE time, so the two tables never share a key. `list_holdings` then
+      drops `held_first` and `overruled`, and the holdings total this chunk builds reads one table.
+      Test that replay order changes nothing, price any `DERIVATION_VERSION` move, and keep the
+      manual-row rule.
+    - **R-5:** make `SeriesCursor.position()` delegate to `series_position`. Add a two-currency
+      paging case.
+  - 🔴 **Decisions taken at this chunk's start (owner, 2026-09-13).** Both were put with the sandbox
+    store measured first:
+    - `[DECISION: in net worth over time, an account no longer active counts through its last capture
+      and not after; the answer states what stopped counting | owner | chosen over carrying its last
+      balance forward]`. The measurement decided it: the sandbox's 14 relinked accounts, last captured
+      2026-09-08/09, hold last balances summing to −7,716,415, identical to their 14 replacements', so
+      carrying them forward serves net worth at exactly 2× on every later day. That is the shape of the
+      2× `money_summary` total this chunk exists to prevent, and it also puts balances on days nobody
+      captured, which Chunk 07's no-smoothing rule refused. Recorded as a **ruling at the edge of**
+      `api-contract.md` § Direction's lifecycle norm, not an amendment. The norm chose include over
+      exclude because an exclusion is "invisible by construction — no field can point at what is not
+      there". In a series the exclusion is visible: the account's own rows end on its last day, and
+      the answer states it. The magnitude therefore stays load-bearing. `account_no_longer_active` on
+      `balance_history` names each account's last captured day and its signed last balance, plus the
+      per-currency count and signed sum. That sum is the figure `coverage.accounts_not_active` /
+      `not_active_balance_minor_units` already carries present-and-zero. A go-red case removes the
+      magnitude from the detail. The go-red case "an account no longer active counts only through its
+      last capture" stays, and the test it names gains the magnitude assertion
+    - `[DECISION: `list_holdings` gains a per-currency `totals` block | owner | chosen over settling
+      the lifecycle ruling with no total built, which the builder recommended]`. The recommendation's
+      cost, recorded so a reviewer can weigh it: a position sum is a SECOND value for money net worth
+      already counts through the balance series, and it does not reconcile to that balance (the sandbox
+      401k is 6% over). The block therefore carries the double-count warning in the tool description
+      and the contract row. Its shape: one entry per currency, every key present and zero where nothing
+      qualifies — `currency`, `positions`, `market_value_minor_units`, `not_active_positions`,
+      `not_active_market_value_minor_units` (signed). It is summed from the returned rows, never from a
+      second read, on `_flow_class_totals`' reason; `list_holdings` is uncapped, so the rows are every
+      position. The block is always present, and empty when there are no rows. Non-active positions
+      stay IN `market_value_minor_units` (include and flag, per the norm), with their count and value
+      beside it. Not in it: cost basis, which is nullable per position, so a sum over the known ones
+      is a wrong number with no signal; and refused positions, which have no minor units to add and are
+      already named under `rule-applied`. `mcp._output_schema`'s existing `totals` flag carries it, so
+      no fourth conditional envelope key arrives. R-4 is what lets the block read one table
+    - `[DECISION: a stopped investments feed is one whose last attempt archived no holdings reply, and a
+      left-out account is judged against the newest archived reply's day | taken in the cumulative
+      review's fix pass, 2026-09-13 | refines R-3's wording above | user can veto]`. The review found
+      that R-3 as worded compared the calendar days of separate stamps of one sync, and any two of
+      them can straddle midnight UTC. That named a working feed stopped, or every account left out,
+      until the next sync. `sync run` attempts investments, archives the holdings reply, stamps the
+      domain, then attempts transactions (measured on the sandbox store), so a reply archived after
+      the attempt began is that attempt's positions. That makes the rule exact, with no calendar days.
+      Two refinements follow: a failure after the reply landed is the trades' problem, not the
+      positions', and a window that merely came back short is not a stopped feed.
 - **Tests:** integration — a store holding a closed brokerage account reports the total, the
   count and the contributed magnitude, and the guard is seen red **with the magnitude
   removed**, not merely with the flag flipped (that is the condition the norm set for its own
@@ -681,6 +880,356 @@ Tests are the floor, and three things here are not testable from a fixture:
   1. Acceptance criteria met and tests pass
   2. Committed, then `/prawduct:critic cumulative` run and blocking findings resolved
   3. Chunk marked `[x]` in Status, and the plan archived once the release carries it
+
+### Chunk 09: Holdings and the balance series leave `query.py` (a pure move, #115)
+
+- **Description:** `query.py` holds every tool's assembly. The two tools this plan added reach the
+  rest of it only through a narrow shared core, and they are what pushed the file past twice the
+  size that prompted the envelope extraction (#39). Move each cluster into its own module, and
+  change nothing a client, a test assertion or a stored row can see. It follows the envelope
+  precedent (`build-plan-envelope-module.md`), including that plan's two recorded traps.
+- **Depends on:** Chunk 08
+- **Backlog:** `brookstalley/bankmachine#115`
+- **Requirements confidence:** High. The boundary is named in #115, and the precedent measured how a
+  move like this fails.
+- **The boundary:**
+  - **Moves to new `src/bankmachine/query_holdings.py`:** `POSITION_PRICE_STALE_AFTER`,
+    `InvestmentFeed`, `_investment_feeds`, `_holdings_totals`, `_positions_not_current_caveat`,
+    `_refused_positions_caveat`, `list_holdings`.
+  - **Moves to new `src/bankmachine/query_balances.py`:** `_BALANCE_ROWS`, `_series_ends`,
+    `BalanceCapture`, `WithheldNetWorth`, `_split`, `compose_balance_series`, `_series_row`,
+    `_withheld_net_worth_caveat`, `balance_history`.
+  - **Stays in `query.py`:** the shared core both clusters import (`_readable`, `_unusable`,
+    `_answer`, `_account_lifecycle`, `_not_active_caveat`, `_roster_observed_empty_caveat`,
+    `_account_exists`, the `_undenominable_*` family) and every other tool. A name used by a moved
+    cluster AND by something that stays, stays.
+  - 🔴 **No re-export from `query.py`.** The new modules import the core from `query.py`, so
+    `query.py` importing them back is a cycle. Every caller is re-pointed instead: `mcp.py`'s
+    dispatch, and the tests that import or monkeypatch a moved name.
+- **Open assumptions:**
+  - `[ASSUMPTION: the modules are named query_holdings.py and query_balances.py | LOW impact | user
+    can correct; it is a rename away until the chunk commits]`. The `query_` prefix keeps them read
+    as the query layer, not as `store/investments.py`'s write path.
+  - ~~`[ASSUMPTION: importing the core's underscore names across modules is acceptable | LOW impact]`~~
+    — **checked 2026-09-13:** `[tool.ruff.lint] select` is `E, F, I, N, UP, B, SIM`, which has no
+    private-import rule. The core keeps its names; renaming it inside a pure move would stop the
+    move being pure.
+- **Deliverables:**
+  - the two modules, and `query.py` without the moved definitions
+  - `mcp.py` and every test re-pointed. 🔴 **Monkeypatch targets move with the reads.** The envelope
+    move found a test that patched the old module while the code read the new one. It stayed green
+    while asserting nothing, and only failed loudly by luck. Grep `setattr` targets and
+    `"bankmachine.query.` strings, not just imports
+  - every `verify_norms_go_red.py` case whose anchor lies in the moved code re-pointed to a new path
+    constant. Recount them at build from the anchors themselves; do not copy a planning figure.
+    Assert each mutation lands, then run the harness ALONE and see each case go RED
+  - artifact and docstring references to the moved names re-pointed where they name a file
+  - 🔴 **Not in this chunk, said so rather than dropped:** #115 also observes that
+    `mcp._tool_definitions` has "the same shape". Its Expected section asks only for the two
+    clusters, so that extraction is not done here. #115's close-out names it, and it is filed only
+    if the owner wants it
+- **Tests:** no assertion changes. `git diff` over `tests/` shows only import lines, monkeypatch
+  targets and the harness's path constants and file fields, and the Critic is pointed at that diff.
+  The suite is green, and the harness catches every case it caught at `68566f2`.
+- **Acceptance criteria:** the published surface is byte-identical. `_tool_definitions()`
+  serialised with sorted keys, and `mcp_resources.documents()` over it, match a dump from `68566f2`
+  byte for byte. The result is recorded here, as the envelope plan recorded its own.
+- **Result, recorded 2026-09-13:**
+  - **Published surface:** `_tool_definitions()` for all seven tools, serialised with sorted keys,
+    is 90,238 bytes before and after, and `cmp` is clean. `mcp_resources.documents()` over it
+    (both reference documents) is 34,306 bytes both sides, `cmp` clean. Both are dumped from this
+    checkout at `68566f2`'s code and again after the move.
+  - **Tests:** across the three test files that changed, the lines removed and the lines added
+    differ only by the `query_holdings.`/`query_balances.` prefix and the import line. Checked as a
+    multiset of lines, not by eye. Four lines the longer prefix pushed past the limit were reflowed
+    by `ruff format`. No monkeypatch target named a moved attribute.
+  - **Harness:** 25 cases re-pointed (16 to `QUERY_HOLDINGS`, 9 to `QUERY_BALANCES`). An anchor was
+    retargeted only when its count in `query.py` fell to zero and it appeared in exactly one new
+    module. The other 42 `QUERY` cases keep their count in `query.py`. The harness was run alone and
+    detached: all 211 norm breaks were caught, with no SKIP, AMBIGUOUS or INVALID. The surface dump
+    was repeated after it and is still byte-identical, so no mutation was left behind.
+- **Type:** code
+- **Critic mode:** chunk
+- **Done when:**
+  1. Acceptance criteria met, the harness run alone, then the full gate green
+  2. Committed, then `/prawduct:critic` run and blocking findings resolved
+  3. Chunk marked `[x]` in Status
+
+### Chunk 10: An investment account's activity counts as coverage (#107)
+
+- **Description:** An account whose only activity is investment trades and positions reads
+  `transaction_count` 0 on `list_accounts` and `get_coverage_report`. Both listings then raise
+  `accounts_without_coverage`, which tells an agent to distrust an account whose data IS in the
+  store. Chunk 06 labelled the field; this chunk fixes what the listings say.
+- **Depends on:** Chunk 09
+- **Backlog:** `brookstalley/bankmachine#107`
+- **Artifacts consumed:** `api-contract.md` § *Coverage is reported per account*, the `list_accounts`
+  and `get_coverage_report` field tables, and the `accounts_without_coverage` row and its scoping
+  paragraph
+- **Requirements confidence:** High on behaviour; field names are assumptions.
+- **Decisions:**
+  - `[DECISION: add per-account investment facts beside transaction_count, and narrow the LISTINGS'
+    warning to accounts neither feed holds anything for | owner, 2026-09-13 | chosen over widening
+    transaction_count, and over narrowing the predicate with no new field]`. Widening would silently
+    change what a documented field counts, and would count trades as if `query_transactions` could
+    return them, which it cannot. Narrowing alone would leave an agent reading 0 with no field
+    saying where the activity is.
+  - `[DECISION: query_transactions(account_id=N) and money_summary keep the transactions-feed
+    predicate | taken in this plan | user can veto]`. Both answer from the transactions feed, so an
+    empty answer from either about an investment-only account really is "no data for this tool".
+    The warning stays true there and keeps pointing at `list_holdings`. Only the two listings, which
+    describe the account itself, change.
+- **Open assumptions:**
+  - `[ASSUMPTION: the fields are investment_transaction_count (integer, 0 not null, soft-deleted
+    trades excluded) and holdings_as_of (the newest captured holdings day, nullable) | LOW impact |
+    user can rename before commit]`. `holdings_as_of` follows `balance_as_of` on the same row.
+  - `[ASSUMPTION: a position refused for its unit does not count as a capture for holdings_as_of |
+    LOW impact | user can override]`. It is named under `rule-applied` on `list_holdings`, so an
+    account whose EVERY position was refused would read as having no data. Rare, and saying "no
+    positions" there is closer to what can be served than naming a day with nothing on it.
+- **Deliverables:**
+  - `AccountCoverage` gains both facts and a predicate for "neither feed holds anything". `uncovered`
+    keeps its current meaning, because four callers read it and two of them keep it.
+  - 🔴 **The two facts come from grouped subqueries joined per account, never from widening the
+    existing outer join.** Joining `investment_transactions` beside `transactions` multiplies each
+    count by the other, and the join-site comment already records that failure for `sync_state`.
+    That comment's "what this DOES leave unsaid" paragraph is rewritten to say what is now said.
+  - `list_accounts` and `get_coverage_report` raise `accounts_without_coverage` only for accounts
+    with no data in either feed, with detail naming what each account lacks.
+    `query_transactions(account_id=N)` and `money_summary` are unchanged.
+  - `mcp._coverage_row_fields` is the one schema fragment both tools publish. It gains both fields,
+    required and present, and `transaction_count`'s description points at the new count rather than
+    only at `list_holdings`.
+  - every surface that says what `accounts_without_coverage` means on a listing:
+    - both tool descriptions in `mcp.py`
+    - `mcp_resources.py`'s guidance for the kind
+    - `api-contract.md`: both field tables, the vocabulary row, the paragraph on where the kind
+      fires, and the § Operations note that leaves #107 open
+    - `docs/connecting-an-mcp-client.md`
+  - 🔴 **The envelope reference's "What this server cannot answer" says trades are stored and
+    "read by no tool", and this chunk makes that false.** Counting them is reading them.
+    `tests/test_mcp.py::test_the_unserved_trades_claim_holds_against_what_every_tool_reads`
+    captures every statement each tool executes and fails the moment any tool touches
+    `investment_transactions`. That is the guard working, and it is not to be quieted. The claim
+    becomes what is true: trades are counted per account and served as rows by no tool. The guard
+    is re-aimed at that claim, and it must stay able to fail. It holds that no tool's ROWS carry a
+    trade, and it still fails if the text claims more or less than the SQL does.
+    `[DECISION: re-aim rather than delete | surfaced while reading the guard before building this
+    chunk, 2026-09-13 | user can veto]`. The guard's purpose, which is that the cannot-answer list
+    matches what the tools do, survives. The old sentence it held does not.
+  - 🔴 **Carried from Chunk 09's review (`rev-20260913T234353Z-a12c5cf0`), riding this chunk's commit
+    rather than buying a round of its own.** Record each as accepted, citing this commit, once it
+    lands:
+    - **R-2 (warning):** `docs/connecting-an-mcp-client.md` and `envelope.py` still describe a
+      stopped investments feed as "investments stopped while transactions did not". Since
+      `d1d9a96` the rule is that the last investments attempt archived no holdings reply. Correct
+      both to that rule.
+    - **R-1/R-4:** `_POSITIONS_FROZE` is used only by `list_holdings`, so by Chunk 09's own
+      boundary rule it moves to `query_holdings.py`.
+    - **R-3:** the `mcp.py` and `envelope.py` docstrings still say every tool runs through
+      `query.py`. `_holdings_totals` refers to `_flow_class_totals` as if the two shared a file.
+- **Tests** (`tests/test_account_coverage.py`, beside the cases they refine):
+  - an investment-only account reports its trade count and holdings day. Neither listing names it,
+    and `query_transactions(account_id=N)` still warns about it
+  - an account with both feeds reports each count exactly, not their product
+  - a soft-deleted trade is not counted
+  - an account with positions and no trades is not "no data"
+  - an account with neither feed is still named by both listings
+  - the existing "two tools never disagree" case extends to the new fields
+  - go-red cases, each seen RED: the listing predicate reverted to `uncovered`; the count taken
+    through the widened join; the soft-delete filter removed
+- **Acceptance criteria:** on the sandbox store, `list_accounts` shows each investment account's
+  trade count and holdings day, and neither listing raises `accounts_without_coverage` for it.
+  `query_transactions(account_id=` one of them `)` still does. An account with no data in either
+  feed is still named.
+- **Visual change:** yes — the wording an agent reads to decide whether an account is empty. The
+  operator verification entry is VRF-024, to be read in the same client session as VRF-022/023.
+- **Result, recorded 2026-09-13:**
+  - **Sandbox store (read-only, this build):** 28 accounts. The two investment accounts (ids 20
+    and 21) carry `transaction_count` 0, 219 and 948 trades, and `holdings_as_of` 2026-09-13.
+    Neither listing names them. `list_accounts` and `get_coverage_report` each name the same 16
+    accounts, exactly the set with nothing in any feed.
+    `query_transactions(account_id=20)` returns no rows and names account 20.
+  - **Harness:** six new cases, covering both listing predicates, `query_transactions` keeping its
+    own predicate, the widened join, the removed-trade filter and the cannot-answer claim. Each was
+    seen RED in a subset run. The full harness run alone and detached then caught all 217.
+  - **Tests written first and seen red:** the four new cases the code had to change failed before
+    it did. The two that pin unchanged behaviour (`query_transactions` and `money_summary` still
+    naming an investment account) passed before and after, as intended.
+  - 🔴 **One test expectation was wrong, and it was corrected rather than the code bent to it.** The
+    listing test first expected exactly two named accounts. The captures' rosters also add the
+    sandbox's checking, loan and card accounts, which have no data in any feed, so naming them is
+    correct. The expectation now derives the set from what the fixture wrote, not from the store, so
+    it is still exact.
+- **Type:** code
+- **Critic mode:** final
+  <!-- Reviews 09 and 10 together. Chunk 08's cumulative covers the branch to 68566f2, and the PR
+       gate composes the two, re-run to confirm. -->
+- **Done when:**
+  1. Acceptance criteria met on the sandbox store, the harness run alone, then the full gate green
+  2. Committed, then `/prawduct:critic` run and blocking findings resolved
+  3. #107 and #115 marked shipped through `/prawduct:backlog` once the PR merges, and the chunk
+     marked `[x]` in Status
+
+### Chunk 11: Two warnings that claim more than the request or the store supports
+
+- **Description:** The VRF-022/023/024 client session (2026-09-13) surfaced two warnings that state
+  something false on the sandbox store. Both are on the wire an agent reads, so the owner put both in
+  this PR (2026-09-13) rather than the backlog.
+  1. **`account_no_longer_active` on `balance_history` overclaims a move.** It says a net worth read
+     across an account's last day "moves by that account's last balance" and tells the reader to
+     name −7716415 beside any later figure. On the sandbox all 14 stopped accounts were re-linked.
+     Each has one twin (ids 15–28) with the same institution, name, mask, type and subtype, first
+     captured 2026-09-11, two days after the old one's last capture on 09-09, at the same balance.
+     The net worth is flat across the handover. The claim was true of the case Chunk 08 measured
+     and is written as general, the same shape as Chunk 08's R-1. This code is new on this branch.
+  2. **The superseded-generation `rule-applied` disclosure is not request-scoped.**
+     `query._superseded_caveat` names every span in the store. `query_transactions(account_id=21)`
+     names accounts 1–5, none of which the request touches. That breaks the contract's promise that
+     a request-scoped kind fires only when the request crosses its boundary (`api-contract.md`
+     § Direction, the 2026-09-10 `rule-applied` amendment). It has been on `develop` since the
+     re-link fix (`a893053`). There is no pre-existing exception, so it is fixed here.
+- **Depends on:** Chunk 10
+- **Backlog:** none filed. Both were found in this branch's client session and fixed before the PR.
+- **Artifacts consumed:** `api-contract.md` § Direction's lifecycle norm and its ruling on net worth
+  over time, and the `rule-applied` amendment. `docs/system-requirements.md` AC-12.8's ruling.
+  `src/bankmachine/store/lineage.py`'s identity partition.
+- **Requirements confidence:** High. Both are observed on the real store with the current build.
+- **Decisions:**
+  - `[DECISION: a stopped account is named as REPLACED by the account that shares its identity
+    partition and currency and was first captured earliest after the stopped account's last
+    capture, when exactly one account holds that earliest day | taken in this plan | user can
+    veto]`. The partition is `lineage`'s own: institution, mask, name, type
+    and subtype, with an account missing mask or subtype matched only to itself. One rule then
+    decides "the same real account" for both the exclusion and this warning. A second rule could
+    disagree with it and leave the two answers contradicting each other.
+    - The strictly-later first capture is what separates a replacement from a look-alike that was
+      live alongside it.
+    - A tie between candidates claims no replacement, because a handover wrongly claimed hides a
+      real move. A move wrongly flagged is only a figure the reader questions.
+    - The replacement need not be active itself, so a chain of re-links still pairs each stop with
+      the account that followed it.
+  - `[DECISION: the figure that stopped counting stays whole and agrees with
+    coverage.not_active_balance_minor_units; the detail splits it into replaced and unreplaced |
+    taken in this plan | user can veto]`. The magnitude stays load-bearing (the lifecycle norm, and
+    its go-red cases). The claim of a move is made only of the unreplaced part. A replaced account
+    is named with its replacement, the day that account was first captured, and its first balance.
+    Across each handover net worth moves only by the difference between the two balances.
+  - `[DECISION: replacements are found over the whole store, whatever the request's account_id |
+    taken in this plan]`. This is `superseded_spans`'s reason: the two generations are different
+    accounts, so narrowing to one of them leaves it looking unreplaced.
+  - `[DECISION: the superseded disclosure names only spans on the request's account (when one is
+    named) whose range overlaps the requested window (open ends unbounded); the EXCLUSION keeps
+    every span | taken in this plan]`. `counts_once` must still see the whole store, or a partial
+    exclusion would pass as a total. A span outside the request excluded nothing from the answer, so
+    naming it says nothing about this answer.
+- **Deliverables:**
+  - `lineage` publishes its identity partition, so `query_balances` reuses the rule rather than
+    restating it.
+  - `query_balances`: the replacement lookup, and `_series_ends` naming each replaced account's
+    successor and splitting the figure. Rewrite the ruling docstring's premise: a relinked account
+    is not double-counted, and is not a move either.
+  - `query._superseded_caveat` is scoped to the request's account and window, at both call sites.
+  - Update every surface that says what the series warning names:
+    - `mcp.py`'s `balance_history` description
+    - `mcp_resources.py`'s `account_no_longer_active` guidance
+    - `api-contract.md`'s ruling and its Chunk 08 amendment
+    - `docs/system-requirements.md` AC-12.8's ruling
+    - `docs/connecting-an-mcp-client.md`'s tool table
+- **Tests** (beside the cases they refine; relinks produced through the shipped derivers, never
+  written by hand):
+  - `tests/test_balance_history.py`:
+    - a re-linked account is named as replaced by its successor, from that account's first day and
+      at its first balance. No move is claimed for it, and the figure still equals the envelope's.
+    - a stopped account with no successor keeps the move claim. This is the existing case,
+      extended to assert the claim.
+    - a look-alike first captured on or before the stop day is not called a replacement.
+    - an account missing its mask is never matched.
+    - a mix of replaced and unreplaced accounts gives each part its own sum, and the whole agrees
+      with the envelope.
+  - `tests/test_money_summary.py`, beside the re-link fixture:
+    - `query_transactions` scoped to an account the span is not on carries no superseded disclosure.
+      Scoped to the superseded account, it does.
+    - `money_summary` over a window that misses the span carries none. Over one that meets it, it
+      does.
+    - the existing wire test stays as it is.
+  - go-red cases, each seen RED:
+    - the successor lookup disabled
+    - the strictly-later comparison loosened to on-or-before
+    - the account filter removed from the disclosure scope
+    - the window-overlap filter removed from the disclosure scope
+- **Acceptance criteria:** on the sandbox store, relaunched on this build:
+  - `balance_history` names each of accounts 1–14 as replaced by its twin from 2026-09-11 and claims
+    no move. The whole figure still reads −7716415 and matches `coverage`.
+  - `query_transactions(account_id=21)` carries no superseded disclosure, and
+    `query_transactions(account_id=1)` does.
+  - `money_summary` from 2026-09-10 carries none.
+- **Visual change:** yes, the wording an agent reads about net worth and exclusions. VRF-023 step 3
+  is re-read by a fresh reader in a real client against the new text, and the result is appended to
+  its recorded session. No new entry.
+- **Result, recorded 2026-09-14:**
+  - **Sandbox store, read-only, through the query functions on this working tree.** The MCP server
+    still serves `f7d5d2a`, so the client re-read waits for a relaunch after the commit.
+    - `balance_history` names each of accounts 1–14 as "replaced by account" 15–28 "from
+      2026-09-11" at an identical balance. It claims no move, and the whole figure reads −7716415,
+      equal to `coverage`.
+    - `list_transactions(account_id=21)` names no superseded span, and `account_id=1` names only
+      account 1's. Unscoped, it names all five.
+    - `money_summary` from 2026-09-10 names none, and over the whole range it names all five.
+  - **Harness:** six new cases, for the successor assignment, the strictly-later comparison, the
+    tie, and the account, since and until filters. Each was seen RED in a subset run, together with
+    the two magnitude cases whose anchors the rewrite kept. The full harness then ran alone and
+    detached and caught all 223.
+  - **Tests first:** four of the six `balance_history` cases failed before the code changed. The
+    mask and tie cases pin behaviour the fix must keep, and passed before and after. 🔴 **The two
+    scoping tests were written in the same batch as the `query.py` fix and were never run against
+    the old code.** Their go-red cases are the evidence that they fail when the scoping is removed.
+  - **Moved during build:** the tie test was added beyond the listed tests. The replacement
+    decision's text was corrected from "exactly one account" to "the earliest first-captured, when
+    exactly one holds that day", which is what a chain of re-links needs. `lineage._group` became
+    `lineage.identity_partition`, and no caller outside `lineage` used it.
+  - **Gate:** green (`prawduct-hook test-status`).
+  - **Review (`rev-20260914T022414Z-baa484bc`, cumulative, one round past the budget on the
+    owner's word, 2026-09-14):** 0 blocking and 4 warnings, all fixed in one commit.
+    - **R-1:** two stopped accounts could both claim one successor, which calls a real drop a
+      handover. A successor claimed twice now replaces neither.
+    - **R-2:** nothing pinned the earliest-successor rule in a chain. There is now a chain test.
+    - **R-3 and R-4 (one defect):** a net-worth day strictly between a stop and its successor's
+      first capture counts neither account. Another connection's capture makes that row complete,
+      so "net worth moves only by the difference" was false on it. Each such day is now named beside
+      the handover with the balance it leaves out. The description, the guidance, the contract
+      ruling and AC-12.8 all say so. `[DECISION: name those days rather than withhold their rows |
+      taken in this plan | user can veto]`. Withholding them would change the Chunk 08 ruling that
+      an account counts through its last capture and not after, which is the owner's call. Naming
+      them keeps the ruling and makes the claim true.
+    - The contested-claim and between-day tests were seen RED against the unfixed code before it
+      changed. The chain test passed before and after, because the code already took the earliest,
+      and its go-red case (`min` to `max`) is what shows it bites.
+    - The review also reported the lineage module as missing. That was a false alarm on a
+      prefix-less path, and "Artifacts consumed" now gives it in full.
+    - **Verify-resolutions (`rev-20260914T024622Z-31551f82`):** all four are confirmed fixed, with 0
+      findings. Two observations were accepted as not worth a change. The list of between days is
+      unbounded, growing by one date per day of a long outage over a wide window. The R-1 test
+      would also pass if its fixtures fell into different partitions, and its go-red case is what
+      proves it bites.
+    - **Census** (`prawduct-hook render-dispositions --review rev-20260914T022414Z-baa484bc`), for
+      the PR body:
+
+      | Finding | Severity | State | Detail |
+      |---|---|---|---|
+      | R-1 | warning | fixed | Two stopped accounts in one identity partition can both claim the same successor, so the warning calls a real net-worth drop a handover |
+      | R-2 | warning | fixed | The 'earliest later capture' rule and the re-link chain it exists for are untested: changing min to max in _successors survives every test |
+      | R-3 | warning | fixed | The handover wording assumes nothing happens between a stopped account's last capture and its successor's first, so gap-day net-worth rows that omit the whole balance are covered by a warning saying net worth does not move |
+      | R-4 | warning | fixed | account_no_longer_active says net worth does not move across a re-link handover, which is false for a net-worth row dated between the stopped account's last capture and its successor's first |
+
+      **4 findings** (4 warning), all fixed. The PR coverage gate is satisfied at `e9618da`.
+- **Type:** code
+- **Critic mode:** final
+- **Done when:**
+  1. Acceptance criteria met on the sandbox store, the harness run alone and detached, then the full
+     gate green
+  2. Committed, then `/prawduct:critic` run and blocking findings resolved
+  3. The chunk marked `[x]` in Status
 
 ## Early Feedback Milestone
 
@@ -724,3 +1273,6 @@ supports and which squash would break.
   attention to two things: whether any artifact still claims investments or the two tools are
   unbuilt, and whether the double-count guard actually holds a test that fails when the guard
   is removed.
+- **Chunk 10 (final, over 09 and 10)** — two things in particular. Did the move leave any test
+  asserting through a patch aimed at the old module? And does any surface still say a listing's
+  `accounts_without_coverage` counts the transactions feed alone?
