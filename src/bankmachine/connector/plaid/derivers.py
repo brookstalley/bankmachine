@@ -471,6 +471,12 @@ def _record_item_standing(
     )
 
 
+#: The one `transactions_update_status` that says a backfill has fully landed.
+#: `INITIAL_UPDATE_COMPLETE` hands over the first stretch with the rest still
+#: arriving, and `NOT_READY` hands over nothing yet.
+HISTORICAL_UPDATE_COMPLETE = "HISTORICAL_UPDATE_COMPLETE"
+
+
 def derive_transactions_sync(
     conn: SAConnection, response: RawResponse, context: DerivationContext
 ) -> None:
@@ -491,7 +497,11 @@ def derive_transactions_sync(
     overwriting a good cursor with nothing. But that is a rule about the cursor
     alone: a page carrying changes and no cursor keeps its rows and leaves the
     cursor where it was, because discarding them would lose transactions the
-    aggregator has already handed over and has no reason to send again.
+    aggregator has already handed over and has no reason to send again. And it
+    does not stop the domain landing: an institution with no cash accounts
+    finishes its backfill at `HISTORICAL_UPDATE_COMPLETE` with nothing in it and
+    no cursor to give, and a domain left unstamped there reads as never landed on
+    every answer, for as long as the connection exists.
 
     Transaction rows are written here too, and the ordering is not incidental:
     the rows go in before the cursor, so a row that cannot be written stops the
@@ -536,6 +546,16 @@ def derive_transactions_sync(
                 response.raw_response_id,
                 response.endpoint,
                 applied,
+            )
+        # 🔴 The cursor stays unstored, but the domain is landed when the
+        # aggregator says the backfill is. An institution with no cash accounts
+        # ends its backfill here with nothing to hand over and no cursor to give.
+        if payload.get("transactions_update_status") == HISTORICAL_UPDATE_COMPLETE:
+            record_domain_success(
+                conn,
+                connection_id=response.connection_id,
+                domain=TRANSACTIONS_DOMAIN,
+                at=response.received_at,
             )
         return
 

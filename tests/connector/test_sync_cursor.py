@@ -16,14 +16,16 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from bankmachine.cli import sync_run
 from bankmachine.config import Config
 from bankmachine.connector import ACCOUNTS_GET, TRANSACTIONS_SYNC, FetchedResponse
 from bankmachine.derivers import ALL_DERIVERS, all_replay_passes
+from bankmachine.store import derivation
 from bankmachine.store.derivation import DerivationError, apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
+from bankmachine.store.rebuild import rebuild
 from bankmachine.store.schema import TRANSACTIONS_DOMAIN, connections, institutions, sync_state
 from bankmachine.store.types import now_utc
 from conftest import child_env
@@ -535,3 +537,107 @@ def test_a_body_the_deriver_cannot_read_refuses_one_response_not_the_run(
         "the refusal does not name the row an operator would go and read"
     )
     assert _cursor(enrolled) is None
+
+
+def _transactions_domain(config: Config) -> Any:
+    with reader_connection(config) as conn:
+        return (
+            conn.execute(select(sync_state).where(sync_state.c.domain == TRANSACTIONS_DOMAIN))
+            .mappings()
+            .one_or_none()
+        )
+
+
+def test_a_complete_page_with_no_cursor_lands_the_domain(enrolled: Config) -> None:
+    """🔴 A finished backfill that held nothing is still a finished backfill.
+
+    An Item whose institution holds no cash accounts answers
+    `HISTORICAL_UPDATE_COMPLETE` with no changes and an EMPTY `next_cursor`
+    (measured against a real investment-only institution). The empty cursor is
+    still not stored -- that rule is about the cursor -- but the domain got
+    everything it asked for. Leaving `last_success_at` null reports it as never
+    landed on every answer the connection contributes to, for as long as it
+    exists.
+    """
+    _apply(enrolled, _page(next_cursor=None, status="HISTORICAL_UPDATE_COMPLETE"))
+
+    domain = _transactions_domain(enrolled)
+    assert domain is not None, "a finished feed left no record that it was attempted"
+    assert domain["last_success_at"] is not None, "a finished feed was left never-landed"
+    assert domain["cursor"] is None, "an empty cursor was stored as if it were one"
+
+
+def test_a_complete_page_with_no_cursor_keeps_the_cursor_it_had(enrolled: Config) -> None:
+    """Landing the domain must not cost it the place it had reached."""
+    _apply(enrolled, _page(next_cursor=CURSOR_ONE))
+
+    _apply(enrolled, _page(next_cursor=None, status="HISTORICAL_UPDATE_COMPLETE"))
+
+    assert _cursor(enrolled) == CURSOR_ONE, "an empty cursor overwrote a good one"
+
+
+def test_an_unfinished_page_with_no_cursor_does_not_land_the_domain(enrolled: Config) -> None:
+    """The mirror, without which the rule above is satisfied by landing every page.
+
+    `INITIAL_UPDATE_COMPLETE` hands over the first stretch of a backfill with the
+    rest still arriving, so a page at that status with no cursor has proved
+    nothing about the domain being complete.
+    """
+    _apply(enrolled, _page(next_cursor=None, status="INITIAL_UPDATE_COMPLETE"))
+
+    assert _transactions_domain(enrolled) is None
+
+
+# --------------------------------------------------------------------------
+# AC-5.3: a store derived before an empty feed could land rebuilds as expected
+# --------------------------------------------------------------------------
+
+#: The last version whose deriver landed the transactions domain only from a page
+#: carrying a cursor. A historical fact, deliberately not `DERIVATION_VERSION - 1`:
+#: written relatively it moves with the constant, and a reverted bump would move
+#: the fixture with it.
+DERIVATION_THAT_LANDED_ONLY_WITH_A_CURSOR = 11
+
+
+def test_a_store_derived_before_empty_feeds_landed_rebuilds_them_as_an_expected_change(
+    enrolled: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 AC-5.3: the same archive now derives a different `sync_state` row.
+
+    A store derived by the previous version holds an account and a complete,
+    empty transactions page, and no record that the domain landed -- that deriver
+    returned before writing one. Replayed now, the page lands the domain: a
+    content change, which `store rebuild` accepts only across a new derivation
+    version and refuses otherwise. The account is what carries the older version
+    stamp; with no row stamped by it, every rebuild reads as expected and this
+    test would pass with the bump reverted.
+    """
+    with monkeypatch.context() as previous_build:
+        previous_build.setattr(
+            derivation, "DERIVATION_VERSION", DERIVATION_THAT_LANDED_ONLY_WITH_A_CURSOR
+        )
+        previous_build.setattr(derivation, "DERIVATION_DESCRIPTION", "landed only with a cursor")
+        with writer_connection(enrolled) as conn:
+            apply_response(
+                conn,
+                connection_id=1,
+                endpoint=ACCOUNTS_GET.path,
+                body=_accounts_body(),
+                received_at=now_utc(),
+                derivers=ALL_DERIVERS,
+                replay_passes=(),
+            )
+        _apply(enrolled, _page(next_cursor=None, status="HISTORICAL_UPDATE_COMPLETE"))
+    with writer_connection(enrolled) as conn:
+        conn.execute(delete(sync_state).where(sync_state.c.domain == TRANSACTIONS_DOMAIN))
+    assert _transactions_domain(enrolled) is None, "the fixture is not the previous version's state"
+
+    report = rebuild(enrolled, derivers=ALL_DERIVERS, replay_passes=all_replay_passes)
+
+    assert report.content_changed, "the replay reproduced the missing record, so nothing moved"
+    assert report.change_was_expected, (
+        "`store rebuild` would refuse on a store derived before an empty feed could land. "
+        "Bump DERIVATION_VERSION in the commit that changes what an archive derives"
+    )
+    domain = _transactions_domain(enrolled)
+    assert domain is not None and domain["last_success_at"] is not None

@@ -73,7 +73,7 @@ logger = get_logger("store.derivation")
 #: column. AC-5.3 exists because losslessness is only well-defined against a
 #: recorded version: without one, an upstream taxonomy change and a rebuild bug
 #: are indistinguishable, since both simply produce different rows than before.
-DERIVATION_VERSION = 11
+DERIVATION_VERSION = 12
 
 #: What that version means, recorded beside it so a datastore carrying rows from
 #: an old version says something useful about them years later.
@@ -94,7 +94,9 @@ DERIVATION_DESCRIPTION = (
     "the price the institution valued it at (`holdings.price_as_of`); and a position refused for "
     "a currency with no known minor-unit exponent, or none stated, recorded where a read can "
     "name it (`refused_holdings`); and a position's capture day claimed across `holdings` and "
-    "`refused_holdings` together, so one day records a position or its refusal and never both"
+    "`refused_holdings` together, so one day records a position or its refusal and never both; "
+    "and a transactions feed the aggregator reports fully landed with no cursor to give "
+    "recorded as landed (`sync_state.last_success_at`)"
 )
 
 

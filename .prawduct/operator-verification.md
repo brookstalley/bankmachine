@@ -1598,3 +1598,35 @@ branch changes no sign handling. The obligation is **#23**, and it blocks produc
 **Drain with:** `prawduct-hook verify-operator-verification VRF-035`
 
 **Accepted:** 2026-09-14 — rationale: Accepted to open the window-concluded-with-its-page PR, which bears on neither entry: it changes when an investments window's removals commit, and no pending-hold or sign handling. VRF-034 needs a real pending transaction watched across settlement, and production (live since 2026-09-11) has not yet held one long enough. VRF-035 needs a real inflow at two institutions, and the second production institution enrolled on 2026-09-14 is investment-only, with no cash transactions to judge. Each is re-raised as a fresh pending entry (VRF-036/037) on the next branch, as VRF-032/033 were, so this acceptance discharges the block and not the obligation.
+
+## VRF-036 — one real pending transaction watched across settlement
+
+**Status:** accepted
+
+**Chunk:** production-data semantics (#22) · **Raised:** 2026-09-14
+
+**Why a human:** unchanged from **VRF-005**, which carries the full procedure and is the entry to
+follow. Re-raised from VRF-034, which was accepted to open the window-concluded-with-its-page PR on
+the term that it be raised again on the next branch. This branch changes when the transactions
+domain is recorded as landed, and no pending-hold handling. Production has been live since
+2026-09-11 and has not yet held a real pending row across its settlement. The obligation is **#22**.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-036`
+
+**Accepted:** 2026-09-14 — rationale: Accepted to open the empty-complete-transactions-page PR (#123), which bears on neither entry: it changes when a transactions feed with no cursor is recorded as landed, and no pending-hold or sign handling. VRF-036 needs a real pending transaction watched across settlement, which production (live since 2026-09-11) has not yet held long enough. VRF-037 needs a paycheck and a bill at a second institution with cash accounts, and the second production institution is investment-only. Each is re-raised as a fresh pending entry on the next branch, as VRF-034/035 were, so this acceptance discharges the block and not the obligation.
+
+## VRF-037 — the sign convention on a real inflow, across two institutions
+
+**Status:** accepted
+
+**Chunk:** production-data semantics (#23) · **Raised:** 2026-09-14
+
+**Why a human:** unchanged from **VRF-006**, which carries the full procedure and is the entry to
+follow. Re-raised from VRF-035 on the same term as VRF-036. This branch changes no sign handling. Two
+institutions are enrolled in production, but the second is investment-only and carries no cash
+transactions, so a paycheck and a bill at a second institution are still owed. The obligation is
+**#23**.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-037`
+
+**Accepted:** 2026-09-14 — rationale: Accepted to open the empty-complete-transactions-page PR (#123), which bears on neither entry: it changes when a transactions feed with no cursor is recorded as landed, and no pending-hold or sign handling. VRF-036 needs a real pending transaction watched across settlement, which production (live since 2026-09-11) has not yet held long enough. VRF-037 needs a paycheck and a bill at a second institution with cash accounts, and the second production institution is investment-only. Each is re-raised as a fresh pending entry on the next branch, as VRF-034/035 were, so this acceptance discharges the block and not the obligation.
