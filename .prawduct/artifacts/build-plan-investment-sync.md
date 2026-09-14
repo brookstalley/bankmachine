@@ -239,8 +239,11 @@ commit. Chunk 10 is committed as `27f627f`. Its review ran as a cumulative over 
 (`rev-20260914T001645Z-4026ed54`) and raised 0 blocking, 0 warnings and 7 notes. R-3, R-4, R-5 and
 R-7 were accepted. R-1, R-2 and R-6 were fixed in `1ebe24f`, which a `verify-resolutions` pass
 covers. The gate passed at each commit, and the go-red harness caught all 217. Both chunks are done.
-The one PR for waves 2 and 3 plus 09–10 is the owner's call, and it blocks on VRF-020/021
-(production-only) and VRF-022 to VRF-024.
+Chunk 11 is committed as `2cb0d78` plus `e9618da`, and its Result records the review census. The
+operator-verification queue is clear. VRF-022 to VRF-024 were verified in a real client on
+2026-09-13, including VRF-023 step 3 re-read on `186857f`. VRF-020/021 (production-only) were
+accepted for this PR, on the owner's word, in `c04a82c`. The one PR for waves 2 and 3 plus 09–11
+is opening.
 
 ## The Program
 

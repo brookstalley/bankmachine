@@ -34,6 +34,50 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-13: A stopped balance names the account that took it over, and a disclosure names only what the request reaches
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** a real client read of the sandbox store (VRF-023) found two warnings stating something
+false. `account_no_longer_active` on `balance_history` said a net worth read across a stopped
+account's last day "moves by that account's last balance". All 14 stopped accounts there were
+re-linked at the same balances, so the net worth is flat. And the superseded-generation `rule-applied`
+disclosure named every span in the store, so `query_transactions(account_id=21)` named accounts 1–5.
+
+**What changed (Chunk 11):**
+
+- **`account_no_longer_active` names each stopped account's successor.** A successor shares the
+  stopped account's `lineage` identity partition and currency and was first captured strictly later.
+  Each stopped account is named with that account, its first day and its first balance. Across the
+  handover net worth moves only by the difference. A successor two stopped accounts share, or a tie,
+  claims no handover. A net-worth day between a stop and its successor is named with the balance it
+  leaves out. The figure that stopped counting stays whole and still agrees with
+  `coverage.not_active_balance_minor_units`. The move claim is made only of the unreplaced part.
+- **The superseded disclosure is request-scoped.** It names only spans on the request's account whose
+  range meets the requested window. The exclusion still sees every span, so an answer's totals are
+  unchanged. This behaviour predates the branch and is fixed here.
+
+## 2026-09-13: An investment account's trades and positions count as coverage
+
+<!-- prawduct: scope=investments-v1 -->
+
+**Why:** an account whose only activity is trades and positions read `transaction_count` 0, and both
+listings raised `accounts_without_coverage` for it. That told an agent to distrust an account whose
+data is in the store (#107).
+
+**What changed (Chunk 10):**
+
+- **`list_accounts` and `get_coverage_report` gain `investment_transaction_count`** (soft-deleted trades
+  excluded, 0 not null) and **`holdings_as_of`** (the newest captured holdings day, nullable; a refused
+  position is not a capture). Both come from per-account grouped subqueries, never a widened join.
+- **Both listings raise `accounts_without_coverage` only for accounts with nothing in any feed.**
+  `query_transactions(account_id=N)` and `money_summary` keep the transactions-feed predicate, because
+  an empty answer from either really is "no data for this tool".
+- **The envelope reference's cannot-answer list now says trades are counted per account and served as
+  rows by no tool.** Its guard test was re-aimed at that claim, and it can still fail.
+- `list_holdings` and `balance_history` moved out of `query.py` into their own modules (#115, Chunk
+  09). Nothing a client sees changed.
+
 ## 2026-09-13: Net worth that says what stopped counting, and a holdings total that is not a second balance
 
 <!-- prawduct: scope=investments-v1 -->
