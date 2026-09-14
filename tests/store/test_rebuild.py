@@ -344,6 +344,7 @@ def apply_corpus(
                 body=json.dumps(payload).encode(),
                 received_at=received_at,
                 derivers=derivers,
+                replay_passes=(),
             )
     return connection_id
 

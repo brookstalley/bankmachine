@@ -142,6 +142,7 @@ def _observe(
             body=_accounts_body(source_ids, balance=balance),
             received_at=at,
             derivers=ALL_DERIVERS,
+            replay_passes=(),
         )
 
 
@@ -227,6 +228,7 @@ def _post_transactions(
             body=_sync_body(source_id, days),
             received_at=at,
             derivers=ALL_DERIVERS,
+            replay_passes=(),
         )
 
 

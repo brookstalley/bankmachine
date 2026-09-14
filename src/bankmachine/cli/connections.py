@@ -536,6 +536,7 @@ def _archive_item(
             body=fetched.body,
             received_at=fetched.received_at,
             derivers=ALL_DERIVERS,
+            replay_passes=(),
             request_context=fetched.request_context,
         )
 

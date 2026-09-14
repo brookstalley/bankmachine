@@ -35,6 +35,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import insert, select
 
+from bankmachine.cli.sync_run import _WindowConcludedBySync
 from bankmachine.config import DEFAULT_CONNECTION_CAP, MAX_HISTORY_DAYS, Config
 from bankmachine.connector import (
     ACCOUNTS_GET,
@@ -50,14 +51,12 @@ from bankmachine.connector.plaid.window import (
 from bankmachine.derivers import ALL_DERIVERS, all_replay_passes
 from bankmachine.secrets import delete_datastore_key, generate_datastore_key, set_datastore_key
 from bankmachine.store import derivation
-from bankmachine.store.derivation import apply_response
+from bankmachine.store.derivation import ReplayPass, apply_response
 from bankmachine.store.engine import reader_connection, transaction, writer_connection
-from bankmachine.store.investments import record_investment_transaction_window
 from bankmachine.store.migrations import migrate
 from bankmachine.store.raw import load_response
 from bankmachine.store.rebuild import content_digest, rebuild
 from bankmachine.store.schema import (
-    INVESTMENTS_DOMAIN,
     accounts,
     connections,
     derivation_versions,
@@ -69,7 +68,6 @@ from bankmachine.store.schema import (
     refused_holdings,
     securities,
 )
-from bankmachine.store.sync_domains import record_domain_history_start
 from bankmachine.store.types import UtcInstant, calendar_date, utc_instant
 
 FIXTURES = Path(__file__).parents[1] / "connector" / "fixtures"
@@ -230,6 +228,7 @@ def _archive(
     *,
     at: UtcInstant,
     request_context: str | None = None,
+    replay_passes: Sequence[ReplayPass] = (),
 ) -> int:
     with writer_connection(config) as conn:
         response = apply_response(
@@ -239,6 +238,7 @@ def _archive(
             body=body,
             received_at=at,
             derivers=ALL_DERIVERS,
+            replay_passes=replay_passes,
             request_context=request_context,
         )
     return response.raw_response_id
@@ -250,52 +250,41 @@ def sync_a_window(
     *,
     total: int | None,
     at: UtcInstant,
+    stop_after_pages: int | None = None,
 ) -> None:
-    """Archive one window's pages and reconcile it, exactly as `sync run` does.
+    """Archive one window's pages through the pass `sync run` concludes windows with.
 
     🔴 **The `request_context` is built by the production formatter**, because
     the reply does not echo the window back (§26) and that string is the only
     thing a rebuild can reassemble a window from. A fixture that spelled it out
     here would keep passing after the formatter changed, and the replay it is
     meant to exercise would silently stop finding any window at all.
+
+    🔴 **The sync's own pass, not a reconciliation called beside it.** The window
+    is concluded inside the closing page's derivation transaction, which is the
+    property under test; a helper that concluded it separately would reproduce
+    the gap an interrupted run used to leave.
+
+    `stop_after_pages` stands for a run interrupted after that many pages landed:
+    whatever those pages established is in the store, and nothing after them is.
     """
-    page_ids: list[int] = []
+    concluding = _WindowConcludedBySync()
     rows_seen = 0
-    for page in pages:
-        page_ids.append(
-            _archive(
-                config,
-                INVESTMENTS_TRANSACTIONS_GET.path,
-                _transactions_body(page, total=total),
-                at=at,
-                request_context=investment_window_context(
-                    start_date=WINDOW_START,
-                    end_date=WINDOW_END,
-                    offset=rows_seen,
-                    count=INVESTMENT_TRANSACTIONS_PAGE_SIZE,
-                ),
-            )
+    for page in list(pages)[:stop_after_pages]:
+        _archive(
+            config,
+            INVESTMENTS_TRANSACTIONS_GET.path,
+            _transactions_body(page, total=total),
+            at=at,
+            request_context=investment_window_context(
+                start_date=WINDOW_START,
+                end_date=WINDOW_END,
+                offset=rows_seen,
+                count=INVESTMENT_TRANSACTIONS_PAGE_SIZE,
+            ),
+            replay_passes=(concluding,),
         )
         rows_seen += len(page)
-    with writer_connection(config) as conn, transaction(conn):
-        outcome = record_investment_transaction_window(
-            conn,
-            connection_id=CONNECTION_ID,
-            window_start=calendar_date(WINDOW_START),
-            window_end=calendar_date(WINDOW_END),
-            page_response_ids=page_ids,
-            rows_seen=rows_seen,
-            stated_total=total,
-            at=at,
-        )
-        if outcome.history_start_date is not None:
-            record_domain_history_start(
-                conn,
-                connection_id=CONNECTION_ID,
-                domain=INVESTMENTS_DOMAIN,
-                start=outcome.history_start_date,
-                at=at,
-            )
 
 
 def stored(config: Config, table: Any) -> list[dict[str, Any]]:
@@ -722,6 +711,51 @@ def test_a_rebuild_is_lossless_for_any_sequence_of_windows(
             entries = [_txn(name, day=int(name.rsplit("-", 1)[1])) for name in sorted(returned)]
             pages = _split(entries, pages_per_window)
             sync_a_window(config, pages, total=len(entries), at=instant(index))
+        before = digest_of(config)
+        rows_before = stored(config, investment_transactions)
+
+        report = rebuild(config, derivers=ALL_DERIVERS, replay_passes=all_replay_passes)
+
+        assert not report.content_changed
+        assert digest_of(config) == before
+        assert stored(config, investment_transactions) == rows_before
+
+
+@given(
+    windows=_windows(),
+    pages_per_window=st.integers(min_value=1, max_value=2),
+    interrupted_window=st.integers(min_value=0, max_value=3),
+    pages_landed=st.integers(min_value=0, max_value=2),
+)
+@settings(
+    max_examples=25, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
+def test_a_rebuild_is_lossless_whichever_page_a_run_was_interrupted_after(
+    tmp_path_factory: pytest.TempPathFactory,
+    windows: list[list[str]],
+    pages_per_window: int,
+    interrupted_window: int,
+    pages_landed: int,
+) -> None:
+    """🔴 A run can stop after any page, and the archive still reproduces the store.
+
+    A backup takes the writer lock, or the process is killed, and the next run
+    starts the window again. The interrupted run's window is in the store exactly
+    as far as it got: concluded with the page that closed it if that page landed,
+    and concluding nothing if it did not. The rebuild has to reach the same store
+    from the same pages, including the window that never closed.
+    """
+    with temporary_store(tmp_path_factory.mktemp("rebuild-interrupted")) as config:
+        _seed(config)
+        for index, returned in enumerate(windows):
+            entries = [_txn(name, day=int(name.rsplit("-", 1)[1])) for name in sorted(returned)]
+            sync_a_window(
+                config,
+                _split(entries, pages_per_window),
+                total=len(entries),
+                at=instant(index + 1),
+                stop_after_pages=pages_landed if index == interrupted_window else None,
+            )
         before = digest_of(config)
         rows_before = stored(config, investment_transactions)
 

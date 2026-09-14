@@ -86,6 +86,7 @@ def test_a_response_is_committed_before_anything_derives_from_it(writer: SAConne
         body=BODY,
         received_at=RECEIVED,
         derivers={ENDPOINT: _observe},
+        replay_passes=(),
     )
 
     assert seen == [1]
@@ -105,6 +106,7 @@ def test_a_deriver_that_fails_keeps_the_archive_and_leaves_no_half_derived_rows(
             body=BODY,
             received_at=RECEIVED,
             derivers={ENDPOINT: _record_then_fail},
+            replay_passes=(),
         )
 
     assert _count(writer, raw_responses) == 1
@@ -120,6 +122,7 @@ def test_a_response_no_deriver_understands_is_kept_and_named(writer: SAConnectio
             body=BODY,
             received_at=RECEIVED,
             derivers={ENDPOINT: _record_one_institution},
+            replay_passes=(),
         )
 
     assert "/test/unheard-of" in str(caught.value)
@@ -212,6 +215,7 @@ def test_received_at_is_the_derivation_clock(writer: SAConnection) -> None:
         body=BODY,
         received_at=RECEIVED,
         derivers={ENDPOINT: _stamp},
+        replay_passes=(),
     )
 
     assert captured == [RECEIVED]
@@ -264,6 +268,7 @@ def test_a_derivation_that_fails_names_the_archived_row_in_the_log(
             body=BODY,
             received_at=RECEIVED,
             derivers={ENDPOINT: _refuse_the_response},
+            replay_passes=(),
         )
 
     stored = writer.execute(select(raw_responses.c.raw_response_id)).scalar_one()
@@ -303,6 +308,7 @@ def test_the_same_page_failing_twice_names_both_archived_rows(
                 body=BODY,
                 received_at=RECEIVED,
                 derivers={ENDPOINT: _refuse_the_response},
+                replay_passes=(),
             )
 
     archived = [int(row[0]) for row in writer.execute(select(raw_responses.c.raw_response_id))]
@@ -311,3 +317,79 @@ def test_the_same_page_failing_twice_names_both_archived_rows(
         assert any(f"raw response {raw_response_id}" in m for m in _warnings(caplog)), (
             f"the attempt that archived raw response {raw_response_id} left no way to find it"
         )
+
+
+# --------------------------------------------------------------------------
+# Replay passes ride the derivation's transaction
+# --------------------------------------------------------------------------
+
+
+class _SeesTheDerivedRows:
+    """A pass recording what the derivation transaction holds when shown a response."""
+
+    def __init__(self) -> None:
+        self.seen: list[tuple[int, int]] = []
+
+    def observe(self, conn: SAConnection, response: RawResponse) -> None:
+        self.seen.append((response.raw_response_id, _count(conn, institutions)))
+
+
+class _ConcludesThenFails:
+    """A pass that writes its conclusion and then fails partway through."""
+
+    def observe(self, conn: SAConnection, response: RawResponse) -> None:
+        conn.execute(
+            insert(institutions).values(
+                source_institution_id="src-inst-concluded",
+                name="A Conclusion",
+                first_seen_at=response.received_at,
+                last_seen_at=response.received_at,
+            )
+        )
+        raise DeriverFailedError("the conclusion failed")
+
+
+def test_a_replay_pass_is_shown_each_response_after_its_rows_are_derived(
+    writer: SAConnection,
+) -> None:
+    """The point `store.rebuild` observes each response at, reached on the live path.
+
+    A conclusion drawn from a sequence of responses is evidence about the rows
+    that existed when the sequence closed, so the pass has to see the closing
+    response's own rows -- which is where the rebuild shows it them.
+    """
+    seeing = _SeesTheDerivedRows()
+
+    response = apply_response(
+        writer,
+        connection_id=None,
+        endpoint=ENDPOINT,
+        body=BODY,
+        received_at=RECEIVED,
+        derivers={ENDPOINT: _record_one_institution},
+        replay_passes=(seeing,),
+    )
+
+    assert seeing.seen == [(response.raw_response_id, 1)]
+
+
+def test_a_replay_pass_commits_with_the_derivation_or_not_at_all(writer: SAConnection) -> None:
+    """🔴 One transaction for a response's rows and what it completes.
+
+    That is what stops a writer acquisition -- a `store backup` taking the lock --
+    or a crash from landing between a page and the conclusion it establishes. A
+    conclusion that fails takes the page's rows with it, and the archive stays.
+    """
+    with pytest.raises(DeriverFailedError):
+        apply_response(
+            writer,
+            connection_id=None,
+            endpoint=ENDPOINT,
+            body=BODY,
+            received_at=RECEIVED,
+            derivers={ENDPOINT: _record_one_institution},
+            replay_passes=(_ConcludesThenFails(),),
+        )
+
+    assert _count(writer, raw_responses) == 1
+    assert _count(writer, institutions) == 0

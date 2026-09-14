@@ -126,14 +126,17 @@ class RebuildNotReproducibleError(StoreError):
     Rolled back rather than committed. Three causes reach this, and the third is
     the one that looks like neither: a deriver is not a pure function of its
     response (a clock call is the usual one); the archive no longer holds every
-    response the rows were built from; or an investments run archived a complete
-    window and stopped before concluding the removals from it, so the replay
-    retires rows at the closing page's instant while the live store retired them
-    at a later run's -- or not at all. All three are conditions to investigate
-    before the old rows are gone, and the third is not fixed by accepting the
-    change: accepting it writes the replay's instant over the store's, which is
-    the reproducible answer, but it also accepts whatever else moved in the same
-    digest.
+    response the rows were built from; or the archive holds a response the live
+    store never derived, so the replay writes rows -- or concludes an investments
+    window's removals at its closing page's instant -- that the store never did.
+    That last one needs a response whose archive commit landed and whose
+    derivation commit did not. A window's removals commit with its closing page,
+    so they can no longer be lost on their own, but a store an older build wrote
+    concluded them in a transaction of their own and may hold a window it never
+    concluded. All three are conditions to investigate before the old rows are
+    gone, and the third is not fixed by accepting the change: accepting it writes
+    the replay's conclusion over the store's, which is the reproducible answer,
+    but it also accepts whatever else moved in the same digest.
     """
 
 
