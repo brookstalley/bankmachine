@@ -25,8 +25,15 @@ from bankmachine.secrets import (
 )
 from bankmachine.store import connection
 from bankmachine.store.backup import BackupReport, back_up
+from bankmachine.store.derivation import DERIVATION_VERSION
+from bankmachine.store.engine import reader_connection
 from bankmachine.store.migrations import migrate
-from bankmachine.store.rebuild import RebuildReport, rebuild
+from bankmachine.store.rebuild import (
+    RebuildReport,
+    derivation_versions_present,
+    derived_tables,
+    rebuild,
+)
 
 logger = get_logger("cli.store")
 
@@ -286,6 +293,8 @@ def _obtain_key(config: Config, *, datastore_existed: bool) -> bool:
 def cmd_status(config: Config, _args: argparse.Namespace) -> int:
     status = connection.inspect(config)
     _print_status(status)
+    if status.healthy:
+        _print_derivation(config)
     # The standing reminder, on the command an operator runs when something
     # looks wrong. One line rather than `store init`'s block: a block repeated
     # on every run is a block nobody reads, and the block belongs to the moment
@@ -296,6 +305,30 @@ def cmd_status(config: Config, _args: argparse.Namespace) -> int:
         f"reads it out; `bankmachine store key verify` checks the copy you stored"
     )
     return 0 if status.healthy else 1
+
+
+def _print_derivation(config: Config) -> None:
+    """Which derivation versions the stored rows came from, beside this build's (AC-5.4).
+
+    Only on a healthy store, because the question reads every derived table and a
+    store this build cannot serve has already been given its own remedy above.
+    The exit code does not move: a store awaiting a rebuild is a healthy file,
+    and the line itself names what to run.
+    """
+    with reader_connection(config) as conn:
+        present = derivation_versions_present(conn, derived_tables())
+    listed = ", ".join(str(v) for v in present) if present else "none derived yet"
+    print(f"derivation:      {listed} (this build derives {DERIVATION_VERSION})")
+    if any(v < DERIVATION_VERSION for v in present):
+        print(
+            "                 rows from an older version are served as that logic produced "
+            "them -- run `bankmachine store rebuild`"
+        )
+    if any(v > DERIVATION_VERSION for v in present):
+        print(
+            "                 rows from a NEWER version: this build is older than the one that "
+            "derived them -- upgrade it, and do not rebuild with it"
+        )
 
 
 def _print_status(status: connection.DatastoreStatus) -> None:

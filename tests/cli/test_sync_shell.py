@@ -23,6 +23,7 @@ from bankmachine.cli.sync import run_shell
 from bankmachine.config import Config
 from bankmachine.store import connection
 from bankmachine.store.connection import writer
+from bankmachine.store.schema import metadata, public_identifier_columns
 from conftest import use_cli_env
 
 #: Long enough that a wedged shell fails the test instead of hanging the suite.
@@ -383,6 +384,114 @@ def test_a_bare_digit_run_is_still_masked_however_it_is_labelled(
     assert "****5678" in out
     assert "999999999999" not in out
     assert "****9999" in out
+
+
+#: Published CUSIPs, two of them all digits -- the shape the account-number rule
+#: catches -- and two carrying a letter, which the rule never reached.
+_PUBLISHED_CUSIPS: Final = ("037833100", "594918104", "38259P508", "88160R101")
+
+
+@pytest.mark.parametrize("cusip", _PUBLISHED_CUSIPS)
+def test_a_published_cusip_passes_its_check_digit(cusip: str) -> None:
+    assert sync.is_cusip(cusip)
+
+
+@pytest.mark.parametrize(
+    "corrupted",
+    sorted(
+        {
+            "037833100"[:position] + digit + "037833100"[position + 1 :]
+            for position in range(9)
+            for digit in "0123456789"
+        }
+        - {"037833100"}
+    ),
+)
+def test_every_single_digit_corruption_of_a_cusip_fails_its_check_digit(corrupted: str) -> None:
+    """The check digit is the half of the exemption that a column alias cannot forge.
+
+    Every one-character change to a real CUSIP has to fail, or a mistyped or
+    unrelated nine-digit run in a `cusip` column would read as an identifier.
+    """
+    assert not sync.is_cusip(corrupted)
+
+
+@pytest.mark.parametrize("value", ["03783310", "0378331000", "037833 00", "38259p508", ""])
+def test_a_value_that_is_not_nine_cusip_characters_is_not_a_cusip(value: str) -> None:
+    assert not sync.is_cusip(value)
+
+
+def test_a_cusip_in_a_cusip_column_reads_whole(initialized_config: Config) -> None:
+    """A CUSIP is a public identifier, and an all-digit one is the common case.
+
+    Masked, `037833100` read `****3100`, which names no security. The value is
+    printed by every brokerage statement and every market data feed, so there is
+    nothing for AC-10.3 to protect in it.
+    """
+    with writer(initialized_config) as w:
+        w.execute("CREATE TABLE probe (cusip TEXT)")
+        w.executemany("INSERT INTO probe VALUES (?)", [(c,) for c in _PUBLISHED_CUSIPS])
+
+    out = _run(initialized_config, ["SELECT cusip FROM probe;"])
+
+    assert "****" not in out
+    for cusip in _PUBLISHED_CUSIPS:
+        assert cusip in out
+
+
+def test_a_nine_digit_run_failing_the_check_digit_is_masked_even_in_a_cusip_column(
+    initialized_config: Config,
+) -> None:
+    """The column name alone spares nothing: an alias can put any value under it."""
+    with writer(initialized_config) as w:
+        w.execute("CREATE TABLE probe (cusip TEXT)")
+        w.execute("INSERT INTO probe VALUES (?)", ("037833101",))
+
+    out = _run(initialized_config, ["SELECT cusip FROM probe;"])
+
+    assert "037833101" not in out
+    assert "****3101" in out
+
+
+def test_a_valid_cusip_outside_a_cusip_column_is_masked(initialized_config: Config) -> None:
+    """The check digit alone spares nothing: about one random nine-digit number in ten passes it."""
+    with writer(initialized_config) as w:
+        w.execute("CREATE TABLE probe (number TEXT)")
+        w.execute("INSERT INTO probe VALUES (?)", ("037833100",))
+
+    out = _run(initialized_config, ["SELECT number FROM probe;"])
+
+    assert "037833100" not in out
+    assert "****3100" in out
+
+
+def test_an_account_number_aliased_as_cusip_is_still_masked(initialized_config: Config) -> None:
+    with writer(initialized_config) as w:
+        w.execute("CREATE TABLE probe (number TEXT)")
+        w.execute("INSERT INTO probe VALUES (?)", ("999999999999",))
+
+    out = _run(initialized_config, ["SELECT number AS cusip FROM probe;"])
+
+    assert "999999999999" not in out
+    assert "****9999" in out
+
+
+def test_every_flagged_public_identifier_is_a_real_column_with_a_shape_the_shell_checks() -> None:
+    """The flag and the validator are two halves, and neither may exist alone.
+
+    A column flagged with no validator would never be spared, which fails safe
+    but silently; a validator nothing flags is dead. Asserting the set is
+    non-empty first keeps the loop below from agreeing with nothing.
+    """
+    flagged = public_identifier_columns()
+
+    assert flagged, "no column is flagged as a public identifier, so this guard checks nothing"
+    columns = {column.name for table in metadata.tables.values() for column in table.columns}
+    for name, shape in flagged.items():
+        assert name in columns, f"{name} is flagged but is no column in the schema"
+        assert shape in sync.PUBLIC_IDENTIFIER_SHAPES, (
+            f"{name} is flagged as a {shape!r}, which the shell has no check for"
+        )
 
 
 def test_an_error_message_quoting_a_token_is_redacted_too(initialized_config: Config) -> None:

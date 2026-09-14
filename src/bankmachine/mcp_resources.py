@@ -172,6 +172,28 @@ _GUIDANCE: dict[str, _Guidance] = {
             "row, which is healthy. Report which one you mean rather than reporting the zero."
         ),
     ),
+    "derivation_version_mismatch": _Guidance(
+        means=(
+            "some derived rows in the store were produced by a derivation version other than "
+            "the one this server ships; `detail` names the versions and whether they are older "
+            "or newer than this build's"
+        ),
+        for_this_answer=(
+            "🔴 the rows are real and the figures add up, but some were produced by different "
+            "logic than this build runs -- a category renamed, a sign corrected, a column that "
+            "is now populated -- so a figure over them can differ from the one this build would "
+            "compute from the same archive, and nothing in any single row says which rows those are"
+        ),
+        act=(
+            "say that the store has not been re-derived since the logic changed when you report "
+            "a figure, and do not explain a difference against an earlier period by the "
+            "operator's behaviour until it has. When `detail` says the rows are OLDER, the "
+            "remedy is `bankmachine store rebuild`, which the operator runs. When it says they "
+            "are NEWER, this server is older than the build that wrote them: the remedy is to "
+            "upgrade and relaunch the server, and never to rebuild with it. "
+            "`coverage.derivation` on `get_pipeline_health` carries the same fact structured."
+        ),
+    ),
     "rule-applied": _Guidance(
         means=(
             "rows were deliberately excluded from an aggregate, so the total excludes them. "

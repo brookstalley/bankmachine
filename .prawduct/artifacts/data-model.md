@@ -242,6 +242,21 @@ did not derive anything with would be a claim about code that has not run.
 
 Every normalized row in the silver layer carries `derivation_version_id NOT NULL`.
 
+🔴 **The stamp is READ, not only written (AC-5.4).** A version can move without a migration, and the
+rows already stored keep what the older logic produced until `store rebuild` replays the archive.
+So every MCP answer, `get_pipeline_health` and `store status` ask which versions the derived rows
+carry, and say so when any is not this build's. The question covers every table carrying the
+column, not only those a rebuild empties. `securities` is upserted by the replay rather than
+emptied, and it is re-stamped only when a capture is at least as new as the one that last wrote it.
+🔴 A rebuild therefore counts the dimension tables' versions when it judges whether its content
+change was expected. Counted from the emptied tables alone, a store whose only older rows were
+securities read as unchanged, and the rebuild refused the remedy the warning names.
+
+**Migration 012 indexes `derivation_version_id` on every derived table** (`<table>_by_derivation_version`),
+because that question rides every answer. It is asked as "does any row carry version *v*" for each
+recorded version, which is an index seek per table rather than a scan. A derived table added later
+without such an index fails `tests/store/test_schema.py`.
+
 ### The roster, as data
 
 #### `institutions` — an institution as a value, not a code path

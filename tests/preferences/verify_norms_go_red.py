@@ -320,7 +320,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-10.3: the shell redacts a token on its way to the operator's terminal",
         SHELL,
-        "        return value if _EXACT_DECIMAL.fullmatch(value) else redact(value)",
+        "        return redact(value)",
         "        return value",
         f"{SHELL_TESTS}::test_output_redacts_tokens_and_account_numbers_but_keeps_masks",
     ),

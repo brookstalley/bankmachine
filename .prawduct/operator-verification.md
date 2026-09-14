@@ -1391,3 +1391,148 @@ first — confirm by `build.commit` in any answer.
 **Drain with:** `prawduct-hook verify-operator-verification VRF-027`
 
 **Accepted:** 2026-09-14 — rationale: Accepted to open the transaction-filters PR. VRF-025 and VRF-026 cannot run before the production cutover (the sandbox holds no pending row and one enrolled institution) and are raised again on the next branch on the same term. VRF-027 is accepted to open the PR and remains owed as the reading test for search: raise it again on the next branch unless it has been run in a real client against the sandbox by then.
+
+🔴 **VRF-028 and VRF-029 re-raise VRF-025 and VRF-026 on the investments-followups branch, on the
+term they were accepted under — the eighth raising of each.** Checked again on 2026-09-14 before
+re-raising, not assumed: the production MCP server (relaunched on `216c756`) answers `partial` with
+"the production datastore is not readable (datastore missing)", with 0 connections. The cutover has
+still not happened, so neither check can run. VRF-027 was run against the sandbox on this branch, so
+per its acceptance it is carried by VRF-030 rather than re-raised as owed.
+
+## VRF-028 — one real pending transaction watched across settlement
+
+**Status:** accepted
+
+**Chunk:** production-data semantics (#22) · **Raised:** 2026-09-14
+
+**Why a human:** unchanged from **VRF-005**, which carries the full procedure and is the entry to
+follow. Re-raised from VRF-025, which was accepted to open the transaction-filters PR on the term
+that it be raised again on the next branch. This branch changes no pending-hold handling. The
+production datastore does not exist yet, and the sandbox has never held a pending row. The
+obligation is **#22**, and it blocks production.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-028`
+
+**Accepted:** 2026-09-14 — rationale: Accepted to open the investments-followups PR. VRF-028 (a real pending transaction across settlement) and VRF-029 (the sign convention at two institutions) both need production data. The production datastore still does not exist (checked 2026-09-14: the production MCP server reports the datastore missing, 0 connections), so neither can run. This branch changes no pending-hold or sign handling. Accepted on the term that both are raised again on the next branch; the obligations stay #22 and #23, and both block production.
+
+## VRF-029 — the sign convention on a real inflow, across two institutions
+
+**Status:** accepted
+
+**Chunk:** production-data semantics (#23) · **Raised:** 2026-09-14
+
+**Why a human:** unchanged from **VRF-006**, which carries the full procedure and is the entry to
+follow. Re-raised from VRF-026 on the same term as VRF-028. One feed obeying the sign convention is
+not evidence about another, so this needs a second real institution enrolled and a real inflow; the
+sandbox is one connection (its `sign_convention` reads `consistent`, 0 of 441 judged rows positive,
+which says nothing about a second feed). The obligation is **#23**, and it blocks production.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-029`
+
+**Accepted:** 2026-09-14 — rationale: Accepted to open the investments-followups PR. VRF-028 (a real pending transaction across settlement) and VRF-029 (the sign convention at two institutions) both need production data. The production datastore still does not exist (checked 2026-09-14: the production MCP server reports the datastore missing, 0 connections), so neither can run. This branch changes no pending-hold or sign handling. Accepted on the term that both are raised again on the next branch; the obligations stay #22 and #23, and both block production.
+
+## VRF-030 — a search answer read by a model in a real client
+
+**Status:** verified
+
+**Chunk:** transaction filters, Chunk 02 (re-raised from VRF-027) · **Raised:** 2026-09-14
+
+**Why a human:** unchanged from **VRF-027**, which carries the procedure. VRF-027 was accepted to
+open the transaction-filters PR on the term that it be raised again unless it had been run in a real
+client against the sandbox. It was run on this branch, so this entry carries that run.
+
+**Where verified:** the real sandbox store, backed up at schema 11, migrated to schema 12 by
+`store init` and rebuilt (106 raw responses replayed, 2020 rows, `content: identical to what it
+replaced`). The sandbox MCP server was relaunched on `216c756`, `dirty: false`, and every answer
+confirmed that build.
+
+**Recorded session** (2026-09-14). The reader was a fresh Claude Code agent that had not seen this
+entry or VRF-027. It had only the `bankmachine-sandbox` tools, was barred from the repo, and was
+not told that `search` exists. It was asked: "Did I ever get a refund from United Airlines?", "Have
+I been getting any interest on my savings? How much over the last year?" and "After refunds, what
+did travel actually cost me over the last year?". The sandbox holds United Airlines as a +$500
+monthly credit to checking and a −$500 monthly charge to the card, and holds savings interest only
+as `INTRST PYMNT` (+$4.22 a month), which a literal search for "interest" does not match.
+
+**Step 1 — observed.** The reader's first call was `query_transactions` with `search: "united"`,
+not a hand-paged window. It reported 25 credits of $500 ($12,500) to checking and 24 charges of $500
+($12,000) to the card since coverage began on 2024-09-16. Both counts check against the store. It
+said the bank does not call the credits refunds and that it was reading them as refunds from their
+labels, and it flagged unprompted that refunds landing in checking on a monthly schedule are
+unusual.
+
+**Step 2 — observed.** `search: "interest"` returned 0 rows with `search_is_literal`. The reader did
+not conclude there was no interest. It read the savings account's rows and the `TRANSFER_IN`
+category, found `INTRST PYMNT`, and reported 12 payments of $4.22, $50.64, from 2025-09-15, which
+checks against the store. It told the operator in plain words: "A search for the word 'interest'
+finds nothing because the bank abbreviates it." For the money market and CD accounts it said that
+finding no interest payment "doesn't prove they earned nothing". It went past the step's bar,
+which asks only for an offer of a wider search or a read of the rows: it did the read itself.
+
+**Step 3 — observed, condition not triggered.** The reader did not build the travel figure from
+searched rows. It used `category: "TRAVEL"` over 2025-09-15..2026-09-14 and reported $6,000 of
+charges against $6,000 of credits, net $0, with the counts shown. That checks against the store.
+It said the answer depends on treating the credits as refunds ("your travel spending for the year
+was $6,000" otherwise), and named the 2025-09-14 credit and the 2025-09-01 charge that fall just
+before its window. Because the figure came from a complete category filter, this run cannot show
+whether a model would present a total over *searched* rows as the whole amount.
+
+**Noted, outside the steps.** The reader could not read `bankmachine://reference/*`, because the
+resource tool was not loaded in its session. Every judgement above came from the tool descriptions
+and the warnings alone.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-030`
+
+**Verified:** 2026-09-14
+
+## VRF-031 — a total built from searched rows, read by a model in a real client
+
+**Status:** verified
+
+**Chunk:** transaction filters, Chunk 02 (VRF-027 step 3) · **Raised:** 2026-09-14
+
+**Why a human:** VRF-030 ran VRF-027 and passed steps 1 and 2. Its step 3 was not triggered, because
+the reader built its travel figure from a category that isolates those rows completely. That left
+VRF-027's third question unobserved: whether a model presents a total over *searched* rows as the
+whole amount. This entry asks questions where no category isolates the rows, so search is the only
+way to gather them.
+
+**Where verified:** the same sandbox store and server as VRF-030 (schema 12, `216c756`,
+`dirty: false`). Ground truth, taken before the reader's answer was read, over
+2025-09-14..2026-09-14. `search: "uber"` matches 25 rows, 13 × $5.40 and 12 × $6.33, $146.16. They
+share TRANSPORTATION with 12 × $500 at Madison Bicycle Shop, so a category total overstates rides by
+$6,000. `search: "lyft"` matches 0. `search: "coffee"` matches 0. The coffee is 12 × $4.33 Starbucks,
+$51.96, and it shares FOOD_AND_DRINK with KFC and McDonald's. The store holds no other cafe-like
+description.
+
+**Recorded session** (2026-09-14). A second fresh Claude Code agent was used; it had not seen this
+entry, VRF-027 or VRF-030. It had only the `bankmachine-sandbox` tools, was barred from the repo, and
+was not told that `search` exists. It was asked: "How much did I spend on Uber and Lyft rides over
+the last year?" and "What did my coffee habit cost me over the last year?".
+
+**Step 3 — observed, and passed.** The reader built both figures from searched rows and qualified
+both.
+- **Rides.** `search` "uber" and "lyft". It answered $146.16, all Uber, and described the rows: 25
+  rides alternating $5.40 and $6.33, all from checking, none pending. It did not treat the empty Lyft
+  search as proof. "To catch charges under a shortened name", it read the whole TRANSPORTATION
+  category and reported that it holds only the Uber rows and the bicycle shop. It told the operator
+  to "treat $146.16 as a floor". 🔴 The floor was justified by the accounts with no recorded
+  transactions (`accounts_without_coverage`), not by search being literal. The literal-search risk
+  was dealt with by reading the category, not stated as a limit on the figure.
+- **Coffee.** `search` "coffee" (0 rows), then "starbucks". It answered "The coffee I can clearly
+  identify cost you $51.96: 12 Starbucks visits at $4.33 each". It said the coffee search found
+  nothing and that no other cafe appears. It declined to count McDonald's because the rows "can't
+  show what you ordered". It checked the Starbucks and Uber totals against a
+  `money_summary(group_by=merchant)` rollup (14616 and 5196), and both agree with the store.
+
+Every figure in both replies (including McDonald's $144 and KFC $6,000) checks against the store.
+Neither reply presents a searched total as the whole amount without a qualifier.
+
+**Noted, outside the step.** Like VRF-030's reader, this one could not read `bankmachine://reference/*`.
+A subagent's ToolSearch finds no resource tool even when told to load it, so a reader subagent
+judges from tool descriptions and warnings alone. A reading test that must exercise the reference
+resources needs a top-level client session, not a subagent.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-031`
+
+**Verified:** 2026-09-14

@@ -268,6 +268,16 @@ this migration and simply was not written down.
 > captures it derives, so every capture already archived stays unnamed on `list_holdings` until the
 > rebuild runs.
 
+🔴 **A derivation-version bump needs the same rebuild, with or without a migration, and it is now
+visible rather than remembered (AC-5.4).** `store status` prints a `derivation:` line listing every
+version a derived row carries beside the one this build derives. Every MCP answer carries
+`derivation_version_mismatch`, and `get_pipeline_health` carries `coverage.derivation`, until no
+older version remains. So step 5's check is also the rebuild's check: if the `derivation:` line
+lists more than this build's version, run `bankmachine store rebuild`, then run `store status`
+again and see the list collapse to one. A version *newer* than this build's means the reverse: this
+checkout is older than the one that derived the rows, so upgrade it. `store rebuild` refuses in
+that state, before deleting anything.
+
 The MCP server and the CLI must be upgraded *with* the datastore — an older reader
 refuses to serve, which is the norm working rather than a fault.
 

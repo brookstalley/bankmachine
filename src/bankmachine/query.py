@@ -25,7 +25,7 @@ write whatever SQL reaches it.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -58,8 +58,10 @@ from bankmachine.store.connection import (
     inspect,
     remedy_for,
 )
+from bankmachine.store.derivation import DERIVATION_VERSION
 from bankmachine.store.engine import reader_connection
 from bankmachine.store.lineage import SupersededSpan
+from bankmachine.store.rebuild import derivation_versions_present, derived_tables
 from bankmachine.store.schema import (
     PROVENANCE_SOURCES,
     TRANSACTIONS_DOMAIN,
@@ -171,7 +173,10 @@ class _ConnectionFreshness:
 
 
 def _pipeline_warnings(
-    conn: SAConnection, now: UtcInstant, window: Window | None = None
+    conn: SAConnection,
+    now: UtcInstant,
+    window: Window | None = None,
+    derivation_versions: tuple[int, ...] | None = None,
 ) -> list[Caveat]:
     """Everything wrong with the data underneath any answer.
 
@@ -334,7 +339,57 @@ def _pipeline_warnings(
                 )
             )
     warnings.extend(_domain_caveats(conn, now, freshness))
+    warnings.extend(
+        _derivation_caveats(
+            derivation_versions_present(conn, derived_tables())
+            if derivation_versions is None
+            else derivation_versions
+        )
+    )
     return warnings
+
+
+def _derivation_caveats(present: tuple[int, ...]) -> list[Caveat]:
+    """🔴 AC-5.4: rows derived by a version other than this build's, said on every answer.
+
+    A version can move without a migration, and until `store rebuild` replays the
+    archive the rows already stored hold what the older logic produced. Nothing
+    in a row says it would come out differently now, so without this an answer
+    over them reads as current.
+
+    Older and newer are separate caveats because their remedies are opposite:
+    rebuilding a store with a build OLDER than the one that derived it would
+    replace the newer rows with the older logic's.
+    """
+    older = [v for v in present if v < DERIVATION_VERSION]
+    newer = [v for v in present if v > DERIVATION_VERSION]
+    caveats: list[Caveat] = []
+    if older:
+        caveats.append(
+            Caveat(
+                kind="derivation_version_mismatch",
+                detail=(
+                    f"some derived rows were produced by derivation version(s) "
+                    f"{', '.join(map(str, older))}, older than this build's "
+                    f"{DERIVATION_VERSION}, so they may differ from what this build would derive "
+                    f"from the same archive. `bankmachine store rebuild` re-derives them"
+                ),
+            )
+        )
+    if newer:
+        caveats.append(
+            Caveat(
+                kind="derivation_version_mismatch",
+                detail=(
+                    f"some derived rows were produced by derivation version(s) "
+                    f"{', '.join(map(str, newer))}, newer than this server's "
+                    f"{DERIVATION_VERSION}, so this server is older than the build that derived "
+                    f"them and may misread them. Upgrade and relaunch the server; do not rebuild "
+                    f"with this build"
+                ),
+            )
+        )
+    return caveats
 
 
 def _domain_caveats(
@@ -1768,6 +1823,7 @@ def _answer(
     extra_caveats: list[Caveat] | None = None,
     lifecycle: dict[int, AccountLifecycle] | None = None,
     window_series: WindowSeries = "transactions",
+    derivation_versions: tuple[int, ...] | None = None,
 ) -> Answer:
     """One answer, and the one place a window is reconciled against coverage.
 
@@ -1841,7 +1897,7 @@ def _answer(
         # consumer reading top-down meets the standing state of the pipeline
         # before the thing that is specific to what they just asked.
         warnings=(
-            _pipeline_warnings(conn, now, window)
+            _pipeline_warnings(conn, now, window, derivation_versions)
             + ([] if window is None else window.caveats)
             + ([] if truncation is None else truncation.caveats)
             + (extra_caveats or [])
@@ -3901,11 +3957,18 @@ def pipeline_health(config: Config) -> Answer:
 
     Returns rows even when everything is fine, because "healthy" is an answer
     and an empty result would be indistinguishable from a broken query.
+
+    🔴 `coverage.derivation` (AC-5.4) is read ONCE and handed to the warnings as
+    well. The reader is autocommit, so a second read is a second observation, and
+    a rebuild committing between the two would let this answer list an older
+    version while its warnings said there was none.
     """
     problem = _readable(config)
     if problem is not None:
-        return _unusable(config, problem, requested_window=None, truncation=None)
+        unusable = _unusable(config, problem, requested_window=None, truncation=None)
+        return replace(unusable, coverage={**unusable.coverage, "derivation": _derivation(())})
     with reader_connection(config) as conn:
+        derivation_versions = derivation_versions_present(conn, derived_tables())
         result = conn.execute(
             select(
                 connections.c.connection_id,
@@ -3983,12 +4046,13 @@ def pipeline_health(config: Config) -> Answer:
             }
             for r in result
         ]
-        return _answer(
+        answer = _answer(
             config,
             conn,
             rows,
             requested_window=None,
             truncation=None,
+            derivation_versions=derivation_versions,
             # An inverted connection is reported here as well as on the
             # aggregates, because a health tool that showed the measurement in a
             # row and stayed silent in `warnings` would leave the one surface
@@ -4012,3 +4076,11 @@ def pipeline_health(config: Config) -> Answer:
                 + _roster_observed_empty_findings(rows, _connections_with_an_empty_roster(conn))
             ),
         )
+        return replace(
+            answer, coverage={**answer.coverage, "derivation": _derivation(derivation_versions)}
+        )
+
+
+def _derivation(present: tuple[int, ...]) -> dict[str, Any]:
+    """`coverage.derivation`: this build's version beside every version the rows carry."""
+    return {"current_version": DERIVATION_VERSION, "versions_in_store": list(present)}

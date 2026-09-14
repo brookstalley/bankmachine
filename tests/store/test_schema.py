@@ -37,6 +37,7 @@ from bankmachine.store.connection import (
 from bankmachine.store.engine import writer_engine
 from bankmachine.store.migrations import MIGRATIONS, Migration, migrate
 from bankmachine.store.migrations.core_schema import CORE_SCHEMA_DDL, CORE_SCHEMA_DDL_SHA256
+from bankmachine.store.rebuild import derived_tables
 from bankmachine.store.schema import (
     CORE_TABLES,
     LATER_TABLES,
@@ -372,6 +373,26 @@ def test_the_index_comparison_actually_reads_some_predicates(writer: SAConnectio
     predicates = {shape[3] for shape in _metadata_indexes() if shape[3] is not None}
     assert "retired_at is null" in predicates
     assert predicates == {shape[3] for shape in _database_indexes(writer) if shape[3] is not None}
+
+
+def test_every_derived_table_is_indexed_on_its_derivation_version(writer: SAConnection) -> None:
+    """🔴 AC-5.4's cost clause, held for tables that do not exist yet.
+
+    Every MCP answer asks whether any derived row carries a version other than
+    this build's, one seek per table. A derived table added without an index
+    leading with `derivation_version_id` turns that seek into a scan on every
+    answer, and nothing else would notice. Checked against the database as well
+    as the metadata, because the comparison above only proves the two agree.
+    """
+    tables = derived_tables()
+    assert tables, "no derived table was found, so this guard checks nothing"
+    leading = {(shape[1], shape[4][0]) for shape in _database_indexes(writer) if shape[4]} & {
+        (shape[1], shape[4][0]) for shape in _metadata_indexes() if shape[4]
+    }
+    missing = sorted(
+        table.name for table in tables if (table.name, "derivation_version_id") not in leading
+    )
+    assert not missing, f"no index leads with derivation_version_id on {missing}"
 
 
 def test_migrations_are_idempotent_when_re_run(initialized_config: Config) -> None:

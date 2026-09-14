@@ -291,6 +291,12 @@ describes the **pipeline**, so it rides every response equally:
 - `partial` — something is not yet known, such as a granted window that has not been measured, or
   one sync domain of a healthy connection that has never landed in full. 🔴 A null granted window
   means *not yet measured*, never *no shortfall*.
+- `derivation_version_mismatch` — some stored rows were derived by a different version of the
+  normalization logic than this server runs, so a figure over them may differ from the one this
+  build would compute from the same archive. `detail` says whether they are older (the operator runs
+  `bankmachine store rebuild`) or newer (this server is older than the build that wrote them, and
+  must be upgraded, never used to rebuild). `coverage.derivation` on `get_pipeline_health` lists the
+  versions.
 
 The second group describes **this request**, and fires only when the request actually crosses the
 boundary it names — so the *absence* of one is information too:

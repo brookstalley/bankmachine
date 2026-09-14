@@ -33,6 +33,7 @@ from bankmachine.connector import (
     TRANSACTIONS_SYNC,
 )
 from bankmachine.derivers import ALL_DERIVERS
+from bankmachine.store import derivation
 from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import writer_connection
 from bankmachine.store.schema import connections, institutions, investment_transactions
@@ -1134,6 +1135,24 @@ def test_a_degraded_connection_warns_on_every_answer(initialized_config: Config)
     wire = _call(initialized_config, "query_transactions")["structuredContent"]
 
     assert any(w["kind"] == "degraded" for w in wire["warnings"])
+
+
+def test_rows_derived_by_another_version_warn_on_every_answer(
+    initialized_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """🔴 AC-5.4 says EVERY answer, and the tools reach it by two paths.
+
+    `get_pipeline_health` hands the warnings a reading it has already taken; every
+    other tool leaves `_pipeline_warnings` to take its own. A test through the
+    health tool alone cannot see the second path break.
+    """
+    with monkeypatch.context() as previous_build:
+        previous_build.setattr(derivation, "DERIVATION_VERSION", derivation.DERIVATION_VERSION - 1)
+        _seed(initialized_config)
+
+    for name in _every_tool():
+        wire = _call(initialized_config, name)["structuredContent"]
+        assert any(w["kind"] == "derivation_version_mismatch" for w in wire["warnings"]), name
 
 
 def test_an_empty_datastore_says_so_rather_than_answering_zero(

@@ -567,6 +567,11 @@ def _sync_one(
             # list -- nothing here looks at which institution this is, and the
             # roster stays out of the code.
             #
+            # The call is billed. The first investment-transactions call starts
+            # a second monthly subscription on the Item, on top of the holdings
+            # one enrollment started. The owner accepted both with this gate
+            # left as it is (`api-notes-plaid.md` §25).
+            #
             # Before the page loop, not after it, because that loop returns early
             # while the aggregator is still materializing a transactions backfill
             # (`NOT_READY`, which can persist for minutes on a first sync). The

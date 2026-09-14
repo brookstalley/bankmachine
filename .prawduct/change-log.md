@@ -34,6 +34,88 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-14: Every answer says when its rows were derived by another version
+
+<!-- prawduct: scope=investments-followups -->
+
+**Why:** #116. `DERIVATION_VERSION` moved from 10 to 11 with no migration, and a store derived at 10
+kept serving what the older logic produced, with nothing on any answer to say so. Only a change-log
+line carried the remedy. The same holds for any future version move.
+
+**What changed (build-plan-investments-followups, Chunk 03):** AC-5.4 is new. Migration 012 indexes
+`derivation_version_id` on every derived table, so the check is one index seek per recorded version
+per table. `rebuild.derivation_versions_present` replaces the rebuild's private version query and
+serves both callers. The new pipeline-scoped kind `derivation_version_mismatch` rides every MCP
+answer while any derived row carries another version. Its detail separates older rows (run
+`store rebuild`) from newer ones (the server is older than the build that wrote them, so upgrade it
+and never rebuild with it). `get_pipeline_health` carries `coverage.derivation`, and `store status`
+prints a `derivation:` line; the warning and the field on one health answer share one read.
+
+**Found while verifying:** a rebuild judged "content change expected" only from the rows it deletes.
+`securities` is upserted and re-stamped rather than deleted, so a store whose only older rows were
+securities refused the rebuild the new warning names. The rebuild now counts the dimension tables'
+versions too. And from the review: a rebuild by a build older than any stored row now refuses before
+deleting anything, because it would re-stamp newer rows with older logic and silence the warning.
+
+**Documents moved with it:** the API contract's vocabulary table and coverage fields, the client
+guide's kind list, `data-model.md` § Provenance, and `operational-spec.md`'s upgrade note. The
+production guide's upgrade steps now make the rebuild unconditional, matching the operational spec's
+2026-09-10 amendment, which that guide had not picked up. `tests/store/test_upgrading_a_populated_store.py`
+re-points at 012 and keeps 011's fixture as `populated_before_the_refused_holdings`.
+
+**Run `bankmachine store init` after pulling this** (schema 12), then read `store status`'s
+`derivation:` line.
+
+## 2026-09-14: A CUSIP reads as itself in `sync shell`
+
+<!-- prawduct: scope=investments-followups -->
+
+**Why:** #112. The shell masks any run of eight or more digits as an account number, so an
+all-digit CUSIP such as `037833100` would read `****3100`. A CUSIP is a public identifier, printed
+on every brokerage statement.
+
+**What changed (build-plan-investments-followups, Chunk 02):** `schema.py` flags `securities.cusip`
+as a public identifier through `Column.info`, naming which identifier. The shell prints a cell
+unmasked only when its result column is flagged AND the value passes `sync.is_cusip`, the CUSIP
+check digit. Neither condition is enough alone: an alias can put any value under a flagged name,
+and about one random nine-digit number in ten passes the check digit. `boundary-patterns.md` gains
+this as the shell's fifth redaction boundary. ISIN is not flagged, because its letter prefix leaves
+no digit run for the rule to catch.
+
+**Verified:** against a scratch copy of the sandbox store through `bankmachine sync shell`. A valid
+CUSIP read whole in `cusip` and masked under `AS label`. A value failing the check digit, and a
+12-digit run aliased `AS cusip`, both read masked. Three mutations were each seen red: dropping the
+check digit, dropping the column condition, and removing the flag.
+
+**Carried with it:** the go-red harness case for the shell's token redaction anchored on the one
+`_render` line this change split, so the harness would have skipped it. It is re-anchored on
+`return redact(value)` and was seen red again with the redaction removed.
+
+## 2026-09-14: The investments bill is two subscriptions, and the artifacts now say so
+
+<!-- prawduct: scope=investments-followups -->
+
+**Why:** #106 asked whether the capability gate's union read would initialize and bill investments
+on Items that only *could* serve them. Enrollment already asks for `investments` optionally, so that
+reach is small. The cost the artifacts missed is a second subscription: the aggregator bills
+Investments Holdings and Investments Transactions separately, and the first
+`/investments/transactions/get` call, which every sync makes for every capable connection, starts
+the second one.
+
+**What changed (build-plan-investments-followups, Chunk 01):** the owner ruled to accept both
+subscriptions and keep the union gate. AC-3.2 records the ruling. `api-notes-plaid.md` §25 records
+the billing rules with their source. The production guide §1.2 names both subscriptions and when
+each starts. The readiness checklist marks #106 decided. The comments on
+`ENROLLMENT_OPTIONAL_PRODUCTS` and on the sync's investments gate stop implying one bill. No
+behaviour changed.
+
+**Not done, and said so:** #106's first acceptance box, the per-Item cost from the owner's contract,
+is not met. The aggregator publishes no investments rate, so both documents record it as unpriced.
+One open question was recorded rather than answered: what a sync does when investments is disabled
+in the dashboard. It cannot be probed before production and is under `api-notes-plaid.md` § Still
+to verify. A stale "not probed" entry for `/investments/transactions/get` there was struck; §26
+settled it on 2026-09-12.
+
 ## 2026-09-14: `query_transactions` filters by category, a signed amount range and a literal search
 
 <!-- prawduct: scope=transaction-filters -->

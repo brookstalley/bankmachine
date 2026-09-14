@@ -24,6 +24,7 @@ from bankmachine.store.connection import (
 )
 from bankmachine.store.migrations.account_last_seen import apply_account_last_seen
 from bankmachine.store.migrations.core_schema import apply_core_schema
+from bankmachine.store.migrations.derivation_indexes import apply_derivation_indexes
 from bankmachine.store.migrations.holdings_price_as_of import apply_holdings_price_as_of
 from bankmachine.store.migrations.item_consent import apply_item_consent
 from bankmachine.store.migrations.ledger_date import apply_ledger_date
@@ -115,6 +116,11 @@ MIGRATIONS: Sequence[Migration] = (
         version=11,
         name="record the positions a capture listed and this build could not denominate",
         apply=apply_refused_holdings,
+    ),
+    Migration(
+        version=12,
+        name="index every derived table on the derivation version its rows carry",
+        apply=apply_derivation_indexes,
     ),
 )
 

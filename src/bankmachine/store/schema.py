@@ -36,6 +36,32 @@ from bankmachine.store.types import CalendarDateColumn, MinorUnitsColumn, UtcIns
 
 metadata = MetaData()
 
+#: The `Column.info` key naming a column whose values are public identifiers,
+#: and which identifier. Read by `sync shell`, whose value rule blanks any run of
+#: eight or more digits as an account number. An all-digit CUSIP is exactly that
+#: shape, and it is printed on every brokerage statement, so masking it protects
+#: nothing and hides which security a row is.
+#:
+#: The value names the identifier rather than being `True`, because the shell
+#: spares a cell only when it also passes that identifier's own check. A flag
+#: with no check behind it would spare whatever an alias put under the name.
+PUBLIC_IDENTIFIER: Final = "public_identifier"
+
+
+def public_identifier_columns() -> dict[str, str]:
+    """Every column flagged as a public identifier, mapped to which identifier it holds.
+
+    Keyed by bare column name, because that is all a result set carries: the
+    driver does not say which table a result column came from.
+    """
+    return {
+        column.name: str(column.info[PUBLIC_IDENTIFIER])
+        for table in metadata.tables.values()
+        for column in table.columns
+        if PUBLIC_IDENTIFIER in column.info
+    }
+
+
 derivation_versions = Table(
     "derivation_versions",
     metadata,
@@ -364,7 +390,7 @@ securities = Table(
     Column("source_security_id", Text, nullable=True, unique=True),
     Column("name", Text, nullable=True),
     Column("ticker", Text, nullable=True),
-    Column("cusip", Text, nullable=True),
+    Column("cusip", Text, nullable=True, info={PUBLIC_IDENTIFIER: "cusip"}),
     Column("isin", Text, nullable=True),
     Column("security_type", Text, nullable=True),
     Column("currency", Text, nullable=True),
@@ -494,6 +520,22 @@ Index(
     investment_transactions.c.account_id,
     investment_transactions.c.trade_date,
 )
+
+#: 🔴 Migration 012: every derived table indexed on the derivation version its
+#: rows carry (AC-5.4). The question "does any row carry version v" rides every
+#: MCP answer, so it has to be a seek rather than a scan of `transactions`.
+#: Declared here independently of the migration's own list, so
+#: `tests/store/test_schema.py` can compare the two, and a later derived table
+#: without one fails the guard beside that comparison.
+for _derived in (
+    transactions,
+    balances_daily,
+    securities,
+    holdings,
+    refused_holdings,
+    investment_transactions,
+):
+    Index(f"{_derived.name}_by_derivation_version", _derived.c.derivation_version_id)
 
 #: The `sync_state.domain` a transaction cursor is keyed under. The column is
 #: keyed by domain because the domains advance on their own schedules and a
