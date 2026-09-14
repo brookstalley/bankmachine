@@ -1480,3 +1480,55 @@ and the warnings alone.
 **Drain with:** `prawduct-hook verify-operator-verification VRF-030`
 
 **Verified:** 2026-09-14
+
+## VRF-031 — a total built from searched rows, read by a model in a real client
+
+**Status:** verified
+
+**Chunk:** transaction filters, Chunk 02 (VRF-027 step 3) · **Raised:** 2026-09-14
+
+**Why a human:** VRF-030 ran VRF-027 and passed steps 1 and 2. Its step 3 was not triggered, because
+the reader built its travel figure from a category that isolates those rows completely. That left
+VRF-027's third question unobserved: whether a model presents a total over *searched* rows as the
+whole amount. This entry asks questions where no category isolates the rows, so search is the only
+way to gather them.
+
+**Where verified:** the same sandbox store and server as VRF-030 (schema 12, `216c756`,
+`dirty: false`). Ground truth, taken before the reader's answer was read, over
+2025-09-14..2026-09-14. `search: "uber"` matches 25 rows, 13 × $5.40 and 12 × $6.33, $146.16. They
+share TRANSPORTATION with 12 × $500 at Madison Bicycle Shop, so a category total overstates rides by
+$6,000. `search: "lyft"` matches 0. `search: "coffee"` matches 0. The coffee is 12 × $4.33 Starbucks,
+$51.96, and it shares FOOD_AND_DRINK with KFC and McDonald's. The store holds no other cafe-like
+description.
+
+**Recorded session** (2026-09-14). A second fresh Claude Code agent was used; it had not seen this
+entry, VRF-027 or VRF-030. It had only the `bankmachine-sandbox` tools, was barred from the repo, and
+was not told that `search` exists. It was asked: "How much did I spend on Uber and Lyft rides over
+the last year?" and "What did my coffee habit cost me over the last year?".
+
+**Step 3 — observed, and passed.** The reader built both figures from searched rows and qualified
+both.
+- **Rides.** `search` "uber" and "lyft". It answered $146.16, all Uber, and described the rows: 25
+  rides alternating $5.40 and $6.33, all from checking, none pending. It did not treat the empty Lyft
+  search as proof. "To catch charges under a shortened name", it read the whole TRANSPORTATION
+  category and reported that it holds only the Uber rows and the bicycle shop. It told the operator
+  to "treat $146.16 as a floor". 🔴 The floor was justified by the accounts with no recorded
+  transactions (`accounts_without_coverage`), not by search being literal. The literal-search risk
+  was dealt with by reading the category, not stated as a limit on the figure.
+- **Coffee.** `search` "coffee" (0 rows), then "starbucks". It answered "The coffee I can clearly
+  identify cost you $51.96: 12 Starbucks visits at $4.33 each". It said the coffee search found
+  nothing and that no other cafe appears. It declined to count McDonald's because the rows "can't
+  show what you ordered". It checked the Starbucks and Uber totals against a
+  `money_summary(group_by=merchant)` rollup (14616 and 5196), and both agree with the store.
+
+Every figure in both replies (including McDonald's $144 and KFC $6,000) checks against the store.
+Neither reply presents a searched total as the whole amount without a qualifier.
+
+**Noted, outside the step.** Like VRF-030's reader, this one could not read `bankmachine://reference/*`.
+A subagent's ToolSearch finds no resource tool even when told to load it, so a reader subagent
+judges from tool descriptions and warnings alone. A reading test that must exercise the reference
+resources needs a top-level client session, not a subagent.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-031`
+
+**Verified:** 2026-09-14
