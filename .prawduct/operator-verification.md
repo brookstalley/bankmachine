@@ -1601,7 +1601,7 @@ branch changes no sign handling. The obligation is **#23**, and it blocks produc
 
 ## VRF-036 — one real pending transaction watched across settlement
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#22) · **Raised:** 2026-09-14
 
@@ -1613,9 +1613,11 @@ domain is recorded as landed, and no pending-hold handling. Production has been 
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-036`
 
+**Accepted:** 2026-09-14 — rationale: Accepted to open the empty-complete-transactions-page PR (#123), which bears on neither entry: it changes when a transactions feed with no cursor is recorded as landed, and no pending-hold or sign handling. VRF-036 needs a real pending transaction watched across settlement, which production (live since 2026-09-11) has not yet held long enough. VRF-037 needs a paycheck and a bill at a second institution with cash accounts, and the second production institution is investment-only. Each is re-raised as a fresh pending entry on the next branch, as VRF-034/035 were, so this acceptance discharges the block and not the obligation.
+
 ## VRF-037 — the sign convention on a real inflow, across two institutions
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#23) · **Raised:** 2026-09-14
 
@@ -1626,3 +1628,5 @@ transactions, so a paycheck and a bill at a second institution are still owed. T
 **#23**.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-037`
+
+**Accepted:** 2026-09-14 — rationale: Accepted to open the empty-complete-transactions-page PR (#123), which bears on neither entry: it changes when a transactions feed with no cursor is recorded as landed, and no pending-hold or sign handling. VRF-036 needs a real pending transaction watched across settlement, which production (live since 2026-09-11) has not yet held long enough. VRF-037 needs a paycheck and a bill at a second institution with cash accounts, and the second production institution is investment-only. Each is re-raised as a fresh pending entry on the next branch, as VRF-034/035 were, so this acceptance discharges the block and not the obligation.
