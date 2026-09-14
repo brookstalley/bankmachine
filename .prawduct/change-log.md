@@ -34,6 +34,37 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-14: Every answer says when its rows were derived by another version
+
+<!-- prawduct: scope=investments-followups -->
+
+**Why:** #116. `DERIVATION_VERSION` moved from 10 to 11 with no migration, and a store derived at 10
+kept serving what the older logic produced, with nothing on any answer to say so. Only a change-log
+line carried the remedy. The same holds for any future version move.
+
+**What changed (build-plan-investments-followups, Chunk 03):** AC-5.4 is new. Migration 012 indexes
+`derivation_version_id` on every derived table, so the check is one index seek per recorded version
+per table. `rebuild.derivation_versions_present` replaces the rebuild's private version query and
+serves both callers. The new pipeline-scoped kind `derivation_version_mismatch` rides every MCP
+answer while any derived row carries another version. Its detail separates older rows (run
+`store rebuild`) from newer ones (the server is older than the build that wrote them, so upgrade it
+and never rebuild with it). `get_pipeline_health` carries `coverage.derivation`, and `store status`
+prints a `derivation:` line; the warning and the field on one health answer share one read.
+
+**Found while verifying:** a rebuild judged "content change expected" only from the rows it deletes.
+`securities` is upserted and re-stamped rather than deleted, so a store whose only older rows were
+securities refused the rebuild the new warning names. The rebuild now counts the dimension tables'
+versions too.
+
+**Documents moved with it:** the API contract's vocabulary table and coverage fields, the client
+guide's kind list, `data-model.md` § Provenance, and `operational-spec.md`'s upgrade note. The
+production guide's upgrade steps now make the rebuild unconditional, matching the operational spec's
+2026-09-10 amendment, which that guide had not picked up. `tests/store/test_upgrading_a_populated_store.py`
+re-points at 012 and keeps 011's fixture as `populated_before_the_refused_holdings`.
+
+**Run `bankmachine store init` after pulling this** (schema 12), then read `store status`'s
+`derivation:` line.
+
 ## 2026-09-14: A CUSIP reads as itself in `sync shell`
 
 <!-- prawduct: scope=investments-followups -->

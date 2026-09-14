@@ -72,6 +72,12 @@ CONNECTION_SCOPED_KINDS: tuple[str, ...] = (
     "degraded",
     "gapped",
     "partial",
+    # 🔴 A fact about the STORE rather than about one connection, and it belongs
+    # here all the same: what this tuple promises is that its kinds ride every
+    # response equally, and rows derived by another version are under every
+    # answer equally. `partial` already fires here for one store-wide fact, an
+    # empty roster. AC-5.4.
+    "derivation_version_mismatch",
 )
 
 #: 🔴 Warnings about THIS request, which fire only when this request actually

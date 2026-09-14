@@ -48,7 +48,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Final
 
-from sqlalchemy import Column, Integer, Table, delete, select, update
+from sqlalchemy import Column, Integer, Table, delete, exists, select, update
 from sqlalchemy import Connection as SAConnection
 
 from bankmachine.config import Config
@@ -157,10 +157,11 @@ class RebuildReport:
 
     @property
     def change_was_expected(self) -> bool:
-        """Whether the rows this rebuild replaced were produced by this version.
+        """Whether the rows this rebuild replaced or re-stamped were produced by this version.
 
-        Only one state makes a difference suspicious: the replaced rows were all
-        derived by the version that just re-derived them, so replaying the same
+        Only one state makes a difference suspicious: the replaced rows, and the
+        dimension rows the replay upserts, were all derived by the version that
+        just re-derived them, so replaying the same
         archive through the same logic should have landed on the same content.
         Any other state -- a new derivation version, or no derived rows to
         reproduce in the first place -- has an explanation already, and the
@@ -340,7 +341,19 @@ def rebuild(
     with writer_connection(config) as conn:
         tables = rebuildable_tables()
         with transaction(conn):
-            previous_versions = _previous_derivation_versions(conn, tables)
+            # 🔴 The dimension tables count too. The replay upserts them rather
+            # than deleting them, and every row it writes is re-stamped with this
+            # build's version -- so an older stamp there is content the rebuild
+            # changes for a reason it already knows. Judged from the emptied
+            # tables alone, a store whose only older rows were dimensions read as
+            # unchanged, and the rebuild refused the very remedy AC-5.4's warning
+            # names.
+            previous_versions = tuple(
+                sorted(
+                    set(derivation_versions_present(conn, tables, archived_rows_only=True))
+                    | set(derivation_versions_present(conn, derived_dimension_tables()))
+                )
+            )
             digest_before = content_digest(conn)
 
             preserved = _capture_operator_state(conn, tables)
@@ -441,7 +454,7 @@ def _capture_operator_state(conn: SAConnection, tables: tuple[Table, ...]) -> Ca
     """Read the operator-owned columns off the rows about to be deleted.
 
     Read before the delete, because afterwards there is nothing left to ask --
-    the same reason `_previous_derivation_versions` is.
+    the same reason `derivation_versions_present` is.
 
     A row whose identity is not fully populated is skipped: it cannot be matched
     on the other side, and an incomplete key would match rows it does not mean.
@@ -504,23 +517,35 @@ def _restore_operator_state(conn: SAConnection, captured: CapturedState) -> None
                 )
 
 
-def _previous_derivation_versions(conn: SAConnection, tables: tuple[Table, ...]) -> tuple[int, ...]:
-    """The derivation versions the rows about to be deleted were produced by.
+def derivation_versions_present(
+    conn: SAConnection,
+    tables: tuple[Table, ...],
+    *,
+    archived_rows_only: bool = False,
+) -> tuple[int, ...]:
+    """Every derivation version a row in `tables` carries, ascending (AC-5.3, AC-5.4).
 
-    Read before the delete, because afterwards there is nothing left to ask.
+    Asked per recorded version -- "does any row carry this one" -- rather than as
+    a DISTINCT over each table, because it rides every MCP answer: with migration
+    012's index on `derivation_version_id` each question is one seek, where a
+    DISTINCT walks every row the table holds. `derivation_versions` has one row
+    per version this store has ever derived with, so the loop is short.
+
+    `archived_rows_only` narrows to rows a rebuild would delete -- the ones with
+    a raw response behind them -- which is the question `rebuild` asks before it
+    deletes them. The read path asks about every row, because a row no rebuild
+    replaces is still a row an answer reads.
     """
-    versions: set[int] = set()
-    for table in tables:
-        rows = conn.execute(
-            select(derivation_versions.c.version)
-            .distinct()
-            .select_from(
-                table.join(
-                    derivation_versions,
-                    table.c.derivation_version_id == derivation_versions.c.derivation_version_id,
-                )
-            )
-            .where(table.c[RAW_PROVENANCE_COLUMN].is_not(None))
-        ).fetchall()
-        versions.update(int(row[0]) for row in rows)
-    return tuple(sorted(versions))
+    present: set[int] = set()
+    recorded = conn.execute(
+        select(derivation_versions.c.derivation_version_id, derivation_versions.c.version)
+    ).all()
+    for version_id, version in recorded:
+        for table in tables:
+            condition = table.c[DERIVATION_VERSION_COLUMN] == version_id
+            if archived_rows_only:
+                condition = condition & table.c[RAW_PROVENANCE_COLUMN].is_not(None)
+            if conn.execute(select(exists().where(condition))).scalar_one():
+                present.add(int(version))
+                break
+    return tuple(sorted(present))

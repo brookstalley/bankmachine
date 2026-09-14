@@ -521,6 +521,22 @@ Index(
     investment_transactions.c.trade_date,
 )
 
+#: 🔴 Migration 012: every derived table indexed on the derivation version its
+#: rows carry (AC-5.4). The question "does any row carry version v" rides every
+#: MCP answer, so it has to be a seek rather than a scan of `transactions`.
+#: Declared here independently of the migration's own list, so
+#: `tests/store/test_schema.py` can compare the two, and a later derived table
+#: without one fails the guard beside that comparison.
+for _derived in (
+    transactions,
+    balances_daily,
+    securities,
+    holdings,
+    refused_holdings,
+    investment_transactions,
+):
+    Index(f"{_derived.name}_by_derivation_version", _derived.c.derivation_version_id)
+
 #: The `sync_state.domain` a transaction cursor is keyed under. The column is
 #: keyed by domain because the domains advance on their own schedules and a
 #: single cursor per connection would make one wait for another.

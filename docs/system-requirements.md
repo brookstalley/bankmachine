@@ -329,6 +329,19 @@ supposed to be permanent.
 *Rationale: a bronze/silver split. A categorization bug becomes a re-run rather than a re-fetch, and
 lineage back to source is preserved. Disk cost is trivial at this volume.*
 
+**AC-5.4** — 🔴 **A store holding derived rows stamped with a derivation version other than this
+build's says so on every MCP answer, on `get_pipeline_health`, and on `bankmachine store status`,
+until those rows are re-derived.** A version can move without a migration. When it does, the rows
+already stored keep what the older logic produced until `store rebuild` replays the archive. Nothing
+in the rows themselves says they would come out differently now, so an answer computed over them
+reads as current. Older rows name `store rebuild` as the remedy. Rows newer than this build mean the
+server is older than the build that derived them, and name upgrading it as the remedy. The check
+reads every table carrying `derivation_version_id`, not only the tables a rebuild empties, and it
+costs index lookups rather than a scan, because it rides every answer.
+
+*Rationale: AC-5.3 makes the version recordable; this makes it read. A recorded version nothing
+compares against is a stamp on a row nobody looks at.*
+
 ### FR-6 · Core schema
 
 Minimum tables: `connections`, `institutions`, `accounts`, `transactions`, `balances_daily`,

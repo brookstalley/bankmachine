@@ -188,6 +188,7 @@ def _output_schema(
     window: envelope.WindowSeries | None,
     capped: bool,
     totals: dict[str, Any] | None,
+    derivation: bool,
 ) -> dict[str, Any]:
     """One tool's answer, published as a schema so the shape outlives the prose.
 
@@ -212,7 +213,10 @@ def _output_schema(
     `totals` is the third such key, given as the block's own schema because each
     tool that carries one totals something different. It has no default for the
     same reason the other two do not: a tool acquires the key by saying so, never
-    by a writer forgetting to say otherwise.
+    by a writer forgetting to say otherwise. `derivation` is the fourth, and
+    `get_pipeline_health` is the one tool that says so: AC-5.4 puts the versions
+    a store's rows were derived by on the verification surface, and every other
+    answer carries the same fact as a warning.
 
     🔴 **Every level is closed and every unconditional key required**, and the
     strictness is the mechanism rather than a preference: a key that reaches the
@@ -288,6 +292,29 @@ def _output_schema(
         "earliest_transaction": {"type": ["string", "null"]},
         "latest_transaction": {"type": ["string", "null"]},
     }
+    if derivation:
+        coverage["derivation"] = {
+            "type": "object",
+            "description": (
+                "which derivation versions produced the rows the store holds (AC-5.4). Any "
+                "version in `versions_in_store` other than `current_version` raises "
+                "`derivation_version_mismatch`. Empty means the store holds no derived row, or "
+                "could not be read -- the `partial` warning beside it says which"
+            ),
+            "properties": {
+                "current_version": {
+                    "type": "integer",
+                    "description": "the derivation version this build stamps on what it derives",
+                },
+                "versions_in_store": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "every version a derived row carries, ascending",
+                },
+            },
+            "required": ["current_version", "versions_in_store"],
+            "additionalProperties": False,
+        }
     if window == "transactions":
         coverage["transactions_in_effective_window"] = {
             "type": "integer",
@@ -873,6 +900,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 window=None,
                 capped=False,
                 totals=None,
+                derivation=False,
             ),
         },
         {
@@ -949,6 +977,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 window=None,
                 capped=False,
                 totals=_holdings_totals(),
+                derivation=False,
             ),
         },
         {
@@ -1049,6 +1078,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 window="balances",
                 capped=True,
                 totals=None,
+                derivation=False,
             ),
         },
         {
@@ -1204,6 +1234,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 window="transactions",
                 capped=True,
                 totals=None,
+                derivation=False,
             ),
         },
         {
@@ -1330,6 +1361,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 # so a cut list never shrinks the window's figures.
                 capped=True,
                 totals=_money_summary_totals(),
+                derivation=False,
             ),
         },
         {
@@ -1515,6 +1547,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 window=None,
                 capped=False,
                 totals=None,
+                derivation=True,
             ),
         },
         {
@@ -1659,6 +1692,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 window=None,
                 capped=False,
                 totals=None,
+                derivation=False,
             ),
         },
     ]

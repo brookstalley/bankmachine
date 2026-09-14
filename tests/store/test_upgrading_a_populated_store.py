@@ -66,7 +66,7 @@ from typing import Any
 import pytest
 from sqlalchemy import insert, select, update
 
-from bankmachine import query_holdings
+from bankmachine import query, query_holdings
 from bankmachine.config import Config
 from bankmachine.connector import INVESTMENTS_HOLDINGS_GET, ITEM_GET, TRANSACTIONS_SYNC
 from bankmachine.derivers import ALL_DERIVERS, all_replay_passes
@@ -144,14 +144,39 @@ DESCRIPTION_BEFORE_THE_REFUSED_HOLDINGS = DESCRIPTION_BEFORE_THE_HOLDINGS_PRICE_
 
 #: The migration the newest fixture is missing, and the table it creates. It adds
 #: no column to any table that already exists.
-THE_PENDING_MIGRATION = SCHEMA_BEFORE_THE_REFUSED_HOLDINGS + 1
+THE_REFUSED_HOLDINGS_MIGRATION = SCHEMA_BEFORE_THE_REFUSED_HOLDINGS + 1
 THE_TABLE_IT_CREATES = refused_holdings.name
+
+#: 🔴 **The newest migration, and the store one short of it.** Migration 012 adds
+#: an index per derived table and nothing else, so the fixture that sits one
+#: migration short is a store at schema 11 whose rows carry derivation version
+#: 10: the version the build serving schema 11 stamped before `DERIVATION_VERSION`
+#: moved to 11 with no migration of its own. That gap is AC-5.4's whole subject,
+#: which is why the upgraded store below is expected to warn until it is rebuilt.
+SCHEMA_BEFORE_THE_DERIVATION_INDEXES = 11
+DERIVATION_BEFORE_THE_DERIVATION_INDEXES = 10
+DESCRIPTION_BEFORE_THE_DERIVATION_INDEXES = DESCRIPTION_BEFORE_THE_REFUSED_HOLDINGS + (
+    "; and a position refused for a currency with no known minor-unit exponent, or none "
+    "stated, recorded where a read can name it (`refused_holdings`)"
+)
+THE_INDEX_MIGRATION = SCHEMA_BEFORE_THE_DERIVATION_INDEXES + 1
+
+#: Written out rather than read off the metadata or migration 012's own list, so a
+#: migration that indexed the wrong table is compared against something else.
+THE_INDEXES_IT_CREATES = (
+    "transactions_by_derivation_version",
+    "balances_daily_by_derivation_version",
+    "securities_by_derivation_version",
+    "holdings_by_derivation_version",
+    "refused_holdings_by_derivation_version",
+    "investment_transactions_by_derivation_version",
+)
 
 #: The migrations BETWEEN the older fixture and this build, each named with the
 #: version it IS rather than as an offset from the newest.
 #:
 #: 🔴 Offsets were how two rewinds silently deleted the same `schema_version`
-#: row and left another standing: `THE_PENDING_MIGRATION - 1` reads the same in
+#: row and left another standing: `THE_REFUSED_HOLDINGS_MIGRATION - 1` reads the same in
 #: two functions and means the same thing in only one of them. A version is a
 #: fixed historical number, so it is written as one -- the same rule the fixture
 #: constants above already follow, applied to the steps between them.
@@ -190,7 +215,8 @@ THE_PENDING_MIGRATIONS = [
     THE_ITEM_STANDING_MIGRATION,
     THE_TRANSFER_PAIRS_MIGRATION,
     THE_PRICE_DATE_MIGRATION,
-    THE_PENDING_MIGRATION,
+    THE_REFUSED_HOLDINGS_MIGRATION,
+    THE_INDEX_MIGRATION,
 ]
 THE_COLUMN_IT_WIDENS = "currency"
 
@@ -439,6 +465,54 @@ def _archive_and_derive(config: Config, endpoint: str, body: bytes) -> None:
 def populated_at_the_previous_version(config: Config, monkeypatch: pytest.MonkeyPatch) -> Config:
     """A datastore stopped one migration short of this build, holding derived rows.
 
+    Seeded at the current schema under the derivation version the build serving
+    schema 11 stamped, then 012 undone -- the procedure
+    `populated_before_the_refused_holdings` describes, one step shorter.
+    """
+    _seed(
+        config,
+        monkeypatch,
+        DERIVATION_BEFORE_THE_DERIVATION_INDEXES,
+        DESCRIPTION_BEFORE_THE_DERIVATION_INDEXES,
+    )
+    _rewind_past_the_derivation_indexes(config)
+
+    _refuse_a_fixture_with_nothing_in_it(config)
+    assert not _derivation_indexes(config), (
+        "the rewind left the indexes already there, so the migration under test has nothing to "
+        "create and every assertion below would hold against a store that never moved"
+    )
+    return config
+
+
+def _derivation_indexes(config: Config) -> set[str]:
+    """Which of migration 012's indexes the file holds, read from the file itself.
+
+    The handle `dump_every_table` takes, for its reason: the file is at a version
+    this build does not serve until the migration runs.
+    """
+    with reader(config, require_supported_schema=False) as conn:
+        names = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            ).fetchall()
+        }
+    return names & set(THE_INDEXES_IT_CREATES)
+
+
+@pytest.fixture
+def populated_before_the_refused_holdings(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> Config:
+    """The same store, two migrations short -- the one 011's table lands on.
+
+    🔴 **Kept when this module re-pointed at 012.** A store at schema 11 already
+    holds the table, so the assertions that 011 creates it empty and that the
+    rebuild fills it need a store from before it.
+
+    What follows is how the store is made, and holds for every fixture here.
+
     🔴 **Seeded at the CURRENT version and then rewound, rather than seeded at the
     old one -- and that order is forced.** A build's derivers write the columns
     that build has, so this build's transaction deriver stamps `lineage_id` and
@@ -464,6 +538,7 @@ def populated_at_the_previous_version(config: Config, monkeypatch: pytest.Monkey
         DESCRIPTION_BEFORE_THE_REFUSED_HOLDINGS,
     )
     _rewind_past_the_refused_holdings(config)
+    _rewind_past_the_derivation_indexes(config)
 
     _refuse_a_fixture_with_nothing_in_it(config)
     assert THE_TABLE_IT_CREATES not in dump_every_table(config), (
@@ -496,6 +571,7 @@ def populated_before_the_holdings_price_date(
     # gives: the step that makes the file unsupported is the last one taken.
     _rewind_past_the_holdings_price_date(config)
     _rewind_past_the_refused_holdings(config)
+    _rewind_past_the_derivation_indexes(config)
 
     _refuse_a_fixture_with_nothing_in_it(config)
     columns = dump_every_table(config)[THE_TABLE_THE_PRICE_DATE_MIGRATION_EXTENDS][0]
@@ -539,6 +615,7 @@ def populated_before_the_nullable_currency(
     _rewind_past_the_transfer_pairs(config)
     _rewind_past_the_holdings_price_date(config)
     _rewind_past_the_refused_holdings(config)
+    _rewind_past_the_derivation_indexes(config)
 
     _refuse_a_fixture_with_nothing_in_it(config)
     assert required_columns(config, THE_TABLE_IT_REBUILDS) >= {THE_COLUMN_IT_WIDENS}, (
@@ -584,13 +661,34 @@ def _rewind_past_the_refused_holdings(config: Config) -> None:
     previous build left: that build recorded no refusal anywhere.
 
     🔴 **`DROP TABLE`, written out rather than derived from the shipped DDL**, for
-    the reason the column rewind below gives. It is the last rewind in every chain
-    that calls it, because its version row is what makes the file one this build
-    will not open with an ordinary writer.
+    the reason the column rewind below gives. It runs before
+    `_rewind_past_the_derivation_indexes` in every chain, while the file still
+    reports a version this build serves.
     """
     with writer(config) as conn:
         conn.execute(f"DROP TABLE {THE_TABLE_IT_CREATES}")
-        conn.execute("DELETE FROM schema_version WHERE version = ?", (THE_PENDING_MIGRATION,))
+        conn.execute(
+            "DELETE FROM schema_version WHERE version = ?", (THE_REFUSED_HOLDINGS_MIGRATION,)
+        )
+
+
+def _rewind_past_the_derivation_indexes(config: Config) -> None:
+    """Take a store back past 012, the migration that indexed the derivation versions.
+
+    Undoes exactly what migration 012 did -- one index per derived table, and its
+    row in `schema_version`. No row moves, because an index holds none of its own.
+
+    🔴 **The last rewind in every chain**, because its version row is what makes
+    the file one this build will not open with an ordinary writer. The index names
+    are this module's own list, not the migration's, for the reason the column
+    rewinds give.
+    """
+    with writer(config) as conn:
+        for index in THE_INDEXES_IT_CREATES:
+            # `IF EXISTS` because an older chain has already dropped
+            # `refused_holdings`, and an index goes with its table.
+            conn.execute(f"DROP INDEX IF EXISTS {index}")
+        conn.execute("DELETE FROM schema_version WHERE version = ?", (THE_INDEX_MIGRATION,))
 
 
 def _rewind_past_the_holdings_price_date(config: Config) -> None:
@@ -867,23 +965,41 @@ def test_migrating_a_populated_store_forward_keeps_every_row_it_already_held(
     nothing in it. Here the whole file is read before and after, so a step that
     reached past its own DDL has nowhere to hide.
 
-    🔴 **The new table comes out EMPTY, and that is the assertion the remedy
-    depends on.** No migration can know which archived positions a build
-    refused, so an upgraded store names no refusal until `store rebuild` replays
-    the captures -- and a migration that put rows there would be claiming a
-    derivation it never ran.
+    🔴 **Migration 012 adds indexes and no row, so every table must come through
+    identical, and every index must arrive.** An index is derived from the rows it
+    covers, so nothing about the data may move.
     """
     before = dump_every_table(populated_at_the_previous_version)
 
     applied = migrate(populated_at_the_previous_version)
 
-    assert applied == [THE_PENDING_MIGRATION]
+    assert applied == [THE_INDEX_MIGRATION]
     after = dump_every_table(populated_at_the_previous_version)
-    _assert_only_what_the_migrations_add_moved(before, after)
+    _assert_only_what_the_migrations_add_moved(before, after, created=())
+    assert _derivation_indexes(populated_at_the_previous_version) == set(THE_INDEXES_IT_CREATES)
     # The highest version, not the last row: the dump sorts by `repr`, and
     # `(10, …)` sorts before `(9, …)`.
-    assert max(row[0] for row in after[SCHEMA_VERSION_TABLE][1]) == THE_PENDING_MIGRATION
+    assert max(row[0] for row in after[SCHEMA_VERSION_TABLE][1]) == THE_INDEX_MIGRATION
     assert len(after[SCHEMA_VERSION_TABLE][1]) == len(before[SCHEMA_VERSION_TABLE][1]) + 1
+
+
+def test_migrating_a_store_from_before_the_refused_holdings_creates_the_table_empty(
+    populated_before_the_refused_holdings: Config,
+) -> None:
+    """🔴 011's own assertion, kept when the module re-pointed at 012.
+
+    No migration can know which archived positions a build refused, so an
+    upgraded store names no refusal until `store rebuild` replays the captures --
+    and a migration that put rows there would be claiming a derivation it never ran.
+    """
+    before = dump_every_table(populated_before_the_refused_holdings)
+
+    applied = migrate(populated_before_the_refused_holdings)
+
+    assert applied == [THE_REFUSED_HOLDINGS_MIGRATION, THE_INDEX_MIGRATION]
+    after = dump_every_table(populated_before_the_refused_holdings)
+    _assert_only_what_the_migrations_add_moved(before, after)
+    assert max(row[0] for row in after[SCHEMA_VERSION_TABLE][1]) == THE_INDEX_MIGRATION
 
 
 def test_migrating_a_store_from_before_the_price_date_leaves_the_new_column_empty(
@@ -900,7 +1016,11 @@ def test_migrating_a_store_from_before_the_price_date_leaves_the_new_column_empt
 
     applied = migrate(populated_before_the_holdings_price_date)
 
-    assert applied == [THE_PRICE_DATE_MIGRATION, THE_PENDING_MIGRATION]
+    assert applied == [
+        THE_PRICE_DATE_MIGRATION,
+        THE_REFUSED_HOLDINGS_MIGRATION,
+        THE_INDEX_MIGRATION,
+    ]
     after = dump_every_table(populated_before_the_holdings_price_date)
     _assert_only_what_the_migrations_add_moved(
         before,
@@ -909,7 +1029,7 @@ def test_migrating_a_store_from_before_the_price_date_leaves_the_new_column_empt
             THE_TABLE_THE_PRICE_DATE_MIGRATION_EXTENDS: THE_COLUMNS_THE_PRICE_DATE_MIGRATION_ADDS
         },
     )
-    assert max(row[0] for row in after[SCHEMA_VERSION_TABLE][1]) == THE_PENDING_MIGRATION
+    assert max(row[0] for row in after[SCHEMA_VERSION_TABLE][1]) == THE_INDEX_MIGRATION
 
 
 # --------------------------------------------------------------------------
@@ -950,7 +1070,7 @@ def test_migrating_a_populated_store_across_the_table_rebuild_keeps_every_row(
     )
     # The highest version, not the last row: the dump sorts by `repr`, and
     # `(10, …)` sorts before `(9, …)`.
-    assert max(row[0] for row in after[SCHEMA_VERSION_TABLE][1]) == THE_PENDING_MIGRATION
+    assert max(row[0] for row in after[SCHEMA_VERSION_TABLE][1]) == THE_INDEX_MIGRATION
     assert len(after[SCHEMA_VERSION_TABLE][1]) == len(before[SCHEMA_VERSION_TABLE][1]) + len(
         THE_PENDING_MIGRATIONS
     )
@@ -1125,7 +1245,7 @@ def test_an_upgraded_store_serves_the_values_its_derivers_wrote(
     assert account.last_seen_date is None, (
         "a sync body is not a roster read, so it must not leave a record that one happened"
     )
-    assert stamped == [DERIVATION_BEFORE_THE_REFUSED_HOLDINGS], (
+    assert stamped == [DERIVATION_BEFORE_THE_DERIVATION_INDEXES], (
         "the upgrade restamped rows it did not re-derive, so their provenance is now a claim "
         "about logic that never touched them"
     )
@@ -1162,7 +1282,7 @@ def test_the_prescribed_rebuild_runs_on_the_store_the_upgrade_produced(
         populated_at_the_previous_version, derivers=ALL_DERIVERS, replay_passes=all_replay_passes
     )
 
-    assert report.previous_derivation_versions == (DERIVATION_BEFORE_THE_REFUSED_HOLDINGS,)
+    assert report.previous_derivation_versions == (DERIVATION_BEFORE_THE_DERIVATION_INDEXES,)
     assert report.content_changed, (
         "the replay reproduced the upgraded store byte for byte, so the guard this test exists "
         "to exercise was never consulted"
@@ -1431,7 +1551,7 @@ def test_the_rebuild_fills_the_price_dates_migration_010_could_only_leave_empty(
 
 
 def test_the_rebuild_records_the_refusals_migration_011_could_only_leave_empty(
-    populated_at_the_previous_version: Config,
+    populated_before_the_refused_holdings: Config,
 ) -> None:
     """🔴 The remedy `refused_holdings` is owed, asserted rather than prescribed.
 
@@ -1445,20 +1565,22 @@ def test_the_rebuild_records_the_refusals_migration_011_could_only_leave_empty(
     reverted bump in a LATER build is guarded where that build changed the rows:
     this fixture sits more than one version back and cannot see one.
     """
-    migrate(populated_at_the_previous_version)
-    with reader_connection(populated_at_the_previous_version) as conn:
+    migrate(populated_before_the_refused_holdings)
+    with reader_connection(populated_before_the_refused_holdings) as conn:
         before = conn.execute(select(refused_holdings)).all()
     assert before == [], "the upgraded store already names a refusal, so nothing below is proved"
 
     report = rebuild(
-        populated_at_the_previous_version, derivers=ALL_DERIVERS, replay_passes=all_replay_passes
+        populated_before_the_refused_holdings,
+        derivers=ALL_DERIVERS,
+        replay_passes=all_replay_passes,
     )
 
     assert report.change_was_expected, (
         "`store rebuild` would refuse on a store that just gained the refusal table. Bump "
         "DERIVATION_VERSION in the commit that populates a new table"
     )
-    with reader_connection(populated_at_the_previous_version) as conn:
+    with reader_connection(populated_before_the_refused_holdings) as conn:
         after = conn.execute(
             select(securities.c.source_security_id, refused_holdings.c.currency).select_from(
                 refused_holdings.join(
@@ -1471,9 +1593,35 @@ def test_the_rebuild_records_the_refusals_migration_011_could_only_leave_empty(
     )
     named = [
         warning.detail
-        for warning in query_holdings.list_holdings(populated_at_the_previous_version).warnings
+        for warning in query_holdings.list_holdings(populated_before_the_refused_holdings).warnings
         if warning.kind == "rule-applied"
     ]
     assert len(named) == 1 and UNPRICEABLE_CURRENCY in named[0], (
         "the rebuild recorded the refusal and `list_holdings` still does not name it"
     )
+
+
+def test_an_upgraded_store_warns_of_its_older_derivation_until_the_rebuild_runs(
+    populated_at_the_previous_version: Config,
+) -> None:
+    """🔴 AC-5.4 on the store an operator actually has after an upgrade.
+
+    The rows carry the derivation version the previous build stamped, so every
+    answer must say so -- and the rebuild the warning names must be what stops it.
+    """
+    migrate(populated_at_the_previous_version)
+
+    before = [
+        w.detail
+        for w in query.pipeline_health(populated_at_the_previous_version).warnings
+        if w.kind == "derivation_version_mismatch"
+    ]
+    assert len(before) == 1 and str(DERIVATION_BEFORE_THE_DERIVATION_INDEXES) in before[0]
+
+    rebuild(
+        populated_at_the_previous_version, derivers=ALL_DERIVERS, replay_passes=all_replay_passes
+    )
+
+    health = query.pipeline_health(populated_at_the_previous_version)
+    assert not [w for w in health.warnings if w.kind == "derivation_version_mismatch"]
+    assert health.coverage["derivation"]["versions_in_store"] == [derivation.DERIVATION_VERSION]

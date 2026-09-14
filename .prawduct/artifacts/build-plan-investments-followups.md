@@ -102,8 +102,20 @@ shell. #116: a store derived at an older version answers with nothing saying so.
 - [x] Chunk 02: A CUSIP reads as itself in `sync shell`
 - [ ] Chunk 03: An answer says when its rows were derived by another version
 
-Context: planned 2026-09-14. Re-raise on this branch before the PR: VRF-025 (#22) and VRF-026 (#23),
-production-only; VRF-027 (the search reading test) unless it is run against the sandbox first.
+Context: planned 2026-09-14. Chunk 01 is committed as `0568c96`, Chunk 02 as `9c4ca16`. Chunk 03 is
+built and verified on a scratch copy of the sandbox store. That means migration to 12, the warning on
+`get_pipeline_health` and a data tool, the `store status` line, a rebuild that commits and clears it,
+and latency recorded in `mcp-derivation-check-latency-2026-09-14.md`. It is awaiting the full gate,
+its commit, and the cumulative Critic, which also covers Chunk 02. Re-raise on this branch before the
+PR: VRF-025 (#22) and VRF-026 (#23), production-only; VRF-027 (the search reading test) unless it is
+run against the sandbox first.
+
+`[DECISION: Chunk 03 also changes \`rebuild\`'s content-change expectation to count the dimension
+tables' derivation versions | found while verifying AC-5.4's remedy on the product: a store whose
+only older rows were \`securities\` made \`store rebuild\` refuse, while the new warning told the
+operator to run it. AC-5.4 promises the warning holds "until those rows are re-derived", so a
+remedy that refuses is inside that criterion, not new scope. A test isolating the dimension-only case
+was seen red before the fix | user can veto]`
 
 ## Scaffolding
 

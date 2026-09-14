@@ -941,6 +941,7 @@ here.
 | `earliest_transaction` | string, nullable | the oldest posted date held anywhere in the store, `YYYY-MM-DD`; null when the store holds no transaction |
 | `latest_transaction` | string, nullable | the newest posted date held anywhere in the store, `YYYY-MM-DD`; null when the store holds no transaction. 🔴 Store-wide like `transactions`, so it is **not** the last date in this answer's window and a caller must not read it as one |
 | `transactions_in_effective_window` | integer | windowed tools only: how many rows the window this answer actually covered holds. Never narrowed by `account_id` — per-account coverage is its own field on the rows |
+| `derivation` | object | `get_pipeline_health` only (AC-5.4): `current_version`, the derivation version this build stamps, and `versions_in_store`, every version a derived row in the store carries, ascending. Anything in the list other than `current_version` raises `derivation_version_mismatch`. An empty list means the store holds no derived row, or could not be read — the `partial` warning beside it says which |
 
 **Fields — `coverage.not_active_balance_minor_units[]`.**
 
@@ -1227,6 +1228,7 @@ three-week-old hole in the data and answer confidently.
 | `degraded` | A contributing connection is in error, or ONE SYNC DOMAIN of an otherwise healthy connection is. `detail` says which. 🔴 At domain scope the connection's own `status` is `active` and its `last_error_code` is null — the code lives in `rows[].domains[]`, and `connections reauth` repairs nothing |
 | `gapped` | A known coverage hole in the queried window |
 | `partial` | A contributing account has bounded history, no connection is enrolled, or ONE SYNC DOMAIN of a healthy connection has never landed in full. `detail` says which |
+| `derivation_version_mismatch` | Derived rows in the store carry a derivation version other than this build's (AC-5.4), so some of what any answer reads may not be what this build's derivers would produce from the same archive. `detail` names the versions. Older rows name `bankmachine store rebuild` as the remedy; newer rows mean this server is older than the build that derived them. Store-wide, so it rides every answer like the kinds above; `coverage.derivation` on `get_pipeline_health` carries the same fact structured |
 | `rule-applied` | Rows were excluded from this aggregate ON PURPOSE, so the figure will not reconcile against a raw sum over the same window. `detail` names which rows and why. On `list_holdings`, a position the store could not record is ABSENT from the rows and so from `totals`, and `detail` names its account, security and unit |
 | `window_starts_before_coverage` | The window asked for reaches back past the first covered date |
 | `window_extends_past_coverage` | The window asked for reaches past the covered end — today, or the last transaction when that is later |
