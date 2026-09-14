@@ -103,7 +103,7 @@ owner and ruled on 2026-09-14: one `search` over `description` and `merchant`; a
 ## Status
 
 - [x] Chunk 01: `category` and the amount range, end to end — the filter value, the fingerprint, the requirement
-- [ ] Chunk 02: `search`, the `search_is_literal` warning, and retiring every "cannot filter" claim
+- [x] Chunk 02: `search`, the `search_is_literal` warning, and retiring every "cannot filter" claim
 
 ## Scaffolding
 
