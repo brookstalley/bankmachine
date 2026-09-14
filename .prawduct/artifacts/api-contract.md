@@ -613,7 +613,7 @@ the whole request; at the 200k figure above that is one further ~89ms on a call 
 
 🔴 **A truncated answer carries `truncation.next_cursor`, when and only when `truncated` is true.**
 The caller passes it straight back as the optional `cursor` argument of the tool that issued it, with the
-same window and account, and repeats until `truncated` is false — at which point no `next_cursor` is
+same window, account and filters, and repeats until `truncated` is false — at which point no `next_cursor` is
 present. **The key's presence is the loop condition**: a consumer pages while it is there and stops
 when it is gone, without comparing two counts to decide. Visibility without a route past the cap
 would have left the honest answer still unobtainable, which is why #17 needed both halves.

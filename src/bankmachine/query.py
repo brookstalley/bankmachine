@@ -38,9 +38,11 @@ from bankmachine.config import Config
 from bankmachine.envelope import (
     MAX_ROWS,
     STALE_AFTER,
+    UNFILTERED,
     Answer,
     Caveat,
     Cursor,
+    TransactionFilter,
     Truncation,
     Window,
     WindowSeries,
@@ -2204,11 +2206,55 @@ class UnknownAccountError(ValueError):
     """
 
 
+class UnknownCategoryError(ValueError):
+    """A `category` no transaction in the store carries, refused rather than answered empty.
+
+    🔴 `UnknownAccountError`'s reasoning, one argument over. `TRAVL` and a
+    category that was simply quiet in the window both select no rows, and "no
+    travel this year" invites no second look. The categories are a small set, so
+    the refusal names them -- a correction the caller can make without another
+    call.
+
+    Checked against the whole store rather than the window: a category that
+    exists and has no rows in THIS window is an ordinary empty answer, not a typo.
+    """
+
+
 def _account_exists(conn: SAConnection, account_id: int) -> bool:
     found = conn.execute(
         select(accounts.c.account_id).where(accounts.c.account_id == account_id).limit(1)
     ).first()
     return found is not None
+
+
+#: What a transaction with neither an override nor a source category counts under.
+UNCATEGORIZED = "UNCATEGORIZED"
+
+
+def _effective_category() -> ColumnElement[Any]:
+    """The category a transaction counts under: the operator's, else the source's.
+
+    🔴 The ONE spelling of it. `money_summary` groups by it and
+    `query_transactions` filters by it, and a caller drills from a `group_key`
+    into the rows behind it by passing that key back -- so if the two spelled
+    the fallback differently, a key one tool reported would select nothing, or
+    something else, in the other.
+    """
+    return func.coalesce(
+        transactions.c.category_override,
+        transactions.c.source_category_primary,
+        UNCATEGORIZED,
+    )
+
+
+def _known_categories(conn: SAConnection) -> list[str]:
+    """Every effective category a live transaction carries, for the refusal to name."""
+    return sorted(
+        str(value)
+        for value in conn.execute(
+            select(_effective_category()).where(transactions.c.removed_at.is_(None)).distinct()
+        ).scalars()
+    )
 
 
 def _transaction_filters(
@@ -2219,6 +2265,7 @@ def _transaction_filters(
     after: Cursor | None,
     include_removed: bool = False,
     spans: Sequence[SupersededSpan] = (),
+    narrowed_by: TransactionFilter = UNFILTERED,
 ) -> list[Any]:
     """🔴 The predicates of a transaction query, built once for both statements.
 
@@ -2264,6 +2311,17 @@ def _transaction_filters(
         filters.append(transactions.c.ledger_date <= until)
     if account_id is not None:
         filters.append(transactions.c.account_id == account_id)
+    # 🔴 Only the caller's own row query and its counts pass `narrowed_by`; the
+    # coverage readers never do. `coverage.transactions_in_effective_window`
+    # counts the WINDOW, and it rides beside `truncation.matching` so a caller
+    # can see how much of the window its filter set aside. A filter that reached
+    # the coverage count would make the two agree and erase exactly that.
+    if narrowed_by.category is not None:
+        filters.append(_effective_category() == narrowed_by.category)
+    if narrowed_by.min_amount_minor is not None:
+        filters.append(transactions.c.amount_minor >= narrowed_by.min_amount_minor)
+    if narrowed_by.max_amount_minor is not None:
+        filters.append(transactions.c.amount_minor <= narrowed_by.max_amount_minor)
     if after is not None:
         # 🔴 The keyset predicate belongs in the SHARED list, not on the row
         # query alone. `truncation.remaining` is what `truncated` turns on, and
@@ -2578,6 +2636,7 @@ def list_transactions(
     account_id: int | None = None,
     limit: int = 100,
     after: Cursor | None = None,
+    narrowed_by: TransactionFilter = UNFILTERED,
 ) -> Answer:
     """Transactions in a window, newest first. Soft-deleted rows are excluded.
 
@@ -2587,6 +2646,9 @@ def list_transactions(
     condition rather than a number to compare — while `truncation.matching`
     stays the count of what the whole request selects and reads the same on
     every page of the walk.
+
+    `narrowed_by` selects by effective category and signed amount (AC-9.6). It
+    narrows the rows and both counts, and never the coverage figures beside them.
     """
     problem = _readable(config)
     if problem is not None:
@@ -2610,9 +2672,23 @@ def list_transactions(
             raise UnknownAccountError(
                 f"account_id {account_id} does not exist. list_accounts reports the ids that do."
             )
+        # Same ordering, same reason: which categories exist is a fact about the
+        # data, and an unreadable store has already answered above.
+        if narrowed_by.category is not None:
+            known = _known_categories(conn)
+            if narrowed_by.category not in known:
+                raise UnknownCategoryError(
+                    f"category {narrowed_by.category!r} is carried by no transaction in this "
+                    f"store. The categories it holds: {', '.join(known) or 'none'}"
+                )
         spans = lineage.superseded_spans(conn)
         filters = _transaction_filters(
-            since=since, until=until, account_id=account_id, after=after, spans=spans
+            since=since,
+            until=until,
+            account_id=account_id,
+            after=after,
+            spans=spans,
+            narrowed_by=narrowed_by,
         )
         # 🔴 Both statements take the SAME from-clause as well as the same
         # filters. The join to `accounts` is part of what selects a row -- an
@@ -2704,6 +2780,7 @@ def list_transactions(
                         account_id=account_id,
                         after=None,
                         spans=spans,
+                        narrowed_by=narrowed_by,
                     )
                 )
             ).scalar_one()
@@ -2722,6 +2799,7 @@ def list_transactions(
                 since=since,
                 until=until,
                 account_id=account_id,
+                narrowed_by=narrowed_by,
             )
         )
         # 🔴 Scoped to the account ASKED ABOUT, not to every empty account in the
@@ -3472,11 +3550,7 @@ def money_summary(
         key: ColumnElement[Any]
         label: ColumnElement[Any]
         if group_by == "category":
-            key = func.coalesce(
-                transactions.c.category_override,
-                transactions.c.source_category_primary,
-                "UNCATEGORIZED",
-            )
+            key = _effective_category()
             label = key
         elif group_by == "merchant":
             # 🔴 Case- and whitespace-normalized, so "AMAZON", "Amazon" and

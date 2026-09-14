@@ -776,8 +776,8 @@ _ENVELOPE_NOTES = (
     "last page of every walk, and a caller looping on it asks forever for a page that does not "
     "exist.\n"
     "- **`truncation.next_cursor` is OPAQUE.** Pass it back unchanged as `cursor` with the "
-    "same window and account; never read one, build one, or edit one. It is present when and "
-    "only when there is another page to read.\n"
+    "same window, account and filters; never read one, build one, or edit one. It is present "
+    "when and only when there is another page to read.\n"
     f"- **Warnings have a vocabulary of their own**, with what each kind means and what to do "
     f"about it, at `{WARNINGS_URI}`."
 )
