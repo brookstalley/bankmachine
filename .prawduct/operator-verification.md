@@ -1127,7 +1127,7 @@ rather than re-raised quietly. `accept-operator-verification` still flips every 
 
 ## VRF-020 — one real pending transaction watched across settlement
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#22) · **Raised:** 2026-09-13
 
@@ -1138,9 +1138,11 @@ production cutover and a card hold settling. The obligation is **#22**, and it b
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-020`
 
+**Accepted:** 2026-09-13 — rationale: Accepted at the owner's direction on 2026-09-13 to unblock the investment-sync PR (waves 2 and 3, chunks 09-11), which neither entry bears on: this branch pulls holdings, investment transactions and balance history and changes no pending-hold handling and no sign convention. VRF-020 (a real pending transaction across settlement, #22) and VRF-021 (the sign convention at two institutions, #23) both need production data the sandbox cannot produce — this is their sixth raising, and the reason is unchanged: the production cutover has not happened. Each is re-raised by hand as a fresh pending entry on the next branch, so this acceptance discharges the block and not the obligation; #22 and #23 still block production.
+
 ## VRF-021 — the sign convention on a real inflow, across two institutions
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#23) · **Raised:** 2026-09-13
 
@@ -1151,9 +1153,11 @@ The obligation is **#23**, and it blocks production.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-021`
 
+**Accepted:** 2026-09-13 — rationale: Accepted at the owner's direction on 2026-09-13 to unblock the investment-sync PR (waves 2 and 3, chunks 09-11), which neither entry bears on: this branch pulls holdings, investment transactions and balance history and changes no pending-hold handling and no sign convention. VRF-020 (a real pending transaction across settlement, #22) and VRF-021 (the sign convention at two institutions, #23) both need production data the sandbox cannot produce — this is their sixth raising, and the reason is unchanged: the production cutover has not happened. Each is re-raised by hand as a fresh pending entry on the next branch, so this acceptance discharges the block and not the obligation; #22 and #23 still block production.
+
 ## VRF-022 — the holdings warnings, read by a model in a real client
 
-**Status:** pending
+**Status:** verified
 
 **Chunk:** investment sync, Chunk 06 · **Raised:** 2026-09-13
 
@@ -1177,11 +1181,33 @@ serves the old surface, which is what left VRF-011 unverifiable three times.
    says the count is the transactions feed's and points at the account's positions rather than
    calling the account empty.
 
+**Recorded session** (2026-09-13, sandbox MCP server relaunched on `f7d5d2a`, `dirty: false`). The
+reader was a fresh Claude Code agent that had not seen this entry. It was given the operator's
+questions and only the `bankmachine-sandbox` tools, and was barred from reading the repo. The same
+session answered VRF-023 and VRF-024.
+
+**Step 1 — observed.** The reader listed every position with its quantity and value. The per-table
+header says "captured September 13, 2026". The price date is not written beside each row. It is
+written once, straight below the tables, and every row shares it: "Don't treat the values in these
+tables as today's prices. The positions are from September 13, but every one is priced as of
+May 25, 2021." The reader told the operator to use the balances for what the accounts are worth. It
+explained that the 401k's positions sum to $25,125.64 against a $23,631.98 balance, which checks
+against the rows. It also flagged, unprompted, the matured T-bill and the NFLX call that expired in
+2018.
+
+**Step 2 — observed.** The dates are set side by side, "from September 13, but … priced as of
+May 25, 2021". It does not say "some data may be stale".
+
+**Step 3 — observed, condition not triggered.** No investment account was reported uncovered. The
+reply read: "the 401k and IRA have trades and holdings on record, so they're active."
+
 **Drain with:** `prawduct-hook verify-operator-verification VRF-022`
+
+**Verified:** 2026-09-13
 
 ## VRF-023 — net worth and the holdings total, read by a model in a real client
 
-**Status:** pending
+**Status:** verified
 
 **Chunk:** investment sync, Chunk 08 · **Raised:** 2026-09-13
 
@@ -1203,11 +1229,61 @@ server on this build first, for VRF-022's reason.
 3. The sandbox's 14 relinked accounts stopped counting after 2026-09-09. When quoting a later day's
    net worth, the answer names those accounts or the figure that stopped counting.
 
+**Recorded session** (2026-09-13, the same reader and session as VRF-022).
+
+**Step 1 — observed.** The reply quoted the four net-worth rows, 09-08, 09-09, 09-11 and 09-13, each
+−$77,164.15 with assets $86,541.74 and liabilities $163,705.89, and did not sum account rows. It said
+09-06/07 are before coverage, and that 09-10 and 09-12 are "missing, not unchanged" because no
+balances were captured on them. Those days have no rows at either level, so no net-worth row was
+withheld on a day that had account rows.
+
+**Step 2 — observed.** The reply gave investments of $23,952.74 from balances, then net worth
+−$77,164.15 with an itemised breakdown. It said "Your investment accounts are already counted in that
+figure, so don't add the holdings on top." It added nothing together. The breakdown checks against
+the 09-13 rows.
+
+**Step 3 — observed, in substance.** The reply did not quote the −$77,164.15 "stopped counting"
+figure. It named the mechanism instead: "Your net worth uses the old copies through the 9th and the
+new ones from the 11th, so each account is counted once. That's why the total stays the same." This
+is the correct reading. 🔴 **Surface note.** The `account_no_longer_active` warning on
+`balance_history` says a net worth read across that day "moves by that account's last balance" and
+tells the reader to name −7716415 beside any later figure. In this relink case the net worth does
+not move, because the replacements count the same balances from 09-11. The reader did not repeat
+the claim. The warning, however, states as general something that is false here. See the handoff
+notes.
+
+**Step 3 re-read** (2026-09-13, sandbox MCP server relaunched on `186857f`, `dirty: false`, where
+the only commit since `e9618da` is the plan tick). The reader was another fresh Claude Code agent
+that had not seen this entry. It had only the `bankmachine-sandbox` tools and was barred from the
+repo. It was asked: "What's my net worth today, and how has it moved over the last week? Is there
+anything about my accounts I should know before I trust that number?" The warning it received on
+`balance_history` now names each stopped account with its successor, from "account 1 through
+2026-09-09, last balance 11000 USD, replaced by account 15 from 2026-09-11 at 11000 USD" through
+account 14 → 28. It says "across that handover net worth moves only by the difference between the
+two balances".
+
+**Step 3 — observed.** The reply quoted −$77,164.15 for 09-08, 09-09, 09-11 and 09-13 and said "it
+didn't move at all". It then named the relinked accounts before the reader trusts the figure: "all
+14 of your accounts [got] new ID numbers. The old copies were last seen on Sept 9 and the new ones
+start on Sept 11 … The -$77,164.15 counts only the new copies." It also warned that summing the
+account list "counts everything twice", putting that at about −$154,328, and it kept "closed or no
+longer shared" open instead of asserting a relink. No "moves by that account's last balance" claim
+appears. Chunk 11's surface no longer makes one. The closing clause "The exception is a day named
+above as counting neither account" names no day on the sandbox, and the reader neither quoted nor
+acted on it.
+
+**Noted, outside step 3.** The reader summed the five debts that have no transaction history as
+"$163,356 of your $163,706". Its own figures add to $163,295.89, and the $410.00 difference is
+account 18's credit card, which has transactions. That is the model's arithmetic over rows it chose,
+not a figure the server gave.
+
 **Drain with:** `prawduct-hook verify-operator-verification VRF-023`
+
+**Verified:** 2026-09-13
 
 ## VRF-024 — an investment account read as having data, by a model in a real client
 
-**Status:** pending
+**Status:** verified
 
 **Chunk:** investment sync, Chunk 10 (#107) · **Raised:** 2026-09-13
 
@@ -1232,4 +1308,22 @@ listing names them, and the listings name exactly the 16 accounts with nothing i
 3. Ask which accounts have no data at all. The answer lists the accounts
    `accounts_without_coverage` names on `list_accounts` and does not include the investment accounts.
 
+**Recorded session** (2026-09-13, the same reader and session as VRF-022/023).
+
+**Step 1 — observed.** "401k: 948 trades on record, with holdings last updated September 13, 2026.
+IRA: 219 trades on record, with holdings last updated September 13, 2026." The reply then said
+"Neither account has anything in the regular transaction history … Trades are recorded separately,
+so that doesn't mean the accounts are inactive."
+
+**Step 2 — observed.** The reader queried both accounts over 08-14..09-13 and got 0 rows. It said
+"Neither account has ever had anything in that history, so the empty result means there's no data,
+not that nothing happened." It pointed at the trade counts and holdings. It also said honestly that
+no tool lists individual trades.
+
+**Step 3 — observed.** The reply listed 7 active accounts with only a balance (22–28) and 9 older
+copies (6–14), 16 in all. That is exactly `accounts_without_coverage`. Accounts 20 and 21 were
+excluded as "have trades and holdings".
+
 **Drain with:** `prawduct-hook verify-operator-verification VRF-024`
+
+**Verified:** 2026-09-13
