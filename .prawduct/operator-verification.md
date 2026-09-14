@@ -1330,7 +1330,7 @@ excluded as "have trades and holdings".
 
 ## VRF-025 — one real pending transaction watched across settlement
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#22) · **Raised:** 2026-09-14
 
@@ -1343,9 +1343,11 @@ The obligation is **#22**, and it blocks production.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-025`
 
+**Accepted:** 2026-09-14 — rationale: Accepted to open the transaction-filters PR. VRF-025 and VRF-026 cannot run before the production cutover (the sandbox holds no pending row and one enrolled institution) and are raised again on the next branch on the same term. VRF-027 is accepted to open the PR and remains owed as the reading test for search: raise it again on the next branch unless it has been run in a real client against the sandbox by then.
+
 ## VRF-026 — the sign convention on a real inflow, across two institutions
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#23) · **Raised:** 2026-09-14
 
@@ -1359,9 +1361,11 @@ check more relevant here, not less, and still not runnable before the cutover. T
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-026`
 
+**Accepted:** 2026-09-14 — rationale: Accepted to open the transaction-filters PR. VRF-025 and VRF-026 cannot run before the production cutover (the sandbox holds no pending row and one enrolled institution) and are raised again on the next branch on the same term. VRF-027 is accepted to open the PR and remains owed as the reading test for search: raise it again on the next branch unless it has been run in a real client against the sandbox by then.
+
 ## VRF-027 — a search answer read by a model in a real client
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** transaction filters, Chunk 02 · **Raised:** 2026-09-14
 
@@ -1385,3 +1389,5 @@ first — confirm by `build.commit` in any answer.
    presented as what the search found, with its rows shown, not as the whole amount.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-027`
+
+**Accepted:** 2026-09-14 — rationale: Accepted to open the transaction-filters PR. VRF-025 and VRF-026 cannot run before the production cutover (the sandbox holds no pending row and one enrolled institution) and are raised again on the next branch on the same term. VRF-027 is accepted to open the PR and remains owed as the reading test for search: raise it again on the next branch unless it has been run in a real client against the sandbox by then.
