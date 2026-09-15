@@ -1633,7 +1633,7 @@ transactions, so a paycheck and a bill at a second institution are still owed. T
 
 ## VRF-038 — one real pending transaction watched across settlement
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#22) · **Raised:** 2026-09-14
 
@@ -1644,9 +1644,11 @@ has not yet held a real pending row across its settlement. The obligation is **#
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-038`
 
+**Accepted:** 2026-09-15 — rationale: VRF-038/039 are production-data obligations (#22/#23) this branch doesn't touch; re-raised on the next branch. VRF-040 is verifiable only after release by construction and is drained after the production upgrade.
+
 ## VRF-039 — the sign convention on a real inflow, across two institutions
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** production-data semantics (#23) · **Raised:** 2026-09-14
 
@@ -1657,9 +1659,11 @@ bill at a second institution are still owed. The obligation is **#23**.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-039`
 
+**Accepted:** 2026-09-15 — rationale: VRF-038/039 are production-data obligations (#22/#23) this branch doesn't touch; re-raised on the next branch. VRF-040 is verifiable only after release by construction and is drained after the production upgrade.
+
 ## VRF-040 — the agent client reads investment activity and reports no false problems
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** investment activity end to end, chunk 03 · **Raised:** 2026-09-15
 
@@ -1686,3 +1690,5 @@ carries this change (`build.commit` on any answer names it).
    them, not that data is missing or a sync failed.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-040`
+
+**Accepted:** 2026-09-15 — rationale: VRF-038/039 are production-data obligations (#22/#23) this branch doesn't touch; re-raised on the next branch. VRF-040 is verifiable only after release by construction and is drained after the production upgrade.
