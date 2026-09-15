@@ -805,6 +805,7 @@ Required tools:
 | `get_pipeline_health` | Per-connection sync status, last success, error codes, per-account coverage window, row counts, staleness flags, rule anomalies |
 | `list_accounts` | Accounts with type, institution, mask, current balance, lifecycle state |
 | `query_transactions` | Filtered rows (date range, account, category, amount range, merchant search). Paginated, capped |
+| `query_investment_transactions` | An investment account's activity — trades, income, contributions, withdrawals and fees — by date range, account and type. Paginated, capped, totalled per currency and type |
 | `money_summary` | Money in and out over a period, grouped by category, merchant, account, month or flow class, per currency |
 | `balance_history` | Value over time, per account or aggregated as net worth, investments included |
 | `list_holdings` | Current investment positions with cost basis where available |
@@ -812,7 +813,8 @@ Required tools:
 | `get_coverage_report` | Per account: first and last transaction date, gaps against the account's own cadence, source breakdown |
 
 *(Build status 2026-09-14: `get_pipeline_health`, `list_accounts`, `list_holdings`,
-`balance_history`, `query_transactions`, `money_summary` and `get_coverage_report` are implemented,
+`balance_history`, `query_transactions`, `query_investment_transactions`, `money_summary` and
+`get_coverage_report` are implemented,
 and `query_transactions` carries every filter named above under AC-9.6; `find_recurring` is not yet
 built, and the descope — including what the shipped tools do not yet carry — is recorded in
 `.prawduct/artifacts/api-contract.md`.)*

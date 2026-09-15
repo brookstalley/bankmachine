@@ -34,6 +34,113 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-15: Warnings route to where the data lives, and stop calling a quiet account a fault
+
+<!-- prawduct: scope=investment-activity-e2e -->
+
+**Why:** with investment activity served, the warnings still described the store as if it were not.
+`query_transactions` and `money_summary` named every investment account "DATA NOT PRESENT", though
+its trades and positions were in the store. An account with nothing recorded on a connection whose
+sync had completed was called "DATA NOT PRESENT, never no activity", which an agent reported to the
+operator as a problem. And a transactions-grant shortfall on another connection was phrased against
+a trades or balances window as if it reached that answer.
+
+**What changed (chunk 03 of `build-plan-investment-activity-e2e.md`):**
+- New request-scoped warning kind `activity_in_another_feed`. The transactions tools name an account
+  with no transaction but with trades or positions under it, routing to
+  `query_investment_transactions` and `list_holdings`; `accounts_without_coverage` now names only
+  accounts with nothing in any feed, on every tool.
+- `accounts_without_coverage` separates two states. A connection that never completed a sync: data
+  not present. One that has: the store cannot tell an account with no activity from one whose
+  institution does not report it, so report no recorded activity, not a fault. (The aggregator lists
+  only the accounts a sync page touched, so it gives no signal either way.)
+- `gapped` on an answer that reads no transaction -- trades, balances, and positions from
+  `list_holdings` -- says the shortfall limits that connection's transactions and does not affect
+  this answer.
+- The server instructions name `query_investment_transactions`; coverage row and tool descriptions
+  point at it; the contract, client guide and warning guidance carry both kinds.
+- Carried from chunk 02's review: the trades tool's refusals are tested through the server; the
+  paging invariant is walked over varied window, account and type; the set of connections holding
+  transactions is read only when a connection could need it.
+
+**Tests added:** routing on `query_transactions` and `money_summary` as exact sets; both
+`accounts_without_coverage` states (`tests/test_account_coverage.py`); the shortfall on a trades answer
+and the primer naming the tool; no unmeasured caveat on tools other than health
+(`tests/test_mcp.py`); wire refusals and the scoped walk (`tests/test_investment_transactions.py`). Two
+#107 tests that asserted investment accounts are named as uncovered on the transactions tools now
+assert they are routed, per the plan's recorded decision.
+
+**From the cumulative review (`rev-20260915T012943Z-e8459632`):** the `balance_history` shortfall
+wording is tested; `no_data_in_any_feed`'s docstring and the window-coverage comment describe the
+routing rather than the reversed #107 rule; the shared `totals` description states the trades
+block's grouping (each tool must describe the key one way, since the envelope reference renders one);
+the reference lists a trade's `description`, `security_name` and `ticker` as third-party text and
+names the trades' own span in the window-clamp guidance; an unused test import is gone. From its verify pass (`rev-20260915T015907Z-bcca8df1`): the third-party-text rule now covers every institution-written field on every tool, positions included, and the past-coverage guidance names the trades' last day. Accepted with
+reasons: the third near-copy of the cursor code, the two feed parameters on `_answer`, and two notes. Go-red cases retargeted for the two
+replaced anchors and added for routing, the completed-sync wording and the series shortfall.
+
+## 2026-09-14: Investment activity is served, by `query_investment_transactions`
+
+<!-- prawduct: scope=investment-activity-e2e -->
+
+**Why:** an investment account's activity reaches the aggregator on its own feed, so an
+investment-only institution holds hundreds of trades and no transaction. They were stored and
+counted per account, and no tool returned one, so a production agent asked for its investment
+activity answered that none was available.
+
+**What changed (chunk 02 of `build-plan-investment-activity-e2e.md`):**
+- New tool `query_investment_transactions` (`src/bankmachine/query_investments.py`): trades newest
+  first, windowed on `trade_date` and clamped to the trades' own span, filtered by account and
+  `investment_type`, capped and keyset-paged under a new cursor scheme (`envelope.TradeCursor`) that
+  refuses a transactions or balance-series cursor and a cursor issued for a different request. Removed
+  trades are excluded from rows, counts and totals. `totals` groups the whole request by currency,
+  type and subtype and is never netted into one figure. An unknown type is refused naming the types
+  the store holds.
+- `WindowSeries` gains `investment_transactions`. The contract, the requirements' §5 table, the
+  README and the client guide count eight of nine tools built; the contract tables every new field.
+- The envelope reference's cannot-answer list no longer says trades are unserved; it keeps tax lots.
+- Carried from chunk 01's review: the health answer reads the set of connections holding transactions
+  once and hands it to its warnings, so a sync landing between two reads cannot make a row and its
+  warning disagree; the test that the unmeasured caveat is gone now has a positive control on the
+  wording it matches; a first transaction arriving is shown to move a connection out of
+  `no_transactions_to_measure`; and three texts that said such a connection's answers "cannot be
+  short" now say so of its transactions feed only.
+
+**Tests added:** `tests/test_investment_transactions.py` — every recorded trade with the published
+keys; a walk at five page sizes reads each trade once and matches the totals; totals over the whole
+request; removed trades; the window clamp; the type filter and its refusal; an unknown account;
+cursor refusals across all three schemes; a missing store; and a cursor round-trip through the real
+server. Existing tool-set enumerations in `tests/test_mcp.py` and `tests/test_account_lifecycle.py`
+name the new tool, and the go-red
+case for the cannot-answer claim anchors on the new wording.
+
+## 2026-09-14: Two warnings that could never be true are gone
+
+<!-- prawduct: scope=investment-activity-e2e -->
+
+**Why:** a production agent session was told about problems the store did not have. An
+investment-only connection completed its transactions backfill with no transaction, so the
+measurement behind `granted_history_days` had nothing to count and never ran, and every answer
+carried a `partial` caveat saying its window "is measured when the initial backfill completes" --
+about a backfill that had completed. Separately, a request with `since` and no `until` was told its
+window "reaches past today, and that tail is unanswered", though an open `until` resolves to today.
+A warning describing a fault that is not there teaches the reader to skip the ones that are.
+
+**What changed (chunk 01 of `build-plan-investment-activity-e2e.md`):**
+- `get_pipeline_health` rows carry `granted_history_status`: `measured`, `not_yet_measured`, or
+  `no_transactions_to_measure`. The last is a connection whose `last_success_at` is stamped (the
+  aggregator reported the history complete) and which holds no transaction row. The unmeasured
+  `partial` caveat fires only for `not_yet_measured`. Derived at read time: no schema change, no
+  derivation bump, and it clears itself once a transaction arrives and a complete sync measures the
+  window.
+- The `gapped` detail says "reaches past today" only for an explicit `until` after today.
+
+**Tests added:** the three statuses and the absent caveat, including a connection that never completed
+a backfill staying `not_yet_measured` (`tests/test_mcp.py`); a start with no end and an end after today
+(`tests/test_query_window.py`). Each was seen red with its fix reverted. The go-red harness's AC-1.3a
+case now anchors on the status check that replaced the null test, and a second case breaks the
+completed-backfill branch; both were seen red.
+
 ## 2026-09-14: A transactions feed that finishes empty is recorded as landed
 
 <!-- prawduct: scope=empty-complete-transactions-page | release=v0.1.0 -->

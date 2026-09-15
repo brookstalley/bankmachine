@@ -172,11 +172,62 @@ class _ConnectionFreshness:
     stale: bool
 
 
+#: What a connection's `granted_history_days` is, named because null means two
+#: different things. `measured` carries a number. `not_yet_measured` is null
+#: because nobody has counted yet. `no_transactions_to_measure` is null because
+#: the backfill completed and carried no transaction, so there is nothing for a
+#: grant to have cut -- an institution whose accounts post nothing to this feed.
+GRANTED_HISTORY_STATUSES: tuple[str, ...] = (
+    "measured",
+    "not_yet_measured",
+    "no_transactions_to_measure",
+)
+
+
+def _connections_holding_transactions(conn: SAConnection) -> frozenset[int]:
+    """Every connection with at least one transaction row, removed rows included.
+
+    Removed rows count because the measurement they stand in for counts them:
+    `sync_run._record_granted_window` takes the oldest `posted_date` across the
+    connection's transactions without filtering removals, so a connection whose
+    only rows were removed still had something to measure.
+    """
+    return frozenset(
+        int(connection_id)
+        for (connection_id,) in conn.execute(
+            select(accounts.c.connection_id)
+            .select_from(transactions.join(accounts))
+            .where(accounts.c.connection_id.is_not(None))
+            .distinct()
+        ).all()
+    )
+
+
+def _granted_history_status(
+    *, granted: object, backfill_complete: bool, holds_transactions: bool
+) -> str:
+    """Which of `GRANTED_HISTORY_STATUSES` a connection's grant is in.
+
+    🔴 `backfill_complete` is the CONNECTION's `last_success_at`, never a sync
+    domain's. The connection stamp is written only once the aggregator reports
+    the history is in; a transactions domain can be stamped by a page that
+    carries a cursor at any status, so keying on it would call a connection
+    mid-backfill, with no transaction yet, one that has none to measure.
+    """
+    if granted is not None:
+        return "measured"
+    if backfill_complete and not holds_transactions:
+        return "no_transactions_to_measure"
+    return "not_yet_measured"
+
+
 def _pipeline_warnings(
     conn: SAConnection,
     now: UtcInstant,
     window: Window | None = None,
     derivation_versions: tuple[int, ...] | None = None,
+    holding: frozenset[int] | None = None,
+    answers_transactions: bool = True,
 ) -> list[Caveat]:
     """Everything wrong with the data underneath any answer.
 
@@ -238,6 +289,11 @@ def _pipeline_warnings(
         )
 
     freshness: dict[int, _ConnectionFreshness] = {}
+    # 🔴 `get_pipeline_health` hands in the set its rows' `granted_history_status`
+    # was computed from, because a sync committing a connection's first
+    # transaction between two reads would otherwise let one answer's row and its
+    # warning disagree. Every other answer reads it at most once, and only when a
+    # connection could be in the one status the set decides.
     for row in rows:
         connection_id, name = int(row[0]), str(row[1])
         status, last_success = str(row[2]), row[3]
@@ -309,8 +365,17 @@ def _pipeline_warnings(
         # 🔴 The shortfall AC-11.8 exists to surface. Null granted is NOT no
         # shortfall -- it is not yet known -- and the two are reported
         # differently, because reading the first as the second is the exact
-        # inference AC-1.3a forbids.
-        if granted is None and not said.never_succeeded:
+        # inference AC-1.3a forbids. A connection whose backfill completed with no
+        # transaction is neither: nothing in that feed could have been cut, so
+        # there is nothing unknown to warn about.
+        if holding is None and granted is None and last_success is not None:
+            holding = _connections_holding_transactions(conn)
+        status = _granted_history_status(
+            granted=granted,
+            backfill_complete=last_success is not None,
+            holds_transactions=holding is not None and connection_id in holding,
+        )
+        if status == "not_yet_measured" and not said.never_succeeded:
             warnings.append(
                 Caveat(
                     kind="partial",
@@ -333,6 +398,7 @@ def _pipeline_warnings(
                         starts=None if row[7] is None else calendar_date(row[7]),
                         window=window,
                         today=calendar_date(now.date()),
+                        answers_transactions=answers_transactions,
                     ),
                     connection_id=connection_id,
                     institution=name,
@@ -589,8 +655,14 @@ def _gapped_detail(
     starts: CalendarDate | None,
     window: Window | None,
     today: CalendarDate,
+    answers_transactions: bool = True,
 ) -> str:
     """One standing shortfall, phrased against the window actually asked about.
+
+    `answers_transactions` is False on an answer read from another series -- trades or
+    balances. The grant limits a connection's TRANSACTIONS, so on such an answer the
+    shortfall is still stated and is said not to reach the rows beside it, rather than
+    phrased against a window that was never clamped to it.
 
     🔴 **A reader who sees a different sentence on the second answer reads the
     third.** The shortfall is the same fact every time and is stated every time;
@@ -614,6 +686,15 @@ def _gapped_detail(
     a courtesy to a reader, never a replacement for the fact.
     """
     shortfall = f"{name} granted {granted} days of history against {requested} requested"
+    if not answers_transactions:
+        # Ahead of every branch below, including the unrecorded-start one: each of those
+        # reads the grant against this answer's window, and this answer never read the
+        # series the grant limits.
+        starts_at = "" if starts is None else f"; its coverage begins {starts.isoformat()}"
+        return (
+            f"{shortfall}{starts_at}. That limits its TRANSACTIONS, which this answer does not "
+            f"read, so the shortfall does not affect this answer"
+        )
     if starts is None:
         return (
             f"{shortfall}, and the date its coverage begins has not been recorded yet, so "
@@ -637,7 +718,10 @@ def _gapped_detail(
             f"{shortfall}, and THIS window reaches {missing} day(s) past where its data starts: "
             f"{begins}, so the part of the window before that is absent rather than zero"
         )
-    if until is None or until > today:
+    # An open `until` resolves to today, so only an explicit end after today
+    # reaches past it. Saying so of a request that named no end described a
+    # tail the answer does not have.
+    if until is not None and until > today:
         return (
             f"{shortfall}; {begins}, which this window starts inside. Its leading edge is "
             f"covered -- but the window reaches past today, and that tail is unanswered rather "
@@ -793,7 +877,7 @@ class AccountCoverage:
     transaction_count: int
     #: How many investment trades the store holds for the account, removed ones
     #: excluded. Counted from their own table, never through the transactions
-    #: join, and served as rows by no tool.
+    #: join; `query_investment_transactions` serves the trades themselves.
     investment_transaction_count: int
     #: The newest day this account's positions were captured; null when none ever
     #: was. A position refused for its unit is not a capture.
@@ -803,6 +887,10 @@ class AccountCoverage:
     #: no connection -- two different reasons, both meaning the comparison below
     #: cannot be made.
     history_starts: CalendarDate | None = None
+    #: Whether this account's connection has completed a sync: its `last_success_at`
+    #: is stamped only once the aggregator reports the history complete. False for an
+    #: import-only account, which has no connection to have completed anything.
+    feeds_completed: bool = False
 
     @property
     def truncated_by_the_grant(self) -> bool:
@@ -853,20 +941,29 @@ class AccountCoverage:
     def no_data_in_any_feed(self) -> bool:
         """Nothing has been recorded for this account in ANY feed.
 
-        🔴 What the LISTINGS name, where `uncovered` is what the transactions tools
-        name. `list_accounts` and `get_coverage_report` describe the account
-        itself, so an investment account whose trades or positions are stored has
-        data, and naming it told an agent to distrust a true answer (#107).
-        `query_transactions` and `money_summary` answer only from the transactions
-        feed, and for them the same account's empty answer really is data not
-        present -- so they keep `uncovered`. Two predicates because there are two
-        questions, not one rule spelled twice.
+        🔴 What EVERY tool names under `accounts_without_coverage`. An account whose
+        trades or positions are stored has data, and naming it told an agent to
+        distrust a true answer (#107). On `query_transactions` and `money_summary`,
+        which read only the transactions feed, such an account is still named -- but
+        by `activity_elsewhere`, under `activity_in_another_feed`, which says where
+        its data is. A new tool answering from the transactions feed takes both
+        predicates; taking `uncovered` alone would call that account absent again.
         """
         return (
             self.transaction_count == 0
             and self.investment_transaction_count == 0
             and self.holdings_as_of is None
         )
+
+    @property
+    def activity_elsewhere(self) -> bool:
+        """No transaction, and activity recorded in the investments feed instead.
+
+        What a tool answering from the transactions feed names under
+        `activity_in_another_feed` rather than `accounts_without_coverage`: the account
+        has data, and it lives where that tool does not read.
+        """
+        return self.transaction_count == 0 and not self.no_data_in_any_feed
 
     def to_wire(self) -> dict[str, Any]:
         """The fields every account row carries, in every tool that carries them."""
@@ -940,6 +1037,7 @@ def _account_coverage(conn: SAConnection) -> dict[int, AccountCoverage]:
             sync_state.c.history_start_date,
             trades.c.trades,
             positions.c.captured,
+            connections.c.last_success_at,
         )
         .select_from(
             accounts.outerjoin(
@@ -963,6 +1061,7 @@ def _account_coverage(conn: SAConnection) -> dict[int, AccountCoverage]:
             )
             .outerjoin(trades, trades.c.account_id == accounts.c.account_id)
             .outerjoin(positions, positions.c.account_id == accounts.c.account_id)
+            .outerjoin(connections, connections.c.connection_id == accounts.c.connection_id)
         )
         # One row per account on each subquery's side, so grouping by them splits
         # nothing; they are named because a grouped select must name them.
@@ -971,6 +1070,7 @@ def _account_coverage(conn: SAConnection) -> dict[int, AccountCoverage]:
             sync_state.c.history_start_date,
             trades.c.trades,
             positions.c.captured,
+            connections.c.last_success_at,
         )
     ).all()
     return {
@@ -990,6 +1090,7 @@ def _account_coverage(conn: SAConnection) -> dict[int, AccountCoverage]:
             investment_transaction_count=0 if row[5] is None else int(row[5]),
             holdings_as_of=None if row[6] is None else calendar_date(row[6]),
             history_starts=None if row[4] is None else calendar_date(row[4]),
+            feeds_completed=row[7] is not None,
         )
         for row in result
     }
@@ -1460,42 +1561,92 @@ def _not_active_caveat(
 
 
 def _uncovered_caveat(uncovered: list[AccountCoverage], *, listing: bool) -> list[Caveat]:
-    """The warning that names the accounts an answer could not have data for.
+    """The notice for accounts in scope that hold nothing in ANY feed.
 
-    🔴 Request-scoped: it fires only when THIS request's scope holds an
-    uncovered account. A kind riding every response equally is the defect
-    `CONNECTION_SCOPED_KINDS` records above -- the `gapped` notice arrived
-    character-for-character identical on four unrelated questions, true and
-    useless for telling a caller whether this answer was the degraded one.
+    Request-scoped rather than riding every answer: a kind that fires on every
+    response equally is the defect `api-contract.md` records against `gapped`.
+    Names the ids, because "some accounts have no data" is a warning nobody can act
+    on.
 
-    Names the ids, because "some accounts have no data" is a warning nobody can
-    act on and the caller's next move is to ask about a different account.
+    🔴 **Two sentences, because there are two states, and the difference is whether
+    this is a problem.** On a connection that has never completed a sync, nothing
+    has been recorded yet: an empty result is DATA NOT PRESENT. On one that has, the
+    feeds that would carry the account completed and returned nothing for it, and
+    the aggregator gives no signal that tells a quiet account from one its
+    institution does not report -- measured: a sync page lists only the accounts it
+    touched. Calling that "data not present" told an agent to report a fault the
+    store does not have; calling it "no activity" would claim a zero nobody
+    measured. It says what is known.
 
-    `listing` says which question the scope asked, and it has no default because
-    every caller must choose. A listing passes the accounts with nothing in any
-    feed (`AccountCoverage.no_data_in_any_feed`); a tool answering from the
-    transactions feed passes the accounts with no transaction
-    (`AccountCoverage.uncovered`), and its detail says where an investment
-    account's activity is recorded instead.
+    `listing` says which question the scope asked: a listing describes the account
+    itself, a transactions tool describes what it answers from, and the one clause
+    that differs says which. Both name only accounts with nothing in any feed; an
+    account whose activity is in the investments feed is routed by
+    `_other_feed_caveat` instead.
     """
     if not uncovered:
         return []
-    ids = ", ".join(
-        str(coverage.account_id) for coverage in sorted(uncovered, key=lambda c: c.account_id)
-    )
-    detail = (
-        f"nothing has ever been recorded for account(s) {ids} in any feed -- no transaction, "
-        f"no investment trade and no captured position -- so an empty or absent result for "
-        f"them means DATA NOT PRESENT, never no activity"
+
+    def ids(entries: list[AccountCoverage]) -> str:
+        return ", ".join(str(c.account_id) for c in sorted(entries, key=lambda c: c.account_id))
+
+    where = (
+        "in any feed -- no transaction, no investment trade and no captured position"
         if listing
-        else f"no transaction has ever been recorded for account(s) {ids}; an empty or "
-        f"absent result for them means DATA NOT PRESENT, never no activity. This counts "
-        f"the TRANSACTIONS feed alone -- an investment account's trades and positions are "
-        f"recorded apart from it: `investment_transaction_count` and `holdings_as_of` on "
-        f"`list_accounts` say what the store holds for it, and `list_holdings` serves its "
-        f"positions"
+        else "in any feed"
     )
-    return [Caveat(kind="accounts_without_coverage", detail=detail)]
+    caveats: list[Caveat] = []
+    completed = [c for c in uncovered if c.feeds_completed]
+    unfinished = [c for c in uncovered if not c.feeds_completed]
+    if unfinished:
+        caveats.append(
+            Caveat(
+                kind="accounts_without_coverage",
+                detail=(
+                    f"nothing has been recorded for account(s) {ids(unfinished)} {where}, and "
+                    f"their connection has not completed a sync, so an empty or absent result "
+                    f"for them means DATA NOT PRESENT, never no activity"
+                ),
+            )
+        )
+    if completed:
+        caveats.append(
+            Caveat(
+                kind="accounts_without_coverage",
+                detail=(
+                    f"nothing is recorded for account(s) {ids(completed)} {where}, though their "
+                    f"connection's sync has completed. The store cannot tell an account with no "
+                    f"activity from one whose institution does not report its activity, so say "
+                    f"the store holds no recorded activity for it -- not that data is missing, "
+                    f"and not that a sync failed"
+                ),
+            )
+        )
+    return caveats
+
+
+def _other_feed_caveat(elsewhere: list[AccountCoverage]) -> list[Caveat]:
+    """The notice that an account's empty transactions answer has a home elsewhere.
+
+    Named, not silent: `query_transactions(account_id=...)` returning `[]` for a
+    brokerage account with no notice reads as an account that did nothing. And
+    routed, not alarmed: its activity is in the store, so the notice says where.
+    """
+    if not elsewhere:
+        return []
+    named = ", ".join(str(c.account_id) for c in sorted(elsewhere, key=lambda c: c.account_id))
+    return [
+        Caveat(
+            kind="activity_in_another_feed",
+            detail=(
+                f"account(s) {named} hold no transaction because their activity is recorded in "
+                f"the investments feed, which this tool does not read: "
+                f"`query_investment_transactions` serves their trades, contributions and "
+                f"dividends, and `list_holdings` their positions. Their absence here is where "
+                f"the data lives, not missing data"
+            ),
+        )
+    ]
 
 
 def _unmatched_transfer_caveat(
@@ -1646,9 +1797,10 @@ def _window_coverage_caveat(coverage: list[AccountCoverage], since: date | None)
     asked_from = calendar_date(since)
     cut: list[str] = []
     for entry in sorted(coverage, key=lambda c: c.account_id):
-        # Already named, in full, by `_uncovered_caveat`. Saying it twice in two
-        # kinds would have a caller reconcile two lists describing one set of
-        # accounts.
+        # Already named, in full: by `_uncovered_caveat` when it holds nothing in any
+        # feed, and by `_other_feed_caveat` when its activity is in another feed.
+        # Saying it again in a third notice would have a caller reconcile two lists
+        # describing one set of accounts.
         if entry.uncovered:
             continue
         if (
@@ -1824,6 +1976,8 @@ def _answer(
     lifecycle: dict[int, AccountLifecycle] | None = None,
     window_series: WindowSeries = "transactions",
     derivation_versions: tuple[int, ...] | None = None,
+    holding: frozenset[int] | None = None,
+    reads_transactions: bool | None = None,
 ) -> Answer:
     """One answer, and the one place a window is reconciled against coverage.
 
@@ -1857,6 +2011,20 @@ def _answer(
     if requested_window is not None and window_series == "balances":
         first, last = conn.execute(
             select(func.min(balances_daily.c.as_of_date), func.max(balances_daily.c.as_of_date))
+        ).one()
+        span = (
+            None if first is None else calendar_date(first),
+            None if last is None else calendar_date(last),
+        )
+    elif requested_window is not None and window_series == "investment_transactions":
+        # Clamped to the days trades were recorded, for the balance series' reason:
+        # the trades feed reaches back its own distance, and an investment-only
+        # store holds no transaction to clamp against at all.
+        first, last = conn.execute(
+            select(
+                func.min(investment_transactions.c.trade_date),
+                func.max(investment_transactions.c.trade_date),
+            ).where(investment_transactions.c.removed_at.is_(None))
         ).one()
         span = (
             None if first is None else calendar_date(first),
@@ -1897,7 +2065,19 @@ def _answer(
         # consumer reading top-down meets the standing state of the pipeline
         # before the thing that is specific to what they just asked.
         warnings=(
-            _pipeline_warnings(conn, now, window, derivation_versions)
+            _pipeline_warnings(
+                conn,
+                now,
+                window,
+                derivation_versions,
+                holding,
+                # Whether the rows came from the transactions feed: a windowed answer
+                # says so by its series, and an unwindowed one over another feed --
+                # positions -- says so explicitly.
+                window_series == "transactions"
+                if reads_transactions is None
+                else reads_transactions,
+            )
             + ([] if window is None else window.caveats)
             + ([] if truncation is None else truncation.caveats)
             + (extra_caveats or [])
@@ -2918,11 +3098,13 @@ def list_transactions(
         # ordinary result, and naming nine irrelevant accounts on every page of
         # every walk is the character-for-character noise the connection scope
         # already taught this codebase not to emit.
-        uncovered = (
-            [c for c in (_account_coverage(conn).get(account_id),) if c is not None and c.uncovered]
+        scoped = (
+            [c for c in (_account_coverage(conn).get(account_id),) if c is not None]
             if account_id is not None
             else []
         )
+        uncovered = [c for c in scoped if c.no_data_in_any_feed]
+        elsewhere = [c for c in scoped if c.activity_elsewhere]
         # 🔴 Same scoping, same reason, on the lifecycle axis (AC-12.1's
         # rationale). An agent asking
         # "what did I spend on this card" about an account the institution
@@ -2974,6 +3156,7 @@ def list_transactions(
             ),
             extra_caveats=(
                 _uncovered_caveat(uncovered, listing=False)
+                + _other_feed_caveat(elsewhere)
                 + _superseded_caveat(spans, account_id=account_id, since=since, until=until)
                 + _not_active_caveat(not_active)
                 + _roster_observed_empty_caveat(not_active)
@@ -3849,7 +4032,8 @@ def money_summary(
         lifecycle = _account_lifecycle(conn)
         not_active = [entry for entry in lifecycle.values() if not entry.active]
         all_coverage = list(_account_coverage(conn).values())
-        uncovered = [entry for entry in all_coverage if entry.uncovered]
+        uncovered = [entry for entry in all_coverage if entry.no_data_in_any_feed]
+        elsewhere = [entry for entry in all_coverage if entry.activity_elsewhere]
         return _answer(
             config,
             conn,
@@ -3891,6 +4075,7 @@ def money_summary(
             # as settled.
             extra_caveats=(
                 _uncovered_caveat(uncovered, listing=False)
+                + _other_feed_caveat(elsewhere)
                 + _superseded_caveat(spans, account_id=None, since=since, until=until)
                 + _unmatched_transfer_caveat(conn, since=since, until=until)
                 + _window_coverage_caveat(all_coverage, since)
@@ -4013,6 +4198,7 @@ def pipeline_health(config: Config) -> Answer:
         measured = signs.measure(conn)
         conventions = {m.connection_id: m for m in measured}
         domains = _sync_domains(conn)
+        holding = _connections_holding_transactions(conn)
         rows = [
             {
                 "connection_id": int(r[0]),
@@ -4023,6 +4209,11 @@ def pipeline_health(config: Config) -> Answer:
                 "requested_history_days": None if r[5] is None else int(r[5]),
                 # 🔴 Null is reported as null, never as zero or as "complete".
                 "granted_history_days": None if r[6] is None else int(r[6]),
+                "granted_history_status": _granted_history_status(
+                    granted=r[6],
+                    backfill_complete=r[3] is not None,
+                    holds_transactions=int(r[0]) in holding,
+                ),
                 "history_starts": None if r[8] is None else str(r[8]),
                 # 🔴 Null means the Item has not been fetched since this column
                 # existed -- NEVER that consent does not expire, and never that
@@ -4053,6 +4244,7 @@ def pipeline_health(config: Config) -> Answer:
             requested_window=None,
             truncation=None,
             derivation_versions=derivation_versions,
+            holding=holding,
             # An inverted connection is reported here as well as on the
             # aggregates, because a health tool that showed the measurement in a
             # row and stayed silent in `warnings` would leave the one surface

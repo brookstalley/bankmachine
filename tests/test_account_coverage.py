@@ -550,14 +550,26 @@ def test_neither_listing_names_an_account_whose_data_is_investments(
         assert named == expected, (tool, sorted(named ^ expected))
 
 
-def test_querying_an_investment_only_account_for_transactions_still_warns(
+def _routed(wire: dict[str, Any]) -> set[int]:
+    """The account ids `activity_in_another_feed` names on this answer; empty when it is absent."""
+    routed: set[int] = set()
+    for caveat in wire["warnings"]:
+        if caveat["kind"] == "activity_in_another_feed":
+            head = caveat["detail"].split(" hold no transaction")[0]
+            assert head.startswith("account(s) "), caveat["detail"]
+            routed |= {int(part) for part in head.removeprefix("account(s) ").split(", ")}
+    return routed
+
+
+def test_querying_an_investment_only_account_for_transactions_routes_to_its_feed(
     initialized_config: Config,
 ) -> None:
-    """The warning stays where it is still true: this tool answers from the transactions feed.
+    """🔴 Named, and routed rather than called absent: its activity IS in the store.
 
-    `query_transactions` cannot return a trade, so its empty answer about an
-    investment-only account really is data not present for THIS tool. Narrowing it
-    here would let "no transactions found" pass as "nothing happened".
+    `query_transactions` cannot return a trade, so an empty answer about an
+    investment-only account needs a notice -- "no transactions found" must not pass
+    as "nothing happened". But "data not present" is false of it too, and an agent
+    told that reported a fault. The notice says where the activity lives.
     """
     _seed(initialized_config)
     ids = _seed_investment_activity(initialized_config)
@@ -568,22 +580,67 @@ def test_querying_an_investment_only_account_for_transactions_still_warns(
     )["structuredContent"]
 
     assert wire["rows"] == []
-    assert _named(wire) == {ids["trades_only"]}
+    assert _named(wire) == set(), "an account whose trades are stored was called data not present"
+    assert _routed(wire) == {ids["trades_only"]}
+    routed = next(w for w in wire["warnings"] if w["kind"] == "activity_in_another_feed")
+    assert "`query_investment_transactions`" in routed["detail"]
 
 
-def test_summarising_money_still_names_an_account_with_no_transactions_in_it(
+def test_summarising_money_routes_investment_accounts_and_names_the_empty_ones(
     initialized_config: Config,
 ) -> None:
-    """`money_summary` totals the transactions feed, so an investment account adds nothing to it.
+    """Every account the aggregate leaves out is named once, under the kind that is true of it.
 
-    Its zero contribution is absent data for this aggregate, whatever the account
-    holds elsewhere, so the aggregate keeps naming it.
+    An investment account adds nothing to a total over the transactions feed, and
+    that is still said -- but as where its activity lives, not as missing data. An
+    account with nothing in any feed keeps `accounts_without_coverage`. Asserted as
+    exact sets, so an account named under both, or dropped from both, fails.
     """
     _seed(initialized_config)
     ids = _seed_investment_activity(initialized_config)
     wire = _call(initialized_config, "money_summary", {})["structuredContent"]
 
-    assert {ids["trades_only"], ids["positions_only"]} <= _named(wire)
+    routed, named = _routed(wire), _named(wire)
+    # Every account the fixture gave data to except the one it also gave transactions:
+    # the holdings capture can name more than one positions-only account.
+    assert {ids["trades_only"], ids["positions_only"]} <= routed
+    assert routed == ids["with_data"] - {ids["covered"]}
+    assert named == ids["roster"] - ids["with_data"]
+    assert not routed & named
+
+
+def test_an_account_with_nothing_recorded_on_a_completed_connection_is_not_called_missing(
+    initialized_config: Config,
+) -> None:
+    """🔴 A completed sync that returned nothing for an account is not a fault.
+
+    The aggregator gives no signal that tells a quiet account from one whose
+    institution does not report it, so the store says it cannot tell -- never
+    "DATA NOT PRESENT", which an agent reported to the operator as a problem.
+    """
+    _seed(initialized_config)
+
+    wire = _call(initialized_config, "list_accounts", {})["structuredContent"]
+
+    details = [w["detail"] for w in wire["warnings"] if w["kind"] == "accounts_without_coverage"]
+    assert details, "the empty account is no longer named at all"
+    assert all("DATA NOT PRESENT" not in d for d in details), details
+    assert any("cannot tell" in d and "not that a sync failed" in d for d in details), details
+
+
+def test_an_account_with_nothing_recorded_on_an_unfinished_connection_is_data_not_present(
+    initialized_config: Config,
+) -> None:
+    """The other state: a connection that never completed a sync has told us nothing yet."""
+    _seed(initialized_config)
+    with writer_connection(initialized_config) as conn:
+        conn.execute(update(connections).values(last_success_at=None))
+
+    wire = _call(initialized_config, "list_accounts", {})["structuredContent"]
+
+    details = [w["detail"] for w in wire["warnings"] if w["kind"] == "accounts_without_coverage"]
+    assert details and all("DATA NOT PRESENT" in d for d in details), details
+    assert all("cannot tell" not in d for d in details), details
 
 
 def test_each_feed_is_counted_on_its_own_and_never_multiplied_by_the_other(

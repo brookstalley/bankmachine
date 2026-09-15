@@ -110,11 +110,12 @@ creates one, because an empty encrypted store would answer every question with a
 | `list_holdings` | every investment position, as its account's latest capture recorded it, with the date of the price it was valued at, and a per-currency totals block that decomposes balances rather than adding to them |
 | `balance_history` | net worth over time and each account's balance on the days one was captured, paged newest first; a day not every account was captured on has no net-worth row, and says why; an account no longer active counts only through its last capture, and the answer names that day and the balance that stopped counting, and the account that took it over where a re-link replaced it |
 | `query_transactions` | transactions in a date window, newest first |
+| `query_investment_transactions` | an investment account's activity — buys, sells, dividends, contributions, withdrawals and fees — in a date window, newest first, paged, with totals by currency, type and subtype |
 | `money_summary` | money in and out over a window, grouped by category, merchant, account, month or flow class — split by flow class under every grouping, and carrying the totals block described below |
 | `get_pipeline_health` | every connection, when it last synced, what is wrong |
 | `get_coverage_report` | per account: what data exists, and how long it has been silent |
 
-🔴 **Seven of the eight specified tools.** The ones missing from this table — `find_recurring` —
+🔴 **Eight of the nine specified tools.** The ones missing from this table — `find_recurring` —
 are not built yet; the descope is recorded in `.prawduct/artifacts/api-contract.md`.
 
 🔴 **The verification surface is now whole.** `get_pipeline_health` tells you whether the pipeline
@@ -290,7 +291,10 @@ describes the **pipeline**, so it rides every response equally:
   2026-09-08: a sandbox connection to `ins_109511` granted 722 days against 730 requested.)*
 - `partial` — something is not yet known, such as a granted window that has not been measured, or
   one sync domain of a healthy connection that has never landed in full. 🔴 A null granted window
-  means *not yet measured*, never *no shortfall*.
+  means *not yet measured*, never *no shortfall* — unless `granted_history_status` reads
+  `no_transactions_to_measure`: that connection's backfill completed with no transaction, so
+  nothing in that feed can have been cut, and the unmeasured-window `partial` does not ride the
+  answer for it. Its other feeds still report their own state.
 - `derivation_version_mismatch` — some stored rows were derived by a different version of the
   normalization logic than this server runs, so a figure over them may differ from the one this
   build would compute from the same archive. `detail` says whether they are older (the operator runs
@@ -319,12 +323,14 @@ boundary it names — so the *absence* of one is information too:
   unread, and what to do about it.
 - `counted_during_change` — a write landed between the row read and the count read, so the two
   describe moments a fraction apart. The rows are accurate as of the `as_of` stamp.
-- `accounts_without_coverage` — an account in scope has **no data** for what the tool answers from.
-  Its empty result means *data not present*, never *no activity*; call `get_coverage_report` for
-  the per-account picture. On `list_accounts` and `get_coverage_report` it names an account with
-  nothing in any feed. On `query_transactions` and `money_summary` it names an account with no
-  transaction, so an investment account can carry it there — call `list_holdings` for what such an
-  account holds.
+- `accounts_without_coverage` — an account in scope has **nothing recorded in any feed**. Where its
+  connection has never completed a sync, an empty result means *data not present*, never *no
+  activity*. Where it has, the store cannot tell a quiet account from one its institution does not
+  report, and says so: report *no recorded activity*, not a fault. `get_coverage_report` gives the
+  per-account picture.
+- `activity_in_another_feed` — on `query_transactions` and `money_summary`, an account in scope
+  holds no transaction because its activity is in the **investments feed**. `detail` routes to
+  `query_investment_transactions` for its trades and `list_holdings` for its positions.
 - `account_no_longer_active` — an account in scope is closed, or its institution stopped listing it.
   Its balance froze on the date the row carries and is **not a fact about today**. Totals over
   balances *include* it and say by how much, so quote that magnitude beside the total — the reader
