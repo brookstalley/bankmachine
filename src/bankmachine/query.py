@@ -941,14 +941,13 @@ class AccountCoverage:
     def no_data_in_any_feed(self) -> bool:
         """Nothing has been recorded for this account in ANY feed.
 
-        🔴 What the LISTINGS name, where `uncovered` is what the transactions tools
-        name. `list_accounts` and `get_coverage_report` describe the account
-        itself, so an investment account whose trades or positions are stored has
-        data, and naming it told an agent to distrust a true answer (#107).
-        `query_transactions` and `money_summary` answer only from the transactions
-        feed, and for them the same account's empty answer really is data not
-        present -- so they keep `uncovered`. Two predicates because there are two
-        questions, not one rule spelled twice.
+        🔴 What EVERY tool names under `accounts_without_coverage`. An account whose
+        trades or positions are stored has data, and naming it told an agent to
+        distrust a true answer (#107). On `query_transactions` and `money_summary`,
+        which read only the transactions feed, such an account is still named -- but
+        by `activity_elsewhere`, under `activity_in_another_feed`, which says where
+        its data is. A new tool answering from the transactions feed takes both
+        predicates; taking `uncovered` alone would call that account absent again.
         """
         return (
             self.transaction_count == 0
@@ -1797,9 +1796,10 @@ def _window_coverage_caveat(coverage: list[AccountCoverage], since: date | None)
     asked_from = calendar_date(since)
     cut: list[str] = []
     for entry in sorted(coverage, key=lambda c: c.account_id):
-        # Already named, in full, by `_uncovered_caveat`. Saying it twice in two
-        # kinds would have a caller reconcile two lists describing one set of
-        # accounts.
+        # Already named, in full: by `_uncovered_caveat` when it holds nothing in any
+        # feed, and by `_other_feed_caveat` when its activity is in another feed.
+        # Saying it again in a third notice would have a caller reconcile two lists
+        # describing one set of accounts.
         if entry.uncovered:
             continue
         if (

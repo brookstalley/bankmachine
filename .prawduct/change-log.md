@@ -68,7 +68,15 @@ a trades or balances window as if it reached that answer.
 and the primer naming the tool; no unmeasured caveat on tools other than health
 (`tests/test_mcp.py`); wire refusals and the scoped walk (`tests/test_investment_transactions.py`). Two
 #107 tests that asserted investment accounts are named as uncovered on the transactions tools now
-assert they are routed, per the plan's recorded decision. Go-red cases retargeted for the two
+assert they are routed, per the plan's recorded decision.
+
+**From the cumulative review (`rev-20260915T012943Z-e8459632`):** the `balance_history` shortfall
+wording is tested; `no_data_in_any_feed`'s docstring and the window-coverage comment describe the
+routing rather than the reversed #107 rule; the shared `totals` description states the trades
+block's grouping (each tool must describe the key one way, since the envelope reference renders one);
+the reference lists a trade's `description`, `security_name` and `ticker` as third-party text and
+names the trades' own span in the window-clamp guidance; an unused test import is gone. Accepted with
+reasons: the third near-copy of the cursor code, the two feed parameters on `_answer`, and two notes. Go-red cases retargeted for the two
 replaced anchors and added for routing, the completed-sync wording and the series shortfall.
 
 ## 2026-09-14: Investment activity is served, by `query_investment_transactions`

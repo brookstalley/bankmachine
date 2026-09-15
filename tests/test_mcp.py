@@ -1278,8 +1278,11 @@ def test_a_transactions_shortfall_is_not_phrased_against_a_window_over_another_s
     _seed_investments(initialized_config)
 
     trades = _call(initialized_config, "query_investment_transactions")["structuredContent"]
+    balances = _call(initialized_config, "balance_history")["structuredContent"]
     transactions = _call(initialized_config, "query_transactions")["structuredContent"]
 
+    [on_balances] = [w["detail"] for w in balances["warnings"] if w["kind"] == "gapped"]
+    assert "does not affect this answer" in on_balances, on_balances
     [on_trades] = [w["detail"] for w in trades["warnings"] if w["kind"] == "gapped"]
     [on_transactions] = [w["detail"] for w in transactions["warnings"] if w["kind"] == "gapped"]
     assert "does not affect this answer" in on_trades, on_trades
@@ -1312,8 +1315,6 @@ def test_a_transactions_shortfall_does_not_reach_a_positions_answer(
 
 def test_the_primer_names_the_tool_that_serves_investment_activity() -> None:
     """The one sentence an agent reads before any tool call, and the routing it needs."""
-    from bankmachine.config import Config as _Config  # noqa: F401  (kept for symmetry)
-
     primer = mcp._instructions(cast(Config, mock.Mock(environment="sandbox")))
     assert "`query_investment_transactions`" in primer
     assert len(primer) <= mcp.INSTRUCTIONS_BUDGET

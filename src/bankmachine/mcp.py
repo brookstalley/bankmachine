@@ -598,8 +598,10 @@ class ToolRegistrationError(RuntimeError):
 #: one account silently hide the other; what each tool's block holds is said by
 #: its item fields.
 _TOTALS_DESCRIPTION = (
-    "🔴 READ THIS BEFORE QUOTING A MONEY FIGURE. One entry per currency, never one integer "
-    "across currencies. On `money_summary` it carries the whole window's `inflow_minor_units` "
+    "🔴 READ THIS BEFORE QUOTING A MONEY FIGURE. Never one integer across currencies: on "
+    "`money_summary` and `list_holdings` there is one entry per currency, and on "
+    "`query_investment_transactions` one per currency, `investment_type` and "
+    "`investment_subtype`. On `money_summary` it carries the whole window's `inflow_minor_units` "
     "and `outflow_minor_units` and then the outflow split three ways by how the AGGREGATOR "
     "categorised each row. Quote `outflow_minor_units` for 'how much went out' and "
     "`external_spend_outflow_minor_units` for external spend, and name the other two classes "
@@ -610,9 +612,10 @@ _TOTALS_DESCRIPTION = (
     "`list_accounts` already count, so never add it to a balance or a net worth, and do not "
     "expect it to equal them. It INCLUDES positions on accounts that are not `active` and says "
     "how many and what they are worth; positions named under `rule-applied` are not in it, and "
-    "cost basis is not totalled. On `query_investment_transactions` it groups the WHOLE "
-    "request's trades by currency, type and subtype: quote an entry, and never net two entries "
-    "into one figure -- a buy and a contribution are both cash movements with opposite meanings"
+    "cost basis is not totalled. On `query_investment_transactions` it covers the WHOLE request, "
+    "not the page: quote an entry's `transactions` and `amount_minor_units`, and never net two "
+    "entries into one figure -- a buy and a contribution are both cash movements with opposite "
+    "meanings"
 )
 
 
