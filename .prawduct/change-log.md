@@ -34,6 +34,41 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-14: Investment activity is served, by `query_investment_transactions`
+
+<!-- prawduct: scope=investment-activity-e2e -->
+
+**Why:** an investment account's activity reaches the aggregator on its own feed, so an
+investment-only institution holds hundreds of trades and no transaction. They were stored and
+counted per account, and no tool returned one, so a production agent asked for its investment
+activity answered that none was available.
+
+**What changed (chunk 02 of `build-plan-investment-activity-e2e.md`):**
+- New tool `query_investment_transactions` (`src/bankmachine/query_investments.py`): trades newest
+  first, windowed on `trade_date` and clamped to the trades' own span, filtered by account and
+  `investment_type`, capped and keyset-paged under a new cursor scheme (`envelope.TradeCursor`) that
+  refuses a transactions or balance-series cursor and a cursor issued for a different request. Removed
+  trades are excluded from rows, counts and totals. `totals` groups the whole request by currency,
+  type and subtype and is never netted into one figure. An unknown type is refused naming the types
+  the store holds.
+- `WindowSeries` gains `investment_transactions`. The contract, the requirements' §5 table, the
+  README and the client guide count eight of nine tools built; the contract tables every new field.
+- The envelope reference's cannot-answer list no longer says trades are unserved; it keeps tax lots.
+- Carried from chunk 01's review: the health answer reads the set of connections holding transactions
+  once and hands it to its warnings, so a sync landing between two reads cannot make a row and its
+  warning disagree; the test that the unmeasured caveat is gone now has a positive control on the
+  wording it matches; a first transaction arriving is shown to move a connection out of
+  `no_transactions_to_measure`; and three texts that said such a connection's answers "cannot be
+  short" now say so of its transactions feed only.
+
+**Tests added:** `tests/test_investment_transactions.py` — every recorded trade with the published
+keys; a walk at five page sizes reads each trade once and matches the totals; totals over the whole
+request; removed trades; the window clamp; the type filter and its refusal; an unknown account;
+cursor refusals across all three schemes; a missing store; and a cursor round-trip through the real
+server. Existing tool-set enumerations in `tests/test_mcp.py` and `tests/test_account_lifecycle.py`
+name the new tool, and the go-red
+case for the cannot-answer claim anchors on the new wording.
+
 ## 2026-09-14: Two warnings that could never be true are gone
 
 <!-- prawduct: scope=investment-activity-e2e -->

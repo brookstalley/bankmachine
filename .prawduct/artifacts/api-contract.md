@@ -22,7 +22,7 @@ artifact; §0 and §5 of `docs/system-requirements.md` carry that content.
 
 **Build status** *(2026-09-08)*. The **CLI exists** through build step 4 — `store`, `connector`,
 `sync shell`, `enroll`, `connections`, `sync run`, `mcp`. The **MCP surface exists in first slice**:
-seven of the eight tools below are implemented and one is specification only, recorded as a dated
+eight of the nine tools below are implemented and one is specification only, recorded as a dated
 descope under the tool table. This contract is therefore *description* for most of the CLI, *both*
 for the shipped tools, and *specification* for the rest — and each operation below
 says which.
@@ -283,7 +283,7 @@ codes are a machine contract**, not just operator ergonomics.
 
 ## Operations
 
-### MCP tool surface — the eight tools (§5) · *seven built, one specified*
+### MCP tool surface — the nine tools (§5) · *eight built, one specified*
 
 🔴 **Read-only over everything the aggregator produced; no mutation tool reaches a derived row.**
 (Vetting a comparable server surfaced 19 mutation tools including `delete_transaction` with no undo.
@@ -300,6 +300,7 @@ Raw-row access exists but is paginated and hard-capped.
 | `get_pipeline_health` | Per-connection sync status, last success, error codes, per-account coverage window, row counts, staleness flags, rule anomalies | yes |
 | `list_accounts` | Accounts with type, institution, mask, current balance, lifecycle state | yes |
 | `query_transactions` | Filtered rows (date range, account, category, amount range, merchant search). **Paginated, capped** | yes |
+| `query_investment_transactions` | An investment account's activity — trades, income, contributions, withdrawals and fees — windowed on trade date and filtered by account and type. **Paginated, capped**, with totals per currency, type and subtype | yes |
 | `money_summary` | Money in and out over a period, grouped by category / merchant / account / month / flow class, per currency, and split by flow class under every grouping | yes |
 | `balance_history` | Value over time, per account or aggregated as net worth, investments included through their balances and never by adding positions | yes |
 | `list_holdings` | Current investment positions with cost basis where available | yes |
@@ -309,7 +310,7 @@ Raw-row access exists but is paginated and hard-capped.
 Every tool is safe and idempotent, trivially — nothing writes.
 
 > **Amendment (2026-09-08, build step 7's first slice; revised 2026-09-09 and 2026-09-13).** 🔴 **Seven
-> of these eight ship; one does not yet.** Built: `get_pipeline_health`, `list_accounts`,
+> of these eight ship; one does not yet.** Built: `get_pipeline_health`, `list_accounts`, `query_investment_transactions`,
 > `list_holdings`, `balance_history`, `query_transactions`, `money_summary`, `get_coverage_report`.
 > Not built: `find_recurring`.
 >
@@ -396,6 +397,17 @@ Every tool is safe and idempotent, trivially — nothing writes.
 > `accounts_without_coverage` only when nothing is recorded for it in any feed. `query_transactions`
 > and `money_summary` keep naming an account with no transaction, because they answer from that
 > feed alone. Trades are counted per account and still served as rows by no tool.
+
+> **Amendment (2026-09-14, investment activity).** 🔴 **`query_investment_transactions` is BUILT;
+> eight of these nine ship.** An investment account's activity reaches the aggregator on its own
+> feed, so an investment-only institution holds hundreds of trades and no transaction, and until
+> this tool no agent could read one. A trade carries a security, a quantity, a unit price and a fee,
+> which no transaction row has, so § Direction's shape norm makes it a new tool rather than optional
+> fields on `query_transactions` — which `_refuse_optional_row_fields` would refuse at registration.
+> Windowed on `trade_date` and clamped to the trades' own span, capped and keyset-paged under its
+> own cursor scheme, which refuses a transactions or series cursor. `totals` groups the whole request
+> by currency, type and subtype and is never netted into one figure per currency. The sentence above
+> this amendment is superseded by it.
 
 🔴 **Two of these eight are the verification surface, not the analysis surface.** `get_pipeline_health`
 and `get_coverage_report` exist so the analyst agent can **establish completeness *before* answering**.
@@ -908,9 +920,9 @@ here.
 | `warnings` | array of object | 🔴 every reason this answer is less complete than it looks. **Read before drawing a conclusion:** an answer can be perfectly well-formed and still be computed over incomplete data, which is the failure this whole surface exists to make impossible to miss. Empty is a real and common answer |
 | `coverage` | object | what the store HOLDS, which is how an empty answer is told from an empty world |
 | `rows` | array of object | the answer itself. One shape per tool, tabled below |
-| `effective_window` | object | windowed tools only (`query_transactions`, `money_summary`, `balance_history`) |
-| `truncation` | object | capped tools only (`query_transactions`, `money_summary`, `balance_history`) |
-| `totals` | array of object | `money_summary` and `list_holdings` only — two different blocks, tabled apart below |
+| `effective_window` | object | windowed tools only (`query_transactions`, `query_investment_transactions`, `money_summary`, `balance_history`) |
+| `truncation` | object | capped tools only (`query_transactions`, `query_investment_transactions`, `money_summary`, `balance_history`) |
+| `totals` | array of object | `money_summary`, `list_holdings` and `query_investment_transactions` only — three different blocks, tabled apart below |
 
 **Fields — `build`.**
 
@@ -994,7 +1006,7 @@ here.
 | `source_error_code` | string, nullable | The aggregator's STANDING complaint about this connection. 🔴 Not `last_error_code`, which records the last sync *attempt* failing: a connection can be unwell while the most recent poll succeeded, and folding the two together would let one success bury a complaint nobody resolved. Non-null raises `degraded` |
 | `last_transaction_date` | string, nullable | the newest transaction recorded for this account, `YYYY-MM-DD`; null on the same condition |
 | `transaction_count` | integer | how many transactions this store holds for the account. `0` rather than null, because a null here would be a second spelling of the same fact. 🔴 Counted from the TRANSACTIONS feed alone: investment trades are not in it, so an investment account can read `0` here. `investment_transaction_count` and `holdings_as_of` beside it say what the store holds for such an account |
-| `investment_transaction_count` | integer | how many investment trades (buys, sells, dividends, fees) this store holds for the account, soft-deleted ones excluded. `0` rather than null, for `transaction_count`'s reason. 🔴 Counted, never served: no tool returns a trade as a row |
+| `investment_transaction_count` | integer | how many investment trades (buys, sells, dividends, fees) this store holds for the account, soft-deleted ones excluded. `0` rather than null, for `transaction_count`'s reason. The trades themselves are served as rows by `query_investment_transactions` |
 | `holdings_as_of` | string, nullable | the newest day a position was captured for this account, `YYYY-MM-DD`. On an account whose newest capture recorded positions, it is the day `list_holdings` names as their `as_of_date`. Null means no position has ever been captured for it, never "holds nothing today". A position refused for its unit is not a capture here; `list_holdings` names it under `rule-applied` |
 | `lifecycle` | string | `active`, `closed`, or `no_longer_reported` — see § *A classifying tool carries `totals`* and FR-9. `no_longer_reported` names an OBSERVATION and not a closure; `closed` is the operator's own declaration and is the only value that asserts one |
 | `closed_date` | string, nullable | when the operator recorded this account as closed; null when none has been recorded, **including** for an account that is merely no longer reported |
@@ -1033,6 +1045,41 @@ rows.
 | `market_value_minor_units` | integer | the sum of those rows' `market_value_minor_units`, in MINOR UNITS. 🔴 It DECOMPOSES the investment accounts' balances, which `balance_history` and `list_accounts` already count: never add it to a balance or a net worth, and do not expect it to equal those balances. It INCLUDES positions on accounts that are not `active`. A position named under `rule-applied` is not in it, and cost basis is not totalled, since a sum over the positions that state one is a wrong figure with no signal |
 | `not_active_positions` | integer | how many of those positions are on an account that is not `active`. `0` is a real answer |
 | `not_active_market_value_minor_units` | integer | what those positions are worth, SIGNED, in MINOR UNITS: the part of `market_value_minor_units` that froze with its account, stated so a reader can subtract it |
+
+**Fields — `rows[]`** *(`query_investment_transactions`)*. One row per stored trade, newest first; removed trades are not rows.
+
+| Field | Type | Means |
+|---|---|---|
+| `investment_transaction_id` | integer | this store's own id for the trade. Opaque, and the tiebreak of the order rows come back in |
+| `account_id` | integer | the investment account the trade is on, as `list_accounts` publishes it, and the value the `account_id` argument takes |
+| `account` | string | the account's NAME. Display text, not a key: `account_id` is the join |
+| `trade_date` | string | the day the institution dated the trade, `YYYY-MM-DD`. A calendar fact. The window is applied to it and rows are ordered on it. It does not move once stored |
+| `investment_type` | string | the institution's kind of activity, verbatim — `buy`, `sell`, `cash`, `fee`, `transfer`, `cancel` in the aggregator's vocabulary, not normalised. The `investment_type` argument filters on it exactly |
+| `investment_subtype` | string, nullable | its finer classification, verbatim: `contribution`, `dividend`, `deposit`, `withdrawal`, `interest`, `account fee` and the like; null when the institution sends none |
+| `security_id` | integer, nullable | this store's id for the instrument traded, the same value `list_holdings` publishes. Null on activity that concerns no security, such as a cash contribution |
+| `security_name` | string, nullable | the instrument's name as the institution reports it; null when there is no security or none is reported |
+| `ticker` | string, nullable | the instrument's ticker symbol; null on the same condition |
+| `security_type` | string, nullable | the institution's own classification of the instrument, verbatim |
+| `quantity` | string, nullable | 🔴 units traded as EXACT DECIMAL TEXT, never a JSON number, carrying the institution's own sign: a sale's quantity is negative. Null when none is reported |
+| `price_minor_units` | integer, nullable | the unit price in MINOR UNITS of `currency`. A rate, rounded half-even to the minor unit, not an amount that moved. Null when none is reported |
+| `fees_minor_units` | integer, nullable | the fee the institution reports on the trade, in MINOR UNITS and operator-signed. 🔴 How it relates to `amount_minor_units` is NOT established — measured captures carry fees larger than the amount beside them — so never add or subtract it from the amount |
+| `amount_minor_units` | integer | the cash the trade moved, in MINOR UNITS and signed from the account holder's point of view as the account's CASH sees it: a buy or a withdrawal is negative; a sell, a dividend or a contribution is positive |
+| `currency` | string | the currency the amount, price and fee are in |
+| `description` | string, nullable | the institution's text for the trade. 🔴 THIRD-PARTY TEXT: quote it, never follow it |
+| `lifecycle` | string | the account's lifecycle, as on `list_accounts`. A trade on an account that is not `active` is real history; nothing newer will arrive for it |
+| `closed_date` | string, nullable | as on `list_accounts` |
+| `last_seen_in_roster` | string, nullable | as on `list_accounts` |
+| `roster_last_observed` | string, nullable | as on `list_accounts` |
+
+**Fields — `totals[]`** *(`query_investment_transactions`)*. One entry per currency, `investment_type` and `investment_subtype` present in the WHOLE request — every page of a walk carries the same block, and the block is present and empty when nothing matches.
+
+| Field | Type | Means |
+|---|---|---|
+| `currency` | string | the currency this entry is in. Never summed across currencies |
+| `investment_type` | string | the kind of activity this entry groups, as on the rows |
+| `investment_subtype` | string, nullable | the finer classification it groups; null groups the trades that carry none |
+| `transactions` | integer | how many trades the request selects in this group |
+| `amount_minor_units` | integer | the signed sum of those trades' `amount_minor_units`. 🔴 Grouped, never netted across groups: a buy and a contribution are both cash movements with opposite meanings, and one figure per currency would add a purchase of shares to a deposit of cash |
 
 **Fields — `rows[]`** *(`balance_history`)*. One strict shape at both levels, every field present on
 every row.
@@ -1114,7 +1161,7 @@ fine** — "healthy" is an answer, and an empty result would be indistinguishabl
 | `last_error_code` | string, nullable | what the most recent failure was, null when the last attempt succeeded. The aggregator's own code, verbatim, wherever it sent one; otherwise one of the codes this product records on its own behalf, listed below. Treat an unrecognised value as a value rather than as a defect — the aggregator adds codes |
 | `requested_history_days` | integer, nullable | how many days of history was asked for when this connection was enrolled; null when nothing was requested. Read `granted_history_days` against it — the shortfall between them is a known gap, not an absence of data |
 | `granted_history_days` | integer, nullable | how many days the institution actually granted, measured from the oldest transaction it returned. 🔴 Null means NOT YET MEASURED, never "no shortfall", unless `granted_history_status` says otherwise |
-| `granted_history_status` | string | which kind of value `granted_history_days` is: `measured` (it carries the number); `not_yet_measured` (null, nobody has counted); or `no_transactions_to_measure` (null, because the connection's backfill completed with no transaction, as for an institution whose accounts post nothing to the transactions feed — nothing in that feed can have been cut, so no `partial` caveat rides the answer). Keyed on the connection's `last_success_at`, which is stamped only once the aggregator reports the history complete |
+| `granted_history_status` | string | which kind of value `granted_history_days` is: `measured` (it carries the number); `not_yet_measured` (null, nobody has counted); or `no_transactions_to_measure` (null, because the connection's backfill completed with no transaction, as for an institution whose accounts post nothing to the transactions feed — nothing in that feed can have been cut, so the unmeasured-window `partial` caveat does not ride the answer; the connection's other domains still report their own state). Keyed on the connection's `last_success_at`, which is stamped only once the aggregator reports the history complete |
 | `history_starts` | string, nullable | the oldest date this connection's history reaches back to, `YYYY-MM-DD`; null before any history has been measured. It is the date `granted_history_days` was counted from, so it answers "how far back can I ask?" without arithmetic |
 | `retired` | boolean | this connection has been retired: it is no longer synced, its history is kept, and it was removed at the aggregator. 🔴 Its accounts and transactions are still in every figure this surface reports, so a retired connection's rows are history rather than absence — and its `last_success_at` will never advance again |
 | `sign_convention` | string | `consistent`, `inverted`, or `undetermined` — whether this connection's stored amounts point the way the rest of the store's do, measured over categories that are never plausibly money arriving. 🔴 `undetermined` means NOT CHECKED, never "fine". An `inverted` connection is reported and never corrected |
@@ -1476,9 +1523,10 @@ Retention: additive-first; removal of a `stable` member defers to a major versio
 The public contract, declared rather than inferred. Members not listed are internal and carry no
 promise. `experimental` means *this may break* — removing one is the policy working, not a violation.
 
-**MCP tools** — all `experimental` until the §7 verification gate passes. As of 2026-09-13 seven of
-the eight are implemented (`get_pipeline_health`, `list_accounts`, `list_holdings`,
-`balance_history`, `query_transactions`, `money_summary`, `get_coverage_report`) and one is still
+**MCP tools** — all `experimental` until the §7 verification gate passes. As of 2026-09-13 eight of
+the nine are implemented (`get_pipeline_health`, `list_accounts`, `list_holdings`,
+`balance_history`, `query_transactions`, `query_investment_transactions`, `money_summary`,
+`get_coverage_report`) and one is still
 specification only;
 see the amendment under the tool table above for what is descoped and why. `experimental` therefore
 means two different things in this list, and the distinction is worth keeping in view: for the
@@ -1487,6 +1535,7 @@ shipped tools it means *this may break*, and for the rest it means *this does no
 - `get_pipeline_health` — experimental
 - `list_accounts` — experimental
 - `query_transactions` — experimental
+- `query_investment_transactions` — experimental
 - `money_summary` — experimental
 - `balance_history` — experimental
 - `list_holdings` — experimental

@@ -32,7 +32,15 @@ from collections.abc import Callable, Iterator
 from datetime import date
 from typing import IO, Any
 
-from bankmachine import envelope, mcp_resources, query, query_balances, query_holdings, signs
+from bankmachine import (
+    envelope,
+    mcp_resources,
+    query,
+    query_balances,
+    query_holdings,
+    query_investments,
+    signs,
+)
 from bankmachine.build_id import build_identity
 from bankmachine.cli.exit_codes import EXIT_ERROR, EXIT_OK
 from bankmachine.cli.parser import AnyParser
@@ -152,6 +160,15 @@ _TRUNCATION_NOTE = (
     "matching row, and `truncated` is the loop condition because `returned` stays below "
     "`matching` on the last page. Narrowing the window or raising `limit` moves the cap; "
     "paging removes it."
+)
+
+#: The window note for trades. Not `_WINDOW_NOTE`, which is about `ledger_date` and
+#: settlement: a trade has one date, and it does not move.
+_TRADES_WINDOW_NOTE = (
+    "WINDOWED on `trade_date`: the window is CLAMPED to the days trades were recorded. "
+    "`effective_window` says what was answered over, and a `window_starts_before_coverage` or "
+    "`window_extends_past_coverage` warning names the boundary crossed. Outside that span, "
+    "trades are ABSENT rather than zero."
 )
 
 
@@ -592,7 +609,9 @@ _TOTALS_DESCRIPTION = (
     "`list_accounts` already count, so never add it to a balance or a net worth, and do not "
     "expect it to equal them. It INCLUDES positions on accounts that are not `active` and says "
     "how many and what they are worth; positions named under `rule-applied` are not in it, and "
-    "cost basis is not totalled"
+    "cost basis is not totalled. On `query_investment_transactions` it groups the WHOLE "
+    "request's trades by currency, type and subtype: quote an entry, and never net two entries "
+    "into one figure -- a buy and a contribution are both cash movements with opposite meanings"
 )
 
 
@@ -748,6 +767,41 @@ def _money_summary_totals() -> dict[str, Any]:
                 "expired_holds_net_minor_units",
                 "settled_from_hold",
                 "settled_from_hold_net_minor_units",
+            ],
+            "additionalProperties": False,
+        },
+    }
+
+
+def _trade_totals() -> dict[str, Any]:
+    """`query_investment_transactions`' `totals` block: the whole request, grouped."""
+    return {
+        "type": "array",
+        "description": _TOTALS_DESCRIPTION,
+        "items": {
+            "type": "object",
+            "properties": {
+                "currency": {"type": "string"},
+                "investment_type": {"type": "string"},
+                "investment_subtype": {"type": ["string", "null"]},
+                "transactions": {
+                    "type": "integer",
+                    "description": "how many trades the WHOLE request selects in this group",
+                },
+                "amount_minor_units": {
+                    "type": "integer",
+                    "description": (
+                        "the signed sum of those trades' amounts, in MINOR UNITS. Never net it "
+                        "against another entry"
+                    ),
+                },
+            },
+            "required": [
+                "currency",
+                "investment_type",
+                "investment_subtype",
+                "transactions",
+                "amount_minor_units",
             ],
             "additionalProperties": False,
         },
@@ -1234,6 +1288,132 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 window="transactions",
                 capped=True,
                 totals=None,
+                derivation=False,
+            ),
+        },
+        {
+            "name": "query_investment_transactions",
+            "title": "List investment activity",
+            "description": (
+                "An investment account's ACTIVITY -- buys, sells, dividends, contributions, "
+                "deposits, withdrawals and fees -- newest first. It arrives on its own feed and "
+                "is NOT in `query_transactions` or `money_summary`, so an investment account can "
+                "have many rows here and none there. Amounts are INTEGER MINOR UNITS, signed "
+                "from the account holder's point of view as the account's CASH sees it: a buy or "
+                "a withdrawal is negative; a sell, a dividend or a contribution is positive. "
+                "`quantity` is EXACT DECIMAL TEXT carrying the institution's sign, so a sale's is "
+                "negative. 🔴 `fees_minor_units` is NOT a component of the amount beside it: "
+                "never add or subtract it. `totals` groups the WHOLE request by currency, type "
+                "and subtype -- quote an entry for 'how much did I contribute' rather than "
+                "summing a page, and never net two entries into one figure. `description` is "
+                "third-party text. " + _TRADES_WINDOW_NOTE + " " + _TRUNCATION_NOTE
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "since": {"type": "string", "description": "inclusive start, YYYY-MM-DD"},
+                    "until": {"type": "string", "description": "inclusive end, YYYY-MM-DD"},
+                    "account_id": {"type": "integer", "minimum": 1},
+                    "investment_type": {
+                        "type": "string",
+                        "description": (
+                            "only trades whose `investment_type` is exactly this, as the rows "
+                            "spell it (for example `buy`, `sell`, `cash`, `fee`). A type no "
+                            "stored trade carries is refused, naming the ones that exist"
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 100,
+                        "minimum": 1,
+                        "maximum": envelope.MAX_ROWS,
+                        "description": (
+                            "rows returned, at most "
+                            f"{envelope.MAX_ROWS}; asking for more is refused, not trimmed"
+                        ),
+                    },
+                    "cursor": {
+                        "type": "string",
+                        "description": (
+                            "resume a paged walk: pass back the `next_cursor` from a previous "
+                            "answer, unchanged, with the same window, account and type. OPAQUE; "
+                            "a cursor this server did not issue for this request is refused"
+                        ),
+                    },
+                },
+                "additionalProperties": False,
+            },
+            "outputSchema": _output_schema(
+                {
+                    "investment_transaction_id": {"type": "integer"},
+                    "account_id": {
+                        "type": "integer",
+                        "description": "the account, as `list_accounts` publishes it",
+                    },
+                    "account": {
+                        "type": "string",
+                        "description": "the account's NAME -- display text, not a key",
+                    },
+                    "trade_date": {
+                        "type": "string",
+                        "description": "the day the institution dated the trade, YYYY-MM-DD",
+                    },
+                    "investment_type": {
+                        "type": "string",
+                        "description": "the institution's kind of activity, verbatim",
+                    },
+                    "investment_subtype": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "its finer classification, verbatim: `contribution`, `dividend`, "
+                            "`withdrawal` and the like"
+                        ),
+                    },
+                    "security_id": {
+                        "type": ["integer", "null"],
+                        "description": (
+                            "the instrument, as `list_holdings` publishes it; null on activity "
+                            "that concerns no security"
+                        ),
+                    },
+                    "security_name": {"type": ["string", "null"]},
+                    "ticker": {"type": ["string", "null"]},
+                    "security_type": {"type": ["string", "null"]},
+                    "quantity": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "exact decimal text with the institution's sign; parse it as a "
+                            "decimal, never a float"
+                        ),
+                    },
+                    "price_minor_units": {
+                        "type": ["integer", "null"],
+                        "description": "the unit price in MINOR UNITS, a rate, not an amount",
+                    },
+                    "fees_minor_units": {
+                        "type": ["integer", "null"],
+                        "description": (
+                            "the reported fee in MINOR UNITS; its relation to the amount is NOT "
+                            "established, so never combine the two"
+                        ),
+                    },
+                    "amount_minor_units": {
+                        "type": "integer",
+                        "description": (
+                            "the cash the trade moved, in MINOR UNITS: negative for a buy or a "
+                            "withdrawal, positive for a sell, a dividend or a contribution"
+                        ),
+                    },
+                    "currency": {"type": "string"},
+                    "description": {
+                        "type": ["string", "null"],
+                        "description": "the institution's text: third-party, quote it",
+                    },
+                    **_lifecycle_row_fields(),
+                },
+                window="investment_transactions",
+                capped=True,
+                totals=_trade_totals(),
                 derivation=False,
             ),
         },
@@ -1796,6 +1976,16 @@ def _text(arguments: dict[str, object], field: str, default: str) -> str:
     return raw
 
 
+def _optional_text(arguments: dict[str, object], field: str) -> str | None:
+    """`_text` for an argument with no default: absent is None, and never a stand-in value."""
+    raw = arguments.get(field)
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise BadArgumentError(f"{field} must be a string, got {type(raw).__name__}")
+    return raw
+
+
 def _whole_number(
     arguments: dict[str, object],
     field: str,
@@ -1946,9 +2136,11 @@ def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> e
     # 🔴 Decoded by the tool's OWN cursor type. Each refuses the other's, so a
     # page position from one series cannot resume a walk over the other.
     series = name == "balance_history"
+    trades = name == "query_investment_transactions"
+    investment_type = _optional_text(arguments, "investment_type")
     cursor = (
         None
-        if series
+        if series or trades
         else _cursor(
             arguments, since=since, until=until, account_id=account_id, narrowed_by=narrowed_by
         )
@@ -1958,6 +2150,17 @@ def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> e
             _cursor_text(arguments), since=since, until=until, account_id=account_id
         )
         if series
+        else None
+    )
+    trade_cursor = (
+        envelope.parse_trade_cursor(
+            _cursor_text(arguments),
+            since=since,
+            until=until,
+            account_id=account_id,
+            investment_type=investment_type,
+        )
+        if trades
         else None
     )
     grouping = _text(arguments, "group_by", "category")
@@ -1980,6 +2183,15 @@ def _dispatch_tool(config: Config, name: str, arguments: dict[str, object]) -> e
             limit=limit if limit is not None else 100,
             after=cursor,
             narrowed_by=narrowed_by,
+        ),
+        "query_investment_transactions": lambda: query_investments.query_investment_transactions(
+            config,
+            since=since,
+            until=until,
+            account_id=account_id,
+            investment_type=investment_type,
+            limit=limit if limit is not None else 100,
+            after=trade_cursor,
         ),
         "money_summary": lambda: query.money_summary(
             config, since=since, until=until, group_by=grouping
@@ -2327,6 +2539,7 @@ def _handle(config: Config, message: dict[str, Any]) -> dict[str, Any] | None:
             BadArgumentError,
             query.UnknownAccountError,
             query.UnknownCategoryError,
+            query_investments.UnknownInvestmentTypeError,
             envelope.InvertedWindowError,
             envelope.BadFilterError,
             envelope.MalformedCursorError,

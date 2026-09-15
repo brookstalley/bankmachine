@@ -1158,10 +1158,10 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         f"{COVERAGE_TESTS}::test_a_removed_trade_is_not_counted",
     ),
     (
-        "#107: the cannot-answer list says trades are counted but served as rows by no tool",
+        "#107: the cannot-answer list says which tool serves trades, and no other claim",
         MCP_RESOURCES,
-        "and served as rows by no tool; ",
-        "and read by no tool; ",
+        "ARE served, by ",
+        "are served as rows by no tool, and named by ",
         f"{MCP_TESTS}::test_the_unserved_trades_claim_holds_against_what_every_tool_reads",
     ),
     (

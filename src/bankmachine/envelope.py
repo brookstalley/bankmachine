@@ -59,7 +59,9 @@ MAX_ROWS = 500
 #: while transactions reach back through the history the institution granted, so
 #: a balance window clamped to the transactions' span would claim coverage over
 #: days no balance was ever captured on.
-WindowSeries = Literal["transactions", "balances"]
+#: Trades are a third series: they reach back as far as the investments feed returned,
+#: which is neither the transactions' granted span nor the days balances were captured.
+WindowSeries = Literal["transactions", "balances", "investment_transactions"]
 
 #: Warnings about the standing state of the pipeline. These ride EVERY response
 #: equally, because they describe the connection rather than the question: an
@@ -911,6 +913,117 @@ def parse_series_cursor(
     return cursor
 
 
+#: The trade cursor's shape tag. Distinct from the transaction and series schemes, so each
+#: decoder refuses the others' cursors by name rather than resuming at a position that means
+#: something else in its own order.
+_TRADE_CURSOR_SCHEME = 4
+
+
+def _trade_fingerprint(
+    *,
+    since: date | None,
+    until: date | None,
+    account_id: int | None,
+    investment_type: str | None,
+) -> str:
+    """Which trade result set a cursor belongs to, for `_request_fingerprint`'s reason.
+
+    Its own function rather than a filter passed to that one: a transactions request and a
+    trades request with the same window and account must never share a fingerprint, and a
+    leading tag is what keeps them apart even before the scheme tag is compared.
+    """
+    material = json.dumps(
+        ["trades", iso_or_none(since), iso_or_none(until), account_id, investment_type],
+        separators=(",", ":"),
+    )
+    return hashlib.blake2s(material.encode(), digest_size=8).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class TradeCursor:
+    """Where a page of trades stopped, in the order `query_investment_transactions` returns them.
+
+    🔴 A keyset on (trade_date DESC, investment_transaction_id DESC), never an offset, for
+    `Cursor`'s reason. Fingerprinted against the request it was issued for.
+    """
+
+    trade_date: date
+    investment_transaction_id: int
+    request: str
+
+    @classmethod
+    def issued_for(
+        cls,
+        *,
+        trade_date: date,
+        investment_transaction_id: int,
+        since: date | None,
+        until: date | None,
+        account_id: int | None,
+        investment_type: str | None,
+    ) -> TradeCursor:
+        """The only route that should build one, so the fingerprint cannot be forgotten."""
+        return cls(
+            trade_date=trade_date,
+            investment_transaction_id=investment_transaction_id,
+            request=_trade_fingerprint(
+                since=since, until=until, account_id=account_id, investment_type=investment_type
+            ),
+        )
+
+    def encode(self) -> str:
+        """The wire form, URL-safe and unpadded for `Cursor.encode`'s reason."""
+        payload = json.dumps(
+            {
+                "v": _TRADE_CURSOR_SCHEME,
+                "d": self.trade_date.isoformat(),
+                "t": self.investment_transaction_id,
+                "q": self.request,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+    @classmethod
+    def decode(cls, text: str) -> TradeCursor:
+        """A trade cursor off the wire, or a refusal."""
+        payload = _cursor_payload(text, scheme=_TRADE_CURSOR_SCHEME)
+        day, trade_id, request = payload.get("d"), payload.get("t"), payload.get("q")
+        # `bool` is an `int`, and JSON `true` decodes to one; see `Cursor.decode`.
+        if (
+            not isinstance(day, str)
+            or isinstance(trade_id, bool)
+            or not isinstance(trade_id, int)
+            or not isinstance(request, str)
+        ):
+            raise MalformedCursorError(_CURSOR_REFUSAL)
+        try:
+            parsed = date.fromisoformat(day)
+        except ValueError:
+            raise MalformedCursorError(_CURSOR_REFUSAL) from None
+        return cls(trade_date=parsed, investment_transaction_id=trade_id, request=request)
+
+
+def parse_trade_cursor(
+    text: str | None,
+    *,
+    since: date | None,
+    until: date | None,
+    account_id: int | None,
+    investment_type: str | None,
+) -> TradeCursor | None:
+    """A `query_investment_transactions` cursor, decoded and checked against its request."""
+    if text is None:
+        return None
+    cursor = TradeCursor.decode(text)
+    if cursor.request != _trade_fingerprint(
+        since=since, until=until, account_id=account_id, investment_type=investment_type
+    ):
+        raise MalformedCursorError(_CURSOR_REFUSAL)
+    return cursor
+
+
 @dataclass(frozen=True, slots=True)
 class Truncation:
     """How many rows matched, how many came back, and therefore whether the cap bit.
@@ -956,7 +1069,7 @@ class Truncation:
     #: truncation staying inescapable — silently, on the success path, which is
     #: the failure mode this whole surface is being corrected for. `None` means
     #: there is no page to resume from, and it has to be written.
-    resume_from: Cursor | SeriesCursor | None
+    resume_from: Cursor | SeriesCursor | TradeCursor | None
     #: What the rows ARE, as the `rows_truncated` sentence names them. 🔴 No
     #: default: a series tool that inherited "transactions" would tell a caller
     #: that transactions match a question about balances.
@@ -969,7 +1082,7 @@ class Truncation:
         returned: int,
         remaining: int,
         matching: int,
-        resume_from: Cursor | SeriesCursor | None,
+        resume_from: Cursor | SeriesCursor | TradeCursor | None,
         counting: str,
     ) -> Truncation:
         """The only route that should build one, because a count can lag `returned`.

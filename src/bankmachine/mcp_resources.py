@@ -152,7 +152,8 @@ _GUIDANCE: dict[str, _Guidance] = {
             "`get_pipeline_health` before treating an older period as quiet. A null "
             "`granted_history_days` means NOT YET MEASURED, never 'no shortfall' -- unless "
             "`granted_history_status` is `no_transactions_to_measure`: that connection's "
-            "backfill completed with no transaction, so no answer from it can be short."
+            "backfill completed with no transaction, so nothing in its TRANSACTIONS feed can be "
+            "missing; its other feeds report their own state in `rows[].domains[]`."
         ),
     ),
     "partial": _Guidance(
@@ -750,18 +751,16 @@ _CANNOT_ANSWER = (
     "🔴 **Say so rather than deriving it.** Each of these is a question this surface has no "
     "data path for, and every one of them can be given a plausible-looking answer by "
     "improvising over the tools that do exist.\n\n"
-    # 🔴 Positions ARE served, so this bullet is about what sits behind one -- the
-    # part a model would otherwise improvise: a lot no table extracts, and trades
-    # stored and counted but served by no query. Tests hold both claims against the code.
-    "- **Tax lots, and the trades behind a position.** Positions are served by "
-    "`list_holdings` as they stood on the day they were captured: quantity, market value, "
-    "and cost basis where the institution supplied one. What sits behind a position is not "
-    "served. Its tax lots are not extracted: the aggregator sends them and only the verbatim "
-    "response archive keeps them, so anything asked per lot has no data path. Its buys, "
-    "sells, dividends and fees are stored and counted per account as "
-    "`investment_transaction_count` on `list_accounts`, and served as rows by no tool; "
-    "`query_transactions` does not return them, so an investment account with no rows there "
-    "may still have traded.\n"
+    # 🔴 Positions and trades ARE served, so this bullet is about the lots no table
+    # extracts. A test holds the trades half against the SQL every tool runs.
+    "- **Tax lots.** Positions are served by `list_holdings` as they stood on the day they "
+    "were captured: quantity, market value, and cost basis where the institution supplied "
+    "one. A position's tax lots are not extracted: the aggregator sends them and only the "
+    "verbatim response archive keeps them, so anything asked per lot has no data path. The "
+    "buys, sells, dividends, contributions and fees behind a position ARE served, by "
+    "`query_investment_transactions`, and counted per account as "
+    "`investment_transaction_count` on `list_accounts`; `query_transactions` does not return "
+    "them, so an investment account with no rows there may still have traded.\n"
     # 🔴 The series IS served, so this bullet is about the days it does not hold --
     # the gap a model would otherwise fill by arithmetic.
     "- **A balance on a day nothing captured it, or before its first capture.** "

@@ -6,7 +6,7 @@ serves that data read-only to an AI agent over [MCP](https://modelcontextprotoco
 against Plaid's **sandbox**, which is free fake data, or **production**, which is your real
 accounts. It never moves money, and it does no budgeting, categorization or advice.
 
-**Status:** enrollment, sync and the MCP server work end to end. Seven of the eight specified MCP
+**Status:** enrollment, sync and the MCP server work end to end. Eight of the nine specified MCP
 tools are serving. Not built yet: scheduling (you run the sync yourself), the verification gate,
 and file import. It is built for one person on one Mac.
 

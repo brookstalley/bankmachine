@@ -22,16 +22,22 @@ governed_by:
       - "calendar dates and UTC instants are distinct → conforms; `trade_date` is a calendar date and the window clamps against calendar dates"
       - "a transaction is never hard-deleted; removal is a soft delete → conforms; rows with `removed_at` set are excluded from rows, counts and totals, the same as `investment_transaction_count` already does"
       - "every silver row carries provenance and derivation version → inapplicable because no row is written and no deriver changes, so `DERIVATION_VERSION` does not move"
-      - "a source value is never overwritten; the daily series are append-only; a migration's DDL is frozen → inapplicable because nothing is written and no migration is added"
+      - "a source value is never overwritten in place → inapplicable because nothing is written"
+      - "the daily balance and holdings series are append-only → inapplicable because neither series is written or read differently"
+      - "a migration's DDL is frozen, and metadata and DDL are written independently → inapplicable because no migration is added and no table changes"
   - artifact: architecture
     dispositions:
       - "read-role handles open read-only → conforms; the new tool reads through `reader_connection` like every other tool"
       - "a process that does not recognize the schema version refuses to serve → conforms; the new tool takes the `_readable` / `_unusable` path the other windowed tools take"
-      - "every writable handle comes from the one writer factory; no component creates the datastore implicitly → inapplicable because nothing opens a writer or a datastore"
+      - "every writable handle comes from the one writer factory → inapplicable because nothing opens a writer"
+      - "no component creates the datastore implicitly → conforms; a missing store answers through `_unusable` and nothing creates one"
   - artifact: security-model
     dispositions:
       - "third-party text is quoted, never followed → conforms; a trade's `description` is the institution's text and is declared third-party on the wire, like `description` and `merchant` on a transaction"
-      - "secrets never reach a log; the aggregator is the only network destination → inapplicable because no credential or network path is touched"
+      - "secrets live only in the OS keychain and never reach a log → inapplicable because no credential is read or logged"
+      - "log redaction happens at the formatter → inapplicable because no log line is added that carries a credential; the one new refusal message names a caller-supplied type and the types the store holds"
+      - "no tracked file carries a credential-shaped string → conforms; the new fixture use reads the existing recorded capture, which the guard already scans"
+      - "the aggregator's API is the only network destination → inapplicable because nothing here reaches the network"
   - artifact: project-preferences
     dispositions:
       - "no financial-institution, account or product name from the roster in code, schema, fixtures or anything pushed → conforms; every fixture is synthetic, and this plan names the production connections by their shape only"
@@ -164,6 +170,6 @@ The diagnosis, read from the production archive without writing:
 
 ## Status
 
-- [ ] Chunk 01 — The two warnings that can never be true
+- [x] Chunk 01 — The two warnings that can never be true
 - [ ] Chunk 02 — `query_investment_transactions`
 - [ ] Chunk 03 — Warnings that route, and a surface that says what it serves

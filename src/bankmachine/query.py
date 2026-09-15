@@ -226,6 +226,7 @@ def _pipeline_warnings(
     now: UtcInstant,
     window: Window | None = None,
     derivation_versions: tuple[int, ...] | None = None,
+    holding: frozenset[int] | None = None,
 ) -> list[Caveat]:
     """Everything wrong with the data underneath any answer.
 
@@ -287,7 +288,12 @@ def _pipeline_warnings(
         )
 
     freshness: dict[int, _ConnectionFreshness] = {}
-    holding = _connections_holding_transactions(conn)
+    # 🔴 Read once per answer. `get_pipeline_health` hands in the set its rows'
+    # `granted_history_status` was computed from, because a sync committing a
+    # connection's first transaction between two reads would otherwise let one
+    # answer's row and its warning disagree about the same connection.
+    if holding is None:
+        holding = _connections_holding_transactions(conn)
     for row in rows:
         connection_id, name = int(row[0]), str(row[1])
         status, last_success = str(row[2]), row[3]
@@ -1884,6 +1890,7 @@ def _answer(
     lifecycle: dict[int, AccountLifecycle] | None = None,
     window_series: WindowSeries = "transactions",
     derivation_versions: tuple[int, ...] | None = None,
+    holding: frozenset[int] | None = None,
 ) -> Answer:
     """One answer, and the one place a window is reconciled against coverage.
 
@@ -1917,6 +1924,20 @@ def _answer(
     if requested_window is not None and window_series == "balances":
         first, last = conn.execute(
             select(func.min(balances_daily.c.as_of_date), func.max(balances_daily.c.as_of_date))
+        ).one()
+        span = (
+            None if first is None else calendar_date(first),
+            None if last is None else calendar_date(last),
+        )
+    elif requested_window is not None and window_series == "investment_transactions":
+        # Clamped to the days trades were recorded, for the balance series' reason:
+        # the trades feed reaches back its own distance, and an investment-only
+        # store holds no transaction to clamp against at all.
+        first, last = conn.execute(
+            select(
+                func.min(investment_transactions.c.trade_date),
+                func.max(investment_transactions.c.trade_date),
+            ).where(investment_transactions.c.removed_at.is_(None))
         ).one()
         span = (
             None if first is None else calendar_date(first),
@@ -1957,7 +1978,7 @@ def _answer(
         # consumer reading top-down meets the standing state of the pipeline
         # before the thing that is specific to what they just asked.
         warnings=(
-            _pipeline_warnings(conn, now, window, derivation_versions)
+            _pipeline_warnings(conn, now, window, derivation_versions, holding)
             + ([] if window is None else window.caveats)
             + ([] if truncation is None else truncation.caveats)
             + (extra_caveats or [])
@@ -4119,6 +4140,7 @@ def pipeline_health(config: Config) -> Answer:
             requested_window=None,
             truncation=None,
             derivation_versions=derivation_versions,
+            holding=holding,
             # An inverted connection is reported here as well as on the
             # aggregates, because a health tool that showed the measurement in a
             # row and stayed silent in `warnings` would leave the one surface

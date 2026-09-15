@@ -924,6 +924,7 @@ def test_no_tool_mutates_anything(initialized_config: Config) -> None:
         "list_holdings",
         "balance_history",
         "query_transactions",
+        "query_investment_transactions",
         "money_summary",
         "get_pipeline_health",
         "get_coverage_report",
@@ -980,7 +981,7 @@ def _cannot_answer_text() -> str:
 def test_the_unserved_trades_claim_holds_against_what_every_tool_reads(
     initialized_config: Config,
 ) -> None:
-    """🔴 The reference says trades are counted but served as rows by no tool; held to the SQL.
+    """🔴 Whether the reference calls trades unserved is held to what every tool's SQL reads.
 
     Checked against the statements every registered tool actually executes, not
     against a list of files: a tool's query already runs through store helpers
@@ -1155,6 +1156,12 @@ def test_an_unmeasured_window_is_reported_differently_from_no_shortfall(
     assert wire["rows"][0]["granted_history_status"] == "not_yet_measured"
     kinds = {w["kind"] for w in wire["warnings"]}
     assert "partial" in kinds
+    # The positive control for the absence test below, which finds this caveat by
+    # its wording: reworded, that match would find nothing and pass forever.
+    unmeasured = [
+        w for w in wire["warnings"] if w["kind"] == "partial" and "not yet known" in w["detail"]
+    ]
+    assert len(unmeasured) == 1, wire["warnings"]
     assert "gapped" not in kinds, "an unknown window was reported as a measured shortfall"
 
 
@@ -1206,6 +1213,37 @@ def test_a_connection_that_never_completed_a_backfill_is_still_not_yet_measured(
     wire = _call(initialized_config, "get_pipeline_health")["structuredContent"]
 
     assert wire["rows"][0]["granted_history_status"] == "not_yet_measured"
+
+
+def test_a_first_transaction_arriving_takes_the_connection_out_of_no_transactions_to_measure(
+    initialized_config: Config,
+) -> None:
+    """The status is read, not stored: a transaction landing moves it at once.
+
+    Until the next complete sync measures the window, the connection holds a
+    transaction nobody has counted from, which is `not_yet_measured` and carries
+    the caveat again -- the second call, not a fresh store, is what shows it.
+    """
+    _seed(initialized_config, granted=None, transactions=False)
+    before = _call(initialized_config, "get_pipeline_health")["structuredContent"]
+    assert before["rows"][0]["granted_history_status"] == "no_transactions_to_measure"
+
+    with writer_connection(initialized_config) as conn:
+        apply_response(
+            conn,
+            connection_id=1,
+            endpoint=TRANSACTIONS_SYNC.path,
+            body=_sync_body(str(now_utc().date())),
+            received_at=now_utc(),
+            derivers=ALL_DERIVERS,
+            replay_passes=(),
+        )
+
+    after = _call(initialized_config, "get_pipeline_health")["structuredContent"]
+    assert after["rows"][0]["granted_history_status"] == "not_yet_measured"
+    assert any(
+        w["kind"] == "partial" and "not yet known" in w["detail"] for w in after["warnings"]
+    ), after["warnings"]
 
 
 def test_a_degraded_connection_warns_on_every_answer(initialized_config: Config) -> None:
@@ -2932,12 +2970,12 @@ def test_the_window_scoped_count_rides_beside_the_store_wide_one(
 def test_the_capped_tool_describes_its_cap_and_the_aggregate_does_not() -> None:
     """AC-9.4: a tool description states its conventions.
 
-    The note belongs to the two PAGED tools alone — `query_transactions` and
-    `balance_history` — and saying it on the aggregate would describe a cursor
-    that tool does not issue.
+    The note belongs to the PAGED tools alone — `query_transactions`,
+    `query_investment_transactions` and `balance_history` — and saying it on the
+    aggregate would describe a cursor that tool does not issue.
     """
     described = {d["name"]: d["description"] for d in mcp._tool_definitions()}
-    paged = ("query_transactions", "balance_history")
+    paged = ("query_transactions", "query_investment_transactions", "balance_history")
 
     for name in paged:
         assert mcp._TRUNCATION_NOTE in described[name], name
@@ -3211,7 +3249,7 @@ def test_the_cursor_is_advertised_on_the_capped_tool_and_nowhere_else() -> None:
     make the escape route unreachable to a caller reading the tool definition,
     which is the only thing an agent reads.
     """
-    paged = ("query_transactions", "balance_history")
+    paged = ("query_transactions", "query_investment_transactions", "balance_history")
     for name in paged:
         assert "cursor" in mcp._permitted_arguments(name), name
     for name in _every_tool_except(*paged):
@@ -3337,6 +3375,7 @@ _LIVE_CALLS: tuple[tuple[str, dict[str, Any]], ...] = (
     ("list_holdings", {}),
     ("balance_history", {"since": "2020-01-01", "until": "2030-12-31"}),
     ("query_transactions", {"since": "2020-01-01", "until": "2030-12-31"}),
+    ("query_investment_transactions", {"since": "2020-01-01", "until": "2030-12-31"}),
     ("money_summary", {"since": "2020-01-01", "until": "2030-12-31"}),
     ("get_pipeline_health", {}),
     ("get_coverage_report", {}),
