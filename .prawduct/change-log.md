@@ -75,7 +75,7 @@ wording is tested; `no_data_in_any_feed`'s docstring and the window-coverage com
 routing rather than the reversed #107 rule; the shared `totals` description states the trades
 block's grouping (each tool must describe the key one way, since the envelope reference renders one);
 the reference lists a trade's `description`, `security_name` and `ticker` as third-party text and
-names the trades' own span in the window-clamp guidance; an unused test import is gone. Accepted with
+names the trades' own span in the window-clamp guidance; an unused test import is gone. From its verify pass (`rev-20260915T015907Z-bcca8df1`): the third-party-text rule now covers every institution-written field on every tool, positions included, and the past-coverage guidance names the trades' last day. Accepted with
 reasons: the third near-copy of the cursor code, the two feed parameters on `_answer`, and two notes. Go-red cases retargeted for the two
 replaced anchors and added for routing, the completed-sync wording and the series shortfall.
 

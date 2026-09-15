@@ -179,4 +179,4 @@ The diagnosis, read from the production archive without writing:
 
 - [x] Chunk 01 — The two warnings that can never be true
 - [x] Chunk 02 — `query_investment_transactions`
-- [ ] Chunk 03 — Warnings that route, and a surface that says what it serves
+- [x] Chunk 03 — Warnings that route, and a surface that says what it serves

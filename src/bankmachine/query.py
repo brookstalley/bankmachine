@@ -1579,9 +1579,10 @@ def _uncovered_caveat(uncovered: list[AccountCoverage], *, listing: bool) -> lis
     measured. It says what is known.
 
     `listing` says which question the scope asked: a listing describes the account
-    itself, a transactions tool describes what it answers from. Both now name only
-    accounts with nothing in any feed; an account whose activity is in the
-    investments feed is routed by `_other_feed_caveat` instead.
+    itself, a transactions tool describes what it answers from, and the one clause
+    that differs says which. Both name only accounts with nothing in any feed; an
+    account whose activity is in the investments feed is routed by
+    `_other_feed_caveat` instead.
     """
     if not uncovered:
         return []
