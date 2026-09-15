@@ -310,7 +310,7 @@ Raw-row access exists but is paginated and hard-capped.
 Every tool is safe and idempotent, trivially — nothing writes.
 
 > **Amendment (2026-09-08, build step 7's first slice; revised 2026-09-09 and 2026-09-13).** 🔴 **Seven
-> of these eight ship; one does not yet.** Built: `get_pipeline_health`, `list_accounts`,
+> of these eight ship; one does not yet.** Built: `get_pipeline_health`, `list_accounts`, `query_investment_transactions`,
 > `list_holdings`, `balance_history`, `query_transactions`, `money_summary`, `get_coverage_report`.
 > Not built: `find_recurring`.
 >
