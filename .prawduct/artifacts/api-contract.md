@@ -310,7 +310,7 @@ Raw-row access exists but is paginated and hard-capped.
 Every tool is safe and idempotent, trivially — nothing writes.
 
 > **Amendment (2026-09-08, build step 7's first slice; revised 2026-09-09 and 2026-09-13).** 🔴 **Seven
-> of these eight ship; one does not yet.** Built: `get_pipeline_health`, `list_accounts`, `query_investment_transactions`,
+> of these eight ship; one does not yet.** Built: `get_pipeline_health`, `list_accounts`,
 > `list_holdings`, `balance_history`, `query_transactions`, `money_summary`, `get_coverage_report`.
 > Not built: `find_recurring`.
 >
@@ -411,7 +411,7 @@ Every tool is safe and idempotent, trivially — nothing writes.
 
 > **Amendment (2026-09-14, investment activity, chunk 03).** 🔴 **An investment account is routed, not called absent.** `query_transactions` and `money_summary` name an account with no transaction and with trades or positions under `activity_in_another_feed`, which names the tool that serves it; they name only an account with nothing in any feed under `accounts_without_coverage`, as the listings already did. The #107 amendment's sentence that the transactions tools "keep naming an account with no transaction" is superseded. `accounts_without_coverage` now says, where the account's connection has completed a sync, that the store cannot tell a quiet account from an unreported one, because the aggregator lists only the accounts a sync page touched and so gives no signal for either.
 
-🔴 **Two of these eight are the verification surface, not the analysis surface.** `get_pipeline_health`
+🔴 **Two of these tools are the verification surface, not the analysis surface.** `get_pipeline_health`
 and `get_coverage_report` exist so the analyst agent can **establish completeness *before* answering**.
 The product's headline goal is not "answer the question" but "answer it, or say why you should not."
 
@@ -1526,7 +1526,7 @@ Retention: additive-first; removal of a `stable` member defers to a major versio
 The public contract, declared rather than inferred. Members not listed are internal and carry no
 promise. `experimental` means *this may break* — removing one is the policy working, not a violation.
 
-**MCP tools** — all `experimental` until the §7 verification gate passes. As of 2026-09-13 eight of
+**MCP tools** — all `experimental` until the §7 verification gate passes. Eight of
 the nine are implemented (`get_pipeline_health`, `list_accounts`, `list_holdings`,
 `balance_history`, `query_transactions`, `query_investment_transactions`, `money_summary`,
 `get_coverage_report`) and one is still
