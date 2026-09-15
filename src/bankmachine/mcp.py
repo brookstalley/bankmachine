@@ -1371,7 +1371,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "Every connection, when it last synced, and what is wrong with it — including "
                 "when there is no datastore at all. 🔴 Call "
                 "this before trusting a total that looks surprising: a granted history "
-                "window of null means NOT YET MEASURED, never 'no shortfall', and a "
+                "window of null means NOT YET MEASURED, never 'no shortfall', unless "
+                "`granted_history_status` says the backfill completed with no transaction to "
+                "measure, and a "
                 "`sign_convention` of `inverted` means that connection's amounts may have "
                 "their direction backwards — they are reported as stored and never corrected."
             ),
@@ -1386,7 +1388,21 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "requested_history_days": {"type": ["integer", "null"]},
                     "granted_history_days": {
                         "type": ["integer", "null"],
-                        "description": "null means NOT YET MEASURED, never 'no shortfall'",
+                        "description": (
+                            "null means NOT YET MEASURED, never 'no shortfall' -- read "
+                            "`granted_history_status` for which null it is"
+                        ),
+                    },
+                    "granted_history_status": {
+                        "type": "string",
+                        "enum": list(query.GRANTED_HISTORY_STATUSES),
+                        "description": (
+                            "`measured`: `granted_history_days` is the number. "
+                            "`not_yet_measured`: it is null because nobody has counted yet. "
+                            "`no_transactions_to_measure`: it is null because this connection's "
+                            "backfill completed with no transaction -- its accounts post "
+                            "nothing to the transactions feed, so nothing there can be missing"
+                        ),
                     },
                     "history_starts": {"type": ["string", "null"]},
                     "consent_expires_at": {

@@ -111,8 +111,36 @@ def _sync_body(today: str) -> bytes:
     ).encode()
 
 
-def _seed(config: Config, *, degraded: bool = False, granted: int | None = 90) -> None:
+def _empty_sync_body() -> bytes:
+    """A transactions backfill that completed and carried nothing.
+
+    The shape an institution whose accounts post nothing to this feed sends: the
+    status says the history is in, and there is no transaction and no cursor.
+    """
+    return json.dumps(
+        {
+            "accounts": [],
+            "added": [],
+            "modified": [],
+            "removed": [],
+            "next_cursor": "",
+            "has_more": False,
+            "transactions_update_status": "HISTORICAL_UPDATE_COMPLETE",
+            "request_id": "req-sync-empty",
+        }
+    ).encode()
+
+
+def _seed(
+    config: Config,
+    *,
+    degraded: bool = False,
+    granted: int | None = 90,
+    transactions: bool = True,
+) -> None:
     """One institution, one account, three transactions — through the real derivers.
+
+    `transactions=False` completes the backfill with nothing in it instead.
 
     🔴 Derived rather than hand-inserted. The schema enforces provenance with a
     CHECK, so hand-built rows either encode this test's assumptions about that
@@ -149,7 +177,10 @@ def _seed(config: Config, *, degraded: bool = False, granted: int | None = 90) -
         )
         for endpoint, body in (
             (ACCOUNTS_GET.path, _accounts_body()),
-            (TRANSACTIONS_SYNC.path, _sync_body(str(now.date()))),
+            (
+                TRANSACTIONS_SYNC.path,
+                _sync_body(str(now.date())) if transactions else _empty_sync_body(),
+            ),
         ):
             apply_response(
                 conn,
@@ -1121,9 +1152,60 @@ def test_an_unmeasured_window_is_reported_differently_from_no_shortfall(
     wire = _call(initialized_config, "get_pipeline_health")["structuredContent"]
 
     assert wire["rows"][0]["granted_history_days"] is None
+    assert wire["rows"][0]["granted_history_status"] == "not_yet_measured"
     kinds = {w["kind"] for w in wire["warnings"]}
     assert "partial" in kinds
     assert "gapped" not in kinds, "an unknown window was reported as a measured shortfall"
+
+
+def test_a_measured_window_says_it_was_measured(initialized_config: Config) -> None:
+    """The status names which kind of number `granted_history_days` is."""
+    _seed(initialized_config, granted=90)
+
+    wire = _call(initialized_config, "get_pipeline_health")["structuredContent"]
+
+    assert wire["rows"][0]["granted_history_status"] == "measured"
+
+
+def test_a_complete_backfill_with_no_transactions_is_not_reported_as_unmeasured(
+    initialized_config: Config,
+) -> None:
+    """🔴 A connection whose accounts post nothing to the transactions feed.
+
+    Its backfill completed and carried no transaction, so the measurement that
+    fills `granted_history_days` has nothing to count from and never runs. The
+    caveat said the window "is measured when the initial backfill completes" --
+    on every answer, forever, about a backfill that had completed. No answer
+    from this connection can be short on transactions, because it has none that
+    a grant could have cut, so the status says that instead and no `partial`
+    rides the answer.
+    """
+    _seed(initialized_config, granted=None, transactions=False)
+
+    wire = _call(initialized_config, "get_pipeline_health")["structuredContent"]
+
+    row = wire["rows"][0]
+    assert row["granted_history_days"] is None, "a window nobody measured was given a number"
+    assert row["granted_history_status"] == "no_transactions_to_measure"
+    unmeasured = [
+        w for w in wire["warnings"] if w["kind"] == "partial" and "not yet known" in w["detail"]
+    ]
+    assert not unmeasured, unmeasured
+
+
+def test_a_connection_that_never_completed_a_backfill_is_still_not_yet_measured(
+    initialized_config: Config,
+) -> None:
+    """The case the new status must not swallow: no transactions YET is not none at all.
+
+    `last_success_at` is stamped only once the aggregator says the history is in,
+    so a connection without it has told us nothing about what its feed holds.
+    """
+    _seed(initialized_config, degraded=True, granted=None, transactions=False)
+
+    wire = _call(initialized_config, "get_pipeline_health")["structuredContent"]
+
+    assert wire["rows"][0]["granted_history_status"] == "not_yet_measured"
 
 
 def test_a_degraded_connection_warns_on_every_answer(initialized_config: Config) -> None:

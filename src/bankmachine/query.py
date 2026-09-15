@@ -172,6 +172,55 @@ class _ConnectionFreshness:
     stale: bool
 
 
+#: What a connection's `granted_history_days` is, named because null means two
+#: different things. `measured` carries a number. `not_yet_measured` is null
+#: because nobody has counted yet. `no_transactions_to_measure` is null because
+#: the backfill completed and carried no transaction, so there is nothing for a
+#: grant to have cut -- an institution whose accounts post nothing to this feed.
+GRANTED_HISTORY_STATUSES: tuple[str, ...] = (
+    "measured",
+    "not_yet_measured",
+    "no_transactions_to_measure",
+)
+
+
+def _connections_holding_transactions(conn: SAConnection) -> frozenset[int]:
+    """Every connection with at least one transaction row, removed rows included.
+
+    Removed rows count because the measurement they stand in for counts them:
+    `sync_run._record_granted_window` takes the oldest `posted_date` across the
+    connection's transactions without filtering removals, so a connection whose
+    only rows were removed still had something to measure.
+    """
+    return frozenset(
+        int(connection_id)
+        for (connection_id,) in conn.execute(
+            select(accounts.c.connection_id)
+            .select_from(transactions.join(accounts))
+            .where(accounts.c.connection_id.is_not(None))
+            .distinct()
+        ).all()
+    )
+
+
+def _granted_history_status(
+    *, granted: object, backfill_complete: bool, holds_transactions: bool
+) -> str:
+    """Which of `GRANTED_HISTORY_STATUSES` a connection's grant is in.
+
+    🔴 `backfill_complete` is the CONNECTION's `last_success_at`, never a sync
+    domain's. The connection stamp is written only once the aggregator reports
+    the history is in; a transactions domain can be stamped by a page that
+    carries a cursor at any status, so keying on it would call a connection
+    mid-backfill, with no transaction yet, one that has none to measure.
+    """
+    if granted is not None:
+        return "measured"
+    if backfill_complete and not holds_transactions:
+        return "no_transactions_to_measure"
+    return "not_yet_measured"
+
+
 def _pipeline_warnings(
     conn: SAConnection,
     now: UtcInstant,
@@ -238,6 +287,7 @@ def _pipeline_warnings(
         )
 
     freshness: dict[int, _ConnectionFreshness] = {}
+    holding = _connections_holding_transactions(conn)
     for row in rows:
         connection_id, name = int(row[0]), str(row[1])
         status, last_success = str(row[2]), row[3]
@@ -309,8 +359,15 @@ def _pipeline_warnings(
         # 🔴 The shortfall AC-11.8 exists to surface. Null granted is NOT no
         # shortfall -- it is not yet known -- and the two are reported
         # differently, because reading the first as the second is the exact
-        # inference AC-1.3a forbids.
-        if granted is None and not said.never_succeeded:
+        # inference AC-1.3a forbids. A connection whose backfill completed with no
+        # transaction is neither: nothing in that feed could have been cut, so
+        # there is nothing unknown to warn about.
+        status = _granted_history_status(
+            granted=granted,
+            backfill_complete=last_success is not None,
+            holds_transactions=connection_id in holding,
+        )
+        if status == "not_yet_measured" and not said.never_succeeded:
             warnings.append(
                 Caveat(
                     kind="partial",
@@ -637,7 +694,10 @@ def _gapped_detail(
             f"{shortfall}, and THIS window reaches {missing} day(s) past where its data starts: "
             f"{begins}, so the part of the window before that is absent rather than zero"
         )
-    if until is None or until > today:
+    # An open `until` resolves to today, so only an explicit end after today
+    # reaches past it. Saying so of a request that named no end described a
+    # tail the answer does not have.
+    if until is not None and until > today:
         return (
             f"{shortfall}; {begins}, which this window starts inside. Its leading edge is "
             f"covered -- but the window reaches past today, and that tail is unanswered rather "
@@ -4013,6 +4073,7 @@ def pipeline_health(config: Config) -> Answer:
         measured = signs.measure(conn)
         conventions = {m.connection_id: m for m in measured}
         domains = _sync_domains(conn)
+        holding = _connections_holding_transactions(conn)
         rows = [
             {
                 "connection_id": int(r[0]),
@@ -4023,6 +4084,11 @@ def pipeline_health(config: Config) -> Answer:
                 "requested_history_days": None if r[5] is None else int(r[5]),
                 # 🔴 Null is reported as null, never as zero or as "complete".
                 "granted_history_days": None if r[6] is None else int(r[6]),
+                "granted_history_status": _granted_history_status(
+                    granted=r[6],
+                    backfill_complete=r[3] is not None,
+                    holds_transactions=int(r[0]) in holding,
+                ),
                 "history_starts": None if r[8] is None else str(r[8]),
                 # 🔴 Null means the Item has not been fetched since this column
                 # existed -- NEVER that consent does not expire, and never that

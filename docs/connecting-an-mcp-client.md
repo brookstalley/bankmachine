@@ -290,7 +290,9 @@ describes the **pipeline**, so it rides every response equally:
   2026-09-08: a sandbox connection to `ins_109511` granted 722 days against 730 requested.)*
 - `partial` — something is not yet known, such as a granted window that has not been measured, or
   one sync domain of a healthy connection that has never landed in full. 🔴 A null granted window
-  means *not yet measured*, never *no shortfall*.
+  means *not yet measured*, never *no shortfall* — unless `granted_history_status` reads
+  `no_transactions_to_measure`: that connection's backfill completed with no transaction, so
+  nothing in that feed can have been cut, and no `partial` rides the answer for it.
 - `derivation_version_mismatch` — some stored rows were derived by a different version of the
   normalization logic than this server runs, so a figure over them may differ from the one this
   build would compute from the same archive. `detail` says whether they are older (the operator runs

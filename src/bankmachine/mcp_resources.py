@@ -150,7 +150,9 @@ _GUIDANCE: dict[str, _Guidance] = {
         act=(
             "compare your window against `granted_history_days` and `history_starts` from "
             "`get_pipeline_health` before treating an older period as quiet. A null "
-            "`granted_history_days` means NOT YET MEASURED, never 'no shortfall'."
+            "`granted_history_days` means NOT YET MEASURED, never 'no shortfall' -- unless "
+            "`granted_history_status` is `no_transactions_to_measure`: that connection's "
+            "backfill completed with no transaction, so no answer from it can be short."
         ),
     ),
     "partial": _Guidance(

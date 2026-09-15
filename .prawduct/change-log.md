@@ -34,6 +34,33 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-14: Two warnings that could never be true are gone
+
+<!-- prawduct: scope=investment-activity-e2e -->
+
+**Why:** a production agent session was told about problems the store did not have. An
+investment-only connection completed its transactions backfill with no transaction, so the
+measurement behind `granted_history_days` had nothing to count and never ran, and every answer
+carried a `partial` caveat saying its window "is measured when the initial backfill completes" --
+about a backfill that had completed. Separately, a request with `since` and no `until` was told its
+window "reaches past today, and that tail is unanswered", though an open `until` resolves to today.
+A warning describing a fault that is not there teaches the reader to skip the ones that are.
+
+**What changed (chunk 01 of `build-plan-investment-activity-e2e.md`):**
+- `get_pipeline_health` rows carry `granted_history_status`: `measured`, `not_yet_measured`, or
+  `no_transactions_to_measure`. The last is a connection whose `last_success_at` is stamped (the
+  aggregator reported the history complete) and which holds no transaction row. The unmeasured
+  `partial` caveat fires only for `not_yet_measured`. Derived at read time: no schema change, no
+  derivation bump, and it clears itself once a transaction arrives and a complete sync measures the
+  window.
+- The `gapped` detail says "reaches past today" only for an explicit `until` after today.
+
+**Tests added:** the three statuses and the absent caveat, including a connection that never completed
+a backfill staying `not_yet_measured` (`tests/test_mcp.py`); a start with no end and an end after today
+(`tests/test_query_window.py`). Each was seen red with its fix reverted. The go-red harness's AC-1.3a
+case now anchors on the status check that replaced the null test, and a second case breaks the
+completed-backfill branch; both were seen red.
+
 ## 2026-09-14: A transactions feed that finishes empty is recorded as landed
 
 <!-- prawduct: scope=empty-complete-transactions-page | release=v0.1.0 -->

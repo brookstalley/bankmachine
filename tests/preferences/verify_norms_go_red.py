@@ -901,9 +901,16 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "AC-1.3a: an unmeasured window is not reported as no shortfall",
         QUERY,
-        "        if granted is None and not said.never_succeeded:",
+        '        if status == "not_yet_measured" and not said.never_succeeded:',
         "        if False:",
         f"{MCP_TESTS}::test_an_unmeasured_window_is_reported_differently_from_no_shortfall",
+    ),
+    (
+        "AC-1.3a: a backfill that completed with no transaction is not called unmeasured",
+        QUERY,
+        "    if backfill_complete and not holds_transactions:",
+        "    if False:",
+        f"{MCP_TESTS}::test_a_complete_backfill_with_no_transactions_is_not_reported_as_unmeasured",
     ),
     (
         # 🔴 Retargeted when the merge landed, not deleted. Both halves of this
