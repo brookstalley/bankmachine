@@ -34,6 +34,43 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-15: Warnings route to where the data lives, and stop calling a quiet account a fault
+
+<!-- prawduct: scope=investment-activity-e2e -->
+
+**Why:** with investment activity served, the warnings still described the store as if it were not.
+`query_transactions` and `money_summary` named every investment account "DATA NOT PRESENT", though
+its trades and positions were in the store. An account with nothing recorded on a connection whose
+sync had completed was called "DATA NOT PRESENT, never no activity", which an agent reported to the
+operator as a problem. And a transactions-grant shortfall on another connection was phrased against
+a trades or balances window as if it reached that answer.
+
+**What changed (chunk 03 of `build-plan-investment-activity-e2e.md`):**
+- New request-scoped warning kind `activity_in_another_feed`. The transactions tools name an account
+  with no transaction but with trades or positions under it, routing to
+  `query_investment_transactions` and `list_holdings`; `accounts_without_coverage` now names only
+  accounts with nothing in any feed, on every tool.
+- `accounts_without_coverage` separates two states. A connection that never completed a sync: data
+  not present. One that has: the store cannot tell an account with no activity from one whose
+  institution does not report it, so report no recorded activity, not a fault. (The aggregator lists
+  only the accounts a sync page touched, so it gives no signal either way.)
+- `gapped` on an answer that reads no transaction -- trades, balances, and positions from
+  `list_holdings` -- says the shortfall limits that connection's transactions and does not affect
+  this answer.
+- The server instructions name `query_investment_transactions`; coverage row and tool descriptions
+  point at it; the contract, client guide and warning guidance carry both kinds.
+- Carried from chunk 02's review: the trades tool's refusals are tested through the server; the
+  paging invariant is walked over varied window, account and type; the set of connections holding
+  transactions is read only when a connection could need it.
+
+**Tests added:** routing on `query_transactions` and `money_summary` as exact sets; both
+`accounts_without_coverage` states (`tests/test_account_coverage.py`); the shortfall on a trades answer
+and the primer naming the tool; no unmeasured caveat on tools other than health
+(`tests/test_mcp.py`); wire refusals and the scoped walk (`tests/test_investment_transactions.py`). Two
+#107 tests that asserted investment accounts are named as uncovered on the transactions tools now
+assert they are routed, per the plan's recorded decision. Go-red cases retargeted for the two
+replaced anchors and added for routing, the completed-sync wording and the series shortfall.
+
 ## 2026-09-14: Investment activity is served, by `query_investment_transactions`
 
 <!-- prawduct: scope=investment-activity-e2e -->

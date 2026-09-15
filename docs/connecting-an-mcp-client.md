@@ -323,12 +323,14 @@ boundary it names — so the *absence* of one is information too:
   unread, and what to do about it.
 - `counted_during_change` — a write landed between the row read and the count read, so the two
   describe moments a fraction apart. The rows are accurate as of the `as_of` stamp.
-- `accounts_without_coverage` — an account in scope has **no data** for what the tool answers from.
-  Its empty result means *data not present*, never *no activity*; call `get_coverage_report` for
-  the per-account picture. On `list_accounts` and `get_coverage_report` it names an account with
-  nothing in any feed. On `query_transactions` and `money_summary` it names an account with no
-  transaction, so an investment account can carry it there — call `list_holdings` for what such an
-  account holds.
+- `accounts_without_coverage` — an account in scope has **nothing recorded in any feed**. Where its
+  connection has never completed a sync, an empty result means *data not present*, never *no
+  activity*. Where it has, the store cannot tell a quiet account from one its institution does not
+  report, and says so: report *no recorded activity*, not a fault. `get_coverage_report` gives the
+  per-account picture.
+- `activity_in_another_feed` — on `query_transactions` and `money_summary`, an account in scope
+  holds no transaction because its activity is in the **investments feed**. `detail` routes to
+  `query_investment_transactions` for its trades and `list_holdings` for its positions.
 - `account_no_longer_active` — an account in scope is closed, or its institution stopped listing it.
   Its balance froze on the date the row carries and is **not a fact about today**. Totals over
   balances *include* it and say by how much, so quote that magnitude beside the total — the reader

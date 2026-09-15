@@ -1656,3 +1656,33 @@ production, but the second is investment-only and carries no cash transactions, 
 bill at a second institution are still owed. The obligation is **#23**.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-039`
+
+## VRF-040 — the agent client reads investment activity and reports no false problems
+
+**Status:** pending
+
+**Chunk:** investment activity end to end, chunk 03 · **Raised:** 2026-09-15
+
+**Why a human:** the tests hold the wire to its schema and the warnings to their triggers, and the
+branch server was read against the production store. What no test can say is how the desktop agent
+client, after an app restart onto the released build, actually reads those answers: whether it finds
+`query_investment_transactions` on its own, and whether it still tells the operator about problems
+the store does not have.
+
+**Where to verify:** the desktop agent client, restarted after production is on the release that
+carries this change (`build.commit` on any answer names it).
+
+**Verify:**
+
+1. Ask for the investment accounts' activity this year. The client calls
+   `query_investment_transactions` without being told the tool's name, and quotes `totals` for
+   contributions rather than summing a page.
+2. Ask whether the investment-only institution's data is complete. It does not report a
+   "granted history window not yet known" problem, and `get_pipeline_health` shows that connection as
+   `no_transactions_to_measure`.
+3. Ask for spending across all accounts. It says the investment accounts' activity is elsewhere
+   (`activity_in_another_feed`) and does not call their data missing.
+4. Ask about the accounts with nothing recorded. It says the store holds no recorded activity for
+   them, not that data is missing or a sync failed.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-040`

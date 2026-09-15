@@ -1114,7 +1114,7 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
     (
         "#19: the aggregate names an account that has never had a transaction",
         QUERY,
-        "        uncovered = [entry for entry in all_coverage if entry.uncovered]",
+        "        uncovered = [entry for entry in all_coverage if entry.no_data_in_any_feed]",
         "        uncovered: list[AccountCoverage] = []",
         f"{COVERAGE_TESTS}::test_summarising_money_warns_when_an_account_in_scope_has_no_coverage",
     ),
@@ -1133,11 +1133,43 @@ CASES: list[tuple[str, pathlib.Path, str, str, str]] = [
         f"{COVERAGE_TESTS}::test_neither_listing_names_an_account_whose_data_is_investments",
     ),
     (
-        "#107: query_transactions keeps naming an account with no transaction",
+        "#19: query_transactions names an account with nothing in any feed",
         QUERY,
-        "if c is not None and c.uncovered]",
-        "if c is not None and c.no_data_in_any_feed]",
-        f"{COVERAGE_TESTS}::test_querying_an_investment_only_account_for_transactions_still_warns",
+        "        uncovered = [c for c in scoped if c.no_data_in_any_feed]",
+        "        uncovered: list[AccountCoverage] = []",
+        f"{COVERAGE_TESTS}::test_querying_an_uncovered_account_warns_instead_of_answering_a_bare_empty",
+    ),
+    (
+        "query_transactions routes an investment account to the feed its activity is in",
+        QUERY,
+        "        elsewhere = [c for c in scoped if c.activity_elsewhere]",
+        "        elsewhere: list[AccountCoverage] = []",
+        f"{COVERAGE_TESTS}::"
+        "test_querying_an_investment_only_account_for_transactions_routes_to_its_feed",
+    ),
+    (
+        "money_summary routes investment accounts instead of calling them absent",
+        QUERY,
+        "        elsewhere = [entry for entry in all_coverage if entry.activity_elsewhere]",
+        "        elsewhere: list[AccountCoverage] = []",
+        f"{COVERAGE_TESTS}::"
+        "test_summarising_money_routes_investment_accounts_and_names_the_empty_ones",
+    ),
+    (
+        "an empty account on a completed connection is named without calling it missing",
+        QUERY,
+        "    if completed:\n",
+        "    if False:\n",
+        f"{COVERAGE_TESTS}::"
+        "test_an_account_with_nothing_recorded_on_a_completed_connection_is_not_called_missing",
+    ),
+    (
+        "a transactions shortfall is not phrased against another series' window",
+        QUERY,
+        "    if not answers_transactions:\n",
+        "    if False:\n",
+        f"{MCP_TESTS}::"
+        "test_a_transactions_shortfall_is_not_phrased_against_a_window_over_another_series",
     ),
     (
         "#107: the trade count is never taken through a join beside transactions",

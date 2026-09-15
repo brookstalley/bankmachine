@@ -1200,6 +1200,25 @@ def test_a_complete_backfill_with_no_transactions_is_not_reported_as_unmeasured(
     assert not unmeasured, unmeasured
 
 
+def test_every_answer_drops_the_unmeasured_caveat_for_a_connection_with_nothing_to_measure(
+    initialized_config: Config,
+) -> None:
+    """The caveat rides every tool, so its removal has to reach every tool.
+
+    `get_pipeline_health` hands its warnings the set it computed its rows from;
+    every other answer reads that set itself, and only when a connection could
+    need it. A tool that skipped the read would say "not yet known" again.
+    """
+    _seed(initialized_config, granted=None, transactions=False)
+
+    for tool in ("list_accounts", "money_summary"):
+        wire = _call(initialized_config, tool)["structuredContent"]
+        unmeasured = [
+            w for w in wire["warnings"] if w["kind"] == "partial" and "not yet known" in w["detail"]
+        ]
+        assert not unmeasured, (tool, unmeasured)
+
+
 def test_a_connection_that_never_completed_a_backfill_is_still_not_yet_measured(
     initialized_config: Config,
 ) -> None:
@@ -1244,6 +1263,60 @@ def test_a_first_transaction_arriving_takes_the_connection_out_of_no_transaction
     assert any(
         w["kind"] == "partial" and "not yet known" in w["detail"] for w in after["warnings"]
     ), after["warnings"]
+
+
+def test_a_transactions_shortfall_is_not_phrased_against_a_window_over_another_series(
+    initialized_config: Config,
+) -> None:
+    """🔴 The grant limits a connection's TRANSACTIONS; a trades answer never read them.
+
+    The shortfall still rides the answer, as the connection-scoped kinds promise,
+    but a trades request told "this request set no start, so it reaches back to that
+    date and no further" was told something false about its own rows.
+    """
+    _seed(initialized_config, granted=90)
+    _seed_investments(initialized_config)
+
+    trades = _call(initialized_config, "query_investment_transactions")["structuredContent"]
+    transactions = _call(initialized_config, "query_transactions")["structuredContent"]
+
+    [on_trades] = [w["detail"] for w in trades["warnings"] if w["kind"] == "gapped"]
+    [on_transactions] = [w["detail"] for w in transactions["warnings"] if w["kind"] == "gapped"]
+    assert "does not affect this answer" in on_trades, on_trades
+    assert "no further" not in on_trades, on_trades
+    # The transactions answer keeps the window phrasing, whichever branch of it this
+    # store reaches: it must not borrow the other-series sentence.
+    assert "does not affect this answer" not in on_transactions, on_transactions
+    assert on_transactions != on_trades
+
+
+def test_a_transactions_shortfall_does_not_reach_a_positions_answer(
+    initialized_config: Config,
+) -> None:
+    """`list_holdings` takes no window, and still reads no transaction.
+
+    Told "this request named no window, so it may reach past that date", a caller
+    asking about positions was told the shortfall might reach its rows.
+    """
+    _seed(initialized_config, granted=90)
+    _seed_investments(initialized_config)
+
+    wire = _call(initialized_config, "list_holdings")["structuredContent"]
+    listing = _call(initialized_config, "list_accounts")["structuredContent"]
+
+    [on_positions] = [w["detail"] for w in wire["warnings"] if w["kind"] == "gapped"]
+    [on_accounts] = [w["detail"] for w in listing["warnings"] if w["kind"] == "gapped"]
+    assert "does not affect this answer" in on_positions, on_positions
+    assert "does not affect this answer" not in on_accounts, on_accounts
+
+
+def test_the_primer_names_the_tool_that_serves_investment_activity() -> None:
+    """The one sentence an agent reads before any tool call, and the routing it needs."""
+    from bankmachine.config import Config as _Config  # noqa: F401  (kept for symmetry)
+
+    primer = mcp._instructions(cast(Config, mock.Mock(environment="sandbox")))
+    assert "`query_investment_transactions`" in primer
+    assert len(primer) <= mcp.INSTRUCTIONS_BUDGET
 
 
 def test_a_degraded_connection_warns_on_every_answer(initialized_config: Config) -> None:

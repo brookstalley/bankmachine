@@ -125,6 +125,14 @@ REQUEST_SCOPED_KINDS: tuple[str, ...] = (
     # request's scope actually holds an uncovered account, so an empty answer
     # about such an account carries it and an ordinary quiet window does not.
     "accounts_without_coverage",
+    # 🔴 An account in THIS request's scope holds no transaction because its
+    # activity is recorded in ANOTHER feed: it has trades or a positions capture.
+    # On a tool answering from the transactions feed its empty contribution is real
+    # and has a home, so it is named apart from `accounts_without_coverage`, whose
+    # "data not present" would be false of it -- and named at all, because an empty
+    # `query_transactions` about it with no notice reads as an account that did
+    # nothing.
+    "activity_in_another_feed",
     # An account in THIS request's scope is closed, or its institution has
     # stopped listing it. The balance beside it froze on the day it was last
     # reported and is not a fact about today, which is a wrong number with no

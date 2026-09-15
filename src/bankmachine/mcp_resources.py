@@ -271,24 +271,40 @@ _GUIDANCE: dict[str, _Guidance] = {
     ),
     "accounts_without_coverage": _Guidance(
         means=(
-            "an account inside the scope of this request has NO DATA for what this tool "
-            "answers from -- not none in this window, none at all, ever. On `list_accounts` "
-            "and `get_coverage_report` that is nothing in any feed: no transaction, investment "
-            "trade or captured position. On `query_transactions` and `money_summary` it is no "
-            "transaction, so an investment account whose trades are stored can carry it there"
+            "an account inside the scope of this request has NOTHING recorded in any feed -- no "
+            "transaction, no investment trade, no captured position. `detail` says which of two "
+            "states it is in: its connection has never completed a sync, or it has and returned "
+            "nothing for the account"
         ),
         for_this_answer=(
-            "any row count, total or empty result touching that account describes ABSENT "
-            "DATA rather than absent activity. An answer of 'no payments found' about it is "
-            "false, and it is the most plausible-looking false answer this surface can give: "
-            "nothing about an empty list looks wrong"
+            "where the connection never completed a sync, a row count, total or empty result "
+            "touching the account describes ABSENT DATA, and 'no payments found' about it is "
+            "false. Where it has completed, the store cannot tell an account with no activity from "
+            "one whose institution does not report its activity: neither 'no activity' nor "
+            "'missing data' is established"
         ),
         act=(
-            "never report zero activity for a named account carrying this warning. Say the "
-            "store has no data for it on this question, and call `get_coverage_report` for "
-            "the per-account picture -- `transaction_count`, `investment_transaction_count`, "
-            "`holdings_as_of`, and how long it has been silent against its own cadence. For "
-            "an investment account, call `list_holdings` for what it holds."
+            "for a connection that never completed a sync, never report zero activity: say the "
+            "store has no data for it yet. For one that has, report that the store holds no "
+            "recorded activity for the account, and do NOT describe it as a sync fault or as "
+            "missing data. `get_coverage_report` gives the per-account picture."
+        ),
+    ),
+    "activity_in_another_feed": _Guidance(
+        means=(
+            "an account in this request's scope holds no transaction because its activity is "
+            "recorded in the investments feed -- trades or positions -- which this tool does not "
+            "read; `detail` names the accounts"
+        ),
+        for_this_answer=(
+            "the account contributes nothing to these rows or totals, and that is where its data "
+            "lives rather than an absence of data: its contributions, dividends and trades are in "
+            "the store"
+        ),
+        act=(
+            "call `query_investment_transactions` for its trades, contributions and dividends and "
+            "`list_holdings` for its positions. Do not report the account as inactive or its data "
+            "as missing, and do not add its activity into a transactions total."
         ),
     ),
     "counted_during_change": _Guidance(

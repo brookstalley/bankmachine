@@ -161,6 +161,83 @@ def test_a_walk_at_any_page_size_reads_every_trade_exactly_once_and_matches_the_
         } == per_key, f"limit={limit}"
 
 
+def test_the_walk_invariant_holds_over_every_filter_a_cursor_is_fingerprinted_on(
+    seeded: Config,
+) -> None:
+    """The same invariant as above, with the window, account and type varied as well.
+
+    A cursor is fingerprinted on every filter and the keyset clause is ANDed with
+    all of them, so a walk that is right unscoped can still repeat or drop a trade
+    once a filter narrows it. Every row must also satisfy the scope it was asked
+    under.
+    """
+    everything = query_investments.query_investment_transactions(seeded, limit=500).rows
+    assert everything, "the capture derived no trade"
+    account = everything[0]["account_id"]
+    middle = date.fromisoformat(sorted(r["trade_date"] for r in everything)[len(everything) // 2])
+    scopes: list[dict[str, Any]] = [
+        {"investment_type": "buy"},
+        {"account_id": account},
+        {"since": middle},
+        {"until": middle, "investment_type": "cash"},
+    ]
+    for scope in scopes:
+        for limit in (3, 40):
+            rows, last = _walk(seeded, limit, **scope)
+            ids = [r["investment_transaction_id"] for r in rows]
+            assert rows, scope
+            assert len(ids) == len(set(ids)), (scope, limit)
+            assert last.truncation is not None and len(rows) == last.truncation.matching, scope
+            assert last.totals is not None
+            assert sum(t["transactions"] for t in last.totals) == len(rows), scope
+            for r in rows:
+                assert scope.get("investment_type", r["investment_type"]) == r["investment_type"]
+                assert scope.get("account_id", r["account_id"]) == r["account_id"]
+                assert "since" not in scope or r["trade_date"] >= scope["since"].isoformat()
+                assert "until" not in scope or r["trade_date"] <= scope["until"].isoformat()
+
+
+def _wire(config: Config, arguments: dict[str, Any]) -> dict[str, Any]:
+    """One `tools/call` through the real server, returning the call's `result`."""
+    import io
+
+    frames = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "query_investment_transactions", "arguments": arguments},
+        },
+    ]
+    out = io.StringIO()
+    mcp.serve(config, stdin=io.StringIO("\n".join(map(json.dumps, frames)) + "\n"), stdout=out)
+    replies = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+    result: dict[str, Any] = replies[1]["result"]
+    return result
+
+
+def test_an_unknown_type_is_refused_on_the_wire_as_an_argument_to_correct(seeded: Config) -> None:
+    """🔴 `invalid_argument`, naming the types that exist -- never `internal_error`.
+
+    An agent that misspells a type can correct the call from this answer; one told
+    "the failure has been logged" gives up on a question the store can answer.
+    """
+    result = _wire(seeded, {"investment_type": "purchase"})
+
+    assert result["isError"] is True
+    assert result["structuredContent"]["error"]["code"] == "invalid_argument"
+    assert "buy" in result["structuredContent"]["error"]["message"]
+
+
+def test_a_type_that_is_not_text_is_refused_on_the_wire(seeded: Config) -> None:
+    result = _wire(seeded, {"investment_type": 3})
+
+    assert result["isError"] is True
+    assert result["structuredContent"]["error"]["code"] == "invalid_argument"
+    assert "investment_type" in result["structuredContent"]["error"]["message"]
+
+
 def test_the_totals_cover_the_whole_request_not_the_page(seeded: Config) -> None:
     answer = query_investments.query_investment_transactions(seeded, limit=5)
 

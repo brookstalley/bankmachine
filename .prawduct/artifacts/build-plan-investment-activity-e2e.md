@@ -162,6 +162,13 @@ The diagnosis, read from the production archive without writing:
   `api-contract.md`, `mcp.py`, `mcp_resources.py`, `query.py`, `tests/test_mcp.py`,
   `tests/preferences/verify_norms_go_red.py`) to name the tool; server instructions gain one
   sentence naming it; `get_coverage_report` and `list_accounts` descriptions point at it.
+- `gapped` on an answer read from another series (trades, balances) says the shortfall limits the
+  connection's transactions and does not affect this answer, instead of phrasing it against a window
+  that was never clamped to the grant. Found verifying chunk 02 against production.
+- Carried from chunk 02's review (`rev-20260915T005910Z-e9b5e129`): the trades tool's refusals are
+  tested through the server (unknown type, non-text type); the paging invariant is walked over
+  varied scopes, not only page sizes; the set of connections holding transactions is read only when
+  a connection could need it.
 - Verification: this branch's `bankmachine mcp` against the production store, read-only. Call every
   tool with defaults and with an investment `account_id`. Read every warning, and confirm the only
   ones left describe true facts (the cash connection's grant shortfall, pending holds, unpaired
@@ -171,5 +178,5 @@ The diagnosis, read from the production archive without writing:
 ## Status
 
 - [x] Chunk 01 — The two warnings that can never be true
-- [ ] Chunk 02 — `query_investment_transactions`
+- [x] Chunk 02 — `query_investment_transactions`
 - [ ] Chunk 03 — Warnings that route, and a surface that says what it serves
