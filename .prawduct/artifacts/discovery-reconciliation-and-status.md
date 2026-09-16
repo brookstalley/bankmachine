@@ -321,6 +321,11 @@ unhealthy"*) rather than inventing a code.
   `current` balance less any pending outflows plus any pending inflows"* — arithmetic that only
   holds if `current` has not already netted them out. **`current` is the settled balance and
   excludes pending**, so the interval sum counts posted rows only.
+  🔴 **The vendor hedges and so should this.** The SDK says `available` *"typically"* equals that
+  expression — the word is Plaid allowing for institutions that compute it differently. So the
+  exclusion is well-evidenced, not guaranteed. The choice fails safe: an institution that behaves
+  otherwise yields a visible residual rather than a silently wrong number, which is the direction
+  this whole surface is built to fail in. The production measurement is the empirical check.
   Two consequences, both recorded above: the `pending_holds` cause is removed, and the sum is
   restricted to `pending = 0`. A third is worth stating on its own — because posted rows carry
   their **posting** date and not their authorization date (`plaid/model/transaction.py`), a

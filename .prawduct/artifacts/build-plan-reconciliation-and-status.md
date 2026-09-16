@@ -204,7 +204,8 @@ against either one alone.
   - A residual producer in `src/bankmachine/query.py`, beside `_account_coverage` and sharing its
     one-producer discipline. SQLAlchemy Core, no ORM, per project preferences. Pairs each account's
     `balances_daily` rows with their predecessor; sums `transactions.amount_minor` over `(from, to]`
-    excluding soft-deleted rows; attributes each nonzero residual to `coverage_gap` |
+    over **posted rows only (`pending = 0`)** and excluding soft-deleted rows; attributes each
+    nonzero residual to `coverage_gap` |
     `window_truncated` | `unexplained`. 🔴 `pending_holds` is NOT in this list: the verify-api
     finding above removed it. Both sides of the comparison exclude pending, so a hold produces no
     residual to explain. Re-add it only if measurement produces a case it is needed for.
@@ -231,8 +232,8 @@ against either one alone.
     and any count the contract test reads.
 - **Tests:**
   - unit — an account whose transactions bridge two snapshots exactly (residual `0`); one whose do
-    not, asserting the magnitude **and** the attributed cause; each of the four causes reaching its
-    own branch; a liability account, proving the single sign convention makes the arithmetic
+    not, asserting the magnitude **and** the attributed cause; each cause in the list above reaching
+    its own branch; a liability account, proving the single sign convention makes the arithmetic
     uniform (this is the norm's Why under test for the first time); an investment account yielding
     `null` beside `not_applicable_investment`, with the warning raised.
   - 🔴 **each `reconciliation_state` distinctly** — the three non-`reconciled` states must be
@@ -258,12 +259,20 @@ against either one alone.
   named in a warning.
 - **Foreign API:** plaid-accounts-balances — whether `balances.current` includes authorization holds
 - **Done when:**
-  0. verify-api — establish whether `current` includes pending. In preference order: the aggregator's
-     current documentation for the `balances` object; then a probe against the production store —
-     an account with a known open hold, comparing `current` against the posted-only sum. Record the
-     finding in `.prawduct/artifacts/api-notes-plaid.md` as a numbered section, **whichever way it
-     comes out**. 🔴 If it cannot be established, say so there and leave the assumption standing in
-     this plan rather than resolving it by preference.
+  0. verify-api — 🔴 **ANSWERED 2026-09-16, RECORD STILL OWED.** The finding is in § Requirements
+     Confidence: `current` excludes pending, established from SDK source
+     (`plaid/model/account_balance.py`, `plaid/model/transaction.py`). What is NOT done is writing
+     it into `.prawduct/artifacts/api-notes-plaid.md` as a numbered section beside §23 and §26,
+     which is where this project keeps measured aggregator behaviour and where the next reader will
+     look for it. A finding that lives only in a build plan is one that disappears when the plan is
+     archived. **This step is not discharged until that section exists.**
+     🔴 Record the hedge with it: the SDK says `available` *"typically"* equals current less pending
+     outflows plus pending inflows. "Typically" is the vendor allowing for institutions that differ,
+     so the exclusion is well-evidenced rather than guaranteed. The direction chosen fails safe —
+     an institution that behaves otherwise produces a visible residual rather than a silent wrong
+     number — and step 2's production measurement is the empirical check on it. Say that in the
+     section rather than stating the exclusion flatly, which is the overclaim this whole cycle
+     exists to correct one instance of.
   1. Acceptance criteria met and tests pass
   2. Residual distribution read against the production store and recorded — the measurement, not a
      formality
