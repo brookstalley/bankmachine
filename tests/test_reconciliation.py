@@ -840,8 +840,10 @@ def test_both_new_kinds_are_declared_request_scoped(one_connection: Config) -> N
     which takes the WHOLE answer down rather than degrading it.
 
     Request-scoped for both, because each fires only when this request's scope
-    holds such an account -- so their absence is information, which is the entire
-    guarantee the two tuples exist to make.
+    holds such an account. 🔴 Their absence is information **on
+    `get_coverage_report`, which is the only tool that emits them** --
+    `envelope.VERIFICATION_SURFACE_ONLY_KINDS` records that narrowing, and the
+    served text renders the exception from it.
     """
     for kind in ("balance_unreconciled", "reconciliation_not_applicable"):
         assert kind in envelope.WARNING_KINDS, f"{kind} is emitted but not in the vocabulary"
@@ -1251,7 +1253,11 @@ def test_the_served_scope_note_carries_the_verification_only_exception() -> None
     """
     from bankmachine import mcp_resources
 
-    served = mcp_resources._request_scope_note()
+    # 🔴 The SERVED reference, not the fragment it is spliced from. Reading
+    # `_request_scope_note()` directly leaves this green if the splice that puts
+    # it into the served document is ever dropped -- the test would pin a string
+    # nobody receives while its own name claims otherwise.
+    served = mcp_resources._warning_reference()
     for kind in envelope.VERIFICATION_SURFACE_ONLY_KINDS:
         assert kind in served, (
             f"{kind} is emitted by one tool only, and the served scope note does not name it as "
@@ -1269,6 +1275,32 @@ def test_the_served_scope_note_carries_the_verification_only_exception() -> None
     assert "stayed inside what the store can answer over" in served, (
         "the note dropped the absence-is-information promise entirely; it is true of every kind "
         "except the named exceptions, and deleting it costs consumers real information"
+    )
+
+
+def test_the_always_present_instructions_carry_the_exception_too(
+    initialized_config: Config,
+) -> None:
+    """🔴 The instructions reach every caller; the reference is read on demand.
+
+    Narrowing the reference alone leaves the wider surface still promising that
+    any request-scoped kind's absence is information — which is the claim that
+    makes a `money_summary` total wrong by a residual read as clean. The
+    instructions carry the count and route to the reference for the names,
+    because `INSTRUCTIONS_BUDGET` is a measured client truncation limit and
+    naming both kinds does not fit inside it.
+    """
+    from bankmachine import mcp
+
+    served = mcp._instructions(initialized_config)
+    assert "get_coverage_report" in served, (
+        "the instructions state the absence-is-information promise without naming the tool the "
+        "exception points to, so a reader has nowhere to go with it"
+    )
+    assert str(len(envelope.VERIFICATION_SURFACE_ONLY_KINDS)) in served
+    assert len(served) <= mcp.INSTRUCTIONS_BUDGET, (
+        f"the instructions are {len(served)} characters against a budget of "
+        f"{mcp.INSTRUCTIONS_BUDGET}; a client truncates past it and the tail is silently lost"
     )
 
 

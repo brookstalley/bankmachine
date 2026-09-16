@@ -2411,6 +2411,19 @@ def _instructions(config: Config) -> str:
     """
     # 🔴 Rendered from the vocabularies that own them, never typed here: a hand
     # copy of a closed set is the one that drifts when the set moves.
+    # 🔴 The COUNT, derived from the tuple rather than written. The unqualified
+    # promise above is FALSE for these kinds, and a hand-written exception goes
+    # stale the first time one joins or leaves -- in the direction that tells an
+    # agent silence means clean on an answer that can be wrong by a residual.
+    #
+    # 🔴 Counted rather than named because naming both costs 55 of the ~80
+    # characters `INSTRUCTIONS_BUDGET` leaves, and that budget is a MEASURED
+    # client truncation limit rather than a style rule. The warnings reference
+    # names them in full, and the paragraph above already routes the reader
+    # there before concluding anything -- so the instructions carry the fact that
+    # an exception exists and how many, which is what stops a reader treating
+    # silence as clean, and the reference carries which.
+    verification_only = len(envelope.VERIFICATION_SURFACE_ONLY_KINDS)
     pipeline_kinds = _oxford([f"`{kind}`" for kind in envelope.CONNECTION_SCOPED_KINDS])
     unbuilt = _oxford([f"`{tool}`" for tool in mcp_resources.UNBUILT_TOOLS])
     return (
@@ -2426,8 +2439,9 @@ def _instructions(config: Config) -> str:
         f"data. READ `warnings` BEFORE drawing a conclusion, and say what you found. Nothing "
         f"here throws; the numbers simply stop being true. {pipeline_kinds} describe the "
         f"PIPELINE and ride every answer; every "
-        f"other kind describes THIS REQUEST and fires only when it crosses the boundary it "
-        f"names, so its absence is information too.\n\n"
+        f"other kind describes THIS REQUEST and fires only when it crosses that boundary, so "
+        f"its absence is information — except the {verification_only} reconciliation kinds, "
+        f"sent only by `get_coverage_report`.\n\n"
         f"Quote `totals` rather than a sum over `rows`. When `truncation.truncated` is true, "
         f"page with `next_cursor` until it is false instead of counting the rows in hand.\n\n"
         f"An investment account's activity is served by `query_investment_transactions`; "
