@@ -68,4 +68,6 @@ directory's client guide and the README against the tools the server actually se
 
 ## Licence
 
-No licence has been chosen yet, so default copyright applies.
+[MIT](../LICENSE). The root [`README.md`](../README.md) carries the warranty note that matters for
+this one: the verification gate is not built, so reconcile against your institution's own figures
+before relying on any number this produces.
