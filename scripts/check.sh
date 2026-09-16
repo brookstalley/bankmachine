@@ -88,7 +88,7 @@ check() {
 # copies disagreed within a day, which is the second-copy failure this file's own
 # header warns about.
 #
-# 1264 of the tests hold `keychain_service` against the REAL keychain, so the
+# Most of the tests hold `keychain_service` against the REAL keychain, so the
 # suite spent most of its wall clock inside `securityd` rather than in this
 # product. `-n auto` could not reach it: ten workers queue on one daemon, which
 # is why parallelism alone bought 21%.
@@ -107,8 +107,12 @@ check() {
 # coverage away.
 #
 # WHAT THE RISK ACTUALLY IS: for the length of the run, another process writing
-# to the DEFAULT keychain would write to ours. The login keychain stays in the
-# search list, so READS are unaffected. The window is ~77s, down from ~542s.
+# to the DEFAULT keychain writes to ours instead. Reads are unaffected -- the
+# original search list is kept and still searched. That write is NOT destroyed on
+# the way out: the keychain is left in place and removed only at the start of a
+# later run, announced. The figures are in the change-log entry for
+# `scope=fast-keychain-suite`; restating them here is what made two copies
+# disagree within a day.
 #
 # CI does exactly this already (`.github/workflows/check.yml` creates
 # `ci.keychain`); the restore below captures whatever was default, so running
@@ -142,7 +146,12 @@ restore_keychain() {
     security default-keychain -s "$keychain_swapped" 2>/dev/null || true
     # shellcheck disable=SC2086 -- the saved list is space-joined and must expand
     [[ -n $keychain_list_saved ]] && security list-keychains -d user -s $keychain_list_saved 2>/dev/null
-    security delete-keychain "$BMTEST_KEYCHAIN" 2>/dev/null || true
+    # 🔴 NOT deleted here. Anything written to the DEFAULT keychain during the run
+    # landed in this one, and for this product that can be the datastore key,
+    # which `secrets.py` documents as unrecoverable. Deleting on the way out
+    # turns "misdirected" into "destroyed". It is left in place and removed at the
+    # START of the next run, which is a moment the operator caused and is told
+    # about -- see `use_test_keychain`.
     rm -f "$BMTEST_STATE"
     keychain_swapped=""
 }
@@ -179,7 +188,8 @@ repair_stale_keychain() {
     security default-keychain -s "$recorded_default" 2>/dev/null || true
     # shellcheck disable=SC2086 -- space-joined list, must expand
     security list-keychains -d user -s $recorded_list 2>/dev/null || true
-    security delete-keychain "$BMTEST_KEYCHAIN" 2>/dev/null || true
+    # 🔴 Emphatically not deleted on THIS path. The run that owned this keychain
+    # was killed, so it is the one most likely to hold a write nobody has seen.
     rm -f "$BMTEST_STATE"
 }
 
@@ -235,7 +245,18 @@ use_test_keychain() {
     # open. The suite stays slow, which is the safe direction to fail.
     [[ -n $pw ]] || { rm -f "$BMTEST_STATE"; return 0; }
 
-    security delete-keychain "$BMTEST_KEYCHAIN" 2>/dev/null || true
+    # The one place the keychain is destroyed, and it says so. A leftover from a
+    # previous run may hold a write that landed on the default during that run;
+    # it is announced here rather than removed on the way out, so the loss is
+    # attributable to a command the operator just ran instead of happening
+    # invisibly at the end of the last one.
+    if security show-keychain-info "$BMTEST_KEYCHAIN" >/dev/null 2>&1; then
+        printf '\n*** removing a leftover %s from a previous run.\n' "$BMTEST_KEYCHAIN" >&2
+        printf '*** if anything wrote to the DEFAULT keychain during that run it landed\n' >&2
+        printf '*** there, and is going now. Ctrl-C within 3s to keep it.\n' >&2
+        sleep 3
+        security delete-keychain "$BMTEST_KEYCHAIN" 2>/dev/null || true
+    fi
     security create-keychain -p "$pw" "$BMTEST_KEYCHAIN" 2>/dev/null || { rm -f "$BMTEST_STATE"; return 0; }
     # No auto-lock: a keychain that relocks mid-suite fails every `keyring` write
     # after it, which reads as a product bug rather than as a harness one.

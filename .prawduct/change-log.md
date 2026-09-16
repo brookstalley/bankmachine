@@ -82,9 +82,12 @@ worst case — stale default *and* no state file — takes the fallback. CI alre
 assuming a login one.
 
 **The remaining exposure, stated plainly and without softening it:** for the length of the run,
-another process writing to the *default* keychain writes to the temporary one — and that write is
-**destroyed**, not merely misdirected, because the run deletes the keychain on its way out. Reads
-are unaffected: the original search list is kept and still searched. The temporary keychain is
+another process writing to the *default* keychain writes to the temporary one instead. Reads are
+unaffected: the original search list is kept and still searched. 🔴 That write is **not destroyed** —
+neither teardown path deletes the keychain, because for this product the thing that could land there
+is the datastore key, which `secrets.py` documents as unrecoverable. A leftover is removed at the
+START of a later run, announced, so the loss is attributable to a command the operator just ran
+rather than happening invisibly at the end of the previous one. The temporary keychain is
 created with a random password rather than an empty one, so a secret that does land there before
 deletion is not sitting in a keychain anyone can open. The window is now ~56s rather than ~542s.
 `BANKMACHINE_NO_KEYCHAIN_SWAP=1` opts out entirely.

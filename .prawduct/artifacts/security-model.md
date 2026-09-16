@@ -142,6 +142,23 @@ data at rest and in transit.
 
 ## Authentication
 
+🔴 **Running the gate temporarily changes which keychain is the default.**
+`scripts/check.sh` makes an empty, randomly-passworded keychain the default for the length of a
+suite run, because the developer's populated login keychain costs roughly twenty-five times what an
+empty one does per `keyring` round trip and most of the suite's wall clock was spent there. The
+original default **and the whole user search list** are restored on the way out, and a default left
+stale by a `kill -9` is repaired by the next run.
+
+What this means for the boundary stated below: for the length of a run, another process writing to
+the *default* keychain writes to the temporary one instead. Reads are unaffected — the original list
+is kept and still searched. That write is **not destroyed**: the temporary keychain is left in place
+and removed only at the start of a later run, announced, so the loss is attributable to a command
+the operator just ran. It carries a random password precisely so a secret that does land there is
+not sitting in a keychain anyone can open. `BANKMACHINE_NO_KEYCHAIN_SWAP=1` opts out; where
+`security` is unreachable the swap declines and the suite simply runs slowly, so it is an
+optimisation and never a prerequisite.
+
+
 🔴 **There is none, and that is the design.**
 
 This is a single-operator tool. The authentication boundary is **the macOS user account** — login

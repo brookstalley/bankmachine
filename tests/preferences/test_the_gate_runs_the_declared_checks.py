@@ -84,6 +84,35 @@ exit 0
 GateRun = tuple[subprocess.CompletedProcess[str], Path, Path]
 
 
+KEYCHAIN_MARKER = "BANKMACHINE_KEYCHAIN_SWAPPED"
+
+
+#: 🔴 EVERY exec of the real gate goes through this, and that is the point rather
+#: than tidiness. The suite this gate launches contains THIS MODULE, so each of
+#: those execs is a nested gate run. Without the re-entry marker a nested run sees
+#: the default already pointing at the suite's keychain, reads it as a killed
+#: previous run, restores the OUTER run's default, deletes the keychain its xdist
+#: workers are mid-`keyring` call against, and removes its state file.
+#:
+#: `export` in the script is not enough: these sites pass CLOSED env dicts, so a
+#: child inherits nothing it is not handed. A helper is the construction that
+#: makes "every site is covered" checkable instead of remembered.
+def _gate_env(
+    tmp_path: Path, bin_dir: Path, *, reentrant: bool = False, **extra: str
+) -> dict[str, str]:
+    env = {
+        "PATH": f"{bin_dir}:/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        # Never the repo's own file: a nested run writing it corrupts the run
+        # that launched it. See BMTEST_STATE in the gate.
+        "BANKMACHINE_KEYCHAIN_STATE": str(tmp_path / "keychain-restore"),
+    }
+    if not reentrant:
+        env[KEYCHAIN_MARKER] = "1"
+    env.update(extra)
+    return env
+
+
 def _run_gate(tmp_path: Path, *fail: str, report_failures: int = 0) -> GateRun:
     """Run the real gate with a stub `uv`, failing each tool in `fail`.
 
@@ -106,13 +135,13 @@ def _run_gate(tmp_path: Path, *fail: str, report_failures: int = 0) -> GateRun:
         capture_output=True,
         text=True,
         timeout=60,
-        env={
-            "PATH": f"{bin_dir}:/usr/bin:/bin",
-            "STUB_LOG": str(log),
-            "STUB_FAIL": " ".join(fail),
-            "STUB_REPORT_FAILURES": str(report_failures),
-            "HOME": str(tmp_path),
-        },
+        env=_gate_env(
+            tmp_path,
+            bin_dir,
+            STUB_LOG=str(log),
+            STUB_FAIL=" ".join(fail),
+            STUB_REPORT_FAILURES=str(report_failures),
+        ),
     )
     return result, log, junit
 
@@ -235,7 +264,15 @@ def test_it_refuses_to_run_without_a_report_path(tmp_path: Path) -> None:
     """`{junit_xml}` is mandatory in this key's contract; a silent default would hide
     a mis-declared `test_command:` until someone went looking for the evidence."""
     result = subprocess.run(
-        ["bash", str(GATE)], cwd=REPO_ROOT, capture_output=True, text=True, timeout=60
+        ["bash", str(GATE)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        # Routed through the builder although this run exits at the usage check
+        # before the swap: one rule with no exemptions, because an exemption is
+        # what the next site copies.
+        env=_gate_env(tmp_path, tmp_path),
     )
 
     assert result.returncode == 2, "a missing report path must be a usage error"
@@ -347,7 +384,7 @@ def test_a_pytest_that_wrote_no_report_is_still_recorded(tmp_path: Path) -> None
         capture_output=True,
         text=True,
         timeout=60,
-        env={"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(tmp_path)},
+        env=_gate_env(tmp_path, bin_dir),
     )
 
     assert result.returncode == 1
@@ -380,12 +417,9 @@ def test_a_failure_to_record_is_announced(tmp_path: Path) -> None:
         text=True,
         timeout=60,
         # No `python3` reachable: /bin has bash, /usr/bin is where python3 lives.
-        env={
-            "PATH": f"{bin_dir}:/bin",
-            "STUB_LOG": str(log),
-            "STUB_FAIL": "mypy",
-            "HOME": str(tmp_path),
-        },
+        env=_gate_env(
+            tmp_path, bin_dir, PATH=f"{bin_dir}:/bin", STUB_LOG=str(log), STUB_FAIL="mypy"
+        ),
     )
 
     assert result.returncode == 1
@@ -545,8 +579,6 @@ def _stub_env(tmp_path: Path, *, with_security: bool = False) -> tuple[Path, Pat
 # script DECLINES in each of those states, which is the property the suite needs
 # to be able to run itself at all.
 
-KEYCHAIN_MARKER = "BANKMACHINE_KEYCHAIN_SWAPPED"
-
 
 def _gate_source() -> str:
     return GATE.read_text()
@@ -568,22 +600,13 @@ def test_a_nested_gate_run_does_not_touch_the_outer_run_s_keychain(tmp_path: Pat
     log, bin_dir = _stub_env(tmp_path, with_security=True)
     security_log = tmp_path / "security.log"
     security_log.touch()
-    env = {
-        "PATH": f"{bin_dir}:/usr/bin:/bin",
-        "STUB_LOG": str(log),
-        "SECURITY_LOG": str(security_log),
-        "HOME": str(tmp_path),
-        # Never the repo's own state file: see the note beside BMTEST_STATE.
-        "BANKMACHINE_KEYCHAIN_STATE": str(tmp_path / "keychain-restore"),
-        KEYCHAIN_MARKER: "1",
-    }
     result = subprocess.run(
         ["bash", str(GATE), str(tmp_path / "r.xml")],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
         timeout=60,
-        env=env,
+        env=_gate_env(tmp_path, bin_dir, STUB_LOG=str(log), SECURITY_LOG=str(security_log)),
     )
     assert result.returncode == 0, result.stdout + result.stderr
     calls = security_log.read_text().strip()
@@ -610,13 +633,9 @@ def test_without_the_marker_a_run_meeting_our_keychain_does_act(tmp_path: Path) 
         capture_output=True,
         text=True,
         timeout=60,
-        env={
-            "PATH": f"{bin_dir}:/usr/bin:/bin",
-            "STUB_LOG": str(log),
-            "SECURITY_LOG": str(security_log),
-            "HOME": str(tmp_path),
-            "BANKMACHINE_KEYCHAIN_STATE": str(tmp_path / "keychain-restore"),
-        },
+        env=_gate_env(
+            tmp_path, bin_dir, reentrant=True, STUB_LOG=str(log), SECURITY_LOG=str(security_log)
+        ),
     )
     assert "Repairing" in result.stderr, (
         "with no re-entry marker and our keychain reported as default, the gate did "
@@ -636,12 +655,7 @@ def test_the_swap_is_skipped_when_opted_out(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         timeout=60,
-        env={
-            "PATH": f"{bin_dir}:/usr/bin:/bin",
-            "STUB_LOG": str(log),
-            "HOME": str(tmp_path),
-            "BANKMACHINE_NO_KEYCHAIN_SWAP": "1",
-        },
+        env=_gate_env(tmp_path, bin_dir, STUB_LOG=str(log), BANKMACHINE_NO_KEYCHAIN_SWAP="1"),
     )
     assert "Repairing" not in result.stderr
     assert result.returncode == 0, result.stdout + result.stderr
@@ -660,7 +674,7 @@ def test_the_gate_still_runs_where_security_is_unavailable(tmp_path: Path) -> No
         timeout=60,
         # No /usr/bin: `security` is unreachable, which is what a Linux box looks
         # like from this script's point of view.
-        env={"PATH": f"{bin_dir}:/bin", "STUB_LOG": str(log), "HOME": str(tmp_path)},
+        env=_gate_env(tmp_path, bin_dir, PATH=f"{bin_dir}:/bin", STUB_LOG=str(log)),
     )
     assert result.returncode == 0, result.stdout + result.stderr
     invoked = [line.split()[1] for line in log.read_text().splitlines()]
@@ -695,37 +709,28 @@ def test_the_restore_puts_back_the_whole_search_list_not_just_the_default() -> N
         )
 
 
-def test_the_keychain_cases_never_write_the_repo_s_own_state_file() -> None:
-    """🔴 Every case that can reach the swap must redirect the state file.
+def test_the_env_builder_redirects_the_state_file(tmp_path: Path) -> None:
+    """🔴 The redirect is what stops a nested run corrupting the outer one.
 
-    A case exercising the UNGUARDED path is, by construction, a nested run doing
-    the sabotage the re-entry guard exists to prevent. Stubbing `security` keeps
-    it off the real keychain; it does not keep it off the state file, which is a
-    real path in the repo root. An early version of these cases overwrote the
-    outer run's copy with the stub's fake paths mid-suite, undoing the outer
-    swap and leaving that run's SIGKILL path nothing to restore from.
+    Stubbing `security` keeps these cases off the real keychain; it does not keep
+    them off the STATE FILE, which is a real path in the repo root. An early
+    version overwrote the outer run's copy with the stub's fake paths mid-suite,
+    undoing the outer swap and leaving its SIGKILL path nothing to restore from —
+    which surfaced only as a gate that took eight minutes instead of one.
 
-    Asserted structurally because the failure is invisible from inside a single
-    case: each one passes while corrupting the run that launched it.
+    Asserted on the builder rather than per-case, now that every exec goes
+    through it (the case below enforces that), so one assertion covers sites that
+    do not exist yet.
     """
-    src = Path(__file__).read_text()
-    block = src.split("# --- the gate's keychain swap ---", 1)[1]
-    reaching = [
-        name
-        for name in re.findall(r"^def (test_\w+)\(", block, re.M)
-        if "with_security=True" in block.split(f"def {name}(", 1)[1].split("\ndef ", 1)[0]
-    ]
-    assert reaching, (
-        "no keychain case stubs `security`, so none of them reaches the swap at all -- "
-        "they would be passing without exercising the subject."
+    env = _gate_env(tmp_path, tmp_path / "bin")
+    redirect = env.get("BANKMACHINE_KEYCHAIN_STATE")
+    assert redirect, (
+        "_gate_env does not set BANKMACHINE_KEYCHAIN_STATE, so every nested gate run "
+        "writes the repo's own state file and corrupts the run that launched it."
     )
-    for name in reaching:
-        body = block.split(f"def {name}(", 1)[1].split("\ndef ", 1)[0]
-        assert "BANKMACHINE_KEYCHAIN_STATE" in body, (
-            f"{name} stubs `security` — so it reaches the swap — but does not redirect "
-            "BANKMACHINE_KEYCHAIN_STATE, so it writes the repo's own state file and "
-            "corrupts the gate run that launched it."
-        )
+    assert str(tmp_path) in redirect, (
+        f"_gate_env points the state file at {redirect!r}, which is not under tmp_path"
+    )
 
 
 def test_the_swap_actually_engages_when_nothing_prevents_it(tmp_path: Path) -> None:
@@ -754,13 +759,9 @@ def test_the_swap_actually_engages_when_nothing_prevents_it(tmp_path: Path) -> N
         capture_output=True,
         text=True,
         timeout=60,
-        env={
-            "PATH": f"{bin_dir}:/usr/bin:/bin",
-            "STUB_LOG": str(log),
-            "SECURITY_LOG": str(security_log),
-            "HOME": str(tmp_path),
-            "BANKMACHINE_KEYCHAIN_STATE": str(tmp_path / "keychain-restore"),
-        },
+        env=_gate_env(
+            tmp_path, bin_dir, reentrant=True, STUB_LOG=str(log), SECURITY_LOG=str(security_log)
+        ),
     )
     assert result.returncode == 0, result.stdout + result.stderr
     calls = security_log.read_text()
@@ -771,4 +772,114 @@ def test_the_swap_actually_engages_when_nothing_prevents_it(tmp_path: Path) -> N
     assert "default-keychain -s" in calls, (
         "the gate created a keychain but never made it the default, so nothing is "
         f"faster and the keychain leaks. security calls:\n{calls}"
+    )
+
+
+def test_every_exec_of_the_gate_goes_through_the_env_builder() -> None:
+    """🔴 One bypassed site is the whole defect back.
+
+    Each `subprocess.run` of the real gate in this module is a NESTED gate run,
+    because the suite the gate launches collects this module. `_gate_env` is what
+    hands every one of them the re-entry marker and a redirected state file;
+    `export` in the script cannot, since these sites pass CLOSED env dicts and a
+    child inherits nothing it is not given.
+
+    Asserted structurally rather than per-site, because the failure mode is a site
+    added LATER with a hand-written dict — which passes its own case perfectly
+    while tearing the keychain out from under the run that launched it.
+    """
+    src = Path(__file__).read_text()
+    execs = [m.start() for m in re.finditer(r"subprocess\.run\(", src)]
+    assert execs, "no gate invocations found — this case is guarding nothing"
+    bypassed = []
+    for start in execs:
+        block = src[start : start + 900]
+        if "GATE" not in block.split(")", 1)[0] and "str(GATE)" not in block[:200]:
+            continue
+        if "env=_gate_env(" not in block:
+            bypassed.append(src[:start].count("\n") + 1)
+    assert not bypassed, (
+        f"gate exec(s) at line(s) {bypassed} build their own env instead of calling "
+        "_gate_env, so they run without the re-entry marker and would repair, restore "
+        "and delete the OUTER gate run's keychain mid-suite."
+    )
+
+
+def test_repair_restores_the_recorded_default_not_the_fallback(tmp_path: Path) -> None:
+    """🔴 The branch that decides which keychain the operator gets back.
+
+    `repair_stale_keychain` has two branches: use the state file's recorded
+    default, or — when there is no readable state file — fall back to the
+    conventional login path. Only the fallback was ever executed by a test,
+    because the case that reached repair pointed the state file at something it
+    never created. So the `sed -n '1p'` / `2p` parsing, which is what restores a
+    non-default setup, ran nowhere.
+
+    Here the state file EXISTS and names a distinctive path, and the stubbed
+    `security` records what the gate asked for.
+    """
+    log, bin_dir = _stub_env(tmp_path, with_security=True)
+    security_log = tmp_path / "security.log"
+    security_log.touch()
+    state = tmp_path / "keychain-restore"
+    recorded_default = "/Users/someone/Library/Keychains/notlogin.keychain-db"
+    recorded_list = f"{recorded_default} /Users/someone/Library/Keychains/extra.keychain-db"
+    state.write_text(f"{recorded_default}\n{recorded_list}\n")
+
+    result = subprocess.run(
+        ["bash", str(GATE), str(tmp_path / "r.xml")],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=_gate_env(
+            tmp_path,
+            bin_dir,
+            reentrant=True,
+            STUB_LOG=str(log),
+            SECURITY_LOG=str(security_log),
+            BANKMACHINE_KEYCHAIN_STATE=str(state),
+        ),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Repairing" in result.stderr, "the gate never took the repair path:\n" + result.stderr
+    assert "NO recorded default" not in result.stderr, (
+        "the gate fell back although a state file was present and readable — the "
+        "recorded-default branch is not being taken:\n" + result.stderr
+    )
+    calls = security_log.read_text()
+    assert f"default-keychain -s {recorded_default}" in calls, (
+        f"repair did not restore the RECORDED default {recorded_default!r}. "
+        f"security calls:\n{calls}"
+    )
+    assert "extra.keychain-db" in calls, (
+        "repair restored a search list without the second recorded keychain, so a "
+        f"user with more than one searchable keychain loses the rest. Calls:\n{calls}"
+    )
+
+
+def test_neither_teardown_path_destroys_the_keychain() -> None:
+    """🔴 A write that landed on the default during the run is in that keychain.
+
+    For this product that can be the datastore key, which `secrets.py` documents
+    as unrecoverable. Deleting on the way out turns "misdirected" into
+    "destroyed", and the random password means a later reboot relocks it under a
+    secret that died with the process — so not deleting is the only thing
+    preserving any recovery chance at all.
+
+    Deletion belongs at the START of a run, where the operator caused it and is
+    told. Asserted on the script's structure because the alternative is a test
+    that deletes a real keychain to prove it does not.
+    """
+    gate = GATE.read_text()
+    for func in ("restore_keychain", "repair_stale_keychain"):
+        body = gate.split(f"{func}() {{", 1)[1].split("\n}", 1)[0]
+        assert "delete-keychain" not in body, (
+            f"{func} deletes the test keychain, destroying anything that landed on the "
+            "default during the run rather than merely having misdirected it."
+        )
+    setup = gate.split("use_test_keychain() {", 1)[1].split("\n}", 1)[0]
+    assert "delete-keychain" in setup, (
+        "nothing removes a leftover keychain at the start of a run, so they accumulate "
+        "in the user's keychain directory forever."
     )
