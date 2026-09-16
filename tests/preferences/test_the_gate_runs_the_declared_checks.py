@@ -726,3 +726,49 @@ def test_the_keychain_cases_never_write_the_repo_s_own_state_file() -> None:
             "BANKMACHINE_KEYCHAIN_STATE, so it writes the repo's own state file and "
             "corrupts the gate run that launched it."
         )
+
+
+def test_the_swap_actually_engages_when_nothing_prevents_it(tmp_path: Path) -> None:
+    """🔴 A swap that fails SILENTLY is the failure mode this case exists for.
+
+    Every abort path in `use_test_keychain` is a bare `return 0`, deliberately —
+    the swap is an optimisation and must never fail a gate run. The cost is that
+    a broken swap is indistinguishable from a correct decline: nothing errors,
+    and the only symptom is that the suite takes nine minutes instead of one.
+
+    That is not hypothetical. The password was first generated with
+    `tr -dc ... </dev/urandom | head -c 32`; `head` exits at its byte count, `tr`
+    takes SIGPIPE, and the pipeline returns 141 under this script's `pipefail`.
+    The `|| return 0` fired and the swap stopped happening, with a green gate and
+    no message.
+
+    So this asserts the swap REACHES `default-keychain -s`, with `security`
+    stubbed so the assertion costs the machine nothing.
+    """
+    log, bin_dir = _stub_env(tmp_path, with_security=True)
+    security_log = tmp_path / "security.log"
+    security_log.touch()
+    result = subprocess.run(
+        ["bash", str(GATE), str(tmp_path / "r.xml")],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "STUB_LOG": str(log),
+            "SECURITY_LOG": str(security_log),
+            "HOME": str(tmp_path),
+            "BANKMACHINE_KEYCHAIN_STATE": str(tmp_path / "keychain-restore"),
+        },
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    calls = security_log.read_text()
+    assert "create-keychain" in calls, (
+        "the gate never created its keychain — the swap aborted before it, so the "
+        f"suite would run against the real one. security calls:\n{calls}"
+    )
+    assert "default-keychain -s" in calls, (
+        "the gate created a keychain but never made it the default, so nothing is "
+        f"faster and the keychain leaks. security calls:\n{calls}"
+    )

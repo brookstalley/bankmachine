@@ -221,8 +221,19 @@ use_test_keychain() {
     # holding that would sit outside the "protected by the keychain's own unlock"
     # boundary `security-model.md` states. The password lives only in this
     # process; the keychain is deleted on the way out.
+    #
+    # 🔴 NOT `tr -dc ... </dev/urandom | head -c 32`. `head` exits at its byte
+    # count, `tr` takes SIGPIPE, and the pipeline returns 141 under the
+    # `pipefail` this script sets -- so the `|| return 0` fired, the swap never
+    # happened, and the suite silently ran against the developer's real keychain
+    # at nine minutes instead of one. It looked like a performance regression,
+    # not like an error, because nothing failed. `openssl rand` is one process
+    # with no pipe and no signal.
     local pw
-    pw=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32) || return 0
+    pw=$(openssl rand -hex 16 2>/dev/null)
+    # No password source: swap nothing rather than create a keychain anyone can
+    # open. The suite stays slow, which is the safe direction to fail.
+    [[ -n $pw ]] || { rm -f "$BMTEST_STATE"; return 0; }
 
     security delete-keychain "$BMTEST_KEYCHAIN" 2>/dev/null || true
     security create-keychain -p "$pw" "$BMTEST_KEYCHAIN" 2>/dev/null || { rm -f "$BMTEST_STATE"; return 0; }
