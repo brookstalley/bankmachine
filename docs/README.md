@@ -21,13 +21,18 @@ bash scripts/check.sh report.xml       # all four at once, the way the gate runs
 ```
 
 🔴 **`scripts/check.sh` changes your default macOS keychain while it runs.** It makes an empty,
-randomly-passworded keychain the default so the suite stops paying your populated login keychain
-per `keyring` round trip — the difference is roughly 56s against 542s — and puts your default and
-your whole keychain search list back on the way out, including after a Ctrl-C and, on the next run,
-after a `kill -9`. Reads are unaffected: your own keychain stays in the search list. Set
-**`BANKMACHINE_NO_KEYCHAIN_SWAP=1`** to decline it and run slowly instead. The full statement of
-what this exposes, and why the trade is taken, is in `.prawduct/artifacts/security-model.md`
-§ Authentication.
+randomly-passworded keychain the default, because a populated login keychain costs roughly
+twenty-five times what an empty one does per `keyring` round trip and most of the suite is spent
+there — the suite runs about an order of magnitude faster this way. Your default and your whole
+keychain search list are put back on the way out, including after a Ctrl-C and, on the next run,
+after a `kill -9`. Reads are unaffected: your own keychain stays in the search list.
+
+The temporary keychain is **not** deleted when the run ends — anything that wrote to the default
+during it landed there, and for this product that can be the datastore key. It is removed at the
+start of a later run instead, and if the previous run was killed you get a three-second
+"Ctrl-C to keep it" window first. Set **`BANKMACHINE_NO_KEYCHAIN_SWAP=1`** to decline the whole
+mechanism and run slowly. What this exposes and why the trade is taken:
+`.prawduct/artifacts/security-model.md` § *The gate's temporary keychain*.
 
 The individual commands are for while you are editing. `scripts/check.sh` is the one the
 governance gate launches: it runs all four, reports every one that went red rather than
