@@ -16,6 +16,7 @@ which is what lets the failure-reporting contract be tested at all.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import tomllib
 import xml.etree.ElementTree as ET
@@ -799,28 +800,48 @@ def test_no_subprocess_in_this_module_builds_its_own_env(tmp_path: Path) -> None
     in the script cannot, because these sites pass CLOSED environments and a
     child inherits nothing it is not given.
 
-    Stated as "no literal env dict" rather than "every gate call uses the
-    builder", because the second cannot be checked without following variables:
-    a call reading a pre-built `cmd` list mentions `GATE` nowhere inside itself,
-    and a scan looking for it there skips the site silently — which is precisely
-    the failure this case exists to catch. The inverted rule has no such hole,
-    and it is the property actually wanted.
+    TWO rules, because neither alone holds. A literal-needle scan for the dict
+    form misses `env = {` with spaces and misses `env=<variable>` assembled on an
+    earlier line — and that second one is the closed-env case that actually does
+    the sabotage. Requiring every call to NAME the builder catches both, and is
+    not defeated by a pre-built `cmd` list the way looking for `GATE` inside the
+    call was. The dict rule stays because it names the likely mistake in its own
+    terms, which is what a reader of the failure needs.
     """
     src = Path(__file__).read_text()
-    # Assembled at runtime so the needle does not appear literally in this file
-    # and match the case itself — which it did, and which is the self-reference
-    # trap every source-scanning guard gets exactly once.
-    needle = "env=" + "{"
-    offenders = [src[:i].count("\n") + 1 for i in range(len(src)) if src.startswith(needle, i)]
-    assert not offenders, (
-        f"line(s) {offenders} pass a hand-written env dict. Every subprocess here is a "
-        "nested gate run; without _gate_env it runs with no re-entry marker and would "
-        "repair, restore and delete the OUTER run's keychain mid-suite. Use "
+
+    # Scoped to CALL SITES, not the whole file. A file-wide scan for the dict
+    # form matched `_gate_env`'s own construction and this docstring describing
+    # it — legitimate text, reported as offenders. Naming the builder is the only
+    # property a call site needs, and it is not defeated by a pre-built `cmd`
+    # list the way looking for `GATE` inside the call was.
+    builder = "_gate" + "_env("
+    dict_form = re.compile("env" + r"\s*=\s*\{")
+    missing = []
+    for m in re.finditer(r"subprocess\.run\(", src):
+        depth, end = 0, m.start()
+        for i in range(m.start(), len(src)):
+            if src[i] == "(":
+                depth += 1
+            elif src[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        block = src[m.start() : end + 1]
+        if builder in block:
+            continue
+        line = src[: m.start()].count("\n") + 1
+        how = "a hand-written dict" if dict_form.search(block) else "an env built elsewhere"
+        missing.append(f"{line} ({how})")
+    assert not missing, (
+        f"subprocess.run at line(s) {missing} does not name _gate_env. Every subprocess "
+        "here is a nested gate run; without the re-entry marker it would repair, restore "
+        "and delete the OUTER run's keychain mid-suite. Use "
         "_gate_env(tmp_path, bin_dir, ...) and pass extras as keywords."
     )
-    # The builder must actually be reachable and do its job, or the rule above is
-    # satisfied by a module with no subprocess calls at all.
-    assert "def _gate_env(" in src, "the env builder is gone; the rule guards nothing"
+
+    assert "def _gate_env(" in src, "the env builder is gone; the rules guard nothing"
     assert KEYCHAIN_MARKER in _gate_env(tmp_path, tmp_path / "bin"), (
         "_gate_env no longer sets the re-entry marker, so routing every site through "
         "it buys nothing"

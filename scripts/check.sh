@@ -126,7 +126,8 @@ check() {
 # tried and does not discriminate either: the suite's own tests leave entries
 # behind, so "the keychain is non-empty" is true after every clean run too.
 #
-# What bounds the exposure instead: the window is ~47s, reads are unaffected, and
+# What bounds the exposure instead: the window is roughly the suite's runtime,
+# reads are unaffected, and
 # `BANKMACHINE_NO_KEYCHAIN_SWAP=1` declines the whole mechanism.
 #
 # CI does exactly this already (`.github/workflows/check.yml` creates
