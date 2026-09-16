@@ -1253,18 +1253,27 @@ def test_the_served_scope_note_carries_the_verification_only_exception() -> None
     """
     from bankmachine import mcp_resources
 
-    # 🔴 The SERVED reference, not the fragment it is spliced from. Reading
-    # `_request_scope_note()` directly leaves this green if the splice that puts
-    # it into the served document is ever dropped -- the test would pin a string
-    # nobody receives while its own name claims otherwise.
+    # 🔴 **Two axes, and asserting one against the other collapses both.** The
+    # splice axis is whether the note reaches the served document; the content
+    # axis is whether the note carries the exception. Running the content
+    # assertions against the whole served reference passes them on text that has
+    # nothing to do with the exception -- it emits a `### <kind>` section for
+    # every request-scoped kind, and `balance_unreconciled`'s guidance names
+    # `get_coverage_report` in its own advice. Delete the exception sentence and
+    # every such assertion still finds its needle somewhere else in the document.
+    note = mcp_resources._request_scope_note()
     served = mcp_resources._warning_reference()
+    assert note in served, (
+        "the scope note is not spliced into the served warnings reference, so everything "
+        "asserted about it below describes a string no consumer receives"
+    )
     for kind in envelope.VERIFICATION_SURFACE_ONLY_KINDS:
-        assert kind in served, (
+        assert kind in note, (
             f"{kind} is emitted by one tool only, and the served scope note does not name it as "
             f"an exception -- so the note tells a consumer its absence is information on every "
             f"answer, which is how a total wrong by a residual reads as clean"
         )
-    assert "get_coverage_report" in served, "the note names no tool the exception points to"
+    assert "get_coverage_report" in note, "the note names no tool the exception points to"
 
     # The negative control: the promise still stands for every other kind, or the
     # note has been widened into uselessness.
@@ -1272,7 +1281,7 @@ def test_the_served_scope_note_carries_the_verification_only_exception() -> None
         envelope.VERIFICATION_SURFACE_ONLY_KINDS
     )
     assert unrestricted, "no unrestricted request-scoped kind remains; the fixture proves nothing"
-    assert "stayed inside what the store can answer over" in served, (
+    assert "stayed inside what the store can answer over" in note, (
         "the note dropped the absence-is-information promise entirely; it is true of every kind "
         "except the named exceptions, and deleting it costs consumers real information"
     )
@@ -1297,7 +1306,14 @@ def test_the_always_present_instructions_carry_the_exception_too(
         "the instructions state the absence-is-information promise without naming the tool the "
         "exception points to, so a reader has nowhere to go with it"
     )
-    assert str(len(envelope.VERIFICATION_SURFACE_ONLY_KINDS)) in served
+    # 🔴 The rendered CLAUSE, not the bare digit. `str(len(...)) in served` is
+    # discriminating only while the primer happens to contain no other numeral,
+    # which is luck rather than a guard.
+    expected = f"except the {len(envelope.VERIFICATION_SURFACE_ONLY_KINDS)} reconciliation kinds"
+    assert expected in served, (
+        f"the instructions do not carry {expected!r}; a reader is told every request-scoped "
+        f"kind's absence is information, which is false for the kinds only one tool sends"
+    )
     assert len(served) <= mcp.INSTRUCTIONS_BUDGET, (
         f"the instructions are {len(served)} characters against a budget of "
         f"{mcp.INSTRUCTIONS_BUDGET}; a client truncates past it and the tail is silently lost"
