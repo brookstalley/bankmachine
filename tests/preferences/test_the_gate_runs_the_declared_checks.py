@@ -800,13 +800,13 @@ def test_no_subprocess_in_this_module_builds_its_own_env(tmp_path: Path) -> None
     in the script cannot, because these sites pass CLOSED environments and a
     child inherits nothing it is not given.
 
-    TWO rules, because neither alone holds. A literal-needle scan for the dict
-    form misses `env = {` with spaces and misses `env=<variable>` assembled on an
-    earlier line — and that second one is the closed-env case that actually does
-    the sabotage. Requiring every call to NAME the builder catches both, and is
-    not defeated by a pre-built `cmd` list the way looking for `GATE` inside the
-    call was. The dict rule stays because it names the likely mistake in its own
-    terms, which is what a reader of the failure needs.
+    ONE rule: every `subprocess.run` block must NAME the builder. Inverted from
+    "look for a bad form" deliberately — a literal scan for the dict misses
+    `env = {` with spaces and misses `env=<variable>` assembled on an earlier
+    line, and that second one is the closed-env case that actually does the
+    sabotage. Requiring the name catches both and is not defeated by a pre-built
+    `cmd` list the way looking for `GATE` inside the call was. The dict pattern
+    below is not a second rule; it only words which mistake the failure names.
     """
     src = Path(__file__).read_text()
 
@@ -817,8 +817,24 @@ def test_no_subprocess_in_this_module_builds_its_own_env(tmp_path: Path) -> None
     # list the way looking for `GATE` inside the call was.
     builder = "_gate" + "_env("
     dict_form = re.compile("env" + r"\s*=\s*\{")
+    sites = list(re.finditer(r"subprocess\.run\(", src))
+    # 🔴 A scan that matches nothing passes forever. If the call spelling ever
+    # changes — a direct `run` import, an alias, a helper wrapper — the loop body
+    # never executes and this case reports a clean bill over zero sites. That is
+    # the shape it exists to catch, one level up.
+    #
+    # The prose here deliberately does not write the needle out: this scan reads
+    # its own file, so a comment quoting the pattern is a site the scan then
+    # reports. It did, which is the third time today a source-scanning guard
+    # matched its own text.
+    assert len(sites) >= 10, (
+        f"only {len(sites)} exec site(s) found in a module that launches the gate a "
+        "dozen times. The needle has stopped matching how these calls are written, so "
+        "this case is checking almost nothing — re-point it rather than lowering the "
+        "floor."
+    )
     missing = []
-    for m in re.finditer(r"subprocess\.run\(", src):
+    for m in sites:
         depth, end = 0, m.start()
         for i in range(m.start(), len(src)):
             if src[i] == "(":
