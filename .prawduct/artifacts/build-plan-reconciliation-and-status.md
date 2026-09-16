@@ -105,10 +105,17 @@ interval sum counts posted rows only and the `pending_holds` cause is gone. Step
 because the **record** is owed: `api-notes-plaid.md` needs the numbered section, carrying the
 vendor's own "typically" hedge.
 
-🔴 Before Chunk 02 starts, the suite is being parallelised under brookstalley/bankmachine#44 on its
-own branch — the suite has gone from 849 tests/118s to 1896/645s, which is superlinear, and reading
-a mid-chunk failure is easier once a run is ~2 minutes rather than ~11. That work is a different
-scope and does not belong in this plan or its PR.
+🔴 **This plan's `branch:` will not resolve after its PR merges, and that is a step someone has to
+take.** The frontmatter declares `branch: feature/reconciliation-and-status`; that branch is merged
+and deleted by the PR carrying Chunk 01, so the declaration then resolves for nobody and the plan
+reads live-but-inactive — which is what RETAIN wants on gitflow, but it also means **Chunk 02 must
+open a new branch and repoint `branch:` to it in the same commit.** Not automatic, and nothing
+reports it: a plan claiming a branch that does not exist simply stops governing.
+
+🔴 The suite is parallelised under brookstalley/bankmachine#44 (PR #132), which merges ahead of
+Chunk 02 — so pull `develop` before starting, and a full gate run costs ~8.5 minutes rather than
+~11. The larger cost is #131: about 61% of suite wall-clock is serialised macOS keychain I/O, which
+`-n auto` cannot reach. Both are different scopes and neither belongs in this plan.
 
 ## Scaffolding
 
