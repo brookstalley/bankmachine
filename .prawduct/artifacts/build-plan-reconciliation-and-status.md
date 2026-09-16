@@ -2,7 +2,7 @@
 artifact: build-plan
 version: 2
 scope: reconciliation-and-status
-branch: feature/reconciliation-and-status
+branch: feature/reconciliation-chunk-02
 depends_on:
   - artifact: discovery-reconciliation-and-status
   - artifact: data-model
@@ -105,17 +105,11 @@ interval sum counts posted rows only and the `pending_holds` cause is gone. Step
 because the **record** is owed: `api-notes-plaid.md` needs the numbered section, carrying the
 vendor's own "typically" hedge.
 
-🔴 **This plan's `branch:` will not resolve after its PR merges, and that is a step someone has to
-take.** The frontmatter declares `branch: feature/reconciliation-and-status`; that branch is merged
-and deleted by the PR carrying Chunk 01, so the declaration then resolves for nobody and the plan
-reads live-but-inactive — which is what RETAIN wants on gitflow, but it also means **Chunk 02 must
-open a new branch and repoint `branch:` to it in the same commit.** Not automatic, and nothing
-reports it: a plan claiming a branch that does not exist simply stops governing.
-
-🔴 The suite is parallelised under brookstalley/bankmachine#44 (PR #132), which merges ahead of
-Chunk 02 — so pull `develop` before starting, and a full gate run costs ~8.5 minutes rather than
-~11. The larger cost is #131: about 61% of suite wall-clock is serialised macOS keychain I/O, which
-`-n auto` cannot reach. Both are different scopes and neither belongs in this plan.
+The `branch:` above is repointed to the branch Chunk 02 is being built on, so this plan governs by
+declaration again — the one resolution route that is not an inference. `active_build_plan` was
+cleared in the same commit: it existed only to keep this plan governing while the declared branch
+did not exist, and a scalar left aimed at a live plan puts that plan in force on every branch with
+no plan of its own. **The same step falls due again at each future branch cut.**
 
 ## Scaffolding
 
