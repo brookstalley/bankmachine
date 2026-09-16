@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import IO, Any, cast
 from unittest import mock
 
+import mcp_types
 import pytest
 from sqlalchemy import event, func, select
 from sqlalchemy.engine import Engine
@@ -2365,12 +2366,12 @@ def test_the_primer_fits_inside_what_a_client_actually_delivers(
         assert uri in opening, f"{uri} is not in the first three lines, so it can be cut"
 
 
-#: What `Implementation` -- the type of `serverInfo` -- declares, read from
-#: `mcp_types` 2.2.0. Written out rather than imported because this product has
-#: no `mcp` dependency and is not acquiring one to run a test; the list is the
-#: fact the test needs, and it moves only when the SDK's type does.
+#: What `Implementation` -- the type of `serverInfo` -- declares, by WIRE name.
+#: Read from `mcp_types` rather than typed out: a list copied by hand is the kind
+#: of copy that let a key ride `serverInfo` and be dropped in the client's parser,
+#: and `mcp-types` is a dev dependency so the test can ask the type itself.
 _IMPLEMENTATION_FIELDS = frozenset(
-    {"name", "title", "version", "description", "websiteUrl", "icons"}
+    field.alias or name for name, field in mcp_types.Implementation.model_fields.items()
 )
 
 
@@ -2384,7 +2385,7 @@ def test_the_handshake_reports_the_running_build(initialized_config: Config) -> 
 
     🔴 Read from `_meta`, and `serverInfo` is checked for the ABSENCE of the
     same keys, because that is where the identity is actually readable.
-    `Implementation` declares six fields and the SDK's wire base leaves
+    `Implementation` declares a closed set of fields and the SDK's wire base leaves
     pydantic's `extra="ignore"` in force, so a `commit` on `serverInfo` is
     dropped in the client's parser -- present in the bytes, gone by the time
     anything reads them, which no assertion over the raw reply would catch.

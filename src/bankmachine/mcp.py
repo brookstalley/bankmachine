@@ -51,8 +51,14 @@ from bankmachine.store.schema import PROVENANCE_SOURCES
 
 logger = get_logger("mcp")
 
-#: The newest protocol revision an `initialize` handshake can reach, read from
-#: `mcp_types.version.LATEST_HANDSHAKE_VERSION` at 2.2.0 rather than remembered.
+#: The newest protocol revision an `initialize` handshake can reach, copied from
+#: `mcp_types.version.LATEST_HANDSHAKE_VERSION` rather than remembered.
+#:
+#: 🔴 Every protocol constant below is a hand copy, and
+#: `tests/preferences/test_the_protocol_constants_match_mcp_types.py` holds each
+#: one to the `mcp-types` release pinned in `uv.lock`. `mcp-types` is a dev
+#: dependency only: the copies stay written out here so the runtime tree carries
+#: no pydantic. Bumping the lock is how a protocol change reaches this file.
 #:
 #: 🔴 Deliberately NOT the SDK's `LATEST_PROTOCOL_VERSION`, which is documented
 #: as the newest revision that SDK speaks *in any era*. The registry is

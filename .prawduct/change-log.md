@@ -34,6 +34,28 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-16: The hand-copied protocol constants are held to their source
+
+<!-- prawduct: scope=mcp-error-recovery-and-types -->
+
+**Why:** the MCP server speaks the protocol without the SDK, so its revisions and error codes are
+copies a person read out of `mcp_types`. One review pass found four defects in that layer, each a
+stale or missing copy, and each failed at connection time rather than in a test (#32).
+
+**What shipped:**
+
+- `mcp-types` is a dev dependency and a test oracle. A new preferences test compares
+  `LATEST_HANDSHAKE_VERSION`, the fallback revision, the offered revision set and the JSON-RPC
+  error codes with it, and `tests/test_mcp.py` reads `Implementation`'s wire field names from the
+  type instead of a typed-out list.
+- The same file pins the ruling's other half: `mcp-types`, `mcp` and `pydantic` stay out of the
+  runtime dependencies, and nothing under `src/` imports them. The runtime tree is unchanged.
+- `api-notes-plaid.md` §18 records that its revisit clause fired, on what evidence, and the
+  test-only outcome.
+
+Each guard was seen red with its fact changed: the newest revision, one offered revision, one
+JSON-RPC code, a runtime dependency added, and a runtime import added.
+
 ## 2026-09-16: The balance reconciliation the product has been claiming, finally computed
 
 <!-- prawduct: scope=reconciliation-and-status -->

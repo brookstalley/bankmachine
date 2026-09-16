@@ -49,6 +49,12 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "hypothesis>=6",
+    # A TEST ORACLE, never a runtime dependency. `mcp.py` speaks the protocol by
+    # hand and copies its constants from these types; a test holds the copies to
+    # them, because a copy read once by hand shipped four wire defects in one
+    # pass. Kept out of `dependencies` on purpose: it brings pydantic, and the
+    # runtime tree has no use for either. `api-notes-plaid.md` §18 records why.
+    "mcp-types>=2.2",
     "mypy>=1.11",
     "pytest>=8",
     # Parallel test execution. Invoked as `-n auto` from `scripts/check.sh` and
