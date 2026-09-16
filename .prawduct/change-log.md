@@ -34,6 +34,52 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-16: The suite runs in parallel, and the measurement says that is not where the time goes
+
+<!-- prawduct: scope=pytest-xdist -->
+
+**Why:** 1896 tests took about eleven minutes serially, on a ten-core machine. Closes
+brookstalley/bankmachine#44, whose safety analysis was already done and already right: the suite is
+parallel-safe because isolation is per-test — a uuid keychain service, a `tmp_path` config, an
+autouse logging fixture that restores per test — and because xdist forks processes, so the
+`monkeypatch.setattr` sites each get their own module table.
+
+**What changed:** `pytest-xdist` is a dev dependency, and `scripts/check.sh` passes `-n auto`. CI
+already invokes that script, so one edit covers the local gate and CI both.
+
+🔴 **`-n auto` is deliberately NOT in `addopts`, and that placement is the whole of #44's finding.**
+`addopts` follows every pytest invocation in the repo, including ones nobody had in mind when they
+edited the line. `tests/preferences/verify_norms_go_red.py` shells out one single-test run per norm
+case; under `addopts` each would spin up a worker pool to run one test, failing slowly enough that
+switching the harness off looks like the fix — costing the repo its norm-break guard. `--pdb` would
+become a debugger nobody can drive, reached by someone already debugging something else. And
+`-m sandbox` would fan live aggregator calls across workers into rate limits and the connection cap,
+which is the one hazard here that leaves the machine. The reasoning sits beside `addopts` so the next
+person to reach for that key meets it first — and a test now pins the placement, because a rule whose
+only enforcement is the comment beside it decays to a comment. It reads `addopts` as TOML rather than
+as a line, since a multi-line array would otherwise carry `-n` on a line a scan never reads, which is
+the silent re-entry the case exists to block. It matches token PREFIXES rather than whole tokens, because `-n4` and `-nauto` are ordinary spellings that equality misses; `--no-header` cannot trip it, since every long option begins `--`. Seen red by hand against `-n auto`, `-n4`, `-nauto`, `--numprocesses=4` and a multi-line array, and seen green against `--no-header`.
+
+**Verified rather than argued:** the suite passes under `-n auto` with **the same count it passes
+serially** — that equality is the acceptance criterion, because a difference between the two would
+mean real shared state and would be a finding rather than a flake. 🔴 Stated as a relation and not as
+a number on purpose: this entry's own bundle then added the pinning test below and moved the absolute
+by one, and a reader comparing a fresh count against a stale literal would be sent hunting shared
+state that does not exist. `scripts/check.sh` states the criterion the same relational way. The go-red harness was run to completion: all 232 norm breaks still
+caught.
+
+🔴 **The win is 21%, and the measurement is the useful part of this entry.** 645s to 510s, at **126%
+CPU on ten cores** — roughly one and a quarter cores busy. The suite is not CPU-bound. A keychain
+`set`+`get`+`delete` round trip measures **311ms** against a **340ms** mean test time, and **1264 of
+1896** tests hold the `keychain_service` fixture against the real `securityd`, which serializes
+machine-wide; the workers queue on one daemon. That is about 393s of a 645s run, and no amount of
+process parallelism reaches it. Filed as **brookstalley/bankmachine#131**, which compounds with this
+rather than replacing it: once tests stop queueing there is finally work for ten cores to spread.
+
+Two costs were ruled out by measurement so nobody re-investigates them: SQLCipher key derivation is
+free here, because `connection.py` passes a raw hex key via `PRAGMA key = "x'…'"` and bypasses
+PBKDF2 (a keyed open is under 1ms), and creating a keyed store plus migration 002's DDL is ~8ms.
+
 ## 2026-09-15: Warnings route to where the data lives, and stop calling a quiet account a fault
 
 <!-- prawduct: scope=investment-activity-e2e -->
