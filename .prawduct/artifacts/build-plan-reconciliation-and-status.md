@@ -145,14 +145,20 @@ against either one alone.
   - `docs/system-requirements.md` — AC-11.2 amended with the investment exclusion and the zero
     tolerance; new AC-11.2a, AC-11.6a, AC-18.1–18.3. §7's AC-11.2 clause gains an amendment note in
     the voice of the AC-11.1 and AC-11.3 notes already beside it.
-  - `.prawduct/artifacts/data-model.md` — amendment to the operator-signed norm's **Why**, carrying
-    statement / why / retroactivity and a `[DECISION: …]`. 🔴 The norm's *statement* is untouched:
-    the sign convention is not what measurement falsified. What is corrected is a consequence it
-    claims, and the amendment must say that explicitly, because a norm amended in the same cycle as
-    the code it governs is the laundering shape `docs/norms.md` warns hardest about — the defence is
-    that the falsifying measurement (§23) predates this cycle and was recorded by other work.
-  - `src/bankmachine/store/migrations/core_schema.py` — module docstring corrected
-  - `src/bankmachine/connector/plaid/derivers.py` — `_balance_row` docstring corrected
+  - **Four** overclaim sites, and they split on the norms line — bind vs. track:
+    - `.prawduct/artifacts/data-model.md:57` — the operator-signed norm's **Why**. **Normative**, so
+      a recorded amendment carrying statement / why / retroactivity and a `[DECISION: …]`. 🔴 The
+      norm's *statement* is untouched: the sign convention is not what measurement falsified. What
+      is corrected is a consequence it claims, and the amendment must say so explicitly, because a
+      norm amended in the same cycle as the code it governs is the laundering shape `docs/norms.md`
+      warns hardest about — the defence is that the falsifying measurement (§23) predates this cycle
+      and was recorded by other work.
+    - `.prawduct/artifacts/data-model.md:776` — § Sign convention prose. Descriptive; tracks the norm.
+    - `src/bankmachine/store/migrations/core_schema.py:40` — module docstring, **not** the frozen DDL.
+    - `src/bankmachine/connector/plaid/derivers.py:1631` — `_balance_row` docstring.
+    🔴 Re-derive the site list with `grep -rn "change in balance equals sum"` before editing rather
+    than trusting these four line numbers — lines shift, and the first pass of the discovery
+    document said three sites and missed one.
 - **Tests:** `tests/preferences/test_requirement_ids_unique.py` covers the new ids.
   `tests/store/test_schema.py` must stay green across the migration docstring edit — **the evidence
   that the edit did not touch frozen DDL**, and the reason this chunk carries a code path at all.

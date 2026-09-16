@@ -198,10 +198,24 @@ finding. Investment accounts are **excluded and named as excluded** — their ba
 market, and §23 of `api-notes-plaid.md` measured that neither holdings nor transactions reconcile
 them.
 
-**AC-11.2a** — The two docstrings asserting the reconciliation holds "for every account"
-(`core_schema.py`, `plaid/derivers.py`) are corrected to state the exclusion. *A requirement,
-not a cleanup: they are the recorded justification for the sign convention, and leaving them
-overclaiming preserves the exact confusion this cycle exists to resolve.*
+**AC-11.2a** — **Four** sites assert the reconciliation holds "for every account" and are corrected
+to state the exclusion. *A requirement, not a cleanup: they are the recorded justification for the
+sign convention, and leaving them overclaiming preserves the exact confusion this cycle exists to
+resolve.*
+
+🔴 **They do not all have the same status, and the difference decides how each is changed** — norms
+bind, descriptions track (`/prawduct:methodology norms`):
+
+| Site | Status | How it changes |
+|---|---|---|
+| `data-model.md:57` — the operator-signed norm's **Why** | **normative** | a recorded **amendment**, with statement / why / retroactivity and a `[DECISION: …]` |
+| `data-model.md:776` — § Sign convention prose | descriptive | tracks the norm; corrected to match |
+| `src/bankmachine/store/migrations/core_schema.py:40` | descriptive | module docstring; **not** the frozen DDL |
+| `src/bankmachine/connector/plaid/derivers.py:1631` | descriptive | `_balance_row` docstring |
+
+Counted by `grep -rn "change in balance equals sum"` rather than from memory — the first pass of
+this document said three and missed `data-model.md:776`, which is exactly the decay a durable
+claim about a count suffers when it is written from recall.
 
 **AC-11.6a** — The expected account inventory is operator-supplied, read from a gitignored file
 under `deployment/`. Each entry identifies an account the operator expects the store to hold. The
