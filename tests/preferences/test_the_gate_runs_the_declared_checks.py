@@ -470,7 +470,7 @@ def test_parallelism_is_configured_on_the_gate_and_never_in_addopts() -> None:
         None,
     )
     assert pytest_line is not None, (
-        f"no `check \"uv run pytest\"` line in {GATE} -- this case asserts that line carries "
+        f'no `check "uv run pytest"` line in {GATE} -- this case asserts that line carries '
         "the parallel flag, so its absence means the case is guarding nothing."
     )
     gate_tokens = pytest_line.split()
