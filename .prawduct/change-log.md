@@ -34,6 +34,57 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-16: The suite gets its own keychain, and stops spending nine minutes inside securityd
+
+<!-- prawduct: scope=fast-keychain-suite -->
+
+**Why:** brookstalley/bankmachine#131. `-n auto` had bought only 21% (645s → 510s) at **126% CPU on
+ten cores**, which said the suite was not CPU-bound. It was blocked on the macOS keychain daemon,
+and the A/B that isolates it was run on one machine at one commit with one `-n auto`:
+
+| default keychain | suite | per `set`+`get`+`delete` |
+|---|---|---|
+| the developer's login keychain, populated | **542s** | **332ms** |
+| a freshly created empty keychain | **56s** | **12ms** |
+
+1264 of the tests hold `keychain_service` against the real keychain, so most of the wall clock was
+`securityd`, and ten workers simply queued on one daemon. Nothing about the earlier CI figure was
+wrong, but it was confounded by runner hardware and three skipped tests; this is the same machine
+and the same commit with one variable moved.
+
+**What changed:** `scripts/check.sh` creates an empty keychain, makes it the default for the length
+of the run, and puts the previous one back. The original stays in the **search list**, so reads of
+anything already stored still resolve — `keyring` writes to the default and reads through the list.
+
+🔴 **Why not target a keychain per process, which would need no swap at all.** `keyring` still
+exposes `KEYCHAIN_PATH` and a `Keyring.keychain` attribute, and as of **keyring 25.7 the macOS
+backend ignores both** — it warns *"Specified keychain is ignored. See #623"*. Measured rather than
+read: a probe pointed at an empty keychain by path ran at **321.9ms**, indistinguishable from the
+login keychain, so it had gone there anyway. The default keychain is the only lever that works.
+
+🔴 **Why not fake `keyring` instead**, which was #131's original proposal. `secrets.py` is the only
+module that imports it (AC-10.1) and the security model leans on genuine keychain behaviour; a fake
+would stop 1264 tests exercising the real integration and reopen the question of which ones keep it.
+**A dedicated keychain is still a real keychain**, so the speed costs none of that coverage — which
+is why the tension that held #131 at `stage: design` did not need resolving.
+
+🔴 **The swap changes a user-level setting, so it is self-healing.** A shell trap covers a normal
+exit, Ctrl-C and SIGTERM; it cannot cover SIGKILL. So the pre-swap default is written to a
+gitignored state file **before** the swap, and a run that finds the default still pointing at the
+test keychain repairs it and says so loudly rather than layering a second swap on top — which would
+record the test keychain as the thing to restore to and strand the real default permanently. With no
+state file it falls back to the conventional login keychain and prints the manual command.
+
+All four paths were exercised by hand rather than argued: a normal exit restores; a `kill -9`
+mid-suite leaves it stale, as designed; the next run detects, repairs, re-swaps and restores; and the
+worst case — stale default *and* no state file — takes the fallback. CI already does this
+(`ci.keychain`), and the restore captures whatever was default, so it puts CI's back rather than
+assuming a login one.
+
+**The remaining exposure, stated plainly:** for the length of the run, another process writing to the
+default keychain writes to the test one. Reads are unaffected. The window is now ~56s rather than
+~542s.
+
 ## 2026-09-16: The engine is MIT licensed, and the guard learns that an author is not an operator
 
 <!-- prawduct: scope=mit-licence -->

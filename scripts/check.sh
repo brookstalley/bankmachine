@@ -78,6 +78,114 @@ check() {
     failed="${failed}${name}"$'\n'
 }
 
+# --- the test keychain: why the gate swaps the default, and how it puts it back
+#
+# 🔴 THIS CHANGES A USER-LEVEL SETTING FOR THE DURATION OF THE RUN, and that is
+# not done lightly. Measured on this machine, same commit, same `-n auto`:
+#
+#     login keychain (populated)   542s suite   332ms per set+get+delete
+#     a fresh empty keychain        77s suite    12ms per set+get+delete
+#
+# 1264 of the tests hold `keychain_service` against the REAL keychain, so the
+# suite spent most of its wall clock inside `securityd` rather than in this
+# product. `-n auto` could not reach it: ten workers queue on one daemon, which
+# is why parallelism alone bought 21%.
+#
+# WHY NOT TARGET A KEYCHAIN PER PROCESS, which would need no swap at all:
+# `keyring` exposes `KEYCHAIN_PATH` and a `Keyring.keychain` attribute, and as of
+# keyring 25.7 the macOS backend IGNORES BOTH -- it warns "Specified keychain is
+# ignored. See #623". Measured rather than read: a probe targeting an empty
+# keychain by path ran at 321.9ms, i.e. it went to the login keychain anyway. The
+# default keychain is the only lever that works.
+#
+# WHY NOT FAKE `keyring` INSTEAD: `secrets.py` is the only module that imports it
+# (AC-10.1) and the security model leans on genuine keychain behaviour. A fake
+# would make 1264 tests stop exercising the real integration. A DEDICATED
+# keychain is still a real keychain, so this buys the speed without trading the
+# coverage away.
+#
+# WHAT THE RISK ACTUALLY IS: for the length of the run, another process writing
+# to the DEFAULT keychain would write to ours. The login keychain stays in the
+# search list, so READS are unaffected. The window is ~77s, down from ~542s.
+#
+# CI does exactly this already (`.github/workflows/check.yml` creates
+# `ci.keychain`); the restore below captures whatever was default, so running
+# under CI restores CI's keychain rather than assuming a login one.
+BMTEST_KEYCHAIN="bankmachine-test.keychain"
+BMTEST_STATE="$gate_dir/../.bankmachine-keychain-restore"
+keychain_swapped=""
+
+keychain_current_default() {
+    security default-keychain 2>/dev/null | sed -e 's/^[[:space:]]*"//' -e 's/"$//'
+}
+
+restore_keychain() {
+    [[ -n $keychain_swapped ]] || return 0
+    security default-keychain -s "$keychain_swapped" 2>/dev/null || true
+    security list-keychains -d user -s "$keychain_swapped" 2>/dev/null || true
+    security delete-keychain "$BMTEST_KEYCHAIN" 2>/dev/null || true
+    rm -f "$BMTEST_STATE"
+    keychain_swapped=""
+}
+
+# 🔴 Self-healing, and it is the half that makes the swap acceptable. A shell trap
+# covers a normal exit, a Ctrl-C and a SIGTERM; it cannot cover SIGKILL or a power
+# cut. So the ORIGINAL default is written to a state file BEFORE the swap, and a
+# run that finds a stale one repairs it rather than layering a second swap on top
+# -- which would otherwise record OUR keychain as the thing to restore to, and
+# strand the real default permanently.
+repair_stale_keychain() {
+    local current recorded
+    current=$(keychain_current_default)
+    case "$current" in
+        *"$BMTEST_KEYCHAIN"*) ;;
+        *) return 0 ;;
+    esac
+    printf '\n*** the default keychain is this suite'"'"'s temporary one, so a previous run\n' >&2
+    printf '*** was killed before it could restore yours. Repairing.\n' >&2
+    if [[ -r $BMTEST_STATE ]] && recorded=$(cat "$BMTEST_STATE") && [[ -n $recorded ]]; then
+        printf '***   restoring the recorded default: %s\n' "$recorded" >&2
+    else
+        recorded="$HOME/Library/Keychains/login.keychain-db"
+        printf '***   NO recorded default found; falling back to %s\n' "$recorded" >&2
+        printf '***   if that is not yours, set it by hand: security default-keychain -s <path>\n' >&2
+    fi
+    security default-keychain -s "$recorded" 2>/dev/null || true
+    security list-keychains -d user -s "$recorded" 2>/dev/null || true
+    security delete-keychain "$BMTEST_KEYCHAIN" 2>/dev/null || true
+    rm -f "$BMTEST_STATE"
+}
+
+use_test_keychain() {
+    # Not macOS, or `security` unavailable: nothing to do and nothing to warn about.
+    command -v security >/dev/null 2>&1 || return 0
+    [[ ${BANKMACHINE_NO_KEYCHAIN_SWAP:-} != 1 ]] || return 0
+
+    repair_stale_keychain
+
+    local original
+    original=$(keychain_current_default)
+    [[ -n $original ]] || return 0
+
+    # Written BEFORE the swap. A state file that appears after it is useless to
+    # exactly the run that dies between the two.
+    printf '%s' "$original" >"$BMTEST_STATE" || return 0
+
+    security delete-keychain "$BMTEST_KEYCHAIN" 2>/dev/null || true
+    security create-keychain -p "" "$BMTEST_KEYCHAIN" 2>/dev/null || { rm -f "$BMTEST_STATE"; return 0; }
+    security set-keychain-settings "$BMTEST_KEYCHAIN" 2>/dev/null || true
+    security unlock-keychain -p "" "$BMTEST_KEYCHAIN" 2>/dev/null || true
+    security default-keychain -s "$BMTEST_KEYCHAIN" 2>/dev/null || { rm -f "$BMTEST_STATE"; return 0; }
+    # The original stays in the SEARCH list: `keyring` writes to the default but
+    # reads through the list, so anything already stored there still resolves.
+    security list-keychains -d user -s "$BMTEST_KEYCHAIN" "$original" 2>/dev/null || true
+
+    keychain_swapped="$original"
+    trap restore_keychain EXIT INT TERM
+}
+
+use_test_keychain
+
 # `-n auto` lives HERE rather than in `pyproject.toml`'s `addopts`, and the
 # difference matters. `addopts` would follow every pytest invocation in the repo,
 # including the single-test runs `tests/preferences/verify_norms_go_red.py`
