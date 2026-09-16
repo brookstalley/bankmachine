@@ -244,6 +244,14 @@ order and pairs each row with its predecessor.
 | `transactions_sum_minor_units` | Σ `amount_minor` over the interval, soft-deleted rows excluded |
 | `residual_minor_units` | the difference; `0` is the expected value |
 | `cause` | one of the four above; `unexplained` is the finding |
+| `reconciliation_state` | `reconciled` \| `not_applicable_investment` \| `insufficient_snapshots` \| `no_balance_recorded` |
+
+🔴 **`reconciliation_state` is a separate required field and is never inferred from a null
+residual.** Three distinguishable states would otherwise share one null — an investment account, an
+account with only one snapshot so far, and an account with no balance ever recorded — and a
+consumer could not tell an *unreconcilable* account from an *unreconciled* one. `learnings.md`
+§ *A carve-out reaches every state that shares its return type*: when one function collapses
+distinguishable states into one value, the collapse is the defect.
 
 ### Two new warning kinds, for `api-contract.md` § *The warning vocabulary*
 
