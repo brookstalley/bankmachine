@@ -167,6 +167,38 @@ socket. AC-10.5 — *the MCP server opens no network sockets and reads only its 
 
 ---
 
+### The gate's temporary keychain
+
+🔴 **Running the gate temporarily changes which keychain is the default.**
+`scripts/check.sh` makes an empty, randomly-passworded keychain the default for the length of a
+suite run, because the developer's populated login keychain costs roughly twenty-five times what an
+empty one does per `keyring` round trip and most of the suite's wall clock was spent there. The
+original default **and the whole user search list** are restored on the way out, and a default left
+stale by a `kill -9` is repaired by the next run.
+
+What this means for the boundary stated below: for the length of a run, another process writing to
+the *default* keychain writes to the temporary one instead. Reads are unaffected — the original list
+is kept and still searched.
+
+🔴 **That write is removed at the start of the NEXT run, and only some of those removals are
+announced.** The announcement fires when the previous run did not exit cleanly. That is a **proxy**
+for the risk, not a measurement of it: whether a foreign process wrote during the window is
+independent of how the run ended, so a write absorbed by a run that exited normally is deleted at
+the next start **with no warning**. Stated here rather than only in the script, because a reader of
+this document is the one who needs it.
+
+The narrowing is a deliberate trade. Every run after the first leaves a keychain behind, so
+announcing every removal means announcing on every run — and a banner that fires every time is the
+one the operator stops reading, which costs more than it buys for the one interrupt window that
+exists. Measuring the risk directly does not discriminate either: the suite's own tests leave
+entries, so "the keychain is non-empty" is true after every clean run too. What bounds the exposure
+instead is its size — a window of roughly the suite's runtime, reads unaffected — and the opt-out.
+
+**The temporary keychain** carries a random password precisely so a secret that does land there is
+not sitting in a keychain anyone can open. `BANKMACHINE_NO_KEYCHAIN_SWAP=1` opts out; where
+`security` is unreachable the swap declines and the suite simply runs slowly, so it is an
+optimisation and never a prerequisite.
+
 ## Authorization
 
 **Within the product: none, for the same reason.** One operator, one role, everything visible. There
