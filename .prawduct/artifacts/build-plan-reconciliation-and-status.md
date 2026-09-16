@@ -91,7 +91,7 @@ Not applicable — this is established work in a built product. `uv sync` is cur
 
 🔴 **Chunk 01 is deliberately NOT a walking skeleton**, departing from the template's "first chunk
 is a thin vertical slice" rule. That rule exists to prove the layers connect before widening the
-path; here the layers are built, exercised by 1896 passing tests, and serving production. What is
+path; here the layers are built, exercised by a green suite, and serving production. What is
 *not* established is the requirement — a norm's Why currently asserts the opposite of what Chunk 02
 implements. The risk this plan front-loads is the requirement risk, which is where it actually sits.
 
@@ -143,7 +143,7 @@ against either one alone.
   requirements as proposed), `.prawduct/artifacts/api-notes-plaid.md` §23 (the measurement)
 - **Deliverables:**
   - `docs/system-requirements.md` — AC-11.2 amended with the investment exclusion and the zero
-    tolerance; new AC-11.2a, AC-11.6a, AC-14.1–14.3. §7's AC-11.2 clause gains an amendment note in
+    tolerance; new AC-11.2a, AC-11.6a, AC-18.1–18.3. §7's AC-11.2 clause gains an amendment note in
     the voice of the AC-11.1 and AC-11.3 notes already beside it.
   - `.prawduct/artifacts/data-model.md` — amendment to the operator-signed norm's **Why**, carrying
     statement / why / retroactivity and a `[DECISION: …]`. 🔴 The norm's *statement* is untouched:
@@ -249,7 +249,7 @@ against either one alone.
   invocation — three fully, one partly.
 - **Depends on:** Chunk 02
 - **Artifacts consumed:** `.prawduct/artifacts/discovery-reconciliation-and-status.md`
-  § *Requirements* (AC-14.1–14.3, AC-11.6a), `deployment/deployment-requirements.md` DAC-5.2/5.3
+  § *Requirements* (AC-18.1–18.3, AC-11.6a), `deployment/deployment-requirements.md` DAC-5.2/5.3
 - **Deliverables:**
   - new `src/bankmachine/cli/status.py` — per connection: status, granted vs. requested window,
     account and transaction counts, the span they cover, currency mix, zero-activity accounts, what
@@ -268,7 +268,7 @@ against either one alone.
     `learnings.md` already records against itself. *Malformed or unreadable* — a file the operator
     did supply and the command cannot use — is exit `2`: the command could not do what it was
     asked, and silently proceeding past a supplied-but-unusable oracle is the worse failure.
-  - The AC-14.2 duplication signal, with its false-positive bar **written down before it ships** —
+  - The AC-18.2 duplication signal, with its false-positive bar **written down before it ships** —
     per #96's own acceptance. The case that must not cry wolf is a joint account legitimately
     appearing on two connections.
   - `docs/first-production-connection.md` — §§ 3.7 and 4.3 collapse into the command; 4.5 partly
@@ -293,7 +293,7 @@ against either one alone.
   implementation added later goes red here rather than passing both suites.
   🔴 Any fixture inventory file uses invented institution names — `check-no-personal-data.sh` runs
   on every push and the real roster is gitignored for this reason.
-- **Acceptance criteria:** `bash scripts/check.sh` green; one invocation answers AC-14.1 with no SQL
+- **Acceptance criteria:** `bash scripts/check.sh` green; one invocation answers AC-18.1 with no SQL
   and no `sync shell`; an absent inventory renders `not supplied`; a malformed one exits `2`.
 - **Type:** cumulative-final
 - **Visual change:** yes — a new human-facing output surface; legibility and whether a finding reads

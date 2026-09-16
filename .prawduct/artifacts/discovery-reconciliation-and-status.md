@@ -210,18 +210,18 @@ the inventory — a finding per AC-11.6), and **expected but never received** (i
 in the store). 🔴 When no inventory file is present the surface reports **not supplied**, which is
 neither a pass nor a failure.
 
-**AC-14.1** *(number provisional)* — One command reports, per connection: connection status,
+**AC-18.1** — One command reports, per connection: connection status,
 granted vs. requested history window, account count, transaction count, the date span they cover,
 currency mix, accounts with zero activity, what the most recent sync changed, the reconciliation
 residuals of AC-11.2, and the inventory states of AC-11.6a — with no SQL and no `sync shell`.
 
-**AC-14.2** — A suspected account duplication is **stated in words**, not left inferable from a
+**AC-18.2** — A suspected account duplication is **stated in words**, not left inferable from a
 count. Two active accounts on one connection sharing `(mask, name, type, subtype)`, or an account
 count that rose with no corresponding retire. 🔴 Per #96's own acceptance, **the false-positive
 bar is written down before it ships** — a joint account legitimately appearing on two connections
 is the case that must not cry wolf.
 
-**AC-14.3** — Every account is USD, or the command says which are not and that multi-currency
+**AC-18.3** — Every account is USD, or the command says which are not and that multi-currency
 totals are undefined (runbook 4.3).
 
 ---
@@ -339,7 +339,7 @@ unverified. Flagged for the Critic's `verify-api` check on the chunk that consum
 
 ## Shared-artifact deltas for the build
 
-1. `docs/system-requirements.md` — amend AC-11.2; add AC-11.2a, AC-11.6a, AC-14.1–14.3. Amend §7's
+1. `docs/system-requirements.md` — amend AC-11.2; add AC-11.2a, AC-11.6a, AC-18.1–18.3. Amend §7's
    AC-11.2 clause to state the investment exclusion, in the same voice as the AC-11.1 and AC-11.3
    amendment notes already there.
 2. `.prawduct/artifacts/api-contract.md` — two warning kinds; the `get_coverage_report` row-shape
