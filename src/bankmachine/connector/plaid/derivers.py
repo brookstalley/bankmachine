@@ -1629,7 +1629,11 @@ def _write_balance(
     hypothetical feed's convention inside the one built for a documented feed.
     One stored convention is what lets net worth be a plain sum and AC-11.2's
     reconciliation be "change in balance equals sum of transactions" for every
-    account.
+    NON-INVESTMENT account. 🔴 An investment account's balance moves with the
+    market rather than with recorded activity, so no transaction sum reconciles
+    it; AC-11.2 excludes those accounts and names the exclusion in the answer.
+    The convention still governs their amounts -- this row is written the same
+    way for them -- and what does not reach them is the reconciliation.
 
     `available_minor` and `limit_minor` are the documented exceptions and keep
     the magnitudes the source reported: neither participates in net worth, and

@@ -201,6 +201,58 @@ else
 fi
 
 echo
+echo "the LICENSE copyright carve-out -- the guard's ONLY exemption"
+#
+# 🔴 These run through the REAL scan path, in BOTH modes. The carve-out judges a
+# location string that `scan_worktree` builds with `cut -d: -f1-2` and
+# `scan_revs` with `cut -d: -f1-3`; a control that hand-writes "LICENSE:3" never
+# touches that derivation, so it can pass while the thing that actually runs
+# does not. `--range` is the mode `.githooks/pre-push` uses, and before these
+# cases it had never met a LICENSE at all.
+# The base for the range case is captured HERE, not `clean_tip`: the history-mode
+# section above deliberately committed a leak and then sanitized the tip, so a
+# range from `clean_tip` legitimately catches THAT leak and would report a green
+# carve-out as red for a reason having nothing to do with the carve-out.
+pre_licence_tip=$(git rev-parse HEAD)
+printf 'MIT License\n\nCopyright (c) 2026 someoperator\n' >LICENSE
+git add -A && git commit -qm "add a licence"
+licence_tip=$(git rev-parse HEAD)
+check "LICENSE copyright naming the author passes" 0
+check "  ... and passes in --rev mode" 0 --rev "$licence_tip"
+check "  ... and passes in --range mode (what pre-push runs)" 0 --range "$pre_licence_tip" "$licence_tip"
+
+printf 'MIT License\n\nCopyright (c) 2026 ExampleBank\n' >LICENSE
+check "a ROSTER token as the copyright holder is still caught" 1
+
+# 🔴 The case the strip's word-exactness exists for. `someoperatorbank` contains
+# the identity token `someoperator`, and an UNBOUNDED substring strip would cut
+# the identity part out of it -- leaving `bank`, which the roster pattern no
+# longer matches, silently exempting the institution. Dropping only whole words
+# that ARE identity tokens keeps this one intact and caught.
+printf 'someoperatorbank\n' >>deployment/roster-tokens.txt
+printf 'MIT License\n\nCopyright (c) 2026 someoperatorbank\n' >LICENSE
+check "a roster token CONTAINING an identity token survives the strip" 1
+printf 'examplebank\n' >deployment/roster-tokens.txt   # drop the extra token again
+
+# 🔴 `git add` is load-bearing: the guard scans TRACKED files, so an untracked
+# probe is never read and the case reports a false pass. That shape cost this
+# branch a wrong claim once already.
+printf '# Copyright (c) 2026 someoperator\n' >notalicence.py
+git add notalicence.py
+check "a copyright line OUTSIDE LICENSE is not exempted" 1
+git rm -q -f notalicence.py
+
+printf 'MIT License\n\nmaintained by someoperator\n' >LICENSE
+check "a NON-copyright line in LICENSE is not exempted" 1
+
+# Restored in the working tree only. No commit: the content equals what
+# `licence_tip` already holds, so `git commit` would find nothing to do and exit
+# non-zero, which under `set -e` kills the harness AFTER it has printed a clean
+# tally -- a green run reported as a failure.
+printf 'MIT License\n\nCopyright (c) 2026 someoperator\n' >LICENSE
+git add -A
+
+echo
 echo "no roster present -- the state every other clone is in"
 rm -f deployment/roster-tokens.txt deployment/identity-tokens.txt deployment/roster-tokens-cased.txt
 printf 'ExampleBank holds four accounts.\n' >>docs.md

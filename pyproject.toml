@@ -8,6 +8,8 @@ readme = "README.md"
 # ever tested. Widen it when a CI matrix exercises the range, not before —
 # `tests/preferences/test_python_floor_is_exercised.py` holds the two together.
 requires-python = ">=3.14"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "certifi>=2026.7.22",
     "keyring>=25",
@@ -17,9 +19,25 @@ dependencies = [
     "urllib3>=2",
 ]
 
-# No `authors` field. The published engine carries no operator identity —
-# `tests/preferences/check-no-personal-data.sh` enforces that against every pushed commit,
-# and `uv init` writes the git-config name here by default.
+# No `authors` field. `uv init` writes the git-config name here by default, and this
+# file has no reason to carry it.
+#
+# 🔴 `LICENSE` DOES name a copyright holder, and that is not an exception being
+# smuggled — it is a different role. The identity this repo keeps out is the
+# OPERATOR's: whose accounts these are, at which institutions, holding what.
+# That is what `tests/preferences/check-no-personal-data.sh` matches on, and it is
+# the leak that actually happened here. A copyright holder is the AUTHOR, and an
+# MIT grant with no one granting it is not a licence.
+#
+# 🔴 The guard BLOCKED that line, and the conflict was real rather than a
+# misconfiguration: the norm reads *no operator name in any commit reaching a
+# remote*, and a licence names its author. It passes now because of a **bounded
+# exception** — the guard strips an author's name from a copyright notice in
+# `LICENSE` and nowhere else, on the same reasoning it already strips
+# identity-owned `owner/repo` slugs. The exception, its three narrowing axes and
+# its `[DECISION: …]` are recorded in `.prawduct/artifacts/project-preferences.md`;
+# its cases live in `tests/preferences/check-no-personal-data.selftest.sh`.
+# Do not read the pass here as "the name was never a token" — it is.
 
 [project.scripts]
 bankmachine = "bankmachine.__main__:main"

@@ -937,6 +937,19 @@ test_command: bash scripts/check.sh {junit_xml}
 # plan of its own. Every live plan here declares its own `branch:`.
 # active_build_plan: artifacts/build-plan-ci-runs-the-gate.md
 
+# 🔴 SET, and the reasoning above does NOT overrule it. That paragraph is about
+# plans whose work is FINISHED: aiming the scalar at one of those puts a completed
+# plan back in force on every branch with no plan of its own. This plan has two
+# UNTICKED chunks, so the opposite hazard applies. Its `branch:` declaration stops
+# resolving the moment that branch merges and is deleted, resolution falls to this
+# scalar, and unset resolves to `artifacts/build-plan.md` — which does not exist.
+# Chunk 02 would then build the first real code this plan governs with the Stop
+# hook's Critic and reflection gates running ADVISORY.
+#
+# Chunk 02 opens a new branch, repoints the plan's own `branch:` to it, and clears
+# this line in the same commit. Until then this is what keeps the plan governing.
+active_build_plan: artifacts/build-plan-reconciliation-and-status.md
+
 # =============================================================================
 # BASE BRANCH (opt-in, unset by default)
 # =============================================================================
@@ -1228,7 +1241,7 @@ distribution: plugin
 backlog_service_repo: brookstalley/bankmachine
 
 # Stamped by /prawduct:backlog list — resolves backlog-overdue-grooming.
-backlog_last_groomed_at: 2026-09-13
+backlog_last_groomed_at: 2026-09-16
 
 # Raised from the 40KB default on 2026-09-07, after measuring rather than
 # guessing at what the two nudged files actually hold.
