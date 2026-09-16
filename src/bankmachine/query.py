@@ -1207,10 +1207,14 @@ class AccountReconciliation:
     #: 🔴 The honest denominator: a net residual of zero over ZERO intervals is
     #: green by vacuity, and this is the number that tells the two apart.
     intervals_compared: int
-    #: Intervals with a nonzero residual, as MEASURED. Not the length of the list
-    #: below, which is capped -- the same split `interior_gaps` makes.
-    unreconciled_count: int
-    #: Those intervals, oldest first, already cut to `MAX_RESIDUALS_PER_ACCOUNT`.
+    #: Every interval with a nonzero residual, oldest first and **uncapped**.
+    #: 🔴 The cap belongs to the WIRE, not to this object. Cutting the list here
+    #: made every in-process reader see a truncated ledger: the caveat builder
+    #: counted and netted over it, so an account with more than
+    #: `MAX_RESIDUALS_PER_ACCOUNT` findings under-reported both -- and because the
+    #: cut ran before the `unexplained` filter, an account whose first ten
+    #: residuals were explained and whose next five were not raised no warning at
+    #: all. `to_wire` caps what it renders; nothing else sees a short list.
     unreconciled: tuple[ResidualInterval, ...]
     #: The account's balance currency; null when no balance was ever recorded.
     #: 🔴 Present because `api-contract.md` binds any aggregate over residuals to
@@ -1218,14 +1222,33 @@ class AccountReconciliation:
     #: cannot group by a unit its rows do not carry.
     currency: str | None
 
+    @property
+    def unreconciled_count(self) -> int:
+        """Intervals with a nonzero residual, as MEASURED.
+
+        🔴 Derived from the list rather than stored beside it, so the two cannot
+        disagree. Held as its own field, it went stale the moment the list was
+        capped anywhere, which is precisely what happened.
+        """
+        return len(self.unreconciled)
+
     def to_wire(self) -> dict[str, Any]:
-        """The reconciliation fields every account row carries, in every tool."""
+        """The reconciliation fields every account row carries, in every tool.
+
+        🔴 **The only place the cap is applied.** The COUNT rides out as
+        measured, so a `unreconciled_detail` shorter than `unreconciled_intervals`
+        tells a caller the enumeration was cut -- the split `interior_gaps`
+        already makes on this surface. Capping both would make a truncated list
+        indistinguishable from a complete one.
+        """
         return {
             "reconciliation_state": self.state,
             "residual_minor_units": self.residual_minor_units,
             "reconciled_intervals": self.intervals_compared,
             "unreconciled_intervals": self.unreconciled_count,
-            "unreconciled_detail": [interval.to_wire() for interval in self.unreconciled],
+            "unreconciled_detail": [
+                interval.to_wire() for interval in self.unreconciled[:MAX_RESIDUALS_PER_ACCOUNT]
+            ],
             "balance_currency": self.currency,
         }
 
@@ -1259,13 +1282,45 @@ def _residual_cause(
     # No transaction was EVER recorded for this account, so nothing could have
     # explained the movement. An empty feed is a gap in coverage, not a quiet
     # account -- the balance moved, which is the proof something happened.
+    # 🔴 Unconditional, and NOT gated on the grant like the branch below it. The
+    # store cannot tell an account with no activity from one whose institution
+    # does not report its activity -- the stance `accounts_without_coverage`
+    # already takes -- so a recorded grant does not turn "the feed has never
+    # carried a row for this account" into proof that nothing happened.
     if first_transaction is None or last_transaction is None:
         return "coverage_gap"
-    # 🔴 Either END outside the recorded span, not "the interval is disjoint from
-    # it". A balance that moved after the last transaction the feed carries means
-    # the feed is BEHIND the balance, and that is the common shape of this
-    # finding -- a sync that fetched balances and stopped short of transactions.
-    if to_date > last_transaction or to_date <= first_transaction:
+    # 🔴 **Unconditional, and this is the asymmetry to keep.** A balance that
+    # moved AFTER the last row the feed carries means the feed is behind the
+    # balance -- the common shape of this finding, a sync that fetched balances
+    # and stopped short of transactions. A grant says how far BACK the aggregator
+    # will serve; it proves nothing about rows that have not arrived yet, so
+    # there is no gate to apply here.
+    if to_date > last_transaction:
+        return "coverage_gap"
+    # 🔴 **Gated on an UNMEASURED grant, and the gate is the whole finding.** An
+    # interval opening before the feed's first row means two different things
+    # depending on whether the grant is known:
+    #
+    #   - `history_starts` is NULL -- nobody has measured how far back the
+    #     aggregator would serve, so whether the feed COULD have covered those
+    #     days is unknown, and `coverage_gap` is the honest answer.
+    #   - `history_starts` is set and reaches back past this interval -- the feed
+    #     covered those days and returned nothing for them, so the absence of
+    #     rows is PROVEN rather than assumed, and a residual there is exactly
+    #     what `unexplained` names.
+    #
+    # Ungated, the second case is swallowed by the first: coverage the grant
+    # proves is reported as coverage nobody has, and since the warning fires only
+    # on `unexplained`, the surface's headline finding disappears without a word.
+    #
+    # 🔴 **One condition covers BOTH shapes** -- the interval that straddles the
+    # feed's first row and the one that closes before it. For any interval
+    # `from < to`, `to_date <= first_transaction` implies this condition, so
+    # adding a clause that spells that half would run first and leave this gate
+    # unreachable for every wholly-before interval. Two spellings of one question
+    # here, the broader one unguarded, is a gate that looks present and never
+    # fires.
+    if history_starts is None and from_date < first_transaction:
         return "coverage_gap"
     return "unexplained"
 
@@ -1300,12 +1355,14 @@ def _account_reconciliation(conn: SAConnection) -> dict[int, AccountReconciliati
     by every institution. Soft-deleted rows are excluded as every other reader
     excludes them.
 
-    🔴 **Intervals pair only snapshots sharing a CURRENCY.** Subtracting two
-    balances denominated differently yields a number with no unit, and
-    `data-model.md` admits no such amount. A currency change therefore ends one
-    run and begins another exactly as a gap would, and `intervals_compared`
-    counts only comparisons actually made -- so nothing is ever claimed to have
-    been checked that was not.
+    🔴 **Only the account's CURRENT currency run is compared.** Subtracting two
+    balances denominated differently yields a number with no unit, and AC-18.3
+    makes a multi-currency total undefined -- so a single scalar residual can
+    carry exactly one unit, and it carries the one the account is denominated in
+    now. Intervals in a superseded currency are not compared at all, rather than
+    netted into a figure whose label would be arbitrary. `intervals_compared`
+    counts only comparisons actually made, so an account with fewer intervals
+    than snapshot pairs is STATING that something was left out.
     """
     types = {
         int(account_id): str(account_type)
@@ -1378,7 +1435,10 @@ def _account_reconciliation(conn: SAConnection) -> dict[int, AccountReconciliati
     reconciliations: dict[int, AccountReconciliation] = {}
     for account_id, account_type in types.items():
         rows = snapshots.get(account_id, [])
-        currency = rows[0][2] if rows else None
+        # 🔴 The account's CURRENT unit -- the newest snapshot's, not the oldest.
+        # It is the unit `residual_minor_units` is denominated in, so it has to
+        # be the one the comparisons below actually ran in.
+        currency = rows[-1][2] if rows else None
         if account_type in NOT_RECONCILABLE_ACCOUNT_TYPES:
             state = "not_applicable_investment"
         elif not rows:
@@ -1393,7 +1453,6 @@ def _account_reconciliation(conn: SAConnection) -> dict[int, AccountReconciliati
                 state=state,
                 residual_minor_units=None,
                 intervals_compared=0,
-                unreconciled_count=0,
                 unreconciled=(),
                 currency=currency,
             )
@@ -1429,9 +1488,19 @@ def _account_reconciliation(conn: SAConnection) -> dict[int, AccountReconciliati
             while ahead < len(movements) and movements[ahead][0] <= to_date:
                 transactions_sum += movements[ahead][1]
                 ahead += 1
-            if from_currency != to_currency:
-                # A currency change ends one run and begins another. Not counted,
-                # because no comparison was made -- see the docstring.
+            if from_currency != currency or to_currency != currency:
+                # 🔴 Only the account's CURRENT currency run is compared, and the
+                # reason is AC-18.3: a multi-currency total is undefined, so
+                # netting an interval measured in one unit against an interval
+                # measured in another produces a number with no unit and labels
+                # it with whichever currency happened to be picked. One scalar
+                # residual can carry one unit; this is the run it carries.
+                #
+                # Intervals in a superseded currency are therefore NOT compared,
+                # and `intervals_compared` is what makes that visible -- an
+                # account showing fewer intervals than it has snapshot pairs is
+                # stating that something was left out, rather than hiding it
+                # inside a total.
                 continue
             compared += 1
             balance_change = to_minor - from_minor
@@ -1468,7 +1537,6 @@ def _account_reconciliation(conn: SAConnection) -> dict[int, AccountReconciliati
                 state="insufficient_snapshots",
                 residual_minor_units=None,
                 intervals_compared=0,
-                unreconciled_count=0,
                 unreconciled=(),
                 currency=currency,
             )
@@ -1478,8 +1546,7 @@ def _account_reconciliation(conn: SAConnection) -> dict[int, AccountReconciliati
             state=state,
             residual_minor_units=net,
             intervals_compared=compared,
-            unreconciled_count=len(findings),
-            unreconciled=tuple(findings[:MAX_RESIDUALS_PER_ACCOUNT]),
+            unreconciled=tuple(findings),
             currency=currency,
         )
     return reconciliations
@@ -2025,36 +2092,50 @@ def _unreconciled_caveat(entries: list[AccountReconciliation]) -> list[Caveat]:
 
     🔴 **Grouped by currency, with a count AND a signed magnitude**, because
     `api-contract.md` § Direction binds any aggregate over stored amounts to
-    carry both and a residual aggregate inherits it. Summing across currencies
-    would produce a number with no unit; a count alone would hide whether the
-    finding is a rounding artefact or a missing month, which is the half
-    `learnings.md` calls load-bearing.
+    carry both and a residual aggregate inherits it. This aggregate spans
+    accounts, so it can span units even though one account's residual cannot:
+    summing across them would produce a number with no unit. A count alone would
+    hide whether the finding is a rounding artefact or a missing month, which is
+    the half `learnings.md` calls load-bearing.
     """
-    unreconciled = [entry for entry in entries if entry.unreconciled_count]
-    if not unreconciled:
+    # 🔴 **`unexplained` intervals ONLY, which is what every declaration of this
+    # kind promises** -- "no coverage gap or truncated window accounts for the
+    # difference". Selecting on a nonzero residual regardless of cause fires the
+    # kind on exactly the residuals the cause vocabulary has just EXPLAINED, and
+    # the guidance then tells the reading agent the opposite of what happened.
+    # Measured, not hypothetical: the production store's only nonzero residual is
+    # a `coverage_gap`, so the broad rule warned on a store with nothing
+    # unexplained in it. A residual with a cause is reported on the ROW, where it
+    # is itemized; the warning is for the one nothing accounts for.
+    # 🔴 Over `entry.unreconciled` in FULL, which is why the cap is not applied
+    # there. Filtering a list that had already been cut to the first ten meant an
+    # account whose first ten residuals were explained and whose next five were
+    # not raised no warning at all -- and the count and magnitude below silently
+    # described ten intervals out of however many there were.
+    by_currency: dict[str, list[tuple[int, ResidualInterval]]] = {}
+    for entry in entries:
+        for interval in entry.unreconciled:
+            if interval.cause == "unexplained":
+                by_currency.setdefault(interval.currency, []).append((entry.account_id, interval))
+    if not by_currency:
         return []
-    by_currency: dict[str, list[AccountReconciliation]] = {}
-    for entry in unreconciled:
-        # `currency` cannot be null here: an account with an unreconciled
-        # interval has at least two balance snapshots, and a snapshot carries a
-        # NOT NULL currency.
-        by_currency.setdefault(str(entry.currency), []).append(entry)
     caveats: list[Caveat] = []
     for currency in sorted(by_currency):
-        group = sorted(by_currency[currency], key=lambda e: e.account_id)
-        intervals = sum(entry.unreconciled_count for entry in group)
-        net = sum(entry.residual_minor_units or 0 for entry in group)
-        named = ", ".join(str(entry.account_id) for entry in group)
+        found = by_currency[currency]
+        intervals = len(found)
+        net = sum(interval.residual_minor_units for _, interval in found)
+        named = ", ".join(str(account_id) for account_id in sorted({a for a, _ in found}))
         caveats.append(
             Caveat(
                 kind="balance_unreconciled",
                 detail=(
                     f"account(s) {named} hold {intervals} interval(s) in {currency} whose "
                     f"balance movement the recorded transactions do not explain, netting "
-                    f"{net} minor units. No coverage gap or truncated window accounts for "
-                    f"an interval attributed `unexplained`. 🔴 The figures in this answer are "
-                    f"internally consistent and may still be wrong by that amount; read "
-                    f"`unreconciled_detail` on the row for the intervals and their causes"
+                    f"{net} minor units. No coverage gap and no truncated history window "
+                    f"accounts for these -- money moved and nothing in the store records it. "
+                    f"🔴 The figures in this answer are internally consistent and may still be "
+                    f"wrong by that amount; read `unreconciled_detail` on the row for the "
+                    f"intervals themselves"
                 ),
             )
         )

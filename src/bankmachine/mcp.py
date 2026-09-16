@@ -469,12 +469,11 @@ def _output_schema(
     }
 
 
-#: The per-account coverage facts, spelled ONCE for the two tools that carry
-#: them. `list_accounts` carries them so an agent that never thought to ask the
-#: verification surface still learns an account is empty; `get_coverage_report`
-#: carries them beside the cadence analysis built on them. One producer feeds
-#: both (`query._account_coverage`), and one schema fragment describes both --
-#: two copies would drift and a client would reject one tool's honest answer.
+#: AC-11.2's residual per account, on the ONE tool that carries it.
+#: `get_coverage_report` is the verification surface `api-contract.md` rules a
+#: per-account finding belongs to; `list_accounts` is the analysis surface and
+#: deliberately does not carry these. One producer (`query._account_reconciliation`)
+#: feeds it, as `_account_coverage` feeds the fragment below.
 def _reconciliation_row_fields() -> dict[str, dict[str, Any]]:
     """AC-11.2's residual per account. A fresh dict per call, like every fragment here.
 
@@ -567,6 +566,12 @@ def _reconciliation_row_fields() -> dict[str, dict[str, Any]]:
     }
 
 
+#: The per-account coverage facts, spelled ONCE for the two tools that carry
+#: them. `list_accounts` carries them so an agent that never thought to ask the
+#: verification surface still learns an account is empty; `get_coverage_report`
+#: carries them beside the cadence analysis built on them. One producer feeds
+#: both (`query._account_coverage`), and one schema fragment describes both --
+#: two copies would drift and a client would reject one tool's honest answer.
 def _coverage_row_fields() -> dict[str, dict[str, Any]]:
     """A fresh dict per call, like every other schema fragment here."""
     return {

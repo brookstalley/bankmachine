@@ -73,7 +73,8 @@ question — see the assumption below.
   a clean residual would go nonzero later with no error anywhere. `plaid/model/transaction.py`:
   *"For pending transactions, the date that the transaction occurred; for posted transactions, the
   date that the transaction posted."* The date moves **forward**, never back, and `posted_date`
-  mirrors that field (`plaid/derivers.py:893`). So a transaction enters the sum on the day it moves
+  mirrors that field (`src/bankmachine/connector/plaid/derivers.py`, the transaction deriver). So a transaction
+  enters the sum on the day it moves
   the balance, and closed intervals stay closed. 🔴 This holds **only because** pending rows are
   excluded — the two findings are load-bearing together, and changing either alone reintroduces the
   instability.
@@ -93,17 +94,27 @@ actually come back zero. That is Chunk 02's step 2 and cannot be answered before
 ## Status
 
 - [x] Chunk 01: The requirements, and the norm whose Why this cycle falsifies
-- [ ] Chunk 02: The residual — one producer, reported on the verification surface
+- [x] Chunk 02: The residual — one producer, reported on the verification surface
 - [ ] Chunk 03: `bankmachine status`, and the inventory it checks against
 
 Context: Chunk 01 closed 2026-09-16 — requirements written, the operator-signed norm amended, all
 four overclaim sites corrected. Gate green against the committed tree; Critic `verify-resolutions`
 returned 0 blocking / 0 warning / 0 note.
 
-Next: **Chunk 02**, whose `verify-api` (step 0) is DONE — `current` excludes pending, so the
-interval sum counts posted rows only and the `pending_holds` cause is gone. The record lives in
-`api-notes-plaid.md` §§27-29, carrying the vendor's own "typically" hedge. What remains is the
-producer, the envelope kinds, the tool fields, and the production measurement.
+Chunk 02 closed 2026-09-16 — the residual producer, both warning kinds, the tool fields, and the
+production measurement. `current` excludes pending (`api-notes-plaid.md` §§27-29, carrying the
+vendor's own "typically" hedge), so the interval sum counts posted rows only and the
+`pending_holds` cause is gone.
+
+🔴 **The measurement is real but weak, and the weakness is the store's.** It holds three balance
+snapshots, so each reconciled account contributes two intervals over four days. Zero residuals are
+`unexplained`; the one nonzero is a `coverage_gap` from a feed running behind its balances. Nothing
+here exercises a long history, a re-link overlap or a duplicated hold. The claim that is safe to
+repeat is the narrow one — across every interval the store can currently support, no residual is
+unexplained — and it strengthens on its own as snapshots accumulate.
+
+Next: **Chunk 03**, which reads `query._account_reconciliation` rather than recomputing it. #70
+closes with the PR that carries this branch, not before.
 
 The `branch:` above is repointed to the branch Chunk 02 is being built on, so this plan governs by
 declaration again — the one resolution route that is not an inference. `active_build_plan` was
@@ -257,7 +268,7 @@ against either one alone.
     enumerated cases** — the window-resolver instance found a bug nine enumerated mutations missed,
     and this is the same shape. The invariant is the whole feature.
   - 🔴 **sparse snapshots** — an interval spanning many days because the aggregator reported a null
-    `current` in between (`plaid/derivers.py`'s `reported is None` path leaves no row). A missing day
+    `current` in between (`src/bankmachine/connector/plaid/derivers.py`'s `reported is None` path leaves no row). A missing day
     is not a defect and must not read as one.
   - integration — `get_coverage_report` end to end; the row schema accepted by
     `_refuse_optional_row_fields`; `tests/preferences/test_the_documented_tool_surface_is_the_built_one.py`
@@ -282,10 +293,31 @@ against either one alone.
      is what keeps a computed interval closed), and the balance-to-transaction freshness this
      depends on is conditional on the Item having Transactions enabled.
   1. Acceptance criteria met and tests pass
-  2. Residual distribution read against the production store and recorded — the measurement, not a
-     formality
-  3. `/prawduct:critic` run and blocking findings resolved
-  4. Committed and chunk marked `[x]` in Status
+  2. ~~Residual distribution read against the production store and recorded~~ **DONE 2026-09-16.**
+     Read against this deployment's **production** store — real institutions, not the aggregator's
+     sandbox dataset. **Across every interval that store can currently support, no residual is
+     `unexplained`.** One interval carried a nonzero residual, attributed `coverage_gap` because
+     that account's transactions feed is behind its balance snapshots, and no
+     `balance_unreconciled` warning is raised — which is the correct answer rather than an absence.
+     🔴 The plan's stop condition (a nonzero result is unbounded work) is aimed at an *unexplained*
+     residual, so it is NOT triggered and no separate scoping is owed.
+     🔴 **The counts, magnitude and dates are deliberately not here.** `project-state.yaml`'s signed
+     REPOSITORY SCOPE decision admits no operator roster, account detail or balance into a tracked
+     file, and this repository is public. They live in
+     `deployment/reconciliation-measurement.md`, which also records the honest limit: the store
+     holds three snapshots, so this is a weak measurement that strengthens as they accumulate.
+     🔴 **Chunk 03 measures against the same store — put its figures there too.**
+     `check-no-personal-data.sh` does not catch this class; it matches roster and identity tokens,
+     and a roster composition or an amount matches none of them.
+  3. ~~`/prawduct:critic` run and blocking findings resolved~~ **DONE 2026-09-16.** One `cumulative`
+     review, then `verify-resolutions` until it returned nothing. 🔴 The pattern worth carrying is
+     not the tally: **the early fix rounds each introduced a defect the next round found**, and the
+     recurring shape was a comment stating a condition the code did not implement. The last rounds
+     found only prose — a directive that would have had a maintainer delete a test, and a docstring
+     overstating what its fixture pinned — which still needed fixing and changed no behaviour.
+     The round-by-round ledger is in the evidence store (`prawduct-hook evidence list`), not
+     copied here where it would go stale the next time anything runs.
+  4. ~~Committed and chunk marked `[x]` in Status~~ **DONE 2026-09-16.**
 
 ### Chunk 03: `bankmachine status`, and the inventory it checks against
 

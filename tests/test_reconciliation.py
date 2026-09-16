@@ -523,8 +523,11 @@ def test_a_residual_inside_full_coverage_is_unexplained(one_connection: Config) 
     """
     _capture(one_connection, [_account(CHECKING, "depository", "checking", "100.00")], day_offset=0)
     _capture(one_connection, [_account(CHECKING, "depository", "checking", "75.00")], day_offset=10)
-    # Transactions on both sides of the closing snapshot, so the feed demonstrably
-    # covers the interval -- the residual cannot be blamed on its reach.
+    # 🔴 The GRANT is what proves coverage here, not a transaction on the opening
+    # date. Recorded from day 0, it says the aggregator would have served those
+    # days -- so the feed's silence before day 5 is a measured absence of
+    # activity, not an absence of data, and a residual over this interval is
+    # exactly what `unexplained` names.
     _post(one_connection, [(CHECKING, 5, "10.00"), (CHECKING, 12, "5.00")])
     _set_history_start(one_connection, day_offset=0)
 
@@ -551,7 +554,7 @@ def test_every_declared_cause_is_one_the_producer_can_actually_attribute(
     _set_history_start(one_connection, day_offset=5)
     reachable.add(_only_cause(one_connection, CHECKING))
 
-    # `unexplained` -- covered on both sides, granted from the start.
+    # `unexplained` -- the grant reaches back past the interval, so coverage is proven.
     _set_history_start(one_connection, day_offset=0)
     _post(one_connection, [(CHECKING, 5, "10.00"), (CHECKING, 12, "5.00")])
     reachable.add(_only_cause(one_connection, CHECKING))
@@ -783,6 +786,7 @@ def test_an_unexplained_residual_raises_the_warning_with_its_magnitude(
     _capture(one_connection, [_account(CHECKING, "depository", "checking", "100.00")], day_offset=0)
     _capture(one_connection, [_account(CHECKING, "depository", "checking", "75.00")], day_offset=10)
     _post(one_connection, [(CHECKING, 5, "10.00"), (CHECKING, 12, "5.00")])
+    _set_history_start(one_connection, day_offset=0)
 
     answer = query.coverage_report(one_connection)
     (detail,) = _details(answer, "balance_unreconciled")
@@ -893,3 +897,340 @@ def test_each_transaction_lands_in_exactly_one_of_several_consecutive_intervals(
         f"a transaction was counted into the wrong interval: {entry.unreconciled}"
     )
     assert entry.residual_minor_units == 0
+
+
+# --------------------------------------------------------------------------- #
+# The branches that were modelled before they were reached.
+# --------------------------------------------------------------------------- #
+
+
+def test_an_explained_residual_does_not_raise_the_unreconciled_warning(
+    one_connection: Config,
+) -> None:
+    """🔴 The kind fires on `unexplained` ONLY, which is what it promises.
+
+    Every declaration of `balance_unreconciled` -- the contract table, the
+    envelope comment, the client guide and the `_GUIDANCE` entry -- says "no
+    coverage gap or truncated window accounts for the difference". Firing on any
+    nonzero residual warns on exactly the residuals the cause vocabulary has just
+    EXPLAINED, and then tells the reading agent the opposite of what happened.
+
+    This is measured rather than hypothetical: the production store's only
+    nonzero residual is a `coverage_gap`, so the broad rule warned on a store
+    with nothing unexplained in it at all.
+    """
+    _capture(one_connection, [_account(CHECKING, "depository", "checking", "100.00")], day_offset=0)
+    _capture(one_connection, [_account(CHECKING, "depository", "checking", "75.00")], day_offset=10)
+    # No transactions at all: the balance moved and the feed reaches nowhere near.
+    answer = query.coverage_report(one_connection)
+
+    entry = _reconciliation(one_connection)[_by_source_id(one_connection)[CHECKING]]
+    assert entry.unreconciled_count == 1, "no residual at all; the silence below is vacuous"
+    assert entry.unreconciled[0].cause == "coverage_gap", (
+        "this fixture must produce an EXPLAINED residual or it is not the case under test"
+    )
+    assert not _details(answer, "balance_unreconciled"), (
+        "an explained residual raised the kind whose every declaration says no coverage gap "
+        "accounts for it -- the warning and its own guidance now contradict each other"
+    )
+    # The residual is not hidden: it is itemized on the row, with its cause.
+    row = next(r for r in answer.rows if int(r["account_id"]) == entry.account_id)
+    assert row["unreconciled_intervals"] == 1
+    assert row["unreconciled_detail"][0]["cause"] == "coverage_gap"
+
+
+def test_a_superseded_currency_is_not_netted_into_the_residual(
+    one_connection: Config,
+) -> None:
+    """🔴 AC-18.3: a multi-currency total is undefined, so one scalar carries one unit.
+
+    An account whose unit changed has intervals measured in two different
+    currencies. Netting them produces a number with no unit and labels it with
+    whichever currency was picked first. Only the account's CURRENT run is
+    compared, and `reconciled_intervals` is what states that something was left out.
+    """
+
+    def priced(current: str, iso: str) -> dict[str, Any]:
+        entry = _account(CHECKING, "depository", "checking", current)
+        entry["balances"]["iso_currency_code"] = iso
+        return entry
+
+    _capture(one_connection, [priced("100.00", "EUR")], day_offset=0)
+    _capture(one_connection, [priced("60.00", "EUR")], day_offset=10)
+    _capture(one_connection, [priced("100.00", "USD")], day_offset=20)
+    _capture(one_connection, [priced("70.00", "USD")], day_offset=30)
+
+    account_id = _by_source_id(one_connection)[CHECKING]
+    assert _snapshot_count(one_connection, account_id) == 4, (
+        "fewer than four snapshots, so there is no currency change to skip over"
+    )
+    entry = _reconciliation(one_connection)[account_id]
+    assert entry.currency == "USD", (
+        "the residual is labelled with the OLDEST snapshot's unit rather than the one the "
+        "comparisons ran in"
+    )
+    assert entry.intervals_compared == 1, (
+        "three snapshot pairs exist and only the USD one is comparable; a count above 1 means "
+        "an interval in a superseded unit was netted into a figure labelled USD"
+    )
+    # -3000 USD from the one comparable interval, and nothing from the EUR run.
+    assert entry.residual_minor_units == -3000
+    assert all(interval.currency == "USD" for interval in entry.unreconciled)
+
+
+def test_the_enumerated_residuals_are_capped_while_the_count_is_not(
+    one_connection: Config,
+) -> None:
+    """The count is as MEASURED; the list beside it may be shorter.
+
+    A report naming forty intervals on one account is one nobody reads, and the
+    operator's move is the same after the first few. Capping the count as well
+    would make a truncated list indistinguishable from a complete one -- which is
+    the split `interior_gaps` already makes on this surface.
+    """
+    over_the_cap = query.MAX_RESIDUALS_PER_ACCOUNT + 4
+    for index in range(over_the_cap + 1):
+        _capture(
+            one_connection,
+            # Every snapshot moves by 10.00 with no transaction to explain it, so
+            # every interval is unreconciled.
+            [_account(CHECKING, "depository", "checking", f"{1000 - index * 10:.2f}")],
+            day_offset=index,
+        )
+
+    entry = _reconciliation(one_connection)[_by_source_id(one_connection)[CHECKING]]
+    assert entry.intervals_compared == over_the_cap
+    assert entry.unreconciled_count == over_the_cap, (
+        "the COUNT was capped; a caller can then no longer tell a truncated enumeration from a "
+        "complete one, which is the whole reason the two are separate fields"
+    )
+    # 🔴 The producer's own list is UNCAPPED. Cutting it here would hand every
+    # in-process reader a truncated ledger -- which is exactly how the caveat
+    # builder came to count and net over ten intervals out of fourteen.
+    assert len(entry.unreconciled) == over_the_cap
+    # The cap belongs to the wire, and only to the enumeration on it.
+    wire = entry.to_wire()
+    assert len(wire["unreconciled_detail"]) == query.MAX_RESIDUALS_PER_ACCOUNT
+    assert wire["unreconciled_intervals"] == over_the_cap
+
+
+def test_a_soft_deleted_transaction_is_not_counted_in_the_interval(
+    one_connection: Config,
+) -> None:
+    """Excluded as every other reader excludes them.
+
+    A coverage figure counting rows the analysis surface cannot return would
+    promise data no query can produce -- and here it would also silently change
+    the residual, which is the number the operator is asked to act on.
+    """
+    from bankmachine.store.schema import transactions as txn_table
+
+    _capture(one_connection, [_account(CHECKING, "depository", "checking", "100.00")], day_offset=0)
+    _capture(one_connection, [_account(CHECKING, "depository", "checking", "90.00")], day_offset=10)
+    _post(one_connection, [(CHECKING, 5, "10.00")], cursor="kept")
+    _post(one_connection, [(CHECKING, 6, "25.00")], cursor="gone")
+
+    account_id = _by_source_id(one_connection)[CHECKING]
+    entry_before = _reconciliation(one_connection)[account_id]
+    assert entry_before.residual_minor_units == 2500, (
+        "the row that is about to be soft-deleted is not moving the residual, so removing it "
+        "proves nothing"
+    )
+
+    with writer_connection(one_connection) as conn:
+        removed = conn.execute(
+            txn_table.update()
+            .where(txn_table.c.source_transaction_id == "gone-0")
+            .values(removed_at=ORIGIN)
+        ).rowcount
+    assert removed == 1, "no row was soft-deleted, so the exclusion below is not under test"
+
+    entry = _reconciliation(one_connection)[account_id]
+    assert entry.residual_minor_units == 0, (
+        "a soft-deleted transaction is still being summed into the interval"
+    )
+
+
+def test_an_unexplained_residual_past_the_cap_still_raises_the_warning(
+    one_connection: Config,
+) -> None:
+    """🔴 The cap must not decide which findings are REPORTED, only which are listed.
+
+    The regression this pins: the enumeration was cut before the `unexplained`
+    filter ran, so an account whose first intervals were all explained and whose
+    later ones were not raised no warning at all -- the loudest finding on the
+    surface, silently dropped by a display limit. The count and magnitude were
+    wrong the same way, describing the first ten of however many there were.
+    """
+    # 🔴 The feed's span splits the intervals, and the grant is deliberately
+    # UNMEASURED so the split falls the right way round. With no grant, an
+    # interval opening before the feed's first row is `coverage_gap`; one inside
+    # the span is `unexplained`. The first row is at day `opens`, set past the
+    # cap on purpose -- that is the whole construction, and it puts the first
+    # unexplained interval beyond the cut.
+    #
+    # (A grant recorded from day 0 inverts the split: coverage is then PROVEN over
+    # the early days, making those the unexplained intervals — inside the cap,
+    # where this test could not reach the case it exists for.)
+    opens = query.MAX_RESIDUALS_PER_ACCOUNT + 2
+    closes = opens + 8
+    for index in range(closes + 1):
+        _capture(
+            one_connection,
+            # Every snapshot moves 10.00 with almost nothing to explain it, so
+            # every interval carries a nonzero residual.
+            [_account(CHECKING, "depository", "checking", f"{1000 - index * 10:.2f}")],
+            day_offset=index,
+        )
+    _post(one_connection, [(CHECKING, opens, "1.00"), (CHECKING, closes, "1.00")])
+
+    entry = _reconciliation(one_connection)[_by_source_id(one_connection)[CHECKING]]
+    causes = [interval.cause for interval in entry.unreconciled]
+    assert causes.count("unexplained") >= 1, "no unexplained interval; the test proves nothing"
+    position = causes.index("unexplained")
+    assert position >= query.MAX_RESIDUALS_PER_ACCOUNT, (
+        f"the first unexplained interval is at position {position}, inside the cap of "
+        f"{query.MAX_RESIDUALS_PER_ACCOUNT} -- this fixture does not reach past it, so it "
+        f"cannot detect the truncation bug it exists for"
+    )
+
+    answer = query.coverage_report(one_connection)
+    details = _details(answer, "balance_unreconciled")
+    assert details, (
+        "an unexplained residual past the enumeration cap raised no warning at all; the "
+        "display limit decided what got REPORTED"
+    )
+
+
+def test_an_interval_before_an_unmeasured_grant_is_a_gap_not_a_finding(
+    one_connection: Config,
+) -> None:
+    """The twin of the covered case: same shape, unknown grant, opposite verdict.
+
+    With `history_start_date` NULL nobody has measured how far back the
+    aggregator would serve, so whether the feed could have covered the days
+    before its first row is unknown. `coverage_gap` is the honest answer, and
+    `unexplained` would send the operator looking for money that may simply
+    never have been fetched.
+    """
+    _capture(one_connection, [_account(CHECKING, "depository", "checking", "100.00")], day_offset=0)
+    _capture(one_connection, [_account(CHECKING, "depository", "checking", "75.00")], day_offset=10)
+    _post(one_connection, [(CHECKING, 5, "10.00"), (CHECKING, 12, "5.00")])
+    # Deliberately NO `_set_history_start`: the grant is unmeasured.
+
+    with reader_connection(one_connection) as conn:
+        from bankmachine.store.schema import sync_state
+
+        granted = conn.execute(select(sync_state.c.history_start_date)).all()
+    assert all(row[0] is None for row in granted), (
+        "a history start is recorded, so this fixture is the PROVEN-coverage case and asserts "
+        "the wrong branch"
+    )
+    assert _only_cause(one_connection, CHECKING) == "coverage_gap"
+
+
+def test_snapshots_that_never_share_a_currency_are_insufficient_not_reconciled(
+    one_connection: Config,
+) -> None:
+    """🔴 Four snapshots, no comparable pair, and `reconciled` would be a lie.
+
+    Every consecutive pair straddles a currency change, so nothing is compared.
+    Reporting `reconciled` with a net of zero would be green by vacuity -- the
+    exact failure `intervals_compared` exists to expose -- so the state falls
+    back to the one that already means "not enough to compare".
+    """
+
+    def priced(current: str, iso: str) -> dict[str, Any]:
+        entry = _account(CHECKING, "depository", "checking", current)
+        entry["balances"]["iso_currency_code"] = iso
+        return entry
+
+    for index, iso in enumerate(("USD", "EUR", "USD", "EUR")):
+        _capture(one_connection, [priced("100.00", iso)], day_offset=index)
+
+    account_id = _by_source_id(one_connection)[CHECKING]
+    assert _snapshot_count(one_connection, account_id) == 4
+    entry = _reconciliation(one_connection)[account_id]
+    assert entry.intervals_compared == 0, "a pair was compared; this is not the case under test"
+    assert entry.state == "insufficient_snapshots", (
+        "four snapshots with no comparable pair reported `reconciled`, which claims a "
+        "comparison that never happened"
+    )
+    assert entry.residual_minor_units is None
+
+
+def test_an_interval_wholly_before_the_feeds_first_row_obeys_the_grant(
+    one_connection: Config,
+) -> None:
+    """🔴 The interval CLOSES before the feed's first row, and the grant decides it.
+
+    This is the shape a broader clause can silently claim: `to_date <=
+    first_transaction` implies `from_date < first_transaction`, so any test
+    spelling that half runs before the gated branch and leaves it unreachable
+    here. The straddling case would still look gated while this one was not, and
+    with a grant recorded the answer would be `coverage_gap` — coverage the grant
+    PROVES, reported as coverage nobody has, with no warning raised because the
+    caveat fires only on `unexplained`.
+
+    Both halves are asserted over one store, because either alone passes while
+    the other is wrong.
+    """
+
+    _capture(one_connection, [_account(CHECKING, "depository", "checking", "100.00")], day_offset=3)
+    _capture(one_connection, [_account(CHECKING, "depository", "checking", "75.00")], day_offset=7)
+    # The feed's first row is day 12 -- AFTER this interval closes -- and its last
+    # is day 20, so the feed is not merely behind the balance.
+    _post(one_connection, [(CHECKING, 12, "10.00"), (CHECKING, 20, "5.00")])
+
+    # No grant: whether the feed could have reached day 3 is unknown.
+    assert _only_cause(one_connection, CHECKING) == "coverage_gap"
+
+    # Grant recorded from day 0: the aggregator would have served those days and
+    # returned nothing, so the absence of rows is proven and the residual is the
+    # finding. Same store, same interval, one recorded fact different.
+    _set_history_start(one_connection, day_offset=0)
+    assert _only_cause(one_connection, CHECKING) == "unexplained", (
+        "an interval the grant proves was covered is still reported as a coverage gap, so the "
+        "gate is dead code for every interval that closes before the feed's first row"
+    )
+
+
+def test_an_interval_closing_exactly_on_the_feeds_first_row_obeys_the_grant(
+    one_connection: Config,
+) -> None:
+    """Two edges no other fixture sits on, asserted where they coincide.
+
+    The feed's first posted row lands exactly on the closing snapshot's date, and
+    the grant lands exactly on the opening one. That pins:
+
+    - **`(from, to]` closed at the top.** The row on `to_date` is counted, so the
+      `transactions_sum_minor_units` assertion below goes red if the upper bound
+      is ever written exclusive.
+    - **`history_starts == from_date` does NOT trip `window_truncated`.** That
+      branch tests `from_date < history_starts`, and an interval opening on the
+      first granted day is inside the grant, not before it.
+
+    🔴 What this does NOT pin, stated so nobody reads more into it: the
+    `from_date < first_transaction` comparison is true by eight days here, so
+    widening it to `<=` would change nothing. The cause verdict is asserted under
+    both grant states because it must fall the same way at the edge as in the
+    interior -- not because the edge is where that comparison is decided.
+    """
+    _capture(one_connection, [_account(CHECKING, "depository", "checking", "100.00")], day_offset=0)
+    _capture(one_connection, [_account(CHECKING, "depository", "checking", "60.00")], day_offset=8)
+    # First posted row lands exactly on the closing snapshot's date.
+    _post(one_connection, [(CHECKING, 8, "10.00"), (CHECKING, 20, "5.00")])
+
+    entry = _reconciliation(one_connection)[_by_source_id(one_connection)[CHECKING]]
+    (interval,) = entry.unreconciled
+    assert interval.to_date == calendar_date(ORIGIN.date() + timedelta(days=8))
+    assert interval.transactions_sum_minor_units == -1000, (
+        "the row posted ON the closing date was not counted, so this fixture is not sitting on "
+        "the equality edge it exists to pin"
+    )
+    # No grant: the feed's reach back to day 0 is unknown.
+    assert interval.cause == "coverage_gap"
+
+    # Grant from day 0: the feed covered those days and returned nothing.
+    _set_history_start(one_connection, day_offset=0)
+    assert _only_cause(one_connection, CHECKING) == "unexplained"
