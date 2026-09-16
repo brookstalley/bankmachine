@@ -108,6 +108,11 @@ USAGE_EOF
 
 tokens=()
 cased_tokens=()
+# The identity class, kept SEPARATELY as well as merged into `tokens`. The
+# copyright carve-out below exempts an author's name and must never exempt an
+# institution's, so it needs to know which class a token came from. Merged-only
+# would make "Copyright (c) 2026 <bank>" pass.
+identity_tokens=()
 
 # The matching mode is a property of the FILE, never of the token line. A prefix
 # or a second column would have to pass the single-word validator below, and that
@@ -139,12 +144,18 @@ load_tokens() {
         else
             tokens+=("$line")
         fi
+        if [[ $mode == identity ]]; then
+            identity_tokens+=("$line")
+        fi
     done <"$file"
     return 0
 }
 
 load_tokens "$ROSTER_FILE" nocase
-load_tokens "$IDENTITY_FILE" nocase
+# `identity` is `nocase` plus membership of the identity class. The mode is still
+# a property of the FILE, per the note above; this one names two facts about that
+# file rather than carrying a per-line prefix.
+load_tokens "$IDENTITY_FILE" identity
 load_tokens "$ROSTER_CASED_FILE" cased
 
 real_token_count=$(( ${#tokens[@]} + ${#cased_tokens[@]} ))
@@ -212,6 +223,47 @@ if (( ${#cased_tokens[@]} > 0 )); then
     cased_token_alt=${cased_token_alt%|}
 fi
 
+# --- the copyright carve-out ----------------------------------------------
+#
+# A copyright line in LICENSE names the AUTHOR, and an author's name is public by
+# construction the moment this repository is published under a licence bearing
+# it. That is the same reasoning the slug strip above rests on -- "the owner
+# segment is inherently public the moment this repository is" -- applied to the
+# one other place authorship is unavoidable. An MIT grant with nobody granting it
+# is not a licence, so the alternative to this carve-out is not a safer LICENSE;
+# it is no enforceable one.
+#
+# 🔴 What this guard exists to keep out is the OPERATOR's identity: whose accounts
+# these are, at which institutions, holding what. Authorship is a different fact
+# about a different role, and conflating the two is what made the norm and the
+# licence look incompatible.
+#
+# Narrow on THREE axes, because any one alone leaks:
+#   - the FILE must be LICENSE. A copyright header in a source file is not exempt.
+#   - the LINE must be a copyright notice in the conventional shape.
+#   - only IDENTITY-class tokens are removed. A roster token -- an institution --
+#     on that same line still fails, which is the case the control below proves.
+# Everything else on the line stays in scope, exactly as the slug strip does.
+identity_alt=""
+if (( ${#identity_tokens[@]} > 0 )); then
+    identity_alt=$(printf '%s|' "${identity_tokens[@]}")
+    identity_alt=${identity_alt%|}
+fi
+
+# `LICENSE` at the end of the path, whether the location is `LICENSE:3` from a
+# working-tree scan or `<commit>:LICENSE:3` from a history scan.
+copyright_location='(^|:)LICENSE:[0-9]+$'
+copyright_shape='^[[:space:]]*Copyright[[:space:]]+(\([cC]\)|©)[[:space:]]+[0-9]{4}([[:space:]]*-[[:space:]]*[0-9]{4})?[[:space:]]'
+
+strip_public_copyright() {
+    local location=$1 out=$2
+    [[ -n $identity_alt ]] || { printf '%s' "$out"; return 0; }
+    [[ $location =~ $copyright_location ]] || { printf '%s' "$out"; return 0; }
+    grep -qE "$copyright_shape" <<<"$out" || { printf '%s' "$out"; return 0; }
+    sed -E "s#(${identity_alt})##gI" <<<"$out" \
+        || die "copyright-strip failed (sed error) -- refusing to report clean"
+}
+
 strip_public_slugs() {
     local out=$1
     if [[ -n $token_alt ]]; then
@@ -270,12 +322,85 @@ control_probe() {
 
 # Every class that will be scanned is proved first. A control that covers one mode
 # while the other scans unproven is the same fail-open shape with a smaller hole.
+# Defined here rather than beside `report`, because the controls below judge
+# through it: a control that cannot reach the judging path proves nothing about
+# the judging path. It depends only on the patterns, which are already built.
+still_matches() {
+    local stripped=$1
+    if [[ -n $pattern ]] && grep -qiE "$pattern" <<<"$stripped"; then
+        return 0
+    fi
+    if [[ -n $cased_pattern ]] && grep -qE "$cased_pattern" <<<"$stripped"; then
+        return 0
+    fi
+    return 1
+}
+
+# The copyright carve-out's controls. A carve-out with no negative control is how
+# an exemption silently widens: the positive leg alone passes just as well when
+# the rule exempts the whole file.
+copyright_control() {
+    local holder=$1 line stripped
+
+    # POSITIVE: the exempted shape, in the exempted file, is actually exempted.
+    # Without this the carve-out could be inert and LICENSE would simply block.
+    line="Copyright (c) 2026 ${holder}"
+    stripped=$(strip_public_copyright "LICENSE:3" "$line")
+    if still_matches "$stripped"; then
+        die "copyright control FAILED -- a LICENSE copyright line naming the author still
+       matches. The carve-out is not working; refusing to report clean."
+    fi
+
+    # NEGATIVE 1: the same line ANYWHERE ELSE still blocks. The carve-out is
+    # scoped to LICENSE, and a copyright header in a source file is not exempt.
+    stripped=$(strip_public_copyright "src/bankmachine/__init__.py:1" "$line")
+    if ! still_matches "$stripped"; then
+        die "copyright control FAILED -- the carve-out exempted a copyright line OUTSIDE
+       LICENSE. It is scoped to LICENSE by design; refusing to report clean."
+    fi
+
+    # NEGATIVE 2: a NON-copyright line in LICENSE still blocks. The carve-out is
+    # scoped to the notice shape, not to the file.
+    stripped=$(strip_public_copyright "LICENSE:9" "contact ${holder} about this software")
+    if ! still_matches "$stripped"; then
+        die "copyright control FAILED -- the carve-out exempted a line in LICENSE that is
+       not a copyright notice. It is scoped to the notice shape; refusing to report clean."
+    fi
+
+    # NEGATIVE 3 -- the one that matters most. A ROSTER token on the copyright
+    # line still blocks. Only the identity class is public-by-authorship; an
+    # institution name in a copyright notice is exactly the leak this guard is
+    # for, and it would be the cheapest place to hide one.
+    if (( ${#tokens[@]} > ${#identity_tokens[@]} )); then
+        local roster_token=""
+        local t
+        for t in "${tokens[@]}"; do
+            local is_identity=0 i
+            for i in "${identity_tokens[@]}"; do
+                [[ $t == "$i" ]] && is_identity=1 && break
+            done
+            (( is_identity == 0 )) && roster_token=$t && break
+        done
+        if [[ -n $roster_token ]]; then
+            stripped=$(strip_public_copyright "LICENSE:3" "Copyright (c) 2026 ${roster_token}")
+            if ! still_matches "$stripped"; then
+                die "copyright control FAILED -- the carve-out exempted a ROSTER token on a
+       LICENSE copyright line. Only the identity class is exempt there; refusing to
+       report clean."
+            fi
+        fi
+    fi
+}
+
 self_test() {
     if [[ -n $pattern ]]; then
         control_probe "${tokens[0]}" nocase
     fi
     if [[ -n $cased_pattern ]]; then
         control_probe "${cased_tokens[0]}" cased
+    fi
+    if (( ${#identity_tokens[@]} > 0 )); then
+        copyright_control "${identity_tokens[0]}"
     fi
 }
 
@@ -289,22 +414,13 @@ self_test
 
 found=0
 
-still_matches() {
-    local stripped=$1
-    if [[ -n $pattern ]] && grep -qiE "$pattern" <<<"$stripped"; then
-        return 0
-    fi
-    if [[ -n $cased_pattern ]] && grep -qE "$cased_pattern" <<<"$stripped"; then
-        return 0
-    fi
-    return 1
-}
-
 report() {
     local location=$1 text=$2 stripped
     stripped=$(strip_public_slugs "$text")
-    # If nothing matches once identity-owned slugs are removed, the only hit was
-    # a slug. Test explicitly rather than treating any failure as a false positive.
+    stripped=$(strip_public_copyright "$location" "$stripped")
+    # If nothing matches once identity-owned slugs and a LICENSE copyright holder
+    # are removed, the only hit was one of those. Test explicitly rather than
+    # treating any failure as a false positive.
     if ! still_matches "$stripped"; then
         return 0
     fi
