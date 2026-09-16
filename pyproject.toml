@@ -8,6 +8,8 @@ readme = "README.md"
 # ever tested. Widen it when a CI matrix exercises the range, not before —
 # `tests/preferences/test_python_floor_is_exercised.py` holds the two together.
 requires-python = ">=3.14"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "certifi>=2026.7.22",
     "keyring>=25",
@@ -17,9 +19,17 @@ dependencies = [
     "urllib3>=2",
 ]
 
-# No `authors` field. The published engine carries no operator identity —
-# `tests/preferences/check-no-personal-data.sh` enforces that against every pushed commit,
-# and `uv init` writes the git-config name here by default.
+# No `authors` field. `uv init` writes the git-config name here by default, and this
+# file has no reason to carry it.
+#
+# 🔴 `LICENSE` DOES name a copyright holder, and that is not an exception being
+# smuggled — it is a different role. The identity this repo keeps out is the
+# OPERATOR's: whose accounts these are, at which institutions, holding what.
+# That is what `tests/preferences/check-no-personal-data.sh` matches on, and it is
+# the leak that actually happened here. A copyright holder is the AUTHOR, and an
+# MIT grant with no one granting it is not a licence. The guard agrees: the
+# copyright line passes it clean, because the author's name is not among the
+# roster or identity tokens.
 
 [project.scripts]
 bankmachine = "bankmachine.__main__:main"
