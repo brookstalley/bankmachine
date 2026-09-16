@@ -34,6 +34,80 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-16: The engine is MIT licensed, and the guard learns that an author is not an operator
+
+<!-- prawduct: scope=mit-licence -->
+
+**Why:** the repository had no `LICENSE` and no license metadata, which makes it "all rights
+reserved" by default — the one state nobody intends for a tool built to be published. MIT, chosen by
+the owner over Apache-2.0 after the patent-grant tradeoff was priced: Apache's express grant is the
+one clause that materially differs in a patent-dense domain, and the owner took the simpler licence
+knowing that.
+
+**What changed:** `LICENSE`, plus the PEP 639 pair in `pyproject.toml` (`license = "MIT"`,
+`license-files`). Verified against the **built** metadata rather than assumed — `uv_build` emits
+`License-Expression: MIT` and `License-File: LICENSE`. The README's Licence section said "No licence
+has been chosen yet, so default copyright applies," which was false the moment `LICENSE` landed, and
+now carries one sentence of substance about what the missing verification gate means for trusting the
+numbers.
+
+🔴 **The leak guard blocked the copyright line, and the conflict was real rather than a bug.** The
+norm reads *no institution, account, balance, **operator name** or machine name in any commit
+reaching a remote* — and a licence names its author. Both could not hold. Resolved on the terms the
+guard had already set for itself: it strips identity-owned `owner/repo` slugs because *"the owner
+segment is inherently public the moment this repository is"*, and an author's name is public by the
+same construction once the repo ships under a licence bearing it. What the guard protects is the
+**operator's** identity — whose accounts, at which institutions — which is a different fact about a
+different role.
+
+The carve-out is narrow on three axes: the file must be `LICENSE`, the line must be a copyright
+notice, and **only IDENTITY-class tokens are stripped**, so an institution named on that same line
+still fails. That last one required tracking the identity class separately from the roster class;
+merged-only would have exempted a bank. Each axis carries its own negative control in `self_test`,
+because a carve-out with only a positive leg passes just as well when it exempts the whole file, and
+all three were seen red by hand against **tracked** files — an untracked probe reports a false clean,
+which is how the conflict was missed the first time. Recorded as a bounded exception with its
+`[DECISION: …]` in `project-preferences.md`.
+
+## 2026-09-16: What the store already claims about its own balances, written down as a requirement
+
+<!-- prawduct: scope=reconciliation-and-status -->
+
+**Why:** AC-11.2's formula — *change in balance equals sum of transactions* — is cited in the
+operator-signed norm's own rationale, in the frozen core-schema migration, and in the balance
+deriver, as the reason the single sign convention is worth having and the reason `balance_class`
+partitions reporting rather than arithmetic. **Nothing has ever computed it.** Two design decisions
+have rested on an unverified premise since the schema was frozen. Chunk 01 of
+`build-plan-reconciliation-and-status.md`; brookstalley/bankmachine#70 and #96 stay open until the
+code lands.
+
+**What changed, and it is requirements rather than code.** AC-11.2 is amended in three ways, and the
+first is a **substitution** rather than a narrowing: the clause specified an *absolute* check — every
+transaction ever, summed, equalling today's balance — which is **unsatisfiable for every account in
+this store**, because the history window is truncated at its start and the balance is not. Summing a
+truncated history against a complete balance yields a permanent residual on every account, forever.
+The replacement is an interval delta between consecutive balance snapshots, which needs only the two
+snapshots and what lies between, so truncation bounds how far back the check reaches instead of
+whether it works at all. The tolerance is now **zero** — stricter than the "documented tolerance" it
+replaces, because a forgiveness band is the averaging-away the clause already forbade. And investment
+accounts are **excluded and named as excluded**, on a measurement that predates this work:
+`api-notes-plaid.md` §23 records the aggregator's own canned data disagreeing with itself by −1493.65
+on a 401k with no margin loan to explain it.
+
+New: **AC-11.2a** (the scope correction as a requirement, since the overclaim is the recorded
+justification for the sign convention), **AC-11.6a** (the expected inventory gets a machine-readable
+form, with absent ≠ pass and unreadable ≠ absent kept distinct), and **AC-18.1–18.3** (the
+data-sanity surface, as a new §7 subsection).
+
+🔴 **A `## Direction` norm is amended, and the timing is stated because it is the shape that should
+draw scrutiny.** The operator-signed norm's *Why* claimed the reconciliation holds "for every
+account". Its **statement** is untouched — every stored amount is still operator-signed — and what is
+corrected is a consequence the rationale claimed. A norm amended in the same cycle as the code it
+governs is how a norm gets laundered to bless its author's design; the defence is that the falsifying
+measurement is not this cycle's. §23 landed four days earlier on unrelated work, and this amendment
+only reads what was already written down. Three further sites track the norm and are corrected to
+match — counted by search rather than from memory, after the first pass said three and missed one.
+
 ## 2026-09-15: Warnings route to where the data lives, and stop calling a quiet account a fault
 
 <!-- prawduct: scope=investment-activity-e2e -->
