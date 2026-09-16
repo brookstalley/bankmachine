@@ -599,11 +599,34 @@ _CONNECTION_SCOPE_NOTE = (
     "the request-scoped kinds below to learn what happened to this request."
 )
 
-_REQUEST_SCOPE_NOTE = (
-    "🔴 These fire only when the request carrying them actually crosses the boundary they "
-    "name, so their presence is information and SO IS THEIR ABSENCE. None of them present "
-    "means this request stayed inside what the store can answer over."
-)
+
+def _request_scope_note() -> str:
+    """The absence-is-information promise, with the exception it actually carries.
+
+    🔴 **Generated, because a hand-written version of this went wrong in the
+    dangerous direction.** The unqualified promise — "none of them present means
+    this request stayed inside what the store can answer over" — is false for the
+    kinds only the verification surface emits: an unexplained residual leaves a
+    `money_summary` total wrong by that amount and raises nothing on the answer
+    carrying it. Telling an agent that silence means clean there is the precise
+    failure `warnings` exists to prevent, one layer out.
+
+    Rendering from `envelope.VERIFICATION_SURFACE_ONLY_KINDS` means the exception
+    cannot go stale as kinds join or leave it.
+    """
+    restricted = ", ".join(f"`{kind}`" for kind in envelope.VERIFICATION_SURFACE_ONLY_KINDS)
+    return (
+        "🔴 These fire only when the request carrying them actually crosses the boundary they "
+        "name, so their presence is information and SO IS THEIR ABSENCE — with ONE exception, "
+        f"and it matters: {restricted} are emitted by `get_coverage_report` ALONE. On any other "
+        "tool their absence tells you nothing, because they are never sent from there. An "
+        "account whose balance and recorded transactions disagree makes a `money_summary` or "
+        "`query_transactions` figure wrong by that amount with NO warning on that answer, so "
+        "call `get_coverage_report` and read `reconciliation_state` before you quote a figure. "
+        "For every other kind below, none present means this request stayed inside what the "
+        "store can answer over."
+    )
+
 
 _WARNINGS_INTRO = (
     "🔴 Read `warnings` before drawing a conclusion: an answer can be perfectly well-formed "
@@ -660,7 +683,7 @@ def _warning_reference() -> str:
     parts += [
         "## Request-scoped — about this request",
         "",
-        _REQUEST_SCOPE_NOTE,
+        _request_scope_note(),
         "",
     ]
     parts += [_kind_section(kind) for kind in envelope.REQUEST_SCOPED_KINDS]

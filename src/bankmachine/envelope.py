@@ -209,6 +209,27 @@ REQUEST_SCOPED_KINDS: tuple[str, ...] = (
     "reconciliation_not_applicable",
 )
 
+#: 🔴 Request-scoped kinds that only the VERIFICATION surface emits, and the
+#: exception they carry to what `REQUEST_SCOPED_KINDS` otherwise promises.
+#:
+#: A request-scoped kind's absence is information — it fires whenever THIS
+#: request's scope holds the condition — and for these two that holds on
+#: `get_coverage_report` and nowhere else. Their emitters are per ACCOUNT and an
+#: analysis answer is a total, so an emitter there would have to decide which
+#: accounts a figure drew on, which is a design question rather than an addition.
+#:
+#: 🔴 Named here rather than described in the server-instructions prose, because
+#: that prose is GENERATED from this module: a hand-written caveat would go stale
+#: the first time a kind joined or left the restriction, and the stale form is the
+#: dangerous one — it tells an agent that silence means clean on an answer that
+#: can be wrong by a residual. `api-contract.md` records the same restriction for
+#: readers; this tuple is what makes the served text agree with it.
+VERIFICATION_SURFACE_ONLY_KINDS: tuple[str, ...] = (
+    "balance_unreconciled",
+    "reconciliation_not_applicable",
+)
+
+
 #: The warning vocabulary the API contract fixes. Named here as a tuple rather
 #: than left to string literals at each site, because a warning nobody spells the
 #: same way twice is a warning a consumer cannot branch on. Composed from the two

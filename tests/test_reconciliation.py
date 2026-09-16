@@ -1234,3 +1234,48 @@ def test_an_interval_closing_exactly_on_the_feeds_first_row_obeys_the_grant(
     # Grant from day 0: the feed covered those days and returned nothing.
     _set_history_start(one_connection, day_offset=0)
     assert _only_cause(one_connection, CHECKING) == "unexplained"
+
+
+def test_the_served_scope_note_carries_the_verification_only_exception() -> None:
+    """🔴 The absence-is-information promise must not be served unqualified.
+
+    `REQUEST_SCOPED_KINDS` promises that a kind's absence is information, and the
+    served warnings reference says so in as many words. For the two kinds only
+    `get_coverage_report` emits, that promise is false everywhere else: an
+    unexplained residual leaves a `money_summary` total wrong by that amount and
+    raises nothing on the answer carrying it.
+
+    Telling an agent silence means clean there is the failure `warnings` exists to
+    prevent, one layer out — so the exception is asserted on the SERVED text, not
+    just on the constant, because the served text is what a consumer reads.
+    """
+    from bankmachine import mcp_resources
+
+    served = mcp_resources._request_scope_note()
+    for kind in envelope.VERIFICATION_SURFACE_ONLY_KINDS:
+        assert kind in served, (
+            f"{kind} is emitted by one tool only, and the served scope note does not name it as "
+            f"an exception -- so the note tells a consumer its absence is information on every "
+            f"answer, which is how a total wrong by a residual reads as clean"
+        )
+    assert "get_coverage_report" in served, "the note names no tool the exception points to"
+
+    # The negative control: the promise still stands for every other kind, or the
+    # note has been widened into uselessness.
+    unrestricted = set(envelope.REQUEST_SCOPED_KINDS) - set(
+        envelope.VERIFICATION_SURFACE_ONLY_KINDS
+    )
+    assert unrestricted, "no unrestricted request-scoped kind remains; the fixture proves nothing"
+    assert "stayed inside what the store can answer over" in served, (
+        "the note dropped the absence-is-information promise entirely; it is true of every kind "
+        "except the named exceptions, and deleting it costs consumers real information"
+    )
+
+
+def test_every_verification_only_kind_is_a_declared_request_scoped_kind() -> None:
+    """The restriction narrows a promise; it cannot name a kind that never made one."""
+    for kind in envelope.VERIFICATION_SURFACE_ONLY_KINDS:
+        assert kind in envelope.REQUEST_SCOPED_KINDS, (
+            f"{kind} is listed as verification-surface-only but is not request-scoped, so there "
+            f"is no absence-is-information promise for the restriction to qualify"
+        )
