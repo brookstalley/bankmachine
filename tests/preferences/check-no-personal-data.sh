@@ -244,24 +244,50 @@ fi
 #   - only IDENTITY-class tokens are removed. A roster token -- an institution --
 #     on that same line still fails, which is the case the control below proves.
 # Everything else on the line stays in scope, exactly as the slug strip does.
-identity_alt=""
-if (( ${#identity_tokens[@]} > 0 )); then
-    identity_alt=$(printf '%s|' "${identity_tokens[@]}")
-    identity_alt=${identity_alt%|}
-fi
-
 # `LICENSE` at the end of the path, whether the location is `LICENSE:3` from a
 # working-tree scan or `<commit>:LICENSE:3` from a history scan.
 copyright_location='(^|:)LICENSE:[0-9]+$'
-copyright_shape='^[[:space:]]*Copyright[[:space:]]+(\([cC]\)|©)[[:space:]]+[0-9]{4}([[:space:]]*-[[:space:]]*[0-9]{4})?[[:space:]]'
+copyright_shape='^[[:space:]]*Copyright[[:space:]]+([(][cC][)]|©)[[:space:]]+[0-9]{4}([[:space:]]*-[[:space:]]*[0-9]{4})?[[:space:]]'
+
+# Everything up to and including the year. What follows it is the HOLDER.
+copyright_prefix='^[[:space:]]*Copyright[[:space:]]+([(][cC][)]|©)[[:space:]]+[0-9]{4}([[:space:]]*-[[:space:]]*[0-9]{4})?[[:space:]]+'
+
+is_identity_token() {
+    local word=$1 lowered token
+    lowered=$(printf '%s' "$word" | tr '[:upper:]' '[:lower:]')
+    for token in "${identity_tokens[@]}"; do
+        [[ $lowered == "$(printf '%s' "$token" | tr '[:upper:]' '[:lower:]')" ]] && return 0
+    done
+    return 1
+}
 
 strip_public_copyright() {
-    local location=$1 out=$2
-    [[ -n $identity_alt ]] || { printf '%s' "$out"; return 0; }
+    local location=$1 out=$2 holder word kept=""
+    (( ${#identity_tokens[@]} > 0 )) || { printf '%s' "$out"; return 0; }
     [[ $location =~ $copyright_location ]] || { printf '%s' "$out"; return 0; }
     grep -qE "$copyright_shape" <<<"$out" || { printf '%s' "$out"; return 0; }
-    sed -E "s#(${identity_alt})##gI" <<<"$out" \
+
+    # Only the holder segment is considered; the prefix is boilerplate with no
+    # token in it, and anything before `Copyright` is not part of the notice.
+    # `#` as the delimiter, not `|`: the prefix pattern CONTAINS `|` for its
+    # alternation, and a `|` delimiter closes the expression in the middle of it.
+    # The guard caught this by failing closed rather than by reporting clean.
+    holder=$(sed -E "s#${copyright_prefix}##" <<<"$out" 2>/dev/null) \
         || die "copyright-strip failed (sed error) -- refusing to report clean"
+
+    # 🔴 WORD-EXACT, not substring. Every match pattern in this guard is anchored
+    # on word boundaries, and a substring strip would not be: an identity token
+    # occurring INSIDE a roster token would be cut out of it, leaving a mangled
+    # remainder that the roster pattern no longer matches -- silently exempting
+    # the institution this guard exists to catch. Dropping whole words that ARE
+    # identity tokens, and keeping every other word intact, makes the exemption
+    # exactly as wide as the tokens it is for.
+    for word in $holder; do
+        if ! is_identity_token "${word%%[.,;]}"; then
+            kept="${kept:+$kept }$word"
+        fi
+    done
+    printf '%s' "$kept"
 }
 
 strip_public_slugs() {
