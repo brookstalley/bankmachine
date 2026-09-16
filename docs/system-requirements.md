@@ -1062,9 +1062,56 @@ identified as such; a retired account's post-closure period is not a gap.
 > periods are fine but must be identified as such."* A monthly account's 30-day silence is exactly
 > that, and the 7-day rule was reporting it as a gap.
 
-**AC-11.2 · Reconciliation** — For each account, the balance derived by summing transactions matches
-the reported current balance within a documented tolerance. Discrepancies are **itemized, not
-averaged away.**
+**AC-11.2 · Reconciliation** — For each **non-investment** account, the change in the recorded
+balance between consecutive snapshots equals the sum of transactions posted in the interval between
+them. The **documented tolerance is zero**. Discrepancies are **itemized, not averaged away**: every
+nonzero residual is reported per account per interval with its magnitude and an attributed cause,
+and a residual no cause explains is a finding.
+
+> **Amendment (2026-09-16).** Three things changed: the **form** of the check, its **tolerance**,
+> and its **scope**. Two are narrowings. The first is a substitution, and it is recorded first
+> because it is the one a reader would otherwise miss — someone comparing an implementation against
+> this clause would be grading it against a check that is no longer the one specified. Derived in
+> `.prawduct/artifacts/discovery-reconciliation-and-status.md`.
+>
+> 🔴 **1. The form of the check was replaced.** The clause read: *"the balance derived by summing
+> transactions matches the reported current balance."* That is an **absolute** claim — every
+> transaction the account ever had, summed, equalling today's balance — and it is **unsatisfiable
+> for every account in this store**, because the history window is granted by the institution and
+> truncated at its start (AC-1.3a, AC-11.8). Summing a truncated history against a complete balance
+> yields a residual equal to everything before the window, on every account, forever. The
+> replacement is an **interval delta**: between two consecutive balance snapshots, the change in
+> balance equals the transactions posted between them. It needs only the two snapshots and what lies
+> between, so truncation bounds *how far back it can check* instead of *whether it can check at
+> all*. The pre-history boundary the absolute form silently failed on is now a named, attributed
+> cause (`window_truncated`) rather than an unexplained residual.
+>
+> **2. The tolerance is zero, and that is stricter than what it replaced.** Amounts are integer minor
+> units by norm, so exact equality is meaningful arithmetic rather than a floating-point
+> aspiration — and this clause's own next sentence already forbade the alternative. A band that
+> forgives residuals under it *is* the averaging-away, wearing a threshold's name. A residual of 300
+> that is an open hold and one of 300 that is a duplicated transaction are indistinguishable by
+> magnitude, so magnitude cannot be the discriminator. The attributed cause is.
+>
+> 🔴 **3. Investment accounts are excluded, and the exclusion is named in the answer rather
+> than left as a silent omission.** Their balances move with the market rather than with recorded activity, so
+> no transaction sum reconciles them — and reconciling them against holdings instead was *measured*
+> and refused: `api-notes-plaid.md` §23 records the aggregator's own canned data disagreeing with
+> itself by −1493.65 on a 401k with no margin loan to explain it, and concludes that such a
+> reconciliation "would go red on the aggregator's own canned data, so it is not a test this product
+> can write." Scoped in, this check's first act against a real investment-only connection would be
+> to report a permanent false finding.
+>
+> AC-11.2a records the retroactivity this narrowing owes: four sites assert the old, wider claim,
+> and one of them is a norm's rationale.
+
+**AC-11.2a · The reconciliation's scope is corrected everywhere it is asserted.** Every site
+claiming the reconciliation holds "for every account" states the investment exclusion instead. This
+is a requirement and not a cleanup: those sites are the **recorded justification** for the operator-
+signed convention and for `balance_class` partitioning reporting rather than arithmetic, so leaving
+them overclaiming preserves exactly the confusion AC-11.2's amendment exists to resolve. 🔴 The
+sites are re-derived by search at the time of the edit, never from a copied list — the first pass of
+the derivation document counted three and missed a fourth.
 
 **AC-11.3 · Deduplication** — Zero duplicate transactions, tested across the pending→posted
 transition, across a re-sync, and across overlapping file imports.
@@ -1087,6 +1134,31 @@ transition, across a re-sync, and across overlapping file imports.
 
 **AC-11.6 · Account inventory** — The set of accounts in the datastore is reconciled against an
 **operator-supplied expected inventory.** Unrecognized accounts are a finding, not noise.
+
+**AC-11.6a · The expected inventory has a machine-readable form, and its absence is not a pass.**
+The inventory AC-11.6 reconciles against is read from a file whose location is **configuration with
+a documented default**, and which is not tracked in version control. Three states are reported and
+kept distinct: **matched**; **unrecognized** (in the store, absent from the inventory — AC-11.6's
+finding); and **expected but never received** (in the inventory, absent from the store).
+
+🔴 **Where no inventory file is present, the check reports that it was not supplied. It never
+renders as a pass and is never omitted.** An account that was never received is undetectable from
+inside the store by construction — there is no field that reports it and no query that finds it —
+so the operator's own list is the only oracle there is. A check with no oracle that displays as a
+checkmark is worse than one that is absent, because absence prompts a question and a checkmark ends
+it.
+
+🔴 A file that is **present but unreadable** is a different outcome from one that is absent: the
+operator supplied an oracle and the check could not use it. That is an error, not an opt-out, and
+the two must not collapse into one state.
+
+*Why this is a system requirement and not a deployment detail:* the deployment layer already
+specifies the inventory's content and its role — `deployment-requirements.template.md` § 5 requires
+a written post-enrollment inventory and names it "the operator-supplied expected inventory that
+engine AC-11.6 reconciles against". What did not exist was any form a program could read, which is
+why AC-11.6 had no mechanism and its check lived as prose in a runbook. The *content* stays the
+deployment layer's; the *readable form* is the engine's, because the engine is what has to fail
+when it is missing.
 
 **AC-11.7 · Independent spot-check** — At least 10 transactions verified by eye against the
 institution's own statement. Automation can be wrong in ways that are internally consistent.
@@ -1188,6 +1260,39 @@ observation rather than a tautology.
 **AC-14.9 · The observed deposit becomes a regression fixture.** Its raw page is extracted from
 `raw_responses`, redacted, and committed, so the inflow direction is machine-checked from that
 commit forward.
+
+---
+
+### The data-sanity surface (#96)
+
+*Derived in `.prawduct/artifacts/discovery-reconciliation-and-status.md`. Every criterion below was derived in the cited discovery document, which records the evidence, the alternatives weighed, and its assumptions as **vetoable**. They are in force as requirements; an assumption the owner rejects retires the criteria that rest on it.*
+
+**Ordinary build requirements, gating on nothing: AC-18.1 through AC-18.3.** None requires
+production data. § 7 is their home because they are the runnable form of gate checks AC-11.1,
+AC-11.2 and AC-11.6 already state — the gate's machine-checkable half, made invocable rather than
+read out of a runbook.
+
+**AC-18.1 · One command answers whether the stored data is sane.** A single invocation reports, per
+connection: connection status; the history window **granted** beside the one **requested**; account
+and transaction counts and the date span they cover; the currency mix; accounts with no recorded
+activity; what the most recent sync changed; AC-11.2's residuals; and AC-11.6a's inventory states.
+No SQL, and no `sync shell`. *Why:* the checks exist and are specified — they were simply
+unreachable except by an operator reading a 492-line runbook and hand-writing queries. A check that
+runs only when someone reads the runbook is a check the product declined to make.
+
+**AC-18.2 · A suspected account duplication is stated in words.** Where two active accounts on one
+connection share `(mask, name, type, subtype)`, or an account count rose with no corresponding
+retire, the answer **says so in a sentence** rather than leaving it inferable from a count. 🔴 The
+signal's false-positive bar is written down **before it ships**, and the case it must not fire on is
+named there: a joint account legitimately reported by two connections has the same shape as a
+duplicate. *Why:* this is what turns a silently-wrong total into a visibly-suspect one. A signal
+that cries wolf on a household's own joint account is one the operator learns to ignore, which
+costs more than not having it.
+
+**AC-18.3 · Multi-currency is reported, not silently assumed away.** The command states whether
+every account is USD, and where any is not, that totals in bare minor units across mixed currencies
+are undefined and must not be read. *Why:* with two currencies in one store a bare minor-units total
+cannot be interpreted at all, and nothing in the figure itself reveals that.
 
 ---
 

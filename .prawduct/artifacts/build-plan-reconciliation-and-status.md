@@ -53,23 +53,42 @@ question — see the assumption below.
 
 **Open assumptions / unknowns:**
 
-- `[ASSUMPTION: the aggregator's reported `current` balance INCLUDES authorization holds, so a
-  pending row belongs in the interval sum | HIGH impact | user can correct]` — not recorded in
-  `api-notes-plaid.md`, which documents the `balances` object's fields but not this semantic. If
-  `current` excludes holds while the sum includes them, every account with an open hold shows a
-  residual equal to that hold. **Mitigated by design rather than guessed:** the `pending_holds`
-  cause is computed independently, so a systematic mismatch surfaces as an *explained* residual
-  whose magnitude equals the open holds — which is itself the measurement that settles it. This is
-  the same semantic **#22 / VRF-038** has been re-raised five times waiting on.
+- 🔴 **RESOLVED 2026-09-16, and FALSIFIED — the assumption was wrong.** It read:
+  `[ASSUMPTION: the aggregator's reported `current` balance INCLUDES authorization holds, so a
+  pending row belongs in the interval sum | HIGH impact]`. Settled from SDK source, which is the
+  `verify-api` order of preference, not from docs or recall. `plaid/model/account_balance.py`
+  documents `available` as, for depository accounts, *"the `current` balance less any pending
+  outflows plus any pending inflows"* — arithmetic that only holds if `current` does **not** already
+  net out pending. **So `current` is the settled balance and EXCLUDES pending**, and the interval
+  sum must count posted rows only (`pending = 0`).
+  Had this been built as assumed, every account with an open hold would have carried a spurious
+  residual equal to that hold — on a feature whose entire value is that a nonzero residual means
+  something. **Consequence for the design: the `pending_holds` cause largely dissolves.** With both
+  sides excluding pending, a hold is not an ordinary residual cause at all; it was a category
+  invented to absorb a mismatch that does not exist. Chunk 02 must not ship a branch that cannot
+  fire — either it is dropped, or it is re-scoped to the narrow case that survives and that case is
+  named.
+- 🔴 **A second question the first one raised, and its answer.** If a settling transaction were
+  dated by its *authorization*, posting would backdate a row into an already-reconciled interval and
+  a clean residual would go nonzero later with no error anywhere. `plaid/model/transaction.py`:
+  *"For pending transactions, the date that the transaction occurred; for posted transactions, the
+  date that the transaction posted."* The date moves **forward**, never back, and `posted_date`
+  mirrors that field (`plaid/derivers.py:893`). So a transaction enters the sum on the day it moves
+  the balance, and closed intervals stay closed. 🔴 This holds **only because** pending rows are
+  excluded — the two findings are load-bearing together, and changing either alone reintroduces the
+  instability.
+  Neither finding closes **#22 / VRF-038**, which is about watching one real pending row across
+  settlement. They answer an adjacent question that obligation kept colliding with.
 - `[ASSUMPTION: the reconciliation pairs CONSECUTIVE balance snapshots rather than a caller-supplied
   period | MED impact | user can correct]` — consecutive pairing needs no parameter and localizes a
   discrepancy to the interval that produced it.
 - `[ASSUMPTION: the inventory file is TOML, matching `~/.config/bankmachine/config.toml` | LOW
   impact | user can correct]`
 
-**What would raise confidence:** For the first — Chunk 02's own output read against the production
-store. That is a 5-minute read once the chunk lands, not a spike, which is why the chunk is
-sequenced before `status` consumes it.
+**What would raise confidence:** The HIGH-impact assumption is now resolved against SDK source, so
+the level would be High but for the two that remain, both LOW/MED and both cheap to reverse. The
+remaining open question is empirical rather than definitional: whether the production residuals
+actually come back zero. That is Chunk 02's step 2 and cannot be answered before the code exists.
 
 ## Status
 
@@ -150,19 +169,20 @@ against either one alone.
       a recorded amendment carrying statement / why / retroactivity and a `[DECISION: …]`. 🔴 The
       norm's *statement* is untouched: the sign convention is not what measurement falsified. What
       is corrected is a consequence it claims, and the amendment must say so explicitly, because a
-      norm amended in the same cycle as the code it governs is the laundering shape `docs/norms.md`
-      warns hardest about — the defence is that the falsifying measurement (§23) predates this cycle
+      norm amended in the same cycle as the code it governs is the laundering shape
+      /prawduct:methodology norms warns hardest about — the defence is that the falsifying measurement (§23) predates this cycle
       and was recorded by other work.
     - `.prawduct/artifacts/data-model.md:776` — § Sign convention prose. Descriptive; tracks the norm.
     - `src/bankmachine/store/migrations/core_schema.py:40` — module docstring, **not** the frozen DDL.
-    - `src/bankmachine/connector/plaid/derivers.py:1631` — `_balance_row` docstring.
+    - `src/bankmachine/connector/plaid/derivers.py:1631` — the balance-row docstring, on
+      `_write_balance`.
     🔴 Re-derive the site list with `grep -rn "change in balance equals sum"` before editing rather
     than trusting these four line numbers — lines shift, and the first pass of the discovery
     document said three sites and missed one.
 - **Tests:** `tests/preferences/test_requirement_ids_unique.py` covers the new ids.
   `tests/store/test_schema.py` must stay green across the migration docstring edit — **the evidence
   that the edit did not touch frozen DDL**, and the reason this chunk carries a code path at all.
-- **Acceptance criteria:** `bash scripts/check.sh` green; no AC id collides; the three overclaim
+- **Acceptance criteria:** `bash scripts/check.sh` green; no AC id collides; every overclaim
   sites agree with §23; `CORE_SCHEMA_DDL_SHA256` unchanged.
 - **Type:** doc-only
   <!-- Two source files are touched, but only their docstrings; no behaviour changes. The
@@ -185,7 +205,9 @@ against either one alone.
     one-producer discipline. SQLAlchemy Core, no ORM, per project preferences. Pairs each account's
     `balances_daily` rows with their predecessor; sums `transactions.amount_minor` over `(from, to]`
     excluding soft-deleted rows; attributes each nonzero residual to `coverage_gap` |
-    `pending_holds` | `window_truncated` | `unexplained`.
+    `window_truncated` | `unexplained`. 🔴 `pending_holds` is NOT in this list: the verify-api
+    finding above removed it. Both sides of the comparison exclude pending, so a hold produces no
+    residual to explain. Re-add it only if measurement produces a case it is needed for.
   - 🔴 **An explicit `reconciliation_state`, because three distinguishable states would otherwise
     collapse into one null.** `learnings.md` § *A carve-out reaches every state that shares its
     return type*: "when one function collapses distinguishable states into one value, the collapse

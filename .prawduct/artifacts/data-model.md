@@ -55,8 +55,10 @@ nothing to migrate or grandfather.
   and plausibly, because the number is well-formed and the sum completes. One convention rather than
   one per account type is what keeps two later things from needing a special case: net worth is a
   plain sum, and AC-11.2's reconciliation is "change in balance equals sum of transactions" for
-  every account. The rejected alternative — store as reported, let each consumer apply the sign —
-  makes net worth type-dependent and puts the error in whichever consumer forgets.
+  every account **[narrowed to every non-investment account by the 2026-09-16 amendment below —
+  the original wording is kept so the amendment has something to amend]**. The rejected
+  alternative — store as reported, let each consumer apply the sign — makes net worth
+  type-dependent and puts the error in whichever consumer forgets.
   Status: **steady-state** as of 2026-09-07, closing `brookstalley/bankmachine#9`. The connector
   normalizes in `connector/plaid/derivers.py`; `test_a_liability_reported_positive_is_stored_negative`
   and its siblings assert it, `verify_norms_go_red.py` proves the assertion goes red with the
@@ -131,7 +133,41 @@ nothing to migrate or grandfather.
   > derives exactly and nothing is refused or warned about. A refused POSITION is also RECORDED, in
   > `refused_holdings` (migration 011), because a skipped holding leaves nothing else a read can see;
   > `list_holdings` names it under `rule-applied`.
-  Status: steady-state.
+
+  > **Amendment, 2026-09-16 — the reconciliation this norm cites as its payoff does NOT hold for
+  > every account.** *Statement:* the norm's own Why says the single convention "keeps two later
+  > things from needing a special case: net worth is a plain sum, and AC-11.2's reconciliation is
+  > 'change in balance equals sum of transactions' for **every** account." The second half is
+  > narrowed: it holds for every **non-investment** account. The norm's *statement* is untouched —
+  > every stored amount is still operator-signed, the exceptions are still the two named ones, and
+  > no consumer applies its own sign. What is corrected is a **consequence the rationale claimed**.
+  > *Why:* an investment account's balance moves with the market rather than with recorded activity,
+  > so no transaction sum can reconcile it; and reconciling it against its own positions instead was
+  > measured and refused. `api-notes-plaid.md` §23 records the aggregator's canned data disagreeing
+  > with itself by −1493.65 on a 401k with a null `margin_loan_amount`, and concludes such a
+  > reconciliation "would go red on the aggregator's own canned data, so it is not a test this
+  > product can write." 🔴 **The overclaim was load-bearing in the worst way**: it is cited as a
+  > reason the convention is uniform, so a reader checking whether the convention had earned its
+  > keep would have found a justification that no code had ever run. The first thing that actually
+  > computes it is the work this amendment lands beside.
+  > *Retroactivity:* none owed against stored rows — nothing derives differently, and the
+  > convention's normalization is unchanged. What IS owed is the claim's other three sites, which
+  > track rather than bind: § Sign convention below, `store/migrations/core_schema.py`'s module
+  > docstring, and `connector/plaid/derivers.py::_write_balance`. AC-11.2a is that debt, and it is
+  > paid in the same commit rather than deferred, because a corrected norm standing above three
+  > uncorrected restatements is worse than none of them being corrected.
+  > 🔴 *On the timing, stated because it is the shape that should draw scrutiny:* this norm is
+  > amended in the same work cycle as the code it governs, which is how a norm gets laundered to
+  > bless its author's design. The defence is that the falsifying measurement is not this cycle's —
+  > §23 was recorded by other work, before this cycle existed, and this amendment only reads what
+  > was already written down. Nothing was measured here to justify a decision already taken.
+  > `[DECISION: AC-11.2's reconciliation is scoped to non-investment accounts, and investment
+  > accounts are reported as excluded rather than omitted | the exclusion is measured rather than
+  > assumed (§23), and a verification surface that silently skips an account reads as having checked
+  > it | user can veto/override]`
+  > Derivation: `.prawduct/artifacts/discovery-reconciliation-and-status.md`.
+  Status: steady-state. The 2026-09-16 amendment narrows a consequence the Why claimed, not the
+  statement, so the mechanism asserting the statement is untouched.
 
 - **All monetary values are stored as integer minor units. No floats anywhere in the schema or in
   aggregation code.**
@@ -774,7 +810,14 @@ amount owed, so **normalizing to this convention is the connector's job.**
 
 One convention rather than one per account type is what keeps two later things from needing a special
 case: net worth is a plain sum, and AC-11.2's reconciliation is "change in balance equals sum of
-transactions" for *every* account.
+transactions" for every *non-investment* account.
+
+🔴 **Not every account, and the exception is measured rather than assumed.** An investment account's
+balance moves with the market rather than with recorded activity, so no transaction sum reconciles
+it — and reconciling it against its own positions was tried and refused (`api-notes-plaid.md` §23).
+The convention still governs those accounts' amounts; what does not reach them is the reconciliation
+this paragraph offers as its payoff. See the 2026-09-16 amendment in § Direction, which is where
+this narrowing binds; this paragraph tracks it.
 
 **Exceptions, deliberate and named:** `available_minor` and `limit_minor` hold magnitudes as the
 source reports them. Neither participates in net worth.

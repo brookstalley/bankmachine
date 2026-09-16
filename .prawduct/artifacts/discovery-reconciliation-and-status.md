@@ -161,12 +161,20 @@ is.
 | Cause | How it is established | Residual is |
 |---|---|---|
 | `coverage_gap` | a known hole between the two snapshots (`gapped`'s own producer) | explained |
-| `pending_holds` | open holds in the interval; the residual equals their sum | explained |
 | `window_truncated` | the interval reaches back past `history_starts` | explained |
 | `unexplained` | none of the above accounts for it | 🔴 **a finding** |
 
-An `unexplained` residual is the output this feature exists to produce. The other three exist so
-that it means something.
+An `unexplained` residual is the output this feature exists to produce. The explained causes exist
+so that it means something.
+
+🔴 **A fourth cause, `pending_holds`, was proposed here and removed on 2026-09-16.** It existed to
+absorb a mismatch between a balance that included authorization holds and a sum that also counted
+them. `verify-api` established from SDK source that `current` **excludes** pending
+(`plaid/model/account_balance.py`: `available` is the current balance *"less any pending outflows
+plus any pending inflows"*, which only holds if `current` has not already netted them). With the
+interval sum restricted to posted rows, both sides exclude pending and there is no residual for
+this cause to explain. It is recorded as removed rather than deleted silently, because a cause list
+is exactly the kind of thing a later reader would otherwise re-add from first principles.
 
 ### RULED — the expected inventory is a gitignored file under `deployment/`
 
@@ -211,7 +219,7 @@ bind, descriptions track (`/prawduct:methodology norms`):
 | `data-model.md:57` — the operator-signed norm's **Why** | **normative** | a recorded **amendment**, with statement / why / retroactivity and a `[DECISION: …]` |
 | `data-model.md:776` — § Sign convention prose | descriptive | tracks the norm; corrected to match |
 | `src/bankmachine/store/migrations/core_schema.py:40` | descriptive | module docstring; **not** the frozen DDL |
-| `src/bankmachine/connector/plaid/derivers.py:1631` | descriptive | `_balance_row` docstring |
+| `src/bankmachine/connector/plaid/derivers.py:1631` | descriptive | the docstring on `_write_balance` |
 
 Counted by `grep -rn "change in balance equals sum"` rather than from memory — the first pass of
 this document said three and missed `data-model.md:776`, which is exactly the decay a durable
@@ -306,16 +314,21 @@ unhealthy"*) rather than inventing a code.
   parameter and localizes a discrepancy to the interval that produced it. A period-based variant
   would aggregate intervals and lose that. Reversible later; the row shape above already carries
   explicit bounds.
-- `[ASSUMPTION: a pending row counts toward the transaction sum for the interval it is posted in |
-  HIGH impact | user can correct]` — 🔴 the highest-impact assumption here and the one most likely
-  to be wrong on day one. Whether the aggregator's `current` includes authorization holds is
-  **not recorded in `api-notes-plaid.md`**, which documents the `balances` object's fields but not
-  that semantic. If `current` excludes holds and this sum includes them, every account with an
-  open hold shows a residual equal to the hold. The design mitigates rather than guesses: the
-  `pending_holds` cause is computed, so the mismatch would surface as an *explained* residual
-  whose magnitude equals the open holds — which is itself the measurement that settles the
-  question. This is the same unverified semantic that **#22 / VRF-038** has been re-raised five
-  times waiting on, and this feature is the instrument that would finally read it.
+- 🔴 **RESOLVED and FALSIFIED, 2026-09-16.** The assumption read:
+  `[ASSUMPTION: a pending row counts toward the transaction sum for the interval it is posted in |
+  HIGH impact]`, and it was wrong. `verify-api` settled it from SDK source rather than from docs or
+  recall: `plaid/model/account_balance.py` documents `available` as, for depository accounts, *"the
+  `current` balance less any pending outflows plus any pending inflows"* — arithmetic that only
+  holds if `current` has not already netted them out. **`current` is the settled balance and
+  excludes pending**, so the interval sum counts posted rows only.
+  Two consequences, both recorded above: the `pending_holds` cause is removed, and the sum is
+  restricted to `pending = 0`. A third is worth stating on its own — because posted rows carry
+  their **posting** date and not their authorization date (`plaid/model/transaction.py`), a
+  settling transaction's date moves forward rather than back, so it enters the sum on the day it
+  moves the balance and a closed interval cannot silently reopen. That stability is a consequence
+  of excluding pending, not independent of it.
+  This is adjacent to the semantic **#22 / VRF-038** keeps colliding with, but does not close it:
+  that obligation is about watching one real pending row across settlement.
 - `[ASSUMPTION: the inventory file is TOML, consistent with `~/.config/bankmachine/config.toml` |
   LOW impact | user can correct]` — format is cosmetic; the states it must express are the
   requirement.
