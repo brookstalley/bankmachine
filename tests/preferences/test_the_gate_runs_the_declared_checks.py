@@ -17,6 +17,7 @@ which is what lets the failure-reporting contract be tested at all.
 from __future__ import annotations
 
 import subprocess
+import tomllib
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -389,4 +390,93 @@ def test_a_failure_to_record_is_announced(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert "could not write the red checks" in result.stderr, (
         f"the gate failed to record and said nothing about it:\n{result.stderr}"
+    )
+
+
+#: Where parallelism is allowed to be configured, and where it is not.
+#: `pyproject.toml` rather than `PREFERENCES`: `addopts` is the key that would
+#: carry it, and the key is what this guards.
+PYPROJECT = REPO_ROOT / "pyproject.toml"
+
+#: Both spellings pytest accepts. Guarding only `-n` would leave the long form as
+#: a silent way back in, and the whole point of this case is that the way back in
+#: is silent.
+_PARALLEL_FLAGS = ("-n", "--numprocesses")
+
+
+def _addopts_tokens() -> list[str]:
+    """Every token of `addopts`, parsed as TOML rather than scanned as text.
+
+    🔴 Parsed, for the reason this case exists at all. A line scan sees one line
+    and is blind to a section: an `addopts` that became a multi-line array, or a
+    second `addopts` under another table, would carry `-n` on a line the scan
+    never reads -- which is precisely the silent re-entry this case is here to
+    block, reproduced inside the block itself.
+
+    Tokenised rather than substring-searched for the neighbouring reason. `-n`
+    occurs INSIDE `--no-header`, so `"-n" in value` reddens on a flag that has
+    nothing to do with parallelism. A guard that cries wolf is one somebody
+    eventually deletes, and it would take the real rule with it.
+    """
+    with PYPROJECT.open("rb") as handle:
+        data = tomllib.load(handle)
+    try:
+        addopts = data["tool"]["pytest"]["ini_options"]["addopts"]
+    except KeyError:
+        raise AssertionError(
+            f"no `[tool.pytest.ini_options] addopts` in {PYPROJECT} -- this case asserts "
+            "what that key may NOT contain, so an absent key means the case is guarding "
+            "nothing and must be re-pointed, not deleted."
+        ) from None
+    values = addopts if isinstance(addopts, list) else [addopts]
+    return [token for value in values for token in str(value).split()]
+
+
+def test_parallelism_is_configured_on_the_gate_and_never_in_addopts() -> None:
+    """🔴 The placement of `-n auto` is the whole of brookstalley/bankmachine#44.
+
+    It is asserted here because **the failure it prevents is silent**. `addopts`
+    applies to every pytest invocation in the repo, and
+    `tests/preferences/verify_norms_go_red.py` shells out one single-test run per
+    norm case: under `addopts` each would spin up a worker pool to run one test.
+    The harness gets SLOWER, never red -- so the documented reaction is to switch
+    it off, and the repo loses its norm-break guard without anything failing.
+    `-m sandbox` would likewise fan LIVE aggregator calls across workers.
+
+    The neighbouring cases cannot catch this. They read `line.split()[1]` off the
+    stub log, which is the TOOL name, so adding or dropping `-n auto` anywhere
+    leaves every one of them green. A rule whose only enforcement is the comment
+    beside it decays to a comment; this project has that written down as a
+    learning and it applies to its own tooling.
+    """
+    tokens = _addopts_tokens()
+    for flag in _PARALLEL_FLAGS:
+        # `startswith`, not equality: `-n4` and `-nauto` are ordinary pytest
+        # spellings and equality misses both, which would leave the guard's own
+        # subject a silent way back in. It does NOT reintroduce the `--no-header`
+        # false positive the docstring names -- that token starts `--`, so it
+        # cannot start with `-n`.
+        offending = [t for t in tokens if t.startswith(flag)]
+        assert not offending, (
+            f"`{flag}` appears in pyproject.toml's addopts: {offending!r}\n"
+            "addopts follows EVERY pytest invocation, including the per-case single-test "
+            "runs verify_norms_go_red.py makes and an explicit `-m sandbox`. Configure "
+            "parallelism on the invocation that wants it -- scripts/check.sh -- not here."
+        )
+
+    gate = GATE.read_text()
+    pytest_line = next(
+        (ln for ln in gate.splitlines() if ln.strip().startswith('check "uv run pytest"')),
+        None,
+    )
+    assert pytest_line is not None, (
+        f"no `check \"uv run pytest\"` line in {GATE} -- this case asserts that line carries "
+        "the parallel flag, so its absence means the case is guarding nothing."
+    )
+    gate_tokens = pytest_line.split()
+    assert any(t.startswith(f) for t in gate_tokens for f in _PARALLEL_FLAGS), (
+        f"the gate's pytest invocation carries no parallel flag: {pytest_line.strip()!r}\n"
+        "The suite is meant to run in parallel FROM THE GATE. If parallelism was "
+        "deliberately removed, remove this case in the same commit and say why -- do not "
+        "leave it asserting a rule the repo no longer holds."
     )

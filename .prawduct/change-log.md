@@ -55,7 +55,10 @@ switching the harness off looks like the fix — costing the repo its norm-break
 become a debugger nobody can drive, reached by someone already debugging something else. And
 `-m sandbox` would fan live aggregator calls across workers into rate limits and the connection cap,
 which is the one hazard here that leaves the machine. The reasoning sits beside `addopts` so the next
-person to reach for that key meets it first.
+person to reach for that key meets it first — and a test now pins the placement, because a rule whose
+only enforcement is the comment beside it decays to a comment. It reads `addopts` as TOML rather than
+as a line, since a multi-line array would otherwise carry `-n` on a line a scan never reads, which is
+the silent re-entry the case exists to block. It matches token PREFIXES rather than whole tokens, because `-n4` and `-nauto` are ordinary spellings that equality misses; `--no-header` cannot trip it, since every long option begins `--`. Seen red by hand against `-n auto`, `-n4`, `-nauto`, `--numprocesses=4` and a multi-line array, and seen green against `--no-header`.
 
 **Verified rather than argued:** the suite passes **1896 under `-n auto`, identical to serial** — the
 count is the acceptance criterion, because a differing one would mean real shared state and would be
