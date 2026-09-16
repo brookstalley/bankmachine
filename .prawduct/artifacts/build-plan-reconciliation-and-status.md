@@ -92,15 +92,23 @@ actually come back zero. That is Chunk 02's step 2 and cannot be answered before
 
 ## Status
 
-- [ ] Chunk 01: The requirements, and the norm whose Why this cycle falsifies
+- [x] Chunk 01: The requirements, and the norm whose Why this cycle falsifies
 - [ ] Chunk 02: The residual — one producer, reported on the verification surface
 - [ ] Chunk 03: `bankmachine status`, and the inventory it checks against
 
-Context: Plan written 2026-09-16 from `discovery-reconciliation-and-status.md`; nothing built yet.
-Next: Chunk 01. Branch `feature/reconciliation-and-status` carries the discovery document at
-`bdf462e`. Sequencing is deliberate — the requirements and the norm amendment land BEFORE the code
-that depends on them, because the code implements an exclusion the norm's current Why says does not
-exist.
+Context: Chunk 01 closed 2026-09-16 — requirements written, the operator-signed norm amended, all
+four overclaim sites corrected. Gate green against the committed tree; Critic `verify-resolutions`
+returned 0 blocking / 0 warning / 0 note.
+
+Next: **Chunk 02**, and its `verify-api` is already ANSWERED — `current` excludes pending, so the
+interval sum counts posted rows only and the `pending_holds` cause is gone. Step 0 is still open
+because the **record** is owed: `api-notes-plaid.md` needs the numbered section, carrying the
+vendor's own "typically" hedge.
+
+🔴 Before Chunk 02 starts, the suite is being parallelised under brookstalley/bankmachine#44 on its
+own branch — the suite has gone from 849 tests/118s to 1896/645s, which is superlinear, and reading
+a mid-chunk failure is easier once a run is ~2 minutes rather than ~11. That work is a different
+scope and does not belong in this plan or its PR.
 
 ## Scaffolding
 
