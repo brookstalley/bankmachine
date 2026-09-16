@@ -475,6 +475,98 @@ def _output_schema(
 #: carries them beside the cadence analysis built on them. One producer feeds
 #: both (`query._account_coverage`), and one schema fragment describes both --
 #: two copies would drift and a client would reject one tool's honest answer.
+def _reconciliation_row_fields() -> dict[str, dict[str, Any]]:
+    """AC-11.2's residual per account. A fresh dict per call, like every fragment here.
+
+    🔴 **Every field is required and nullable, never optional.**
+    `_refuse_optional_row_fields` enforces it, and the reason is this contract's
+    rule that a key's ABSENCE is information: an investment account's residual is
+    present and null beside a state that says why, so a consumer reading the row
+    learns something rather than guessing whether the server forgot.
+    """
+    return {
+        "reconciliation_state": {
+            "type": "string",
+            "enum": list(query.RECONCILIATION_STATES),
+            "description": (
+                "whether the balance-to-transactions check could be RUN for this account, and "
+                "why not when it could not. 🔴 `reconciled` means the comparison was PERFORMED, "
+                "NOT that it came back clean -- `residual_minor_units` beside it carries the "
+                "verdict. The other three each mean no residual exists: "
+                "`not_applicable_investment` (balance moves with the market, so the check does "
+                "not apply), `insufficient_snapshots` (fewer than two comparable balance "
+                "snapshots so far), `no_balance_recorded` (no balance was ever captured). Read "
+                "this field rather than inferring from a null residual: the three would be "
+                "indistinguishable, and an UNRECONCILABLE account is not an UNRECONCILED one"
+            ),
+        },
+        "residual_minor_units": {
+            "type": ["integer", "null"],
+            "description": (
+                "the net of (change in balance - sum of transactions) over every interval "
+                "compared, in minor units, operator-signed. 0 is the expected value and the "
+                "answer this product claims. 🔴 Null EXACTLY when `reconciliation_state` is not "
+                "`reconciled`; the state says why. A nonzero value means the figures in this "
+                "answer are internally consistent and may still be wrong by that amount"
+            ),
+        },
+        "reconciled_intervals": {
+            "type": "integer",
+            "description": (
+                "how many consecutive-snapshot intervals were actually compared. 🔴 The honest "
+                "denominator: a residual of 0 over 0 intervals is green by vacuity, and this is "
+                "what tells the two apart. Present and 0 whenever no comparison was made"
+            ),
+        },
+        "unreconciled_intervals": {
+            "type": "integer",
+            "description": (
+                "how many of those intervals have a NONZERO residual, as MEASURED. The list "
+                "beside it is capped, so a shorter list means the rest were not enumerated"
+            ),
+        },
+        "unreconciled_detail": {
+            "type": "array",
+            "description": (
+                "those intervals, oldest first: the dates it runs between, the balance change, "
+                "the transactions sum over `(from, to]`, the residual, and the cause attributed "
+                "to it. 🔴 `window_truncated` and `coverage_gap` name transactions the store "
+                "never held; `unexplained` is the finding -- money moved and nothing recorded "
+                "it. Present and empty when the account reconciles"
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "from_date": {"type": "string"},
+                    "to_date": {"type": "string"},
+                    "balance_change_minor_units": {"type": "integer"},
+                    "transactions_sum_minor_units": {"type": "integer"},
+                    "residual_minor_units": {"type": "integer"},
+                    "cause": {"type": "string", "enum": list(query.RESIDUAL_CAUSES)},
+                    "currency": {"type": "string"},
+                },
+                "required": [
+                    "from_date",
+                    "to_date",
+                    "balance_change_minor_units",
+                    "transactions_sum_minor_units",
+                    "residual_minor_units",
+                    "cause",
+                    "currency",
+                ],
+                "additionalProperties": False,
+            },
+        },
+        "balance_currency": {
+            "type": ["string", "null"],
+            "description": (
+                "the unit `residual_minor_units` is denominated in; null when no balance was "
+                "ever recorded for the account. An aggregate over residuals groups by this"
+            ),
+        },
+    }
+
+
 def _coverage_row_fields() -> dict[str, dict[str, Any]]:
     """A fresh dict per call, like every other schema fragment here."""
     return {
@@ -1777,6 +1869,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "account": {"type": ["string", "null"]},
                     **_coverage_row_fields(),
                     **_lifecycle_row_fields(),
+                    **_reconciliation_row_fields(),
                     "median_interval_days": {
                         "type": ["number", "null"],
                         "description": (

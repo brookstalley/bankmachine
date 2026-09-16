@@ -359,6 +359,16 @@ boundary it names — so the *absence* of one is information too:
 - `sign_convention_unverified` — a contributing connection was measured against the sign convention
   and its amounts run the wrong way, so on that feed income reads as spending. Name the connection
   and say its direction is in question; do **not** correct it yourself.
+- `balance_unreconciled` — an account in scope has an interval whose balance movement the recorded
+  transactions do not explain, and nothing else accounts for the difference. 🔴 This is the one
+  warning that is **not** about missing or narrowed data: the numbers agree with each other and
+  disagree with the institution, so an answer carrying it can be well-formed and wrong by the
+  magnitude named. Report the residual beside any figure from that account; read
+  `unreconciled_detail` on the `get_coverage_report` row for the intervals and their causes.
+- `reconciliation_not_applicable` — an account in scope is an investment account, whose balance
+  moves with the market, so the balance check does not apply to it. Its null residual is the
+  correct answer rather than a missing one. Do **not** report it as unverified; check such an
+  account through `list_holdings` and `query_investment_transactions` instead.
 
 **Amounts are integer minor units** (cents for USD) and the field names say so — `amount_minor_units`,
 `current_minor_units`. They are signed from the account holder's point of view: negative is money

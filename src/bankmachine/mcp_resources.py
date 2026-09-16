@@ -415,6 +415,50 @@ _GUIDANCE: dict[str, _Guidance] = {
             "as money spent."
         ),
     ),
+    "balance_unreconciled": _Guidance(
+        means=(
+            "an account in this answer's scope has at least one interval between two balance "
+            "snapshots whose change in balance is NOT equal to the sum of the transactions "
+            "recorded in that interval, and no coverage gap or truncated history window "
+            "accounts for the difference; `detail` names the accounts, how many intervals, and "
+            "the net magnitude in minor units grouped by currency"
+        ),
+        for_this_answer=(
+            "🔴 the figures here are INTERNALLY CONSISTENT and may still be wrong by that "
+            "amount. Every other warning describes data that is absent, late or narrowed, so a "
+            "shortfall can be reasoned about; this one says the numbers agree with each other "
+            "and disagree with the institution. A total over the affected account is off by the "
+            "residual, and nothing else in the answer can reveal it"
+        ),
+        act=(
+            "report the residual beside any figure drawn from that account, as a magnitude and "
+            "a currency rather than as a flag. Read `unreconciled_detail` on the account's row "
+            "in `get_coverage_report` for the intervals and the cause attributed to each: "
+            "`window_truncated` and `coverage_gap` name transactions the store never held, "
+            "while `unexplained` is the finding -- money moved and nothing recorded it. 🔴 Do "
+            "not reconcile it yourself by adjusting a total; say the store and the institution "
+            "disagree over the named interval and let the operator look."
+        ),
+    ),
+    "reconciliation_not_applicable": _Guidance(
+        means=(
+            "an account in this answer's scope is an investment account, whose balance moves "
+            "with the market rather than with recorded activity, so the balance-to-transactions "
+            "check does not apply to it at all; `detail` names the accounts"
+        ),
+        for_this_answer=(
+            "those accounts are absent from the residuals BY CONSTRUCTION rather than because "
+            "anything is missing, and a null `residual_minor_units` on their row is the correct "
+            "answer rather than an unmeasured one. Their positions and their reported balance "
+            "need not add up, so a check asserting they do would fail on correct data"
+        ),
+        act=(
+            "do not report these accounts as unverified or as a gap in the check, and do not "
+            "read their null residual as a measurement nobody took. `reconciliation_state` on "
+            "the row says `not_applicable_investment`, which is the reason. Verify such an "
+            "account through `list_holdings` and `query_investment_transactions` instead."
+        ),
+    ),
     "search_is_literal": _Guidance(
         means=(
             "this request narrowed by `search`, which matched its text as a literal, "

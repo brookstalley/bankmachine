@@ -184,6 +184,29 @@ REQUEST_SCOPED_KINDS: tuple[str, ...] = (
     # searched answer rather than only an empty one, because a search that found
     # three of five refunds looks complete and an undercount gets believed.
     "search_is_literal",
+    # 🔴 An account in THIS request's scope has an interval whose balance
+    # movement the transactions recorded in it do not explain, with no coverage
+    # gap or truncated window accounting for the difference. Request-scoped
+    # because it fires only where this request's scope holds such an account.
+    #
+    # 🔴 **The answer carrying this is INTERNALLY CONSISTENT and may still be
+    # wrong by the magnitude named.** Every other kind here describes data that
+    # is absent, late or narrowed, and a careful consumer can reason about the
+    # shortfall. This one describes figures that agree with each other and
+    # disagree with the institution, which nothing else on any surface can say.
+    "balance_unreconciled",
+    # An account in THIS request's scope is an investment account, whose balance
+    # moves with the market rather than with recorded activity, so the
+    # balance-to-transactions check does not apply to it.
+    #
+    # 🔴 Named rather than silently omitted, for `activity_in_another_feed`'s
+    # reason: a consumer that cannot see WHY an account is missing from a
+    # verification surface reads the surface as having checked it. Kept apart
+    # from `rule-applied`, which is about rows excluded from a FIGURE rather than
+    # about an account that cannot be verified at all -- one kind for both would
+    # leave a consumer unable to tell a scoping decision from an unverifiable
+    # account.
+    "reconciliation_not_applicable",
 )
 
 #: The warning vocabulary the API contract fixes. Named here as a tuple rather

@@ -1234,6 +1234,24 @@ without a second call — and carries the analysis `list_accounts` does not.
 | `stranded_holds` | integer | authorisation holds on this account still unsettled past any ordinary hold lifetime. Present and `0`, never omitted. A hold this old usually means the merchant never captured it, so the money is neither spent nor available |
 | `oldest_stranded_hold` | object, nullable | the worst of them, so the operator can go and look at it; null when there are none, and 🔴 also null for a non-active account, whose holds can never settle and can never be cleared. `stranded_holds` beside it still carries the count, so the measurement is not withheld — only the call to action nobody could answer |
 | `source_breakdown` | object | this account's rows by provenance |
+| `reconciliation_state` | string | whether AC-11.2's balance-to-transactions check could be RUN for this account, and why not when it could not: `reconciled`, `not_applicable_investment`, `insufficient_snapshots`, `no_balance_recorded`. 🔴 `reconciled` means the comparison was PERFORMED, not that it came back clean — the residual beside it carries the verdict. 🔴 Its own required field rather than an inference from a null residual: three of these states would otherwise share one null, and an UNRECONCILABLE account is not an UNRECONCILED one |
+| `residual_minor_units` | integer, nullable | the net of (change in balance − sum of transactions) over every interval compared, in minor units, operator-signed. `0` is the expected value and the claim this product makes. Null EXACTLY when `reconciliation_state` is not `reconciled` |
+| `reconciled_intervals` | integer | how many consecutive-snapshot intervals were actually compared. 🔴 The honest denominator: a residual of `0` over `0` intervals is green by vacuity, and this is what tells the two apart. Present and `0` whenever no comparison was made |
+| `unreconciled_intervals` | integer | how many of those intervals have a NONZERO residual, as MEASURED. The list beside it is capped, so a shorter list means the rest were not enumerated |
+| `unreconciled_detail` | array | those intervals, oldest first, each an object of `from_date`, `to_date`, `balance_change_minor_units`, `transactions_sum_minor_units`, `residual_minor_units`, `cause` and `currency`. Present and empty when the account reconciles |
+| `balance_currency` | string, nullable | the unit `residual_minor_units` is denominated in; null when no balance was ever recorded. An aggregate over residuals groups by this, per this document's rule that a total over stored amounts carries a count and a signed magnitude per currency |
+
+**Fields — `rows[].unreconciled_detail[]`** *(`get_coverage_report`)*. One interval whose balance movement the transactions recorded in it do not explain.
+
+| Field | Type | Means |
+|---|---|---|
+| `from_date` | string | the opening snapshot's date. Transactions are counted over `(from_date, to_date]` — half-open, closed at the top: a transaction posted ON the opening date is already inside that snapshot's balance, so counting it again would double it |
+| `to_date` | string | the closing snapshot's date, included for the mirror reason — its effect is in the closing balance and nowhere else |
+| `balance_change_minor_units` | integer | `current` at `to_date` less `current` at `from_date`, operator-signed |
+| `transactions_sum_minor_units` | integer | the sum of `amount_minor` over the interval. 🔴 POSTED rows only (`pending = 0`) and soft-deleted rows excluded — the aggregator's `current` is the settled balance, so both sides of this comparison exclude pending (`api-notes-plaid.md` §§27-28) |
+| `residual_minor_units` | integer | `balance_change_minor_units` − `transactions_sum_minor_units`. Nonzero by construction on every entry in this list |
+| `cause` | string | the narrowest true explanation: `window_truncated` (the interval begins before the aggregator's granted history, so those transactions were never fetchable), `coverage_gap` (the transactions feed does not reach this interval), or `unexplained` — which is the finding: money moved and nothing recorded it |
+| `currency` | string | the unit both amounts are denominated in. Intervals pair only snapshots sharing one, so a subtraction never crosses units |
 
 **Fields — `rows[].oldest_stranded_hold`** *(`get_coverage_report`)*.
 
@@ -1311,6 +1329,8 @@ three-week-old hole in the data and answer confidently.
 | `roster_observed_empty` | A connection contributing to THIS request had its roster read successfully and it listed no accounts at all. Every account on that connection is separately marked `no_longer_reported`; this kind is the connection-level anomaly beside that account-level truth, and it is what distinguishes a whole household closing its accounts from a feed that returns success and no rows |
 | `sign_convention_unverified` | This answer draws on a connection whose stored sign distribution was measured and found INVERTED relative to the operator-signed convention, so its amounts run the wrong way. 🔴 It does not fire for a merely unconfirmed connection — see the note below the table |
 | `search_is_literal` | THIS request narrowed by `search`, which matches literally, so a transaction whose text abbreviates or respells the counterparty is not among the rows. It fires on every searched answer, empty or not, because a search that found some of what it looked for reads as complete |
+| `balance_unreconciled` | An account in THIS request's scope has an interval between two balance snapshots whose change in balance is not equal to the sum of the transactions recorded in it, and no coverage gap or truncated window accounts for the difference. `detail` names the accounts, the interval count and the net magnitude, grouped by currency. 🔴 Unlike every other kind here, which describes data that is absent, late or narrowed, this one says the figures in the answer are INTERNALLY CONSISTENT and may still be wrong by the amount named |
+| `reconciliation_not_applicable` | An account in THIS request's scope is an investment account, whose balance moves with the market rather than with recorded activity, so the balance-to-transactions check does not apply to it. Its absence from the residuals is by construction, not a gap. Deliberately not `rule-applied`: that kind is about rows excluded from a FIGURE, this one about an account that cannot be verified at all |
 
 🔴 **The window/row/account kinds below the line are REQUEST-scoped; the connection kinds above them
 are CONNECTION-scoped, and the distinction is the reason they exist.** A connection-scoped warning describes the standing state of the pipeline,
