@@ -138,8 +138,10 @@ user search list** back on the way out. It self-heals a default left stale by a 
 declines entirely when `security` is unreachable, so the swap is an optimisation and never a
 prerequisite. **Opt out with `BANKMACHINE_NO_KEYCHAIN_SWAP=1`.** The exposure, stated rather than
 implied: for the length of a run, another process writing to the *default* keychain writes to the
-temporary one and that write is **destroyed** when the run deletes it — misdirected *and* lost, not
-merely misdirected. Reads are unaffected, because the original list is kept and searched. Rationale
+temporary one. Reads are unaffected, because the original list is kept and searched. That write is
+not deleted when the run ends — it is removed at the start of the NEXT run, and **only a leftover
+from a run that died is announced first**, so one absorbed by a clean run goes without warning.
+`security-model.md` § Authentication carries the trade and why it is taken. Rationale
 and measurements: the `scope=fast-keychain-suite` change-log entry.
 
 | Mechanism | Where it lives | What it catches | Trade-off |

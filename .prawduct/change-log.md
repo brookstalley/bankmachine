@@ -83,11 +83,26 @@ assuming a login one.
 
 **The remaining exposure, stated plainly and without softening it:** for the length of the run,
 another process writing to the *default* keychain writes to the temporary one instead. Reads are
-unaffected: the original search list is kept and still searched. 🔴 That write is **not destroyed** —
-neither teardown path deletes the keychain, because for this product the thing that could land there
-is the datastore key, which `secrets.py` documents as unrecoverable. A leftover is removed at the
-START of a later run, announced, so the loss is attributable to a command the operator just ran
-rather than happening invisibly at the end of the previous one. The temporary keychain is
+unaffected: the original search list is kept and still searched. 🔴 Neither teardown path deletes the
+keychain, because for this product the thing that could land there is the datastore key, which
+`secrets.py` documents as unrecoverable. A leftover is removed at the **start of a later run**, so
+the deletion is attributable to a command the operator just ran rather than happening invisibly at
+the end of the previous one.
+
+🔴 **Only some of those removals are announced, and that is a trade worth stating.** The banner fires
+when the previous run did not exit cleanly — a **proxy** for the risk, not a measurement of it.
+Whether a foreign process wrote during the window is independent of how the run ended, so a write
+absorbed by a run that exited normally is deleted at the next start with no warning.
+
+Both alternatives were tried and are worse. Announcing every removal means announcing on **every**
+run, since after the first there is always a leftover — and a banner that fires every time is the one
+the operator stops reading, which costs more than it buys for the single interrupt window that
+exists. Measuring the risk directly does not discriminate either: `security dump-keychain` reads a
+keychain's contents without prompting, but the suite's own tests leave entries behind (13 after a
+clean run), so "non-empty" is true every time too. What bounds the exposure instead is its size — a
+window of roughly the suite's runtime, reads unaffected — and `BANKMACHINE_NO_KEYCHAIN_SWAP=1`,
+which declines the mechanism entirely. `security-model.md` § Authentication carries the same
+statement where a reader of the security model meets it. The temporary keychain is
 created with a random password rather than an empty one, so a secret that does land there before
 deletion is not sitting in a keychain anyone can open. The window is now ~56s rather than ~542s.
 `BANKMACHINE_NO_KEYCHAIN_SWAP=1` opts out entirely.

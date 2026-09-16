@@ -151,9 +151,21 @@ stale by a `kill -9` is repaired by the next run.
 
 What this means for the boundary stated below: for the length of a run, another process writing to
 the *default* keychain writes to the temporary one instead. Reads are unaffected — the original list
-is kept and still searched. That write is **not destroyed**: the temporary keychain is left in place
-and removed only at the start of a later run, announced, so the loss is attributable to a command
-the operator just ran. It carries a random password precisely so a secret that does land there is
+is kept and still searched.
+
+🔴 **That write is removed at the start of the NEXT run, and only some of those removals are
+announced.** The announcement fires when the previous run did not exit cleanly. That is a **proxy**
+for the risk, not a measurement of it: whether a foreign process wrote during the window is
+independent of how the run ended, so a write absorbed by a run that exited normally is deleted at
+the next start **with no warning**. Stated here rather than only in the script, because a reader of
+this document is the one who needs it.
+
+The narrowing is a deliberate trade. Every run after the first leaves a keychain behind, so
+announcing every removal means announcing on every run — and a banner that fires every time is the
+one the operator stops reading, which costs more than it buys for the one interrupt window that
+exists. Measuring the risk directly does not discriminate either: the suite's own tests leave
+entries, so "the keychain is non-empty" is true after every clean run too. What bounds the exposure
+instead is its size — a window of roughly the suite's runtime, reads unaffected — and the opt-out. It carries a random password precisely so a secret that does land there is
 not sitting in a keychain anyone can open. `BANKMACHINE_NO_KEYCHAIN_SWAP=1` opts out; where
 `security` is unreachable the swap declines and the suite simply runs slowly, so it is an
 optimisation and never a prerequisite.

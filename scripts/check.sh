@@ -90,8 +90,8 @@ check() {
 #
 # Most of the tests hold `keychain_service` against the REAL keychain, so the
 # suite spent most of its wall clock inside `securityd` rather than in this
-# product. The figures are in the change-log entry, not here. `-n auto` could not reach it: ten workers queue on one daemon, which
-# is why parallelism alone bought 21%.
+# product. `-n auto` could not reach it: ten workers queue on one daemon, so
+# parallelism alone bought very little.
 #
 # WHY NOT TARGET A KEYCHAIN PER PROCESS, which would need no swap at all:
 # `keyring` exposes `KEYCHAIN_PATH` and a `Keyring.keychain` attribute, and as of
@@ -106,13 +106,28 @@ check() {
 # keychain is still a real keychain, so this buys the speed without trading the
 # coverage away.
 #
-# WHAT THE RISK ACTUALLY IS: for the length of the run, another process writing
-# to the DEFAULT keychain writes to ours instead. Reads are unaffected -- the
-# original search list is kept and still searched. That write is NOT destroyed on
-# the way out: the keychain is left in place and removed only at the start of a
-# later run, announced. The figures are in the change-log entry for
-# `scope=fast-keychain-suite`; restating them here is what made two copies
-# disagree within a day.
+# WHAT THE RISK ACTUALLY IS, stated as it holds rather than as it reads best: for
+# the length of the run, another process writing to the DEFAULT keychain writes
+# to ours instead. Reads are unaffected -- the original search list is kept and
+# still searched.
+#
+# 🔴 That write is not destroyed ON THE WAY OUT, but it IS removed at the start
+# of the next run, and only SOME of those removals are announced. The
+# announcement fires when the previous run did not exit cleanly, which is a
+# proxy: the real risk -- did a foreign process write during the window -- is
+# independent of how the run ended, so a write absorbed by a run that exited
+# normally is deleted at the next start WITHOUT a warning.
+#
+# That narrowing is deliberate and it is a trade, not an oversight. Every run
+# after the first leaves a keychain behind, so announcing every removal means
+# announcing on every run, and a banner that fires every time is the one the
+# operator stops reading -- which costs more than it buys, because this banner
+# guards the only interrupt window there is. Measuring the real risk directly was
+# tried and does not discriminate either: the suite's own tests leave entries
+# behind, so "the keychain is non-empty" is true after every clean run too.
+#
+# What bounds the exposure instead: the window is ~47s, reads are unaffected, and
+# `BANKMACHINE_NO_KEYCHAIN_SWAP=1` declines the whole mechanism.
 #
 # CI does exactly this already (`.github/workflows/check.yml` creates
 # `ci.keychain`); the restore below captures whatever was default, so running
@@ -149,9 +164,9 @@ restore_keychain() {
     # 🔴 NOT deleted here. Anything written to the DEFAULT keychain during the run
     # landed in this one, and for this product that can be the datastore key,
     # which `secrets.py` documents as unrecoverable. Deleting on the way out
-    # turns "misdirected" into "destroyed". It is left in place and removed at the
-    # START of the next run, which is a moment the operator caused and is told
-    # about -- see `use_test_keychain`.
+    # removes it at a moment nobody caused and nobody sees. It is left in place
+    # and removed at the START of the next run instead -- announced there only
+    # when the previous run died, for the reason set out in this file's header.
     rm -f "$BMTEST_STATE"
     keychain_swapped=""
 }
@@ -260,18 +275,26 @@ use_test_keychain() {
     # neither teardown path deletes any more, a leftover exists at the start of
     # every run after the first -- so "a leftover exists" cannot be the trigger.
     #
-    # The state file is the discriminator, and it costs nothing: a run that exits
-    # cleanly removes it, a run that is killed does not. A leftover with NO state
-    # file beside it is the ordinary residue of a clean run, and goes quietly. A
-    # leftover WITH one means the run that owned it died -- the case most likely
-    # to hold a write nobody has seen -- and that is worth interrupting for.
+    # The state file is the discriminator, and it is a PROXY rather than a
+    # measurement: a run that exits cleanly removes it, a run that is killed does
+    # not. So it answers "did the previous run die", where the risk is "did a
+    # foreign process write during it" -- two different questions that happen to
+    # correlate, since a killed run is the one whose leftover nobody has looked
+    # at. A leftover with no state file is therefore removed QUIETLY even though
+    # it could, in principle, hold such a write. The header says why that trade
+    # is taken; `security-model.md` says it where a reader of the security model
+    # will meet it.
     if security show-keychain-info "$BMTEST_KEYCHAIN" >/dev/null 2>&1; then
         if (( had_state == 1 )); then
+            # Harness-only, deliberately undocumented beside the operator-facing
+            # opt-out: it exists so the suite's own cases do not pay three
+            # sleeps, and an operator has no reason to shorten the one window
+            # that protects them.
             local grace="${BANKMACHINE_KEYCHAIN_GRACE:-3}"
             printf '\n*** %s is left over from a run that did NOT exit cleanly.\n' "$BMTEST_KEYCHAIN" >&2
             printf '*** Anything that wrote to the DEFAULT keychain during it landed there,\n' >&2
             printf '*** and is about to be deleted. Ctrl-C within %ss to keep it.\n' "$grace" >&2
-            [[ $grace == 0 ]] || sleep "$grace"
+            (( grace > 0 )) && sleep "$grace"
         fi
         security delete-keychain "$BMTEST_KEYCHAIN" 2>/dev/null || true
     fi

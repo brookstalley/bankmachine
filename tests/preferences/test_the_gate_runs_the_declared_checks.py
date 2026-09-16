@@ -16,7 +16,6 @@ which is what lets the failure-reporting contract be tested at all.
 
 from __future__ import annotations
 
-import re
 import subprocess
 import tomllib
 import xml.etree.ElementTree as ET
@@ -791,33 +790,40 @@ def test_the_swap_actually_engages_when_nothing_prevents_it(tmp_path: Path) -> N
     )
 
 
-def test_every_exec_of_the_gate_goes_through_the_env_builder() -> None:
-    """🔴 One bypassed site is the whole defect back.
+def test_no_subprocess_in_this_module_builds_its_own_env(tmp_path: Path) -> None:
+    """🔴 One hand-written env dict is the whole defect back.
 
-    Each `subprocess.run` of the real gate in this module is a NESTED gate run,
-    because the suite the gate launches collects this module. `_gate_env` is what
-    hands every one of them the re-entry marker and a redirected state file;
-    `export` in the script cannot, since these sites pass CLOSED env dicts and a
+    Every `subprocess.run` here execs the real gate, and the suite the gate
+    launches collects this module — so each one is a NESTED gate run. `_gate_env`
+    is what hands them the re-entry marker and a redirected state file; `export`
+    in the script cannot, because these sites pass CLOSED environments and a
     child inherits nothing it is not given.
 
-    Asserted structurally rather than per-site, because the failure mode is a site
-    added LATER with a hand-written dict — which passes its own case perfectly
-    while tearing the keychain out from under the run that launched it.
+    Stated as "no literal env dict" rather than "every gate call uses the
+    builder", because the second cannot be checked without following variables:
+    a call reading a pre-built `cmd` list mentions `GATE` nowhere inside itself,
+    and a scan looking for it there skips the site silently — which is precisely
+    the failure this case exists to catch. The inverted rule has no such hole,
+    and it is the property actually wanted.
     """
     src = Path(__file__).read_text()
-    execs = [m.start() for m in re.finditer(r"subprocess\.run\(", src)]
-    assert execs, "no gate invocations found — this case is guarding nothing"
-    bypassed = []
-    for start in execs:
-        block = src[start : start + 900]
-        if "GATE" not in block.split(")", 1)[0] and "str(GATE)" not in block[:200]:
-            continue
-        if "env=_gate_env(" not in block:
-            bypassed.append(src[:start].count("\n") + 1)
-    assert not bypassed, (
-        f"gate exec(s) at line(s) {bypassed} build their own env instead of calling "
-        "_gate_env, so they run without the re-entry marker and would repair, restore "
-        "and delete the OUTER gate run's keychain mid-suite."
+    # Assembled at runtime so the needle does not appear literally in this file
+    # and match the case itself — which it did, and which is the self-reference
+    # trap every source-scanning guard gets exactly once.
+    needle = "env=" + "{"
+    offenders = [src[:i].count("\n") + 1 for i in range(len(src)) if src.startswith(needle, i)]
+    assert not offenders, (
+        f"line(s) {offenders} pass a hand-written env dict. Every subprocess here is a "
+        "nested gate run; without _gate_env it runs with no re-entry marker and would "
+        "repair, restore and delete the OUTER run's keychain mid-suite. Use "
+        "_gate_env(tmp_path, bin_dir, ...) and pass extras as keywords."
+    )
+    # The builder must actually be reachable and do its job, or the rule above is
+    # satisfied by a module with no subprocess calls at all.
+    assert "def _gate_env(" in src, "the env builder is gone; the rule guards nothing"
+    assert KEYCHAIN_MARKER in _gate_env(tmp_path, tmp_path / "bin"), (
+        "_gate_env no longer sets the re-entry marker, so routing every site through "
+        "it buys nothing"
     )
 
 
