@@ -105,7 +105,6 @@ which declines the mechanism entirely. `security-model.md` § Authentication car
 statement where a reader of the security model meets it. The temporary keychain is
 created with a random password rather than an empty one, so a secret that does land there before
 deletion is not sitting in a keychain anyone can open. The window is now ~56s rather than ~542s.
-`BANKMACHINE_NO_KEYCHAIN_SWAP=1` opts out entirely.
 
 ## 2026-09-16: The engine is MIT licensed, and the guard learns that an author is not an operator
 

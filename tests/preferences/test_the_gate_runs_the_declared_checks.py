@@ -824,9 +824,8 @@ def test_no_subprocess_in_this_module_builds_its_own_env(tmp_path: Path) -> None
     # the shape it exists to catch, one level up.
     #
     # The prose here deliberately does not write the needle out: this scan reads
-    # its own file, so a comment quoting the pattern is a site the scan then
-    # reports. It did, which is the third time today a source-scanning guard
-    # matched its own text.
+    # its own file, so a comment quoting the pattern would be a site the scan
+    # then reports.
     assert len(sites) >= 10, (
         f"only {len(sites)} exec site(s) found in a module that launches the gate a "
         "dozen times. The needle has stopped matching how these calls are written, so "

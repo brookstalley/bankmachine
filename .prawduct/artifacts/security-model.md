@@ -165,11 +165,12 @@ announcing every removal means announcing on every run — and a banner that fir
 one the operator stops reading, which costs more than it buys for the one interrupt window that
 exists. Measuring the risk directly does not discriminate either: the suite's own tests leave
 entries, so "the keychain is non-empty" is true after every clean run too. What bounds the exposure
-instead is its size — a window of roughly the suite's runtime, reads unaffected — and the opt-out. It carries a random password precisely so a secret that does land there is
+instead is its size — a window of roughly the suite's runtime, reads unaffected — and the opt-out.
+
+**The temporary keychain** carries a random password precisely so a secret that does land there is
 not sitting in a keychain anyone can open. `BANKMACHINE_NO_KEYCHAIN_SWAP=1` opts out; where
 `security` is unreachable the swap declines and the suite simply runs slowly, so it is an
 optimisation and never a prerequisite.
-
 
 🔴 **There is none, and that is the design.**
 

@@ -126,9 +126,10 @@ check() {
 # tried and does not discriminate either: the suite's own tests leave entries
 # behind, so "the keychain is non-empty" is true after every clean run too.
 #
-# What bounds the exposure instead: the window is roughly the suite's runtime,
-# and
-# `BANKMACHINE_NO_KEYCHAIN_SWAP=1` declines the whole mechanism.
+# What bounds the exposure instead: the window is roughly the suite's runtime, the
+# keychain carries a random password so a secret landing there is not readable by
+# anyone who finds it, and `BANKMACHINE_NO_KEYCHAIN_SWAP=1` declines the whole
+# mechanism.
 #
 # CI does exactly this already (`.github/workflows/check.yml` creates
 # `ci.keychain`); the restore below captures whatever was default, so running

@@ -20,6 +20,15 @@ uv run ruff check && uv run ruff format --check
 bash scripts/check.sh report.xml       # all four at once, the way the gate runs them
 ```
 
+🔴 **`scripts/check.sh` changes your default macOS keychain while it runs.** It makes an empty,
+randomly-passworded keychain the default so the suite stops paying your populated login keychain
+per `keyring` round trip — the difference is roughly 56s against 542s — and puts your default and
+your whole keychain search list back on the way out, including after a Ctrl-C and, on the next run,
+after a `kill -9`. Reads are unaffected: your own keychain stays in the search list. Set
+**`BANKMACHINE_NO_KEYCHAIN_SWAP=1`** to decline it and run slowly instead. The full statement of
+what this exposes, and why the trade is taken, is in `.prawduct/artifacts/security-model.md`
+§ Authentication.
+
 The individual commands are for while you are editing. `scripts/check.sh` is the one the
 governance gate launches: it runs all four, reports every one that went red rather than
 stopping at the first, and writes each failure into the JUnit report it is handed — the
