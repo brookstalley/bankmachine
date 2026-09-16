@@ -2,7 +2,7 @@
 artifact: build-plan
 version: 2
 scope: reconciliation-and-status
-branch: feature/reconciliation-and-status
+branch: feature/reconciliation-chunk-02
 depends_on:
   - artifact: discovery-reconciliation-and-status
   - artifact: data-model
@@ -73,7 +73,8 @@ question — see the assumption below.
   a clean residual would go nonzero later with no error anywhere. `plaid/model/transaction.py`:
   *"For pending transactions, the date that the transaction occurred; for posted transactions, the
   date that the transaction posted."* The date moves **forward**, never back, and `posted_date`
-  mirrors that field (`plaid/derivers.py:893`). So a transaction enters the sum on the day it moves
+  mirrors that field (`src/bankmachine/connector/plaid/derivers.py`, the transaction deriver). So a transaction
+  enters the sum on the day it moves
   the balance, and closed intervals stay closed. 🔴 This holds **only because** pending rows are
   excluded — the two findings are load-bearing together, and changing either alone reintroduces the
   instability.
@@ -93,29 +94,33 @@ actually come back zero. That is Chunk 02's step 2 and cannot be answered before
 ## Status
 
 - [x] Chunk 01: The requirements, and the norm whose Why this cycle falsifies
-- [ ] Chunk 02: The residual — one producer, reported on the verification surface
+- [x] Chunk 02: The residual — one producer, reported on the verification surface
 - [ ] Chunk 03: `bankmachine status`, and the inventory it checks against
 
 Context: Chunk 01 closed 2026-09-16 — requirements written, the operator-signed norm amended, all
 four overclaim sites corrected. Gate green against the committed tree; Critic `verify-resolutions`
 returned 0 blocking / 0 warning / 0 note.
 
-Next: **Chunk 02**, and its `verify-api` is already ANSWERED — `current` excludes pending, so the
-interval sum counts posted rows only and the `pending_holds` cause is gone. Step 0 is still open
-because the **record** is owed: `api-notes-plaid.md` needs the numbered section, carrying the
-vendor's own "typically" hedge.
+Chunk 02 closed 2026-09-16 — the residual producer, both warning kinds, the tool fields, and the
+production measurement. `current` excludes pending (`api-notes-plaid.md` §§27-29, carrying the
+vendor's own "typically" hedge), so the interval sum counts posted rows only and the
+`pending_holds` cause is gone.
 
-🔴 **This plan's `branch:` will not resolve after its PR merges, and that is a step someone has to
-take.** The frontmatter declares `branch: feature/reconciliation-and-status`; that branch is merged
-and deleted by the PR carrying Chunk 01, so the declaration then resolves for nobody and the plan
-reads live-but-inactive — which is what RETAIN wants on gitflow, but it also means **Chunk 02 must
-open a new branch and repoint `branch:` to it in the same commit.** Not automatic, and nothing
-reports it: a plan claiming a branch that does not exist simply stops governing.
+🔴 **The measurement is real but weak, and the weakness is the store's.** It holds three balance
+snapshots, so each reconciled account contributes two intervals over four days. Zero residuals are
+`unexplained`; the one nonzero is a `coverage_gap` from a feed running behind its balances. Nothing
+here exercises a long history, a re-link overlap or a duplicated hold. The claim that is safe to
+repeat is the narrow one — across every interval the store can currently support, no residual is
+unexplained — and it strengthens on its own as snapshots accumulate.
 
-🔴 The suite is parallelised under brookstalley/bankmachine#44 (PR #132), which merges ahead of
-Chunk 02 — so pull `develop` before starting, and a full gate run costs ~8.5 minutes rather than
-~11. The larger cost is #131: about 61% of suite wall-clock is serialised macOS keychain I/O, which
-`-n auto` cannot reach. Both are different scopes and neither belongs in this plan.
+Next: **Chunk 03**, which reads `query._account_reconciliation` rather than recomputing it. #70
+closes with the PR that carries this branch, not before.
+
+The `branch:` above is repointed to the branch Chunk 02 is being built on, so this plan governs by
+declaration again — the one resolution route that is not an inference. `active_build_plan` was
+cleared in the same commit: it existed only to keep this plan governing while the declared branch
+did not exist, and a scalar left aimed at a live plan puts that plan in force on every branch with
+no plan of its own. **The same step falls due again at each future branch cut.**
 
 ## Scaffolding
 
@@ -205,7 +210,7 @@ against either one alone.
   <!-- Two source files are touched, but only their docstrings; no behaviour changes. The
        test-evidence check is waived on that basis, and test_schema.py still runs. -->
 - **Done when:**
-  1. Acceptance criteria met and tests pass
+  1. ~~Acceptance criteria met and tests pass~~ **DONE 2026-09-16.**
   2. `/prawduct:critic` run and blocking findings resolved
   3. Committed and chunk marked `[x]` in Status
 
@@ -263,7 +268,7 @@ against either one alone.
     enumerated cases** — the window-resolver instance found a bug nine enumerated mutations missed,
     and this is the same shape. The invariant is the whole feature.
   - 🔴 **sparse snapshots** — an interval spanning many days because the aggregator reported a null
-    `current` in between (`plaid/derivers.py`'s `reported is None` path leaves no row). A missing day
+    `current` in between (`src/bankmachine/connector/plaid/derivers.py`'s `reported is None` path leaves no row). A missing day
     is not a defect and must not read as one.
   - integration — `get_coverage_report` end to end; the row schema accepted by
     `_refuse_optional_row_fields`; `tests/preferences/test_the_documented_tool_surface_is_the_built_one.py`
@@ -276,25 +281,43 @@ against either one alone.
   named in a warning.
 - **Foreign API:** plaid-accounts-balances — whether `balances.current` includes authorization holds
 - **Done when:**
-  0. verify-api — 🔴 **ANSWERED 2026-09-16, RECORD STILL OWED.** The finding is in § Requirements
-     Confidence: `current` excludes pending, established from SDK source
-     (`plaid/model/account_balance.py`, `plaid/model/transaction.py`). What is NOT done is writing
-     it into `.prawduct/artifacts/api-notes-plaid.md` as a numbered section beside §23 and §26,
-     which is where this project keeps measured aggregator behaviour and where the next reader will
-     look for it. A finding that lives only in a build plan is one that disappears when the plan is
-     archived. **This step is not discharged until that section exists.**
-     🔴 Record the hedge with it: the SDK says `available` *"typically"* equals current less pending
-     outflows plus pending inflows. "Typically" is the vendor allowing for institutions that differ,
-     so the exclusion is well-evidenced rather than guaranteed. The direction chosen fails safe —
-     an institution that behaves otherwise produces a visible residual rather than a silent wrong
-     number — and step 2's production measurement is the empirical check on it. Say that in the
-     section rather than stating the exclusion flatly, which is the overclaim this whole cycle
-     exists to correct one instance of.
+  0. ~~verify-api~~ **DONE 2026-09-16.** `current` is the settled balance and excludes pending, so
+     the interval sum counts posted rows only. Recorded where this project keeps measured
+     aggregator behaviour — `.prawduct/artifacts/api-notes-plaid.md` §§27-29 — rather than only
+     here, because a finding that lives in a build plan disappears when the plan is archived.
+     The vendor's *"typically"* hedge is carried with it: the exclusion is well-evidenced, not
+     guaranteed, and the direction chosen fails safe because a divergent institution yields a
+     visible residual rather than a silent wrong number. Step 2's production measurement is the
+     empirical check. Two findings beyond the original question came out of the re-read and are in
+     §§28-29: pending amounts are vendor-mutable and not universally provided (so excluding them
+     is what keeps a computed interval closed), and the balance-to-transaction freshness this
+     depends on is conditional on the Item having Transactions enabled.
   1. Acceptance criteria met and tests pass
-  2. Residual distribution read against the production store and recorded — the measurement, not a
-     formality
-  3. `/prawduct:critic` run and blocking findings resolved
-  4. Committed and chunk marked `[x]` in Status
+  2. ~~Residual distribution read against the production store and recorded~~ **DONE 2026-09-16.**
+     Read against this deployment's **production** store — real institutions, not the aggregator's
+     sandbox dataset. **Across every interval that store can currently support, no residual is
+     `unexplained`.** One interval carried a nonzero residual, attributed `coverage_gap` because
+     that account's transactions feed is behind its balance snapshots, and no
+     `balance_unreconciled` warning is raised — which is the correct answer rather than an absence.
+     🔴 The plan's stop condition (a nonzero result is unbounded work) is aimed at an *unexplained*
+     residual, so it is NOT triggered and no separate scoping is owed.
+     🔴 **The counts, magnitude and dates are deliberately not here.** `project-state.yaml`'s signed
+     REPOSITORY SCOPE decision admits no operator roster, account detail or balance into a tracked
+     file, and it binds unconditionally — whatever the remote's visibility is. They live in
+     `deployment/reconciliation-measurement.md`, which also records the honest limit: the store
+     holds three snapshots, so this is a weak measurement that strengthens as they accumulate.
+     🔴 **Chunk 03 measures against the same store — put its figures there too.**
+     `check-no-personal-data.sh` does not catch this class; it matches roster and identity tokens,
+     and a roster composition or an amount matches none of them.
+  3. ~~`/prawduct:critic` run and blocking findings resolved~~ **DONE 2026-09-16.** One `cumulative`
+     review, then `verify-resolutions` until it returned nothing. 🔴 The pattern worth carrying is
+     not the tally: **the early fix rounds each introduced a defect the next round found**, and the
+     recurring shape was a comment stating a condition the code did not implement. The last rounds
+     found only prose — a directive that would have had a maintainer delete a test, and a docstring
+     overstating what its fixture pinned — which still needed fixing and changed no behaviour.
+     The round-by-round ledger is in the evidence store (`prawduct-hook evidence list`), not
+     copied here where it would go stale the next time anything runs.
+  4. ~~Committed and chunk marked `[x]` in Status~~ **DONE 2026-09-16.**
 
 ### Chunk 03: `bankmachine status`, and the inventory it checks against
 

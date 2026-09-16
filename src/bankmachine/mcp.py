@@ -469,6 +469,107 @@ def _output_schema(
     }
 
 
+#: AC-11.2's residual per account, on the ONE tool that carries it.
+#: `get_coverage_report` is the verification surface `api-contract.md` rules a
+#: per-account finding belongs to; `list_accounts` is the analysis surface and
+#: deliberately does not carry these. One producer (`query._account_reconciliation`)
+#: feeds it, as `_account_coverage` feeds the fragment below.
+def _reconciliation_row_fields() -> dict[str, dict[str, Any]]:
+    """AC-11.2's residual per account. A fresh dict per call, like every fragment here.
+
+    🔴 **Every field is required and nullable, never optional.**
+    `_refuse_optional_row_fields` enforces it, and the reason is this contract's
+    rule that a key's ABSENCE is information: an investment account's residual is
+    present and null beside a state that says why, so a consumer reading the row
+    learns something rather than guessing whether the server forgot.
+    """
+    return {
+        "reconciliation_state": {
+            "type": "string",
+            "enum": list(query.RECONCILIATION_STATES),
+            "description": (
+                "whether the balance-to-transactions check could be RUN for this account, and "
+                "why not when it could not. 🔴 `reconciled` means the comparison was PERFORMED, "
+                "NOT that it came back clean -- `residual_minor_units` beside it carries the "
+                "verdict. The other three each mean no residual exists: "
+                "`not_applicable_investment` (balance moves with the market, so the check does "
+                "not apply), `insufficient_snapshots` (fewer than two comparable balance "
+                "snapshots so far), `no_balance_recorded` (no balance was ever captured). Read "
+                "this field rather than inferring from a null residual: the three would be "
+                "indistinguishable, and an UNRECONCILABLE account is not an UNRECONCILED one"
+            ),
+        },
+        "residual_minor_units": {
+            "type": ["integer", "null"],
+            "description": (
+                "the net of (change in balance - sum of transactions) over every interval "
+                "compared, in minor units, operator-signed. 0 is the expected value and the "
+                "answer this product claims. 🔴 Null EXACTLY when `reconciliation_state` is not "
+                "`reconciled`; the state says why. A nonzero value means the figures in this "
+                "answer are internally consistent and may still be wrong by that amount"
+            ),
+        },
+        "intervals_compared": {
+            "type": "integer",
+            "description": (
+                "how many consecutive-snapshot intervals were actually compared. 🔴 The honest "
+                "denominator: a residual of 0 over 0 intervals is green by vacuity, and this is "
+                "what tells the two apart. Present and 0 whenever no comparison was made. 🔴 This "
+                "is the TOTAL and `unreconciled_intervals` is a SUBSET of it -- they do not "
+                "partition, so never add them: 5 compared with 2 unreconciled means 5 were "
+                "checked and 2 of those did not balance, never 7"
+            ),
+        },
+        "unreconciled_intervals": {
+            "type": "integer",
+            "description": (
+                "how many OF THOSE intervals have a nonzero residual, as MEASURED -- a subset of "
+                "`intervals_compared`, never a second category beside it. The list below is "
+                "capped, so a shorter list means the rest were not enumerated"
+            ),
+        },
+        "unreconciled_detail": {
+            "type": "array",
+            "description": (
+                "those intervals, oldest first: the dates it runs between, the balance change, "
+                "the transactions sum over `(from, to]`, the residual, and the cause attributed "
+                "to it. 🔴 `window_truncated` and `coverage_gap` name transactions the store "
+                "never held; `unexplained` is the finding -- money moved and nothing recorded "
+                "it. Present and empty when the account reconciles"
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "from_date": {"type": "string"},
+                    "to_date": {"type": "string"},
+                    "balance_change_minor_units": {"type": "integer"},
+                    "transactions_sum_minor_units": {"type": "integer"},
+                    "residual_minor_units": {"type": "integer"},
+                    "cause": {"type": "string", "enum": list(query.RESIDUAL_CAUSES)},
+                    "currency": {"type": "string"},
+                },
+                "required": [
+                    "from_date",
+                    "to_date",
+                    "balance_change_minor_units",
+                    "transactions_sum_minor_units",
+                    "residual_minor_units",
+                    "cause",
+                    "currency",
+                ],
+                "additionalProperties": False,
+            },
+        },
+        "balance_currency": {
+            "type": ["string", "null"],
+            "description": (
+                "the unit `residual_minor_units` is denominated in; null when no balance was "
+                "ever recorded for the account. An aggregate over residuals groups by this"
+            ),
+        },
+    }
+
+
 #: The per-account coverage facts, spelled ONCE for the two tools that carry
 #: them. `list_accounts` carries them so an agent that never thought to ask the
 #: verification surface still learns an account is empty; `get_coverage_report`
@@ -1768,7 +1869,15 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "`silence_ratio` above 1 means a full posting cycle has been "
                 "missed; a ratio near 1 is worth a second look even when the flag is false. "
                 "🔴 A non-active account's trailing silence is CLOSURE, not a hole: the flag "
-                "stays false for it and `lifecycle` on the row is what says why."
+                "stays false for it and `lifecycle` on the row is what says why. "
+                "🔴 This tool also answers WHETHER THE STORED DATA BALANCES: each row carries "
+                "`reconciliation_state` and `residual_minor_units` — the change in the account's "
+                "balance less the transactions recorded over the same interval, which should be 0 "
+                "— plus `unreconciled_detail` naming each interval that does not, with a cause. "
+                "🔴 Call it before quoting any figure from `money_summary` or "
+                "`query_transactions`: a nonzero residual means those answers are wrong by that "
+                "amount, and they carry no warning of their own about it. It also reports "
+                "unsettled authorisation holds per account (`stranded_holds`)."
             ),
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
             "outputSchema": _output_schema(
@@ -1777,6 +1886,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "account": {"type": ["string", "null"]},
                     **_coverage_row_fields(),
                     **_lifecycle_row_fields(),
+                    **_reconciliation_row_fields(),
                     "median_interval_days": {
                         "type": ["number", "null"],
                         "description": (
@@ -2301,6 +2411,19 @@ def _instructions(config: Config) -> str:
     """
     # 🔴 Rendered from the vocabularies that own them, never typed here: a hand
     # copy of a closed set is the one that drifts when the set moves.
+    # 🔴 The COUNT, derived from the tuple rather than written. The unqualified
+    # promise above is FALSE for these kinds, and a hand-written exception goes
+    # stale the first time one joins or leaves -- in the direction that tells an
+    # agent silence means clean on an answer that can be wrong by a residual.
+    #
+    # 🔴 Counted rather than named because naming both costs 55 of the ~80
+    # characters `INSTRUCTIONS_BUDGET` leaves, and that budget is a MEASURED
+    # client truncation limit rather than a style rule. The warnings reference
+    # names them in full, and the paragraph above already routes the reader
+    # there before concluding anything -- so the instructions carry the fact that
+    # an exception exists and how many, which is what stops a reader treating
+    # silence as clean, and the reference carries which.
+    verification_only = len(envelope.VERIFICATION_SURFACE_ONLY_KINDS)
     pipeline_kinds = _oxford([f"`{kind}`" for kind in envelope.CONNECTION_SCOPED_KINDS])
     unbuilt = _oxford([f"`{tool}`" for tool in mcp_resources.UNBUILT_TOOLS])
     return (
@@ -2317,7 +2440,9 @@ def _instructions(config: Config) -> str:
         f"here throws; the numbers simply stop being true. {pipeline_kinds} describe the "
         f"PIPELINE and ride every answer; every "
         f"other kind describes THIS REQUEST and fires only when it crosses the boundary it "
-        f"names, so its absence is information too.\n\n"
+        f"names, so "
+        f"its absence is information — except the {verification_only} reconciliation kinds, "
+        f"sent only by `get_coverage_report`.\n\n"
         f"Quote `totals` rather than a sum over `rows`. When `truncation.truncated` is true, "
         f"page with `next_cursor` until it is false instead of counting the rows in hand.\n\n"
         f"An investment account's activity is served by `query_investment_transactions`; "

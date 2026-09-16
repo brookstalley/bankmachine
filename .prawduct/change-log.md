@@ -34,6 +34,64 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-16: The balance reconciliation the product has been claiming, finally computed
+
+<!-- prawduct: scope=reconciliation-and-status -->
+
+**Why:** AC-11.2 says the change in an account's balance over an interval equals the sum of the
+transactions recorded in it. Two docstrings and a `## Direction` norm have asserted it since the
+schema was frozen and nothing computed it, so the product was making a claim it had never checked.
+
+**What shipped:** `query._account_reconciliation`, a third one-producer fact beside
+`_account_coverage` and `_account_lifecycle`, reported per account on `get_coverage_report` —
+`reconciliation_state`, `residual_minor_units`, the interval counts and the itemized
+`unreconciled_detail` with a cause per interval. Two warning kinds (`balance_unreconciled`,
+`reconciliation_not_applicable`) with their guidance and contract rows. Chunk 02 of
+`build-plan-reconciliation-and-status.md`; `bankmachine status` (Chunk 03) reads this producer.
+
+**The foreign-API finding it rests on**, recorded in `api-notes-plaid.md` §§27-29: the aggregator's
+`current` is the **settled** balance, so the interval sum counts posted rows only. Established from
+SDK source — `available` defines itself as `current` less pending outflows plus pending inflows, for
+depository and credit accounts alike, and that arithmetic only holds if `current` has not already
+netted them. The vendor says *"typically"*, and the record says so rather than restating it as a
+guarantee. The `pending_holds` residual cause was removed as a consequence: with both sides
+excluding pending there is no residual for it to explain.
+
+**The measurement, which is the point rather than a formality.** Read against this deployment's
+**production** store on 2026-09-16 — real institutions, not the aggregator's sandbox dataset, which
+is what every earlier measurement in this log was taken against.
+
+**Across every interval that store can currently support, no residual is `unexplained`.** One
+interval carried a nonzero residual and the cause vocabulary explained it: that account's
+transactions feed is behind its balance snapshots, so the interval is attributed `coverage_gap`.
+`get_coverage_report` raises no `balance_unreconciled` warning over the store, which is the correct
+answer — the kind fires only where no coverage gap and no truncated window accounts for the
+difference, and an emitter selecting on any nonzero residual (the first implementation) warned on
+precisely the residuals the cause vocabulary had just explained.
+
+🔴 **The figures stay out of this file, and that is the norm rather than discretion.**
+`project-state.yaml`'s signed REPOSITORY SCOPE decision admits no operator roster, account detail or
+balance into a tracked file. That decision is **unconditional** — it binds whatever the remote's
+visibility is, and this entry deliberately rests on it rather than on any claim about that
+visibility, which changes without the records knowing. The counts, the magnitude
+and the interval dates live in `deployment/reconciliation-measurement.md`, beside the history audit
+and the roster, with the command to re-derive them. 🔴 Note for anything that measures against this
+store next: `check-no-personal-data.sh` does **not** catch this class — it matches roster and
+identity tokens, and a roster composition or an amount matches none of them.
+
+🔴 **Honest confidence: this is a weak measurement, and the weakness is the store's, not the
+method's.** It holds three balance snapshots, so each reconciled account contributes two intervals
+over a few days. Nothing here exercises a long history, a re-link overlap or a duplicated hold — the
+failure shapes `reviews-2026-09-09`'s finance review names as each having a characteristic
+magnitude. What can be said is the sentence above and no more. The check gets stronger on its own as
+snapshots accumulate, and it now runs on every call rather than on nobody's initiative.
+
+**Also found while reading the SDK for this**, both in `api-notes-plaid.md`: pending amounts are
+vendor-mutable and not universally provided, so excluding them is what keeps a computed interval
+closed as well as correct; and the balance-to-transaction freshness this reconciliation assumes is
+bought by the Item having Transactions enabled rather than by the endpoint called — a condition this
+product satisfies and an investments-only Item does not.
+
 ## 2026-09-16: The suite gets its own keychain, and stops spending nine minutes inside securityd
 
 <!-- prawduct: scope=fast-keychain-suite -->
