@@ -69,6 +69,16 @@ all three were seen red by hand against **tracked** files — an untracked probe
 which is how the conflict was missed the first time. Recorded as a bounded exception with its
 `[DECISION: …]` in `project-preferences.md`.
 
+**The licence is asserted in four places and nothing derived any of them from any other**, so
+`tests/preferences/test_the_licence_is_stated_once.py` pins them together. It finds its subjects
+with `git ls-files` rather than from a list: the first version named the three it had been told
+about, and `docs/README.md` — the fourth — still said *"No licence has been chosen yet, so default
+copyright applies"* while the other three said MIT. A doc added later is covered without editing the
+test. The cases assert **agreement**, never MIT, so relicensing takes one deliberate edit per site
+and goes green rather than requiring a test be deleted; and a separate case asserts the root README
+has a licence section **at all**, which the agreement case cannot catch — with the section gone
+there is nothing left to disagree.
+
 ## 2026-09-16: What the store already claims about its own balances, written down as a requirement
 
 <!-- prawduct: scope=reconciliation-and-status -->

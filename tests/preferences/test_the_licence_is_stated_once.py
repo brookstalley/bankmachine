@@ -37,20 +37,23 @@ def _licence_sections() -> list[tuple[Path, str]]:
     """Every tracked Markdown file carrying a licence section, FOUND not listed.
 
     🔴 Derived from `git ls-files` rather than from a list in this file, and that
-    is the whole construction. The first version of this case named three sites
-    it had been told about; there were four, and `docs/README.md` sat there
-    saying "No licence has been chosen yet, so default copyright applies" while
-    the case went green over the other three. A guarantee defined by an
-    enumeration decays the moment someone adds a file, and the enumeration is
-    exactly what nobody updates.
+    is the whole construction: a guarantee defined by an enumeration decays the
+    moment someone adds a file, and the enumeration is exactly what nobody
+    updates. A doc added tomorrow is covered without editing this file.
     """
-    listed = subprocess.run(
-        ["git", "ls-files", "*.md"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split()
+    # `-z`: paths are NUL-separated, so one containing a space is not mis-split
+    # into two paths that then both fail to open and are silently skipped.
+    listed = [
+        name
+        for name in subprocess.run(
+            ["git", "ls-files", "-z", "*.md"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split("\0")
+        if name
+    ]
     found: list[tuple[Path, str]] = []
     for name in listed:
         path = REPO_ROOT / name
@@ -147,3 +150,22 @@ def test_every_licence_section_names_the_declared_licence() -> None:
             f"{rel}'s licence section does not link to the licence file, so a reader is "
             "told the name of the licence with no path to its terms."
         )
+
+
+def test_the_root_readme_states_the_licence() -> None:
+    """The one place a human meets this project is told which licence it carries.
+
+    🔴 Separate from the agreement case above, and not redundant with it. That
+    one asserts every licence section AGREES; it is satisfied by a repository
+    with no licence section anywhere, because a set with nothing in it has no
+    disagreement in it. This asserts the root README HAS one -- the guarantee
+    that a reader arriving at the front door is told, rather than left to find
+    `LICENSE` themselves.
+    """
+    readme = REPO_ROOT / "README.md"
+    sections = [text for path, text in _licence_sections() if path == readme]
+    assert sections, (
+        f"{readme} has no `## Licence` (or `## License`) section. The agreement case "
+        "cannot catch this: with the section gone there is nothing left to disagree, so "
+        "it passes over a README that tells a reader nothing about the licence."
+    )
