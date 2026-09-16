@@ -168,10 +168,12 @@ against either one alone.
 
 ### Chunk 01: The requirements, and the norm whose Why this cycle falsifies
 
-- **Description:** Write the requirements before the code that implements them, and correct the
-  three places that assert the reconciliation holds "for every account" when a measurement already
-  in this repo says it cannot. Two are docstrings; the third is a `## Direction` **norm's Why**,
-  which makes this a norm amendment with a recorded decision rather than a prose fix.
+- **Description:** Write the requirements before the code that implements them, and correct
+  **every** site that asserts the reconciliation holds "for every account" when a measurement
+  already in this repo says it cannot. The Deliverables below enumerate them and say how each one
+  changes; one is a `## Direction` **norm's Why**, which makes that site a norm amendment with a
+  recorded decision rather than a prose fix. No count here — re-derive the list by search, which
+  is what the Deliverables instruct.
 - **Depends on:** none
 - **Artifacts consumed:** `.prawduct/artifacts/discovery-reconciliation-and-status.md` (the
   requirements as proposed), `.prawduct/artifacts/api-notes-plaid.md` §23 (the measurement)

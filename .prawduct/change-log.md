@@ -117,6 +117,7 @@ governs is how a norm gets laundered to bless its author's design; the defence i
 measurement is not this cycle's. §23 landed four days earlier on unrelated work, and this amendment
 only reads what was already written down. Three further sites track the norm and are corrected to
 match — counted by search rather than from memory, after the first pass said three and missed one.
+
 ## 2026-09-16: The suite runs in parallel, and the measurement says that is not where the time goes
 
 <!-- prawduct: scope=pytest-xdist -->
