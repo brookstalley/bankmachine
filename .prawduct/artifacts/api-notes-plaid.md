@@ -853,6 +853,101 @@ both directions to exercise on live data.
 
 ---
 
+## What the reconciliation verify-api established
+
+Read for `build-plan-reconciliation-and-status.md` Chunk 02 step 0, whose question was
+whether `balances.current` includes authorization holds — i.e. whether a pending row
+belongs in the interval sum that AC-11.2's residual compares a balance movement against.
+Source reading against the pinned package, quoted below; no probe. The answer decides a
+sign convention that is hard to reverse once residuals are stored, so it is recorded here
+rather than only in the plan that asked it.
+
+### 27. 🔴 `current` is the settled balance and excludes pending — inferred from `available`, and the vendor hedges it
+
+Nothing in the SDK says outright what `current` does with a pending authorization.
+`current` is documented only as *"The total amount of funds in or owed by the account."*
+The answer is in the sibling field, which defines itself in terms of `current`:
+
+> For `depository`-type accounts, the `available` balance **typically** equals the
+> `current` balance less any pending outflows plus any pending inflows.
+
+> For `credit`-type accounts, the `available` balance **typically** equals the `limit`
+> less the `current` balance, less any pending outflows plus any pending inflows.
+
+Both spell the same arithmetic, and it only holds if `current` has **not** already netted
+those pending amounts — subtracting them from a figure that already excludes them would
+double-count. **So `current` is the settled balance**, and the interval sum it is compared
+against counts **posted rows only (`pending = 0`)**.
+
+That both account classes agree matters for this product specifically: the residual runs
+over depository and credit accounts under one operator-signed convention, and a rule that
+held for one class only would make the arithmetic non-uniform exactly where the norm
+claims uniformity.
+
+🔴 **"Typically" is the vendor's own hedge, and it is not decoration.** It is Plaid
+allowing for institutions that compute `available` differently, which makes the exclusion
+**well-evidenced rather than guaranteed**. Two things follow, and the second is why the
+weak evidence is still enough to build on:
+
+- Do **not** restate this finding as a flat guarantee anywhere downstream. Overstating a
+  vendor's word is the defect the reconciliation cycle exists to correct one instance of.
+- **The direction chosen fails safe.** An institution that behaves otherwise yields a
+  *visible residual* — a number on the verification surface with a cause attached — rather
+  than a silently wrong balance. The empirical check is the production measurement in the
+  same chunk, not a further reading of the docs.
+
+### 28. Excluding pending is also what keeps a closed interval closed
+
+The exclusion is not only about double-counting; it is what makes an interval's sum
+stable once computed. Three quoted facts, all from the pinned package:
+
+> date: For pending transactions, the date that the transaction occurred; for posted
+> transactions, the date that the transaction posted.
+
+> pending: When `true`, identifies the transaction as pending or unsettled. Pending
+> transaction details (name, type, amount, category ID) **may change before they are
+> settled**. **Not all institutions provide pending transactions.**
+
+- **The date only moves forward.** `posted_date` mirrors this field (`derivers.py`, the
+  transaction deriver), so a row enters the sum on the day it actually moved the balance.
+  A settled interval cannot silently reopen behind a later snapshot.
+- **A pending amount is mutable by the vendor's own statement.** Summing pending rows
+  would let an already-computed residual change without any new data arriving.
+- **Pending coverage is institution-dependent.** Including it would make the residual
+  mean different things at different institutions — the opposite of a figure an operator
+  can compare across a roster.
+
+🔴 These are load-bearing **together with** §27: the date's forward-only stability holds
+*because* pending is excluded. Re-admitting pending rows to the sum would break both the
+arithmetic and the interval stability, so it is one decision, not two.
+
+**Consequence already applied to the plan:** the `pending_holds` residual cause is
+**removed**. With both sides of the comparison excluding pending, there is no residual for
+it to explain, and a cause that can never fire is a branch no test can reach honestly.
+Re-add it only if measurement produces a case that needs it.
+
+### 29. The balance-to-transaction coherence rests on a conditional clause, and this product satisfies it
+
+`balances_daily` is derived from `/accounts/get` (the accounts deriver), not from
+`/accounts/balance/get`. That distinction is flagged by the SDK:
+
+> Note that balance information may be cached unless the value was returned by
+> `/accounts/balance/get` [...]; **if the Item is enabled for Transactions, the balance
+> will be at least as recent as the most recent Transaction update.**
+
+So the freshness this product relies on is real but **conditional**: it is bought by the
+Item having Transactions enabled, not by the endpoint being called. For a
+transactions-enabled Item the balance and the transaction feed advance together, which is
+the coherence AC-11.2's residual assumes.
+
+🔴 **The condition does not hold for an investments-only Item** (§25 is the measured case
+of an Item answering for a product it has only *available*). Those accounts are excluded
+from reconciliation for the independent reason in §23 — holdings and balance need not add
+up — so nothing currently depends on the gap. Recorded because the two exclusions have
+different causes and a future change that ends one does not end the other.
+
+---
+
 ## Still to verify
 
 - ~~**The success path has not been probed.**~~ Done 2026-09-06 — see §7. The fixture is

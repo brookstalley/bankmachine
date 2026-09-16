@@ -100,10 +100,10 @@ Context: Chunk 01 closed 2026-09-16 — requirements written, the operator-signe
 four overclaim sites corrected. Gate green against the committed tree; Critic `verify-resolutions`
 returned 0 blocking / 0 warning / 0 note.
 
-Next: **Chunk 02**, and its `verify-api` is already ANSWERED — `current` excludes pending, so the
-interval sum counts posted rows only and the `pending_holds` cause is gone. Step 0 is still open
-because the **record** is owed: `api-notes-plaid.md` needs the numbered section, carrying the
-vendor's own "typically" hedge.
+Next: **Chunk 02**, whose `verify-api` (step 0) is DONE — `current` excludes pending, so the
+interval sum counts posted rows only and the `pending_holds` cause is gone. The record lives in
+`api-notes-plaid.md` §§27-29, carrying the vendor's own "typically" hedge. What remains is the
+producer, the envelope kinds, the tool fields, and the production measurement.
 
 The `branch:` above is repointed to the branch Chunk 02 is being built on, so this plan governs by
 declaration again — the one resolution route that is not an inference. `active_build_plan` was
@@ -270,20 +270,17 @@ against either one alone.
   named in a warning.
 - **Foreign API:** plaid-accounts-balances — whether `balances.current` includes authorization holds
 - **Done when:**
-  0. verify-api — 🔴 **ANSWERED 2026-09-16, RECORD STILL OWED.** The finding is in § Requirements
-     Confidence: `current` excludes pending, established from SDK source
-     (`plaid/model/account_balance.py`, `plaid/model/transaction.py`). What is NOT done is writing
-     it into `.prawduct/artifacts/api-notes-plaid.md` as a numbered section beside §23 and §26,
-     which is where this project keeps measured aggregator behaviour and where the next reader will
-     look for it. A finding that lives only in a build plan is one that disappears when the plan is
-     archived. **This step is not discharged until that section exists.**
-     🔴 Record the hedge with it: the SDK says `available` *"typically"* equals current less pending
-     outflows plus pending inflows. "Typically" is the vendor allowing for institutions that differ,
-     so the exclusion is well-evidenced rather than guaranteed. The direction chosen fails safe —
-     an institution that behaves otherwise produces a visible residual rather than a silent wrong
-     number — and step 2's production measurement is the empirical check on it. Say that in the
-     section rather than stating the exclusion flatly, which is the overclaim this whole cycle
-     exists to correct one instance of.
+  0. ~~verify-api~~ **DONE 2026-09-16.** `current` is the settled balance and excludes pending, so
+     the interval sum counts posted rows only. Recorded where this project keeps measured
+     aggregator behaviour — `.prawduct/artifacts/api-notes-plaid.md` §§27-29 — rather than only
+     here, because a finding that lives in a build plan disappears when the plan is archived.
+     The vendor's *"typically"* hedge is carried with it: the exclusion is well-evidenced, not
+     guaranteed, and the direction chosen fails safe because a divergent institution yields a
+     visible residual rather than a silent wrong number. Step 2's production measurement is the
+     empirical check. Two findings beyond the original question came out of the re-read and are in
+     §§28-29: pending amounts are vendor-mutable and not universally provided (so excluding them
+     is what keeps a computed interval closed), and the balance-to-transaction freshness this
+     depends on is conditional on the Item having Transactions enabled.
   1. Acceptance criteria met and tests pass
   2. Residual distribution read against the production store and recorded — the measurement, not a
      formality
