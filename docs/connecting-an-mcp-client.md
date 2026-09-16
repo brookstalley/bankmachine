@@ -312,7 +312,12 @@ describes the **pipeline**, so it rides every response equally:
   versions.
 
 The second group describes **this request**, and fires only when the request actually crosses the
-boundary it names — so the *absence* of one is information too:
+boundary it names — so the *absence* of one is information too, **with one exception**:
+`balance_unreconciled` and `reconciliation_not_applicable` are sent by `get_coverage_report` alone,
+so on any other tool their absence tells you nothing. 🔴 An account whose balance and recorded
+transactions disagree makes a `money_summary` or `query_transactions` figure wrong by that amount
+with **no warning on that answer** — call `get_coverage_report` and read `reconciliation_state`
+before you quote a figure. For every other kind below, absence is information:
 
 - `rule-applied` — rows were excluded from an aggregate on purpose, so the total will not
   reconcile against a raw sum over the same window. 🔴 `detail` names which rows and why, and the
