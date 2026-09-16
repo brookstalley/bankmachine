@@ -539,4 +539,6 @@ def list_holdings(config: Config) -> Answer:
                 + _roster_observed_empty_caveat(not_active)
             ),
             lifecycle=lifecycle,
+            # Positions, not transactions: a transactions-grant shortfall does not reach them.
+            reads_transactions=False,
         )

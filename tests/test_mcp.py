@@ -111,8 +111,36 @@ def _sync_body(today: str) -> bytes:
     ).encode()
 
 
-def _seed(config: Config, *, degraded: bool = False, granted: int | None = 90) -> None:
+def _empty_sync_body() -> bytes:
+    """A transactions backfill that completed and carried nothing.
+
+    The shape an institution whose accounts post nothing to this feed sends: the
+    status says the history is in, and there is no transaction and no cursor.
+    """
+    return json.dumps(
+        {
+            "accounts": [],
+            "added": [],
+            "modified": [],
+            "removed": [],
+            "next_cursor": "",
+            "has_more": False,
+            "transactions_update_status": "HISTORICAL_UPDATE_COMPLETE",
+            "request_id": "req-sync-empty",
+        }
+    ).encode()
+
+
+def _seed(
+    config: Config,
+    *,
+    degraded: bool = False,
+    granted: int | None = 90,
+    transactions: bool = True,
+) -> None:
     """One institution, one account, three transactions — through the real derivers.
+
+    `transactions=False` completes the backfill with nothing in it instead.
 
     🔴 Derived rather than hand-inserted. The schema enforces provenance with a
     CHECK, so hand-built rows either encode this test's assumptions about that
@@ -149,7 +177,10 @@ def _seed(config: Config, *, degraded: bool = False, granted: int | None = 90) -
         )
         for endpoint, body in (
             (ACCOUNTS_GET.path, _accounts_body()),
-            (TRANSACTIONS_SYNC.path, _sync_body(str(now.date()))),
+            (
+                TRANSACTIONS_SYNC.path,
+                _sync_body(str(now.date())) if transactions else _empty_sync_body(),
+            ),
         ):
             apply_response(
                 conn,
@@ -893,6 +924,7 @@ def test_no_tool_mutates_anything(initialized_config: Config) -> None:
         "list_holdings",
         "balance_history",
         "query_transactions",
+        "query_investment_transactions",
         "money_summary",
         "get_pipeline_health",
         "get_coverage_report",
@@ -949,7 +981,7 @@ def _cannot_answer_text() -> str:
 def test_the_unserved_trades_claim_holds_against_what_every_tool_reads(
     initialized_config: Config,
 ) -> None:
-    """🔴 The reference says trades are counted but served as rows by no tool; held to the SQL.
+    """🔴 Whether the reference calls trades unserved is held to what every tool's SQL reads.
 
     Checked against the statements every registered tool actually executes, not
     against a list of files: a tool's query already runs through store helpers
@@ -1121,9 +1153,171 @@ def test_an_unmeasured_window_is_reported_differently_from_no_shortfall(
     wire = _call(initialized_config, "get_pipeline_health")["structuredContent"]
 
     assert wire["rows"][0]["granted_history_days"] is None
+    assert wire["rows"][0]["granted_history_status"] == "not_yet_measured"
     kinds = {w["kind"] for w in wire["warnings"]}
     assert "partial" in kinds
+    # The positive control for the absence test below, which finds this caveat by
+    # its wording: reworded, that match would find nothing and pass forever.
+    unmeasured = [
+        w for w in wire["warnings"] if w["kind"] == "partial" and "not yet known" in w["detail"]
+    ]
+    assert len(unmeasured) == 1, wire["warnings"]
     assert "gapped" not in kinds, "an unknown window was reported as a measured shortfall"
+
+
+def test_a_measured_window_says_it_was_measured(initialized_config: Config) -> None:
+    """The status names which kind of number `granted_history_days` is."""
+    _seed(initialized_config, granted=90)
+
+    wire = _call(initialized_config, "get_pipeline_health")["structuredContent"]
+
+    assert wire["rows"][0]["granted_history_status"] == "measured"
+
+
+def test_a_complete_backfill_with_no_transactions_is_not_reported_as_unmeasured(
+    initialized_config: Config,
+) -> None:
+    """🔴 A connection whose accounts post nothing to the transactions feed.
+
+    Its backfill completed and carried no transaction, so the measurement that
+    fills `granted_history_days` has nothing to count from and never runs. The
+    caveat said the window "is measured when the initial backfill completes" --
+    on every answer, forever, about a backfill that had completed. No answer
+    from this connection can be short on transactions, because it has none that
+    a grant could have cut, so the status says that instead and no `partial`
+    rides the answer.
+    """
+    _seed(initialized_config, granted=None, transactions=False)
+
+    wire = _call(initialized_config, "get_pipeline_health")["structuredContent"]
+
+    row = wire["rows"][0]
+    assert row["granted_history_days"] is None, "a window nobody measured was given a number"
+    assert row["granted_history_status"] == "no_transactions_to_measure"
+    unmeasured = [
+        w for w in wire["warnings"] if w["kind"] == "partial" and "not yet known" in w["detail"]
+    ]
+    assert not unmeasured, unmeasured
+
+
+def test_every_answer_drops_the_unmeasured_caveat_for_a_connection_with_nothing_to_measure(
+    initialized_config: Config,
+) -> None:
+    """The caveat rides every tool, so its removal has to reach every tool.
+
+    `get_pipeline_health` hands its warnings the set it computed its rows from;
+    every other answer reads that set itself, and only when a connection could
+    need it. A tool that skipped the read would say "not yet known" again.
+    """
+    _seed(initialized_config, granted=None, transactions=False)
+
+    for tool in ("list_accounts", "money_summary"):
+        wire = _call(initialized_config, tool)["structuredContent"]
+        unmeasured = [
+            w for w in wire["warnings"] if w["kind"] == "partial" and "not yet known" in w["detail"]
+        ]
+        assert not unmeasured, (tool, unmeasured)
+
+
+def test_a_connection_that_never_completed_a_backfill_is_still_not_yet_measured(
+    initialized_config: Config,
+) -> None:
+    """The case the new status must not swallow: no transactions YET is not none at all.
+
+    `last_success_at` is stamped only once the aggregator says the history is in,
+    so a connection without it has told us nothing about what its feed holds.
+    """
+    _seed(initialized_config, degraded=True, granted=None, transactions=False)
+
+    wire = _call(initialized_config, "get_pipeline_health")["structuredContent"]
+
+    assert wire["rows"][0]["granted_history_status"] == "not_yet_measured"
+
+
+def test_a_first_transaction_arriving_takes_the_connection_out_of_no_transactions_to_measure(
+    initialized_config: Config,
+) -> None:
+    """The status is read, not stored: a transaction landing moves it at once.
+
+    Until the next complete sync measures the window, the connection holds a
+    transaction nobody has counted from, which is `not_yet_measured` and carries
+    the caveat again -- the second call, not a fresh store, is what shows it.
+    """
+    _seed(initialized_config, granted=None, transactions=False)
+    before = _call(initialized_config, "get_pipeline_health")["structuredContent"]
+    assert before["rows"][0]["granted_history_status"] == "no_transactions_to_measure"
+
+    with writer_connection(initialized_config) as conn:
+        apply_response(
+            conn,
+            connection_id=1,
+            endpoint=TRANSACTIONS_SYNC.path,
+            body=_sync_body(str(now_utc().date())),
+            received_at=now_utc(),
+            derivers=ALL_DERIVERS,
+            replay_passes=(),
+        )
+
+    after = _call(initialized_config, "get_pipeline_health")["structuredContent"]
+    assert after["rows"][0]["granted_history_status"] == "not_yet_measured"
+    assert any(
+        w["kind"] == "partial" and "not yet known" in w["detail"] for w in after["warnings"]
+    ), after["warnings"]
+
+
+def test_a_transactions_shortfall_is_not_phrased_against_a_window_over_another_series(
+    initialized_config: Config,
+) -> None:
+    """🔴 The grant limits a connection's TRANSACTIONS; a trades answer never read them.
+
+    The shortfall still rides the answer, as the connection-scoped kinds promise,
+    but a trades request told "this request set no start, so it reaches back to that
+    date and no further" was told something false about its own rows.
+    """
+    _seed(initialized_config, granted=90)
+    _seed_investments(initialized_config)
+
+    trades = _call(initialized_config, "query_investment_transactions")["structuredContent"]
+    balances = _call(initialized_config, "balance_history")["structuredContent"]
+    transactions = _call(initialized_config, "query_transactions")["structuredContent"]
+
+    [on_balances] = [w["detail"] for w in balances["warnings"] if w["kind"] == "gapped"]
+    assert "does not affect this answer" in on_balances, on_balances
+    [on_trades] = [w["detail"] for w in trades["warnings"] if w["kind"] == "gapped"]
+    [on_transactions] = [w["detail"] for w in transactions["warnings"] if w["kind"] == "gapped"]
+    assert "does not affect this answer" in on_trades, on_trades
+    assert "no further" not in on_trades, on_trades
+    # The transactions answer keeps the window phrasing, whichever branch of it this
+    # store reaches: it must not borrow the other-series sentence.
+    assert "does not affect this answer" not in on_transactions, on_transactions
+    assert on_transactions != on_trades
+
+
+def test_a_transactions_shortfall_does_not_reach_a_positions_answer(
+    initialized_config: Config,
+) -> None:
+    """`list_holdings` takes no window, and still reads no transaction.
+
+    Told "this request named no window, so it may reach past that date", a caller
+    asking about positions was told the shortfall might reach its rows.
+    """
+    _seed(initialized_config, granted=90)
+    _seed_investments(initialized_config)
+
+    wire = _call(initialized_config, "list_holdings")["structuredContent"]
+    listing = _call(initialized_config, "list_accounts")["structuredContent"]
+
+    [on_positions] = [w["detail"] for w in wire["warnings"] if w["kind"] == "gapped"]
+    [on_accounts] = [w["detail"] for w in listing["warnings"] if w["kind"] == "gapped"]
+    assert "does not affect this answer" in on_positions, on_positions
+    assert "does not affect this answer" not in on_accounts, on_accounts
+
+
+def test_the_primer_names_the_tool_that_serves_investment_activity() -> None:
+    """The one sentence an agent reads before any tool call, and the routing it needs."""
+    primer = mcp._instructions(cast(Config, mock.Mock(environment="sandbox")))
+    assert "`query_investment_transactions`" in primer
+    assert len(primer) <= mcp.INSTRUCTIONS_BUDGET
 
 
 def test_a_degraded_connection_warns_on_every_answer(initialized_config: Config) -> None:
@@ -2850,12 +3044,12 @@ def test_the_window_scoped_count_rides_beside_the_store_wide_one(
 def test_the_capped_tool_describes_its_cap_and_the_aggregate_does_not() -> None:
     """AC-9.4: a tool description states its conventions.
 
-    The note belongs to the two PAGED tools alone — `query_transactions` and
-    `balance_history` — and saying it on the aggregate would describe a cursor
-    that tool does not issue.
+    The note belongs to the PAGED tools alone — `query_transactions`,
+    `query_investment_transactions` and `balance_history` — and saying it on the
+    aggregate would describe a cursor that tool does not issue.
     """
     described = {d["name"]: d["description"] for d in mcp._tool_definitions()}
-    paged = ("query_transactions", "balance_history")
+    paged = ("query_transactions", "query_investment_transactions", "balance_history")
 
     for name in paged:
         assert mcp._TRUNCATION_NOTE in described[name], name
@@ -3129,7 +3323,7 @@ def test_the_cursor_is_advertised_on_the_capped_tool_and_nowhere_else() -> None:
     make the escape route unreachable to a caller reading the tool definition,
     which is the only thing an agent reads.
     """
-    paged = ("query_transactions", "balance_history")
+    paged = ("query_transactions", "query_investment_transactions", "balance_history")
     for name in paged:
         assert "cursor" in mcp._permitted_arguments(name), name
     for name in _every_tool_except(*paged):
@@ -3255,6 +3449,7 @@ _LIVE_CALLS: tuple[tuple[str, dict[str, Any]], ...] = (
     ("list_holdings", {}),
     ("balance_history", {"since": "2020-01-01", "until": "2030-12-31"}),
     ("query_transactions", {"since": "2020-01-01", "until": "2030-12-31"}),
+    ("query_investment_transactions", {"since": "2020-01-01", "until": "2030-12-31"}),
     ("money_summary", {"since": "2020-01-01", "until": "2030-12-31"}),
     ("get_pipeline_health", {}),
     ("get_coverage_report", {}),

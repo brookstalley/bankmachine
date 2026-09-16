@@ -51,3 +51,7 @@ logs/
 .env
 .env.*
 !.env.example
+
+# The gate writes the pre-swap default keychain here before it swaps, so a run
+# killed mid-suite can be repaired by the next one. Removed on a clean exit.
+.bankmachine-keychain-restore

@@ -1,6 +1,6 @@
 [project]
 name = "bankmachine"
-version = "0.1.0"
+version = "0.2.0"
 description = "Read-only local-first personal finance datastore and MCP server. It never moves money."
 readme = "README.md"
 # Matches `.python-version`, because that is the only interpreter anything here
@@ -8,6 +8,8 @@ readme = "README.md"
 # ever tested. Widen it when a CI matrix exercises the range, not before —
 # `tests/preferences/test_python_floor_is_exercised.py` holds the two together.
 requires-python = ">=3.14"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
     "certifi>=2026.7.22",
     "keyring>=25",
@@ -17,9 +19,25 @@ dependencies = [
     "urllib3>=2",
 ]
 
-# No `authors` field. The published engine carries no operator identity —
-# `tests/preferences/check-no-personal-data.sh` enforces that against every pushed commit,
-# and `uv init` writes the git-config name here by default.
+# No `authors` field. `uv init` writes the git-config name here by default, and this
+# file has no reason to carry it.
+#
+# 🔴 `LICENSE` DOES name a copyright holder, and that is not an exception being
+# smuggled — it is a different role. The identity this repo keeps out is the
+# OPERATOR's: whose accounts these are, at which institutions, holding what.
+# That is what `tests/preferences/check-no-personal-data.sh` matches on, and it is
+# the leak that actually happened here. A copyright holder is the AUTHOR, and an
+# MIT grant with no one granting it is not a licence.
+#
+# 🔴 The guard BLOCKED that line, and the conflict was real rather than a
+# misconfiguration: the norm reads *no operator name in any commit reaching a
+# remote*, and a licence names its author. It passes now because of a **bounded
+# exception** — the guard strips an author's name from a copyright notice in
+# `LICENSE` and nowhere else, on the same reasoning it already strips
+# identity-owned `owner/repo` slugs. The exception, its three narrowing axes and
+# its `[DECISION: …]` are recorded in `.prawduct/artifacts/project-preferences.md`;
+# its cases live in `tests/preferences/check-no-personal-data.selftest.sh`.
+# Do not read the pass here as "the name was never a token" — it is.
 
 [project.scripts]
 bankmachine = "bankmachine.__main__:main"
@@ -33,6 +51,10 @@ dev = [
     "hypothesis>=6",
     "mypy>=1.11",
     "pytest>=8",
+    # Parallel test execution. Invoked as `-n auto` from `scripts/check.sh` and
+    # nowhere else -- deliberately NOT from `addopts`; the reason is beside that
+    # key below.
+    "pytest-xdist>=3",
     # Floor raised from >=0.6 on 2026-09-07: the tree is formatted against 0.16's
     # rules, and 0.6 formats several files differently. A floor that predates the
     # formatting it is meant to reproduce invites a churn diff on any fresh resolve.
@@ -96,4 +118,21 @@ markers = [
     # honest; `uv run pytest -m sandbox` makes the live calls deliberately.
     "sandbox: makes live calls to the aggregator's sandbox environment",
 ]
+# 🔴 NO `-n` HERE, AND THAT IS LOAD-BEARING. `addopts` applies to every pytest
+# invocation, including ones nobody had in mind when they edited this line.
+#
+# `tests/preferences/verify_norms_go_red.py` is the case that decides it. It is
+# not collected by pytest: it mutates a source file, shells out to run ONE test,
+# restores, and repeats -- once per norm case. With `-n auto` here, each of those
+# invocations would spin up a whole worker pool to run a single test. It fails
+# slowly rather than loudly, so the natural response is to switch the harness off
+# rather than find the interaction, which costs the repo its norm-break guard.
+#
+# Two more, same root cause. `--pdb` under xdist is a debugger you cannot drive,
+# and it is reached by someone already debugging something else. And `-m sandbox`
+# -- the one hazard that leaves this machine -- would fan LIVE aggregator calls
+# out across workers, into rate limits and the connection cap.
+#
+# Parallelism belongs on the invocation that wants it. `scripts/check.sh` passes
+# `-n auto`, which is the full-suite run and none of the cases above.
 addopts = "-m 'not sandbox'"

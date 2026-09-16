@@ -34,6 +34,376 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-16: The balance reconciliation the product has been claiming, finally computed
+
+<!-- prawduct: scope=reconciliation-and-status -->
+
+**Why:** AC-11.2 says the change in an account's balance over an interval equals the sum of the
+transactions recorded in it. Two docstrings and a `## Direction` norm have asserted it since the
+schema was frozen and nothing computed it, so the product was making a claim it had never checked.
+
+**What shipped:** `query._account_reconciliation`, a third one-producer fact beside
+`_account_coverage` and `_account_lifecycle`, reported per account on `get_coverage_report` —
+`reconciliation_state`, `residual_minor_units`, the interval counts and the itemized
+`unreconciled_detail` with a cause per interval. Two warning kinds (`balance_unreconciled`,
+`reconciliation_not_applicable`) with their guidance and contract rows. Chunk 02 of
+`build-plan-reconciliation-and-status.md`; `bankmachine status` (Chunk 03) reads this producer.
+
+**The foreign-API finding it rests on**, recorded in `api-notes-plaid.md` §§27-29: the aggregator's
+`current` is the **settled** balance, so the interval sum counts posted rows only. Established from
+SDK source — `available` defines itself as `current` less pending outflows plus pending inflows, for
+depository and credit accounts alike, and that arithmetic only holds if `current` has not already
+netted them. The vendor says *"typically"*, and the record says so rather than restating it as a
+guarantee. The `pending_holds` residual cause was removed as a consequence: with both sides
+excluding pending there is no residual for it to explain.
+
+**The measurement, which is the point rather than a formality.** Read against this deployment's
+**production** store on 2026-09-16 — real institutions, not the aggregator's sandbox dataset, which
+is what every earlier measurement in this log was taken against.
+
+**Across every interval that store can currently support, no residual is `unexplained`.** One
+interval carried a nonzero residual and the cause vocabulary explained it: that account's
+transactions feed is behind its balance snapshots, so the interval is attributed `coverage_gap`.
+`get_coverage_report` raises no `balance_unreconciled` warning over the store, which is the correct
+answer — the kind fires only where no coverage gap and no truncated window accounts for the
+difference, and an emitter selecting on any nonzero residual (the first implementation) warned on
+precisely the residuals the cause vocabulary had just explained.
+
+🔴 **The figures stay out of this file, and that is the norm rather than discretion.**
+`project-state.yaml`'s signed REPOSITORY SCOPE decision admits no operator roster, account detail or
+balance into a tracked file. That decision is **unconditional** — it binds whatever the remote's
+visibility is, and this entry deliberately rests on it rather than on any claim about that
+visibility, which changes without the records knowing. The counts, the magnitude
+and the interval dates live in `deployment/reconciliation-measurement.md`, beside the history audit
+and the roster, with the command to re-derive them. 🔴 Note for anything that measures against this
+store next: `check-no-personal-data.sh` does **not** catch this class — it matches roster and
+identity tokens, and a roster composition or an amount matches none of them.
+
+🔴 **Honest confidence: this is a weak measurement, and the weakness is the store's, not the
+method's.** It holds three balance snapshots, so each reconciled account contributes two intervals
+over a few days. Nothing here exercises a long history, a re-link overlap or a duplicated hold — the
+failure shapes `reviews-2026-09-09`'s finance review names as each having a characteristic
+magnitude. What can be said is the sentence above and no more. The check gets stronger on its own as
+snapshots accumulate, and it now runs on every call rather than on nobody's initiative.
+
+**Also found while reading the SDK for this**, both in `api-notes-plaid.md`: pending amounts are
+vendor-mutable and not universally provided, so excluding them is what keeps a computed interval
+closed as well as correct; and the balance-to-transaction freshness this reconciliation assumes is
+bought by the Item having Transactions enabled rather than by the endpoint called — a condition this
+product satisfies and an investments-only Item does not.
+
+## 2026-09-16: The suite gets its own keychain, and stops spending nine minutes inside securityd
+
+<!-- prawduct: scope=fast-keychain-suite -->
+
+**Why:** brookstalley/bankmachine#131. `-n auto` had bought only 21% (645s → 510s) at **126% CPU on
+ten cores**, which said the suite was not CPU-bound. It was blocked on the macOS keychain daemon,
+and the A/B that isolates it was run on one machine at one commit with one `-n auto`:
+
+| default keychain | suite | per `set`+`get`+`delete` |
+|---|---|---|
+| the developer's login keychain, populated | **542s** | **332ms** |
+| a freshly created empty keychain | **56s** | **12ms** |
+
+1264 of the tests hold `keychain_service` against the real keychain, so most of the wall clock was
+`securityd`, and ten workers simply queued on one daemon. Nothing about the earlier CI figure was
+wrong, but it was confounded by runner hardware and three skipped tests; this is the same machine
+and the same commit with one variable moved.
+
+**What changed:** `scripts/check.sh` creates an empty keychain, makes it the default for the length
+of the run, and puts the previous one back. The original stays in the **search list**, so reads of
+anything already stored still resolve — `keyring` writes to the default and reads through the list.
+
+🔴 **Why not target a keychain per process, which would need no swap at all.** `keyring` still
+exposes `KEYCHAIN_PATH` and a `Keyring.keychain` attribute, and as of **keyring 25.7 the macOS
+backend ignores both** — it warns *"Specified keychain is ignored. See #623"*. Measured rather than
+read: a probe pointed at an empty keychain by path ran at **321.9ms**, indistinguishable from the
+login keychain, so it had gone there anyway. The default keychain is the only lever that works.
+
+🔴 **Why not fake `keyring` instead**, which was #131's original proposal. `secrets.py` is the only
+module that imports it (AC-10.1) and the security model leans on genuine keychain behaviour; a fake
+would stop 1264 tests exercising the real integration and reopen the question of which ones keep it.
+**A dedicated keychain is still a real keychain**, so the speed costs none of that coverage — which
+is why the tension that held #131 at `stage: design` did not need resolving.
+
+🔴 **The swap changes a user-level setting, so it is self-healing.** A shell trap covers a normal
+exit, Ctrl-C and SIGTERM; it cannot cover SIGKILL. So the pre-swap default is written to a
+gitignored state file **before** the swap, and a run that finds the default still pointing at the
+test keychain repairs it and says so loudly rather than layering a second swap on top — which would
+record the test keychain as the thing to restore to and strand the real default permanently. With no
+state file it falls back to the conventional login keychain and prints the manual command.
+
+All four paths were exercised by hand rather than argued: a normal exit restores; a `kill -9`
+mid-suite leaves it stale, as designed; the next run detects, repairs, re-swaps and restores; and the
+worst case — stale default *and* no state file — takes the fallback. CI already does this
+(`ci.keychain`), and the restore captures whatever was default, so it puts CI's back rather than
+assuming a login one.
+
+**The remaining exposure, stated plainly and without softening it:** for the length of the run,
+another process writing to the *default* keychain writes to the temporary one instead. Reads are
+unaffected: the original search list is kept and still searched. 🔴 Neither teardown path deletes the
+keychain, because for this product the thing that could land there is the datastore key, which
+`secrets.py` documents as unrecoverable. A leftover is removed at the **start of a later run**, so
+the deletion is attributable to a command the operator just ran rather than happening invisibly at
+the end of the previous one.
+
+🔴 **Only some of those removals are announced, and that is a trade worth stating.** The banner fires
+when the previous run did not exit cleanly — a **proxy** for the risk, not a measurement of it.
+Whether a foreign process wrote during the window is independent of how the run ended, so a write
+absorbed by a run that exited normally is deleted at the next start with no warning.
+
+Both alternatives were tried and are worse. Announcing every removal means announcing on **every**
+run, since after the first there is always a leftover — and a banner that fires every time is the one
+the operator stops reading, which costs more than it buys for the single interrupt window that
+exists. Measuring the risk directly does not discriminate either: `security dump-keychain` reads a
+keychain's contents without prompting, but the suite's own tests leave entries behind (13 after a
+clean run), so "non-empty" is true every time too. What bounds the exposure instead is its size — a
+window of roughly the suite's runtime, reads unaffected — and `BANKMACHINE_NO_KEYCHAIN_SWAP=1`,
+which declines the mechanism entirely. `security-model.md` § *The gate's temporary keychain* carries
+the same statement where a reader of
+the security model meets it, and `docs/README.md` carries the short form beside the command that
+hands a contributor the gate — which is the surface someone actually reads before running it. The
+temporary keychain is
+created with a random password rather than an empty one, so a secret that does land there before
+deletion is not sitting in a keychain anyone can open. The window is now ~56s rather than ~542s.
+
+## 2026-09-16: The engine is MIT licensed, and the guard learns that an author is not an operator
+
+<!-- prawduct: scope=mit-licence -->
+
+**Why:** the repository had no `LICENSE` and no license metadata, which makes it "all rights
+reserved" by default — the one state nobody intends for a tool built to be published. MIT, chosen by
+the owner over Apache-2.0 after the patent-grant tradeoff was priced: Apache's express grant is the
+one clause that materially differs in a patent-dense domain, and the owner took the simpler licence
+knowing that.
+
+**What changed:** `LICENSE`, plus the PEP 639 pair in `pyproject.toml` (`license = "MIT"`,
+`license-files`). Verified against the **built** metadata rather than assumed — `uv_build` emits
+`License-Expression: MIT` and `License-File: LICENSE`. The README's Licence section said "No licence
+has been chosen yet, so default copyright applies," which was false the moment `LICENSE` landed, and
+now carries one sentence of substance about what the missing verification gate means for trusting the
+numbers.
+
+🔴 **The leak guard blocked the copyright line, and the conflict was real rather than a bug.** The
+norm reads *no institution, account, balance, **operator name** or machine name in any commit
+reaching a remote* — and a licence names its author. Both could not hold. Resolved on the terms the
+guard had already set for itself: it strips identity-owned `owner/repo` slugs because *"the owner
+segment is inherently public the moment this repository is"*, and an author's name is public by the
+same construction once the repo ships under a licence bearing it. What the guard protects is the
+**operator's** identity — whose accounts, at which institutions — which is a different fact about a
+different role.
+
+The carve-out is narrow on three axes: the file must be `LICENSE`, the line must be a copyright
+notice, and **only IDENTITY-class tokens are stripped**, so an institution named on that same line
+still fails. That last one required tracking the identity class separately from the roster class;
+merged-only would have exempted a bank. Each axis carries its own negative control in `self_test`,
+because a carve-out with only a positive leg passes just as well when it exempts the whole file, and
+all three were seen red by hand against **tracked** files — an untracked probe reports a false clean,
+which is how the conflict was missed the first time. Recorded as a bounded exception with its
+`[DECISION: …]` in `project-preferences.md`.
+
+**The licence is asserted in four places and nothing derived any of them from any other**, so
+`tests/preferences/test_the_licence_is_stated_once.py` pins them together. It finds its subjects
+with `git ls-files` rather than from a list: the first version named the three it had been told
+about, and `docs/README.md` — the fourth — still said *"No licence has been chosen yet, so default
+copyright applies"* while the other three said MIT. A doc added later is covered without editing the
+test. The cases assert **agreement**, never MIT, so relicensing takes one deliberate edit per site
+and goes green rather than requiring a test be deleted; and a separate case asserts the root README
+has a licence section **at all**, which the agreement case cannot catch — with the section gone
+there is nothing left to disagree.
+
+## 2026-09-16: What the store already claims about its own balances, written down as a requirement
+
+<!-- prawduct: scope=reconciliation-and-status -->
+
+**Why:** AC-11.2's formula — *change in balance equals sum of transactions* — is cited in the
+operator-signed norm's own rationale, in the frozen core-schema migration, and in the balance
+deriver, as the reason the single sign convention is worth having and the reason `balance_class`
+partitions reporting rather than arithmetic. **Nothing has ever computed it.** Two design decisions
+have rested on an unverified premise since the schema was frozen. Chunk 01 of
+`build-plan-reconciliation-and-status.md`; brookstalley/bankmachine#70 and #96 stay open until the
+code lands.
+
+**What changed, and it is requirements rather than code.** AC-11.2 is amended in three ways, and the
+first is a **substitution** rather than a narrowing: the clause specified an *absolute* check — every
+transaction ever, summed, equalling today's balance — which is **unsatisfiable for every account in
+this store**, because the history window is truncated at its start and the balance is not. Summing a
+truncated history against a complete balance yields a permanent residual on every account, forever.
+The replacement is an interval delta between consecutive balance snapshots, which needs only the two
+snapshots and what lies between, so truncation bounds how far back the check reaches instead of
+whether it works at all. The tolerance is now **zero** — stricter than the "documented tolerance" it
+replaces, because a forgiveness band is the averaging-away the clause already forbade. And investment
+accounts are **excluded and named as excluded**, on a measurement that predates this work:
+`api-notes-plaid.md` §23 records the aggregator's own canned data disagreeing with itself by −1493.65
+on a 401k with no margin loan to explain it.
+
+New: **AC-11.2a** (the scope correction as a requirement, since the overclaim is the recorded
+justification for the sign convention), **AC-11.6a** (the expected inventory gets a machine-readable
+form, with absent ≠ pass and unreadable ≠ absent kept distinct), and **AC-18.1–18.3** (the
+data-sanity surface, as a new §7 subsection).
+
+🔴 **A `## Direction` norm is amended, and the timing is stated because it is the shape that should
+draw scrutiny.** The operator-signed norm's *Why* claimed the reconciliation holds "for every
+account". Its **statement** is untouched — every stored amount is still operator-signed — and what is
+corrected is a consequence the rationale claimed. A norm amended in the same cycle as the code it
+governs is how a norm gets laundered to bless its author's design; the defence is that the falsifying
+measurement is not this cycle's. §23 landed four days earlier on unrelated work, and this amendment
+only reads what was already written down. Three further sites track the norm and are corrected to
+match — counted by search rather than from memory, after the first pass said three and missed one.
+
+## 2026-09-16: The suite runs in parallel, and the measurement says that is not where the time goes
+
+<!-- prawduct: scope=pytest-xdist -->
+
+**Why:** 1896 tests took about eleven minutes serially, on a ten-core machine. Closes
+brookstalley/bankmachine#44, whose safety analysis was already done and already right: the suite is
+parallel-safe because isolation is per-test — a uuid keychain service, a `tmp_path` config, an
+autouse logging fixture that restores per test — and because xdist forks processes, so the
+`monkeypatch.setattr` sites each get their own module table.
+
+**What changed:** `pytest-xdist` is a dev dependency, and `scripts/check.sh` passes `-n auto`. CI
+already invokes that script, so one edit covers the local gate and CI both.
+
+🔴 **`-n auto` is deliberately NOT in `addopts`, and that placement is the whole of #44's finding.**
+`addopts` follows every pytest invocation in the repo, including ones nobody had in mind when they
+edited the line. `tests/preferences/verify_norms_go_red.py` shells out one single-test run per norm
+case; under `addopts` each would spin up a worker pool to run one test, failing slowly enough that
+switching the harness off looks like the fix — costing the repo its norm-break guard. `--pdb` would
+become a debugger nobody can drive, reached by someone already debugging something else. And
+`-m sandbox` would fan live aggregator calls across workers into rate limits and the connection cap,
+which is the one hazard here that leaves the machine. The reasoning sits beside `addopts` so the next
+person to reach for that key meets it first — and a test now pins the placement, because a rule whose
+only enforcement is the comment beside it decays to a comment. It reads `addopts` as TOML rather than
+as a line, since a multi-line array would otherwise carry `-n` on a line a scan never reads, which is
+the silent re-entry the case exists to block. It matches token PREFIXES rather than whole tokens, because `-n4` and `-nauto` are ordinary spellings that equality misses; `--no-header` cannot trip it, since every long option begins `--`. Seen red by hand against `-n auto`, `-n4`, `-nauto`, `--numprocesses=4` and a multi-line array, and seen green against `--no-header`.
+
+**Verified rather than argued:** the suite passes under `-n auto` with **the same count it passes
+serially** — that equality is the acceptance criterion, because a difference between the two would
+mean real shared state and would be a finding rather than a flake. 🔴 Stated as a relation and not as
+a number on purpose: this entry's own bundle then added the pinning test below and moved the absolute
+by one, and a reader comparing a fresh count against a stale literal would be sent hunting shared
+state that does not exist. `scripts/check.sh` states the criterion the same relational way. The go-red harness was run to completion: all 232 norm breaks still
+caught.
+
+🔴 **The win is 21%, and the measurement is the useful part of this entry.** 645s to 510s, at **126%
+CPU on ten cores** — roughly one and a quarter cores busy. The suite is not CPU-bound. A keychain
+`set`+`get`+`delete` round trip measures **311ms** against a **340ms** mean test time, and **1264 of
+1896** tests hold the `keychain_service` fixture against the real `securityd`, which serializes
+machine-wide; the workers queue on one daemon. That is about 393s of a 645s run, and no amount of
+process parallelism reaches it. Filed as **brookstalley/bankmachine#131**, which compounds with this
+rather than replacing it: once tests stop queueing there is finally work for ten cores to spread.
+
+Two costs were ruled out by measurement so nobody re-investigates them: SQLCipher key derivation is
+free here, because `connection.py` passes a raw hex key via `PRAGMA key = "x'…'"` and bypasses
+PBKDF2 (a keyed open is under 1ms), and creating a keyed store plus migration 002's DDL is ~8ms.
+
+## 2026-09-15: Warnings route to where the data lives, and stop calling a quiet account a fault
+
+<!-- prawduct: scope=investment-activity-e2e -->
+
+**Why:** with investment activity served, the warnings still described the store as if it were not.
+`query_transactions` and `money_summary` named every investment account "DATA NOT PRESENT", though
+its trades and positions were in the store. An account with nothing recorded on a connection whose
+sync had completed was called "DATA NOT PRESENT, never no activity", which an agent reported to the
+operator as a problem. And a transactions-grant shortfall on another connection was phrased against
+a trades or balances window as if it reached that answer.
+
+**What changed (chunk 03 of `build-plan-investment-activity-e2e.md`):**
+- New request-scoped warning kind `activity_in_another_feed`. The transactions tools name an account
+  with no transaction but with trades or positions under it, routing to
+  `query_investment_transactions` and `list_holdings`; `accounts_without_coverage` now names only
+  accounts with nothing in any feed, on every tool.
+- `accounts_without_coverage` separates two states. A connection that never completed a sync: data
+  not present. One that has: the store cannot tell an account with no activity from one whose
+  institution does not report it, so report no recorded activity, not a fault. (The aggregator lists
+  only the accounts a sync page touched, so it gives no signal either way.)
+- `gapped` on an answer that reads no transaction -- trades, balances, and positions from
+  `list_holdings` -- says the shortfall limits that connection's transactions and does not affect
+  this answer.
+- The server instructions name `query_investment_transactions`; coverage row and tool descriptions
+  point at it; the contract, client guide and warning guidance carry both kinds.
+- Carried from chunk 02's review: the trades tool's refusals are tested through the server; the
+  paging invariant is walked over varied window, account and type; the set of connections holding
+  transactions is read only when a connection could need it.
+
+**Tests added:** routing on `query_transactions` and `money_summary` as exact sets; both
+`accounts_without_coverage` states (`tests/test_account_coverage.py`); the shortfall on a trades answer
+and the primer naming the tool; no unmeasured caveat on tools other than health
+(`tests/test_mcp.py`); wire refusals and the scoped walk (`tests/test_investment_transactions.py`). Two
+#107 tests that asserted investment accounts are named as uncovered on the transactions tools now
+assert they are routed, per the plan's recorded decision.
+
+**From the cumulative review (`rev-20260915T012943Z-e8459632`):** the `balance_history` shortfall
+wording is tested; `no_data_in_any_feed`'s docstring and the window-coverage comment describe the
+routing rather than the reversed #107 rule; the shared `totals` description states the trades
+block's grouping (each tool must describe the key one way, since the envelope reference renders one);
+the reference lists a trade's `description`, `security_name` and `ticker` as third-party text and
+names the trades' own span in the window-clamp guidance; an unused test import is gone. From its verify pass (`rev-20260915T015907Z-bcca8df1`): the third-party-text rule now covers every institution-written field on every tool, positions included, and the past-coverage guidance names the trades' last day. Accepted with
+reasons: the third near-copy of the cursor code, the two feed parameters on `_answer`, and two notes. Go-red cases retargeted for the two
+replaced anchors and added for routing, the completed-sync wording and the series shortfall.
+
+## 2026-09-14: Investment activity is served, by `query_investment_transactions`
+
+<!-- prawduct: scope=investment-activity-e2e -->
+
+**Why:** an investment account's activity reaches the aggregator on its own feed, so an
+investment-only institution holds hundreds of trades and no transaction. They were stored and
+counted per account, and no tool returned one, so a production agent asked for its investment
+activity answered that none was available.
+
+**What changed (chunk 02 of `build-plan-investment-activity-e2e.md`):**
+- New tool `query_investment_transactions` (`src/bankmachine/query_investments.py`): trades newest
+  first, windowed on `trade_date` and clamped to the trades' own span, filtered by account and
+  `investment_type`, capped and keyset-paged under a new cursor scheme (`envelope.TradeCursor`) that
+  refuses a transactions or balance-series cursor and a cursor issued for a different request. Removed
+  trades are excluded from rows, counts and totals. `totals` groups the whole request by currency,
+  type and subtype and is never netted into one figure. An unknown type is refused naming the types
+  the store holds.
+- `WindowSeries` gains `investment_transactions`. The contract, the requirements' §5 table, the
+  README and the client guide count eight of nine tools built; the contract tables every new field.
+- The envelope reference's cannot-answer list no longer says trades are unserved; it keeps tax lots.
+- Carried from chunk 01's review: the health answer reads the set of connections holding transactions
+  once and hands it to its warnings, so a sync landing between two reads cannot make a row and its
+  warning disagree; the test that the unmeasured caveat is gone now has a positive control on the
+  wording it matches; a first transaction arriving is shown to move a connection out of
+  `no_transactions_to_measure`; and three texts that said such a connection's answers "cannot be
+  short" now say so of its transactions feed only.
+
+**Tests added:** `tests/test_investment_transactions.py` — every recorded trade with the published
+keys; a walk at five page sizes reads each trade once and matches the totals; totals over the whole
+request; removed trades; the window clamp; the type filter and its refusal; an unknown account;
+cursor refusals across all three schemes; a missing store; and a cursor round-trip through the real
+server. Existing tool-set enumerations in `tests/test_mcp.py` and `tests/test_account_lifecycle.py`
+name the new tool, and the go-red
+case for the cannot-answer claim anchors on the new wording.
+
+## 2026-09-14: Two warnings that could never be true are gone
+
+<!-- prawduct: scope=investment-activity-e2e -->
+
+**Why:** a production agent session was told about problems the store did not have. An
+investment-only connection completed its transactions backfill with no transaction, so the
+measurement behind `granted_history_days` had nothing to count and never ran, and every answer
+carried a `partial` caveat saying its window "is measured when the initial backfill completes" --
+about a backfill that had completed. Separately, a request with `since` and no `until` was told its
+window "reaches past today, and that tail is unanswered", though an open `until` resolves to today.
+A warning describing a fault that is not there teaches the reader to skip the ones that are.
+
+**What changed (chunk 01 of `build-plan-investment-activity-e2e.md`):**
+- `get_pipeline_health` rows carry `granted_history_status`: `measured`, `not_yet_measured`, or
+  `no_transactions_to_measure`. The last is a connection whose `last_success_at` is stamped (the
+  aggregator reported the history complete) and which holds no transaction row. The unmeasured
+  `partial` caveat fires only for `not_yet_measured`. Derived at read time: no schema change, no
+  derivation bump, and it clears itself once a transaction arrives and a complete sync measures the
+  window.
+- The `gapped` detail says "reaches past today" only for an explicit `until` after today.
+
+**Tests added:** the three statuses and the absent caveat, including a connection that never completed
+a backfill staying `not_yet_measured` (`tests/test_mcp.py`); a start with no end and an end after today
+(`tests/test_query_window.py`). Each was seen red with its fix reverted. The go-red harness's AC-1.3a
+case now anchors on the status check that replaced the null test, and a second case breaks the
+completed-backfill branch; both were seen red.
+
 ## 2026-09-14: A transactions feed that finishes empty is recorded as landed
 
 <!-- prawduct: scope=empty-complete-transactions-page | release=v0.1.0 -->

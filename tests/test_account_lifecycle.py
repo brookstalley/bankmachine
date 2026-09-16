@@ -458,7 +458,12 @@ def test_the_published_vocabulary_is_the_one_the_server_computes_from() -> None:
         if "lifecycle" in definition["outputSchema"]["properties"]["rows"]["items"]["properties"]
     }
 
-    assert set(published) == {"list_accounts", "list_holdings", "get_coverage_report"}
+    assert set(published) == {
+        "list_accounts",
+        "list_holdings",
+        "get_coverage_report",
+        "query_investment_transactions",
+    }
     for name, enum in published.items():
         assert enum == list(query.LIFECYCLE_VALUES), name
 

@@ -605,6 +605,25 @@ def test_a_window_inside_coverage_says_the_shortfall_did_not_touch_this_answer()
     assert EARLIEST.isoformat() in notice
 
 
+def test_a_start_with_no_end_does_not_claim_to_reach_past_today() -> None:
+    """🔴 An open `until` resolves to today, so nothing in the window lies past it.
+
+    The request shape an agent sends most often -- "since January" -- was told
+    its window "reaches past today, and that tail is unanswered". That sentence
+    describes a fault this answer does not have, and a reader who has been told
+    about a fault that is not there learns to skip the one that is.
+    """
+    notice = _gapped(date(2026, 1, 1), None)
+    assert "past today" not in notice, notice
+    assert "wholly inside" in notice
+
+
+def test_an_end_after_today_still_says_the_tail_is_unanswered() -> None:
+    """The other half: a caller who asked past today is told so."""
+    notice = _gapped(date(2026, 1, 1), date(2027, 1, 1))
+    assert "reaches past today" in notice
+
+
 def test_a_window_crossing_the_leading_edge_counts_the_days_it_reaches_past() -> None:
     """A number the caller can act on, not just a direction."""
     notice = _gapped(date(2024, 1, 1), date(2026, 2, 1))

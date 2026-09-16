@@ -110,11 +110,12 @@ creates one, because an empty encrypted store would answer every question with a
 | `list_holdings` | every investment position, as its account's latest capture recorded it, with the date of the price it was valued at, and a per-currency totals block that decomposes balances rather than adding to them |
 | `balance_history` | net worth over time and each account's balance on the days one was captured, paged newest first; a day not every account was captured on has no net-worth row, and says why; an account no longer active counts only through its last capture, and the answer names that day and the balance that stopped counting, and the account that took it over where a re-link replaced it |
 | `query_transactions` | transactions in a date window, newest first |
+| `query_investment_transactions` | an investment account's activity — buys, sells, dividends, contributions, withdrawals and fees — in a date window, newest first, paged, with totals by currency, type and subtype |
 | `money_summary` | money in and out over a window, grouped by category, merchant, account, month or flow class — split by flow class under every grouping, and carrying the totals block described below |
 | `get_pipeline_health` | every connection, when it last synced, what is wrong |
-| `get_coverage_report` | per account: what data exists, and how long it has been silent |
+| `get_coverage_report` | per account: what data exists, how long it has been silent, and whether the balance and the recorded transactions agree |
 
-🔴 **Seven of the eight specified tools.** The ones missing from this table — `find_recurring` —
+🔴 **Eight of the nine specified tools.** The ones missing from this table — `find_recurring` —
 are not built yet; the descope is recorded in `.prawduct/artifacts/api-contract.md`.
 
 🔴 **The verification surface is now whole.** `get_pipeline_health` tells you whether the pipeline
@@ -194,6 +195,15 @@ with no new activity. `expired_holds` counts the ones that dropped off without e
 `settled_from_hold` the ones that became real transactions in this window; those two are what let
 you tell a total that shrank because a hold expired from one that shrank because data is missing.
 All six are always present and zero rather than absent.
+
+**`get_coverage_report` rows also say whether the stored data balances.** `reconciliation_state`
+says whether the check could run for that account and why not when it could not;
+`residual_minor_units` is the change in its balance less the transactions recorded over the same
+interval, which should be `0`; `unreconciled_detail` names each interval that does not balance, with
+a cause. 🔴 **Call this before quoting a figure from `money_summary` or `query_transactions`** — a
+nonzero residual means those answers are off by that amount for that account, and they raise no
+warning of their own about it. Investment accounts are excluded by construction and say so; their
+null residual is the correct answer, not a missing one.
 
 **`get_coverage_report` rows carry `stranded_holds`** — holds still outstanding past any ordinary
 authorisation lifetime, with `oldest_stranded_hold` naming the one to go look at (null when there
@@ -290,7 +300,10 @@ describes the **pipeline**, so it rides every response equally:
   2026-09-08: a sandbox connection to `ins_109511` granted 722 days against 730 requested.)*
 - `partial` — something is not yet known, such as a granted window that has not been measured, or
   one sync domain of a healthy connection that has never landed in full. 🔴 A null granted window
-  means *not yet measured*, never *no shortfall*.
+  means *not yet measured*, never *no shortfall* — unless `granted_history_status` reads
+  `no_transactions_to_measure`: that connection's backfill completed with no transaction, so
+  nothing in that feed can have been cut, and the unmeasured-window `partial` does not ride the
+  answer for it. Its other feeds still report their own state.
 - `derivation_version_mismatch` — some stored rows were derived by a different version of the
   normalization logic than this server runs, so a figure over them may differ from the one this
   build would compute from the same archive. `detail` says whether they are older (the operator runs
@@ -299,7 +312,12 @@ describes the **pipeline**, so it rides every response equally:
   versions.
 
 The second group describes **this request**, and fires only when the request actually crosses the
-boundary it names — so the *absence* of one is information too:
+boundary it names — so the *absence* of one is information too, **with one exception**:
+`balance_unreconciled` and `reconciliation_not_applicable` are sent by `get_coverage_report` alone,
+so on any other tool their absence tells you nothing. 🔴 An account whose balance and recorded
+transactions disagree makes a `money_summary` or `query_transactions` figure wrong by that amount
+with **no warning on that answer** — call `get_coverage_report` and read `reconciliation_state`
+before you quote a figure. For every other kind below, absence is information:
 
 - `rule-applied` — rows were excluded from an aggregate on purpose, so the total will not
   reconcile against a raw sum over the same window. 🔴 `detail` names which rows and why, and the
@@ -319,12 +337,14 @@ boundary it names — so the *absence* of one is information too:
   unread, and what to do about it.
 - `counted_during_change` — a write landed between the row read and the count read, so the two
   describe moments a fraction apart. The rows are accurate as of the `as_of` stamp.
-- `accounts_without_coverage` — an account in scope has **no data** for what the tool answers from.
-  Its empty result means *data not present*, never *no activity*; call `get_coverage_report` for
-  the per-account picture. On `list_accounts` and `get_coverage_report` it names an account with
-  nothing in any feed. On `query_transactions` and `money_summary` it names an account with no
-  transaction, so an investment account can carry it there — call `list_holdings` for what such an
-  account holds.
+- `accounts_without_coverage` — an account in scope has **nothing recorded in any feed**. Where its
+  connection has never completed a sync, an empty result means *data not present*, never *no
+  activity*. Where it has, the store cannot tell a quiet account from one its institution does not
+  report, and says so: report *no recorded activity*, not a fault. `get_coverage_report` gives the
+  per-account picture.
+- `activity_in_another_feed` — on `query_transactions` and `money_summary`, an account in scope
+  holds no transaction because its activity is in the **investments feed**. `detail` routes to
+  `query_investment_transactions` for its trades and `list_holdings` for its positions.
 - `account_no_longer_active` — an account in scope is closed, or its institution stopped listing it.
   Its balance froze on the date the row carries and is **not a fact about today**. Totals over
   balances *include* it and say by how much, so quote that magnitude beside the total — the reader
@@ -353,6 +373,16 @@ boundary it names — so the *absence* of one is information too:
 - `sign_convention_unverified` — a contributing connection was measured against the sign convention
   and its amounts run the wrong way, so on that feed income reads as spending. Name the connection
   and say its direction is in question; do **not** correct it yourself.
+- `balance_unreconciled` — an account in scope has an interval whose balance movement the recorded
+  transactions do not explain, and nothing else accounts for the difference. 🔴 This is the one
+  warning that is **not** about missing or narrowed data: the numbers agree with each other and
+  disagree with the institution, so an answer carrying it can be well-formed and wrong by the
+  magnitude named. Report the residual beside any figure from that account; read
+  `unreconciled_detail` on the `get_coverage_report` row for the intervals and their causes.
+- `reconciliation_not_applicable` — an account in scope is an investment account, whose balance
+  moves with the market, so the balance check does not apply to it. Its null residual is the
+  correct answer rather than a missing one. Do **not** report it as unverified; check such an
+  account through `list_holdings` and `query_investment_transactions` instead.
 
 **Amounts are integer minor units** (cents for USD) and the field names say so — `amount_minor_units`,
 `current_minor_units`. They are signed from the account holder's point of view: negative is money

@@ -38,9 +38,17 @@ normalizing to this convention is the connector's job.
 One convention rather than one per account type is what keeps two later things
 from needing a special case: net worth is a plain sum, and AC-11.2's
 reconciliation is "change in balance equals sum of transactions" for every
-account. `accounts.balance_class` partitions assets from liabilities for
-*reporting*, never for arithmetic -- a misclassification mislabels a breakdown,
-where a wrong sign would produce a wrong total.
+NON-INVESTMENT account. `accounts.balance_class` partitions assets from
+liabilities for *reporting*, never for arithmetic -- a misclassification
+mislabels a breakdown, where a wrong sign would produce a wrong total.
+
+🔴 An investment account's balance moves with the market rather than with
+recorded activity, so no transaction sum reconciles it, and reconciling it
+against its own positions was measured and refused (`api-notes-plaid.md` §23:
+the aggregator's own canned 401k disagrees with the sum of its holdings by
+-1493.65, with no margin loan to explain it). AC-11.2 excludes those accounts
+and says so in the answer rather than omitting them. The convention above still
+governs their amounts -- what does not reach them is the reconciliation.
 
 Two balance columns are deliberate exceptions and hold magnitudes as the source
 reports them: `available_minor` (available funds, or available credit) and

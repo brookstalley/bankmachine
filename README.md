@@ -6,7 +6,7 @@ serves that data read-only to an AI agent over [MCP](https://modelcontextprotoco
 against Plaid's **sandbox**, which is free fake data, or **production**, which is your real
 accounts. It never moves money, and it does no budgeting, categorization or advice.
 
-**Status:** enrollment, sync and the MCP server work end to end. Seven of the eight specified MCP
+**Status:** enrollment, sync and the MCP server work end to end. Eight of the nine specified MCP
 tools are serving. Not built yet: scheduling (you run the sync yourself), the verification gate,
 and file import. It is built for one person on one Mac.
 
@@ -27,7 +27,7 @@ your Plaid account.
 You need [uv](https://docs.astral.sh/uv/). It fetches the pinned Python 3.14 for you.
 
 ```sh
-git clone <your remote> && cd bankmachine
+git clone https://github.com/brookstalley/bankmachine.git && cd bankmachine
 git config core.hooksPath .githooks   # per clone: turns on the pre-push guards
 uv sync
 ```
@@ -155,4 +155,10 @@ uv run bankmachine store backup ~/backups/bankmachine-$(date +%F).db
 
 ## Licence
 
-No licence has been chosen yet, so default copyright applies.
+[MIT](LICENSE).
+
+It comes with no warranty, and that is not boilerplate here: this reads your real financial data,
+and the checks that would tell you whether what it holds is complete and self-consistent are
+[still being built](docs/system-requirements.md) — § 7 names them, and the verification gate is not
+finished. Reconcile against your institution's own figures before you rely on any number this
+produces.

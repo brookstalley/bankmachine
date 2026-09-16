@@ -172,11 +172,62 @@ class _ConnectionFreshness:
     stale: bool
 
 
+#: What a connection's `granted_history_days` is, named because null means two
+#: different things. `measured` carries a number. `not_yet_measured` is null
+#: because nobody has counted yet. `no_transactions_to_measure` is null because
+#: the backfill completed and carried no transaction, so there is nothing for a
+#: grant to have cut -- an institution whose accounts post nothing to this feed.
+GRANTED_HISTORY_STATUSES: tuple[str, ...] = (
+    "measured",
+    "not_yet_measured",
+    "no_transactions_to_measure",
+)
+
+
+def _connections_holding_transactions(conn: SAConnection) -> frozenset[int]:
+    """Every connection with at least one transaction row, removed rows included.
+
+    Removed rows count because the measurement they stand in for counts them:
+    `sync_run._record_granted_window` takes the oldest `posted_date` across the
+    connection's transactions without filtering removals, so a connection whose
+    only rows were removed still had something to measure.
+    """
+    return frozenset(
+        int(connection_id)
+        for (connection_id,) in conn.execute(
+            select(accounts.c.connection_id)
+            .select_from(transactions.join(accounts))
+            .where(accounts.c.connection_id.is_not(None))
+            .distinct()
+        ).all()
+    )
+
+
+def _granted_history_status(
+    *, granted: object, backfill_complete: bool, holds_transactions: bool
+) -> str:
+    """Which of `GRANTED_HISTORY_STATUSES` a connection's grant is in.
+
+    🔴 `backfill_complete` is the CONNECTION's `last_success_at`, never a sync
+    domain's. The connection stamp is written only once the aggregator reports
+    the history is in; a transactions domain can be stamped by a page that
+    carries a cursor at any status, so keying on it would call a connection
+    mid-backfill, with no transaction yet, one that has none to measure.
+    """
+    if granted is not None:
+        return "measured"
+    if backfill_complete and not holds_transactions:
+        return "no_transactions_to_measure"
+    return "not_yet_measured"
+
+
 def _pipeline_warnings(
     conn: SAConnection,
     now: UtcInstant,
     window: Window | None = None,
     derivation_versions: tuple[int, ...] | None = None,
+    holding: frozenset[int] | None = None,
+    answers_transactions: bool = True,
 ) -> list[Caveat]:
     """Everything wrong with the data underneath any answer.
 
@@ -238,6 +289,11 @@ def _pipeline_warnings(
         )
 
     freshness: dict[int, _ConnectionFreshness] = {}
+    # 🔴 `get_pipeline_health` hands in the set its rows' `granted_history_status`
+    # was computed from, because a sync committing a connection's first
+    # transaction between two reads would otherwise let one answer's row and its
+    # warning disagree. Every other answer reads it at most once, and only when a
+    # connection could be in the one status the set decides.
     for row in rows:
         connection_id, name = int(row[0]), str(row[1])
         status, last_success = str(row[2]), row[3]
@@ -309,8 +365,17 @@ def _pipeline_warnings(
         # 🔴 The shortfall AC-11.8 exists to surface. Null granted is NOT no
         # shortfall -- it is not yet known -- and the two are reported
         # differently, because reading the first as the second is the exact
-        # inference AC-1.3a forbids.
-        if granted is None and not said.never_succeeded:
+        # inference AC-1.3a forbids. A connection whose backfill completed with no
+        # transaction is neither: nothing in that feed could have been cut, so
+        # there is nothing unknown to warn about.
+        if holding is None and granted is None and last_success is not None:
+            holding = _connections_holding_transactions(conn)
+        status = _granted_history_status(
+            granted=granted,
+            backfill_complete=last_success is not None,
+            holds_transactions=holding is not None and connection_id in holding,
+        )
+        if status == "not_yet_measured" and not said.never_succeeded:
             warnings.append(
                 Caveat(
                     kind="partial",
@@ -333,6 +398,7 @@ def _pipeline_warnings(
                         starts=None if row[7] is None else calendar_date(row[7]),
                         window=window,
                         today=calendar_date(now.date()),
+                        answers_transactions=answers_transactions,
                     ),
                     connection_id=connection_id,
                     institution=name,
@@ -589,8 +655,14 @@ def _gapped_detail(
     starts: CalendarDate | None,
     window: Window | None,
     today: CalendarDate,
+    answers_transactions: bool = True,
 ) -> str:
     """One standing shortfall, phrased against the window actually asked about.
+
+    `answers_transactions` is False on an answer read from another series -- trades or
+    balances. The grant limits a connection's TRANSACTIONS, so on such an answer the
+    shortfall is still stated and is said not to reach the rows beside it, rather than
+    phrased against a window that was never clamped to it.
 
     🔴 **A reader who sees a different sentence on the second answer reads the
     third.** The shortfall is the same fact every time and is stated every time;
@@ -614,6 +686,15 @@ def _gapped_detail(
     a courtesy to a reader, never a replacement for the fact.
     """
     shortfall = f"{name} granted {granted} days of history against {requested} requested"
+    if not answers_transactions:
+        # Ahead of every branch below, including the unrecorded-start one: each of those
+        # reads the grant against this answer's window, and this answer never read the
+        # series the grant limits.
+        starts_at = "" if starts is None else f"; its coverage begins {starts.isoformat()}"
+        return (
+            f"{shortfall}{starts_at}. That limits its TRANSACTIONS, which this answer does not "
+            f"read, so the shortfall does not affect this answer"
+        )
     if starts is None:
         return (
             f"{shortfall}, and the date its coverage begins has not been recorded yet, so "
@@ -637,7 +718,10 @@ def _gapped_detail(
             f"{shortfall}, and THIS window reaches {missing} day(s) past where its data starts: "
             f"{begins}, so the part of the window before that is absent rather than zero"
         )
-    if until is None or until > today:
+    # An open `until` resolves to today, so only an explicit end after today
+    # reaches past it. Saying so of a request that named no end described a
+    # tail the answer does not have.
+    if until is not None and until > today:
         return (
             f"{shortfall}; {begins}, which this window starts inside. Its leading edge is "
             f"covered -- but the window reaches past today, and that tail is unanswered rather "
@@ -793,7 +877,7 @@ class AccountCoverage:
     transaction_count: int
     #: How many investment trades the store holds for the account, removed ones
     #: excluded. Counted from their own table, never through the transactions
-    #: join, and served as rows by no tool.
+    #: join; `query_investment_transactions` serves the trades themselves.
     investment_transaction_count: int
     #: The newest day this account's positions were captured; null when none ever
     #: was. A position refused for its unit is not a capture.
@@ -803,6 +887,10 @@ class AccountCoverage:
     #: no connection -- two different reasons, both meaning the comparison below
     #: cannot be made.
     history_starts: CalendarDate | None = None
+    #: Whether this account's connection has completed a sync: its `last_success_at`
+    #: is stamped only once the aggregator reports the history complete. False for an
+    #: import-only account, which has no connection to have completed anything.
+    feeds_completed: bool = False
 
     @property
     def truncated_by_the_grant(self) -> bool:
@@ -853,20 +941,29 @@ class AccountCoverage:
     def no_data_in_any_feed(self) -> bool:
         """Nothing has been recorded for this account in ANY feed.
 
-        🔴 What the LISTINGS name, where `uncovered` is what the transactions tools
-        name. `list_accounts` and `get_coverage_report` describe the account
-        itself, so an investment account whose trades or positions are stored has
-        data, and naming it told an agent to distrust a true answer (#107).
-        `query_transactions` and `money_summary` answer only from the transactions
-        feed, and for them the same account's empty answer really is data not
-        present -- so they keep `uncovered`. Two predicates because there are two
-        questions, not one rule spelled twice.
+        🔴 What EVERY tool names under `accounts_without_coverage`. An account whose
+        trades or positions are stored has data, and naming it told an agent to
+        distrust a true answer (#107). On `query_transactions` and `money_summary`,
+        which read only the transactions feed, such an account is still named -- but
+        by `activity_elsewhere`, under `activity_in_another_feed`, which says where
+        its data is. A new tool answering from the transactions feed takes both
+        predicates; taking `uncovered` alone would call that account absent again.
         """
         return (
             self.transaction_count == 0
             and self.investment_transaction_count == 0
             and self.holdings_as_of is None
         )
+
+    @property
+    def activity_elsewhere(self) -> bool:
+        """No transaction, and activity recorded in the investments feed instead.
+
+        What a tool answering from the transactions feed names under
+        `activity_in_another_feed` rather than `accounts_without_coverage`: the account
+        has data, and it lives where that tool does not read.
+        """
+        return self.transaction_count == 0 and not self.no_data_in_any_feed
 
     def to_wire(self) -> dict[str, Any]:
         """The fields every account row carries, in every tool that carries them."""
@@ -940,6 +1037,7 @@ def _account_coverage(conn: SAConnection) -> dict[int, AccountCoverage]:
             sync_state.c.history_start_date,
             trades.c.trades,
             positions.c.captured,
+            connections.c.last_success_at,
         )
         .select_from(
             accounts.outerjoin(
@@ -963,6 +1061,7 @@ def _account_coverage(conn: SAConnection) -> dict[int, AccountCoverage]:
             )
             .outerjoin(trades, trades.c.account_id == accounts.c.account_id)
             .outerjoin(positions, positions.c.account_id == accounts.c.account_id)
+            .outerjoin(connections, connections.c.connection_id == accounts.c.connection_id)
         )
         # One row per account on each subquery's side, so grouping by them splits
         # nothing; they are named because a grouped select must name them.
@@ -971,6 +1070,7 @@ def _account_coverage(conn: SAConnection) -> dict[int, AccountCoverage]:
             sync_state.c.history_start_date,
             trades.c.trades,
             positions.c.captured,
+            connections.c.last_success_at,
         )
     ).all()
     return {
@@ -990,9 +1090,466 @@ def _account_coverage(conn: SAConnection) -> dict[int, AccountCoverage]:
             investment_transaction_count=0 if row[5] is None else int(row[5]),
             holdings_as_of=None if row[6] is None else calendar_date(row[6]),
             history_starts=None if row[4] is None else calendar_date(row[4]),
+            feeds_completed=row[7] is not None,
         )
         for row in result
     }
+
+
+#: 🔴 The account types whose balance moves with the MARKET rather than with
+#: recorded activity, so AC-11.2's identity -- the change in balance over an
+#: interval equals the sum of the transactions in it -- is not a claim that can
+#: be made about them at all. `api-notes-plaid.md` §23 measured the case on the
+#: aggregator's own canned data: an account's positions and its reported balance
+#: need not add up, so a reconciliation asserting they do goes red on data that
+#: is not wrong.
+#:
+#: 🔴 **`brokerage` sits here beside `investment` and is not redundant.** The
+#: aggregator documents `brokerage` as the name these accounts carried under API
+#: versions 2018-05-22 and earlier, and `derivers.balance_class_of` already
+#: classifies both as assets. Leaving it out would reconcile a brokerage account
+#: as though its balance were cash and attribute every market move to a missing
+#: transaction -- a residual indistinguishable from the finding this surface
+#: exists to report, on an account behaving perfectly correctly.
+NOT_RECONCILABLE_ACCOUNT_TYPES: frozenset[str] = frozenset({"investment", "brokerage"})
+
+#: 🔴 Why a reconciliation produced no residual, spelled as its own closed set
+#: because three of these four would otherwise share one null.
+#:
+#: `learnings.md` § *A carve-out reaches every state that shares its return
+#: type*: when one function collapses distinguishable states into one value, the
+#: collapse is the defect. A null `residual_minor_units` alone would mean *this
+#: account can never be reconciled*, *it has only one snapshot so far* and *no
+#: balance was ever recorded for it* alike -- and a consumer could not tell an
+#: UNRECONCILABLE account from a merely UNRECONCILED one. The first is a
+#: permanent property of the account; the second closes on the next sync.
+#:
+#: 🔴 **`reconciled` means the comparison was PERFORMED, not that it came back
+#: clean.** The residual beside it carries the verdict. That is the misreading to
+#: guard against, and it is why the wire field's description says so outright.
+RECONCILIATION_STATES: tuple[str, ...] = (
+    "reconciled",
+    "not_applicable_investment",
+    "insufficient_snapshots",
+    "no_balance_recorded",
+)
+
+#: What explains a nonzero residual, **most specific first** -- the order
+#: attribution tries them in, so a residual gets the narrowest true explanation
+#: rather than the first plausible one.
+#:
+#: 🔴 **`pending_holds` is deliberately NOT here**, and its absence is a finding
+#: rather than an oversight. `api-notes-plaid.md` §§27-28 established that the
+#: aggregator's `current` is the settled balance, so both sides of this
+#: comparison exclude pending rows and an authorization hold produces no residual
+#: for such a cause to explain. A cause that can never fire is a branch no test
+#: can honestly reach. Re-add it only if measurement produces a case needing it.
+RESIDUAL_CAUSES: tuple[str, ...] = ("window_truncated", "coverage_gap", "unexplained")
+
+#: How many unreconciled intervals one account enumerates before the list is cut.
+#: Mirrors `MAX_INTERIOR_GAPS_PER_ACCOUNT` and for its reason: the operator's next
+#: move is the same after the first few, and the COUNT is not capped, so a caller
+#: can still tell a truncated list from a complete one.
+MAX_RESIDUALS_PER_ACCOUNT = 10
+
+
+@dataclass(frozen=True, slots=True)
+class ResidualInterval:
+    """One consecutive-snapshot interval whose balance movement is unexplained.
+
+    🔴 Every figure that produced the verdict travels with it. The operator's
+    next move is to go and look at this interval, and a bare magnitude makes them
+    reconstruct which two snapshots it came from and which side was surprising.
+    """
+
+    from_date: CalendarDate
+    to_date: CalendarDate
+    balance_change_minor_units: int
+    transactions_sum_minor_units: int
+    residual_minor_units: int
+    cause: str
+    currency: str
+
+    def to_wire(self) -> dict[str, Any]:
+        return {
+            "from_date": self.from_date.isoformat(),
+            "to_date": self.to_date.isoformat(),
+            "balance_change_minor_units": self.balance_change_minor_units,
+            "transactions_sum_minor_units": self.transactions_sum_minor_units,
+            "residual_minor_units": self.residual_minor_units,
+            "cause": self.cause,
+            "currency": self.currency,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AccountReconciliation:
+    """Whether ONE account's recorded transactions explain its balance. AC-11.2.
+
+    🔴 **The claim this measures is one two docstrings and a `## Direction` norm
+    have asserted since the schema was frozen, with nothing computing it.** Over
+    any interval between two consecutive balance snapshots, the change in the
+    balance should equal the sum of the transactions recorded in that interval.
+    The expected residual is zero everywhere; whether it IS zero is the point.
+
+    `state` and `residual_minor_units` are two fields rather than one because
+    three different reasons produce no residual and one null would make them
+    indistinguishable -- see `RECONCILIATION_STATES`.
+    """
+
+    account_id: int
+    state: str
+    #: The net residual over every interval compared, or null when none was.
+    #: 🔴 Null EXACTLY when `state` is not `reconciled`, and the state is what
+    #: says why -- never the other way round.
+    residual_minor_units: int | None
+    #: How many consecutive-snapshot intervals were actually compared.
+    #: 🔴 The honest denominator: a net residual of zero over ZERO intervals is
+    #: green by vacuity, and this is the number that tells the two apart.
+    intervals_compared: int
+    #: Every interval with a nonzero residual, oldest first and **uncapped**.
+    #: 🔴 The cap belongs to the WIRE, not to this object. Cutting the list here
+    #: made every in-process reader see a truncated ledger: the caveat builder
+    #: counted and netted over it, so an account with more than
+    #: `MAX_RESIDUALS_PER_ACCOUNT` findings under-reported both -- and because the
+    #: cut ran before the `unexplained` filter, an account whose first ten
+    #: residuals were explained and whose next five were not raised no warning at
+    #: all. `to_wire` caps what it renders; nothing else sees a short list.
+    unreconciled: tuple[ResidualInterval, ...]
+    #: The account's balance currency; null when no balance was ever recorded.
+    #: 🔴 Present because `api-contract.md` binds any aggregate over residuals to
+    #: carry a count AND a signed magnitude GROUPED BY CURRENCY, and an aggregate
+    #: cannot group by a unit its rows do not carry.
+    currency: str | None
+
+    @property
+    def unreconciled_count(self) -> int:
+        """Intervals with a nonzero residual, as MEASURED.
+
+        🔴 Derived from the list rather than stored beside it, so the two cannot
+        disagree. A stored count goes stale the moment anything caps the list,
+        and the cap in `to_wire` is exactly such a caller.
+        """
+        return len(self.unreconciled)
+
+    def to_wire(self) -> dict[str, Any]:
+        """The reconciliation fields every account row carries, in every tool.
+
+        🔴 **The only place the cap is applied.** The COUNT rides out as
+        measured, so a `unreconciled_detail` shorter than `unreconciled_intervals`
+        tells a caller the enumeration was cut -- the split `interior_gaps`
+        already makes on this surface. Capping both would make a truncated list
+        indistinguishable from a complete one.
+        """
+        return {
+            "reconciliation_state": self.state,
+            "residual_minor_units": self.residual_minor_units,
+            "intervals_compared": self.intervals_compared,
+            "unreconciled_intervals": self.unreconciled_count,
+            "unreconciled_detail": [
+                interval.to_wire() for interval in self.unreconciled[:MAX_RESIDUALS_PER_ACCOUNT]
+            ],
+            "balance_currency": self.currency,
+        }
+
+
+def _residual_cause(
+    *,
+    from_date: CalendarDate,
+    to_date: CalendarDate,
+    history_starts: CalendarDate | None,
+    first_transaction: CalendarDate | None,
+    last_transaction: CalendarDate | None,
+) -> str:
+    """Why this interval's balance movement is not explained by its transactions.
+
+    Tried most specific first, so a residual gets the narrowest true explanation
+    rather than the first plausible one. Called ONLY for a nonzero residual: a
+    quiet interval whose balance did not move needs no explanation, and asking
+    this of one would attribute a cause to an account that is simply idle.
+
+    🔴 **`window_truncated` is tried before `coverage_gap` because it is the
+    stronger statement about the same evidence.** Both describe transactions that
+    are not in the store; the first names the reason -- the aggregator never
+    granted that far back, so the rows were never fetchable -- and the second
+    means only that the feed does not reach here. Testing the general one first
+    would absorb every truncated interval into `coverage_gap` and the distinction
+    would never appear in an answer, which is the collapse that makes a cause
+    vocabulary worthless.
+    """
+    if history_starts is not None and from_date < history_starts:
+        return "window_truncated"
+    # No transaction was EVER recorded for this account, so nothing could have
+    # explained the movement. An empty feed is a gap in coverage, not a quiet
+    # account -- the balance moved, which is the proof something happened.
+    # 🔴 Unconditional, and NOT gated on the grant like the branch below it. The
+    # store cannot tell an account with no activity from one whose institution
+    # does not report its activity -- the stance `accounts_without_coverage`
+    # already takes -- so a recorded grant does not turn "the feed has never
+    # carried a row for this account" into proof that nothing happened.
+    if first_transaction is None or last_transaction is None:
+        return "coverage_gap"
+    # 🔴 **Unconditional, and this is the asymmetry to keep.** A balance that
+    # moved AFTER the last row the feed carries means the feed is behind the
+    # balance -- the common shape of this finding, a sync that fetched balances
+    # and stopped short of transactions. A grant says how far BACK the aggregator
+    # will serve; it proves nothing about rows that have not arrived yet, so
+    # there is no gate to apply here.
+    if to_date > last_transaction:
+        return "coverage_gap"
+    # 🔴 **Gated on an UNMEASURED grant, and the gate is the whole finding.** An
+    # interval opening before the feed's first row means two different things
+    # depending on whether the grant is known:
+    #
+    #   - `history_starts` is NULL -- nobody has measured how far back the
+    #     aggregator would serve, so whether the feed COULD have covered those
+    #     days is unknown, and `coverage_gap` is the honest answer.
+    #   - `history_starts` is set and reaches back past this interval -- the feed
+    #     covered those days and returned nothing for them, so the absence of
+    #     rows is PROVEN rather than assumed, and a residual there is exactly
+    #     what `unexplained` names.
+    #
+    # Ungated, the second case is swallowed by the first: coverage the grant
+    # proves is reported as coverage nobody has, and since the warning fires only
+    # on `unexplained`, the surface's headline finding disappears without a word.
+    #
+    # 🔴 **One condition covers BOTH shapes** -- the interval that straddles the
+    # feed's first row and the one that closes before it. For any interval
+    # `from < to`, `to_date <= first_transaction` implies this condition, so
+    # adding a clause that spells that half would run first and leave this gate
+    # unreachable for every wholly-before interval. Two spellings of one question
+    # here, the broader one unguarded, is a gate that looks present and never
+    # fires.
+    if history_starts is None and from_date < first_transaction:
+        return "coverage_gap"
+    return "unexplained"
+
+
+def _account_reconciliation(conn: SAConnection) -> dict[int, AccountReconciliation]:
+    """AC-11.2's residual, for EVERY account, computed once.
+
+    🔴 One producer, on `_account_coverage`'s discipline and for its reason:
+    `get_coverage_report` reports these facts today and `bankmachine status`
+    renders them next, and two producers can disagree. A verification surface
+    that contradicts itself is worse than one that is missing.
+
+    🔴 **Snapshots are sparse BY DESIGN and a missing day is not a defect.** The
+    deriver records no `balances_daily` row for a day the aggregator reported a
+    null `current`, so an interval may span many days. The pairing walks each
+    account's rows in `as_of_date` order and pairs each with its predecessor,
+    which is why a run of missing days widens an interval rather than breaking
+    one -- a reader that assumed daily rows would report every sparse stretch as
+    a finding.
+
+    🔴 **Transactions are counted over `(from, to]` -- half-open, closed at the
+    top.** A transaction posted ON the opening snapshot's date is already inside
+    that snapshot's balance, so counting it again would double it into the very
+    interval its effect has left. The closing date is included for the mirror
+    reason: its effect is in the closing balance and nowhere else.
+
+    🔴 **Posted rows only (`pending = 0`), and that is a foreign-API finding
+    rather than a preference** -- `api-notes-plaid.md` §§27-28. The aggregator's
+    `current` is the settled balance, so both sides of the comparison exclude
+    pending. It is also what keeps a computed interval closed: a pending amount
+    is mutable by the vendor's own statement, and pending rows are not provided
+    by every institution. Soft-deleted rows are excluded as every other reader
+    excludes them.
+
+    🔴 **Only the account's CURRENT currency run is compared.** Subtracting two
+    balances denominated differently yields a number with no unit, and AC-18.3
+    makes a multi-currency total undefined -- so a single scalar residual can
+    carry exactly one unit, and it carries the one the account is denominated in
+    now. Intervals in a superseded currency are not compared at all, rather than
+    netted into a figure whose label would be arbitrary. `intervals_compared`
+    counts only comparisons actually made, so an account with fewer intervals
+    than snapshot pairs is STATING that something was left out.
+    """
+    types = {
+        int(account_id): str(account_type)
+        for account_id, account_type in conn.execute(
+            select(accounts.c.account_id, accounts.c.account_type)
+        ).all()
+    }
+    # The grant boundary per account, by way of its connection's transactions
+    # domain -- the same bound and the same domain `_account_coverage` reads, for
+    # the reason it names: a second domain's start date would be a different
+    # history compared against the same rows.
+    granted: dict[int, CalendarDate] = {}
+    for account_id, start in conn.execute(
+        select(accounts.c.account_id, sync_state.c.history_start_date).select_from(
+            accounts.outerjoin(
+                sync_state,
+                (sync_state.c.connection_id == accounts.c.connection_id)
+                & (sync_state.c.domain == TRANSACTIONS_DOMAIN),
+            )
+        )
+    ).all():
+        if start is not None:
+            granted[int(account_id)] = calendar_date(start)
+
+    snapshots: dict[int, list[tuple[CalendarDate, int, str]]] = {}
+    for account_id, as_of, current_minor, currency in conn.execute(
+        select(
+            balances_daily.c.account_id,
+            balances_daily.c.as_of_date,
+            balances_daily.c.current_minor,
+            balances_daily.c.currency,
+        ).order_by(balances_daily.c.account_id, balances_daily.c.as_of_date)
+    ).all():
+        snapshots.setdefault(int(account_id), []).append(
+            # Narrowed for the reason `_account_coverage` narrows: this column
+            # comes back a plain `date`, and the wire-dict parser beside it takes
+            # a string. Emptying this silently would make every account read
+            # `no_balance_recorded` -- a green answer over an unexamined store.
+            (calendar_date(as_of), int(current_minor), str(currency))
+        )
+
+    posted: dict[int, list[tuple[CalendarDate, int]]] = {}
+    for account_id, posted_date, amount_minor in conn.execute(
+        select(
+            transactions.c.account_id,
+            transactions.c.posted_date,
+            transactions.c.amount_minor,
+        )
+        .where(
+            transactions.c.removed_at.is_(None),
+            # 🔴 Posted only. See the docstring: this is `api-notes-plaid.md`
+            # §§27-28's finding, not a filter anyone is free to widen.
+            transactions.c.pending == 0,
+        )
+        .order_by(transactions.c.account_id, transactions.c.posted_date)
+    ).all():
+        if posted_date is not None:
+            posted.setdefault(int(account_id), []).append(
+                (calendar_date(posted_date), int(amount_minor))
+            )
+
+    # 🔴 The POSTED span, deliberately not `_account_coverage`'s first/last dates.
+    # Those count pending rows too, and attributing a cause against a boundary
+    # drawn by rows the sum excluded would explain a residual by data that did
+    # not produce it.
+    span = {
+        account_id: (dates[0][0], dates[-1][0]) for account_id, dates in posted.items() if dates
+    }
+
+    reconciliations: dict[int, AccountReconciliation] = {}
+    for account_id, account_type in types.items():
+        rows = snapshots.get(account_id, [])
+        # 🔴 The account's CURRENT unit -- the newest snapshot's, not the oldest.
+        # It is the unit `residual_minor_units` is denominated in, so it has to
+        # be the one the comparisons below actually ran in.
+        currency = rows[-1][2] if rows else None
+        if account_type in NOT_RECONCILABLE_ACCOUNT_TYPES:
+            state = "not_applicable_investment"
+        elif not rows:
+            state = "no_balance_recorded"
+        elif len(rows) < 2:
+            state = "insufficient_snapshots"
+        else:
+            state = "reconciled"
+        if state != "reconciled":
+            reconciliations[account_id] = AccountReconciliation(
+                account_id=account_id,
+                state=state,
+                residual_minor_units=None,
+                intervals_compared=0,
+                unreconciled=(),
+                currency=currency,
+            )
+            continue
+
+        first_transaction, last_transaction = span.get(account_id, (None, None))
+        movements = posted.get(account_id, [])
+        compared = 0
+        net = 0
+        findings: list[ResidualInterval] = []
+        # 🔴 One walk through the movements for the WHOLE account, not one per
+        # interval. Both sequences are already in date order -- the snapshots by
+        # the `ORDER BY` above, the movements by theirs -- so the cursor only
+        # ever advances and each transaction is visited once. Re-filtering the
+        # list inside the loop is the obvious spelling and is quadratic in
+        # (snapshots x transactions): a daily-captured account with two years of
+        # card activity is ~730 intervals against a few thousand rows, per
+        # account, on a tool an agent calls interactively before it answers.
+        cursor = 0
+        for (from_date, from_minor, from_currency), (to_date, to_minor, to_currency) in zip(
+            rows, rows[1:], strict=False
+        ):
+            # 🔴 Advanced BEFORE the currency check, never inside it. A skipped
+            # interval still consumes the days it spans, and leaving the cursor
+            # behind would fold those transactions into the NEXT interval's sum
+            # -- a residual attributed to an interval whose balances never saw it.
+            while cursor < len(movements) and movements[cursor][0] <= from_date:
+                cursor += 1
+            ahead = cursor
+            # `(from, to]` -- see the docstring for why the opening date is
+            # excluded and the closing one included.
+            transactions_sum = 0
+            while ahead < len(movements) and movements[ahead][0] <= to_date:
+                transactions_sum += movements[ahead][1]
+                ahead += 1
+            if from_currency != currency or to_currency != currency:
+                # 🔴 Only the account's CURRENT currency run is compared, and the
+                # reason is AC-18.3: a multi-currency total is undefined, so
+                # netting an interval measured in one unit against an interval
+                # measured in another produces a number with no unit and labels
+                # it with whichever currency happened to be picked. One scalar
+                # residual can carry one unit; this is the run it carries.
+                #
+                # Intervals in a superseded currency are therefore NOT compared,
+                # and `intervals_compared` is what makes that visible -- an
+                # account showing fewer intervals than it has snapshot pairs is
+                # stating that something was left out, rather than hiding it
+                # inside a total.
+                continue
+            compared += 1
+            balance_change = to_minor - from_minor
+            residual = balance_change - transactions_sum
+            net += residual
+            if residual != 0:
+                findings.append(
+                    ResidualInterval(
+                        from_date=from_date,
+                        to_date=to_date,
+                        balance_change_minor_units=balance_change,
+                        transactions_sum_minor_units=transactions_sum,
+                        residual_minor_units=residual,
+                        cause=_residual_cause(
+                            from_date=from_date,
+                            to_date=to_date,
+                            history_starts=granted.get(account_id),
+                            first_transaction=first_transaction,
+                            last_transaction=last_transaction,
+                        ),
+                        currency=from_currency,
+                    )
+                )
+        if compared == 0:
+            # 🔴 Two or more snapshots, and not one comparable PAIR among them --
+            # every consecutive pair straddles a currency change. Reporting
+            # `reconciled` with a net of zero here would be green by vacuity, the
+            # exact failure `intervals_compared` exists to expose, so the state
+            # falls back to the one that already means "not enough to compare".
+            # No fifth state is invented for it: the reason a reader needs is
+            # "nothing was checked", which this value already says.
+            reconciliations[account_id] = AccountReconciliation(
+                account_id=account_id,
+                state="insufficient_snapshots",
+                residual_minor_units=None,
+                intervals_compared=0,
+                unreconciled=(),
+                currency=currency,
+            )
+            continue
+        reconciliations[account_id] = AccountReconciliation(
+            account_id=account_id,
+            state=state,
+            residual_minor_units=net,
+            intervals_compared=compared,
+            unreconciled=tuple(findings),
+            currency=currency,
+        )
+    return reconciliations
 
 
 #: 🔴 The lifecycle vocabulary, spelled ONCE. Every value names an OBSERVATION
@@ -1460,42 +2017,193 @@ def _not_active_caveat(
 
 
 def _uncovered_caveat(uncovered: list[AccountCoverage], *, listing: bool) -> list[Caveat]:
-    """The warning that names the accounts an answer could not have data for.
+    """The notice for accounts in scope that hold nothing in ANY feed.
 
-    🔴 Request-scoped: it fires only when THIS request's scope holds an
-    uncovered account. A kind riding every response equally is the defect
-    `CONNECTION_SCOPED_KINDS` records above -- the `gapped` notice arrived
-    character-for-character identical on four unrelated questions, true and
-    useless for telling a caller whether this answer was the degraded one.
+    Request-scoped rather than riding every answer: a kind that fires on every
+    response equally is the defect `api-contract.md` records against `gapped`.
+    Names the ids, because "some accounts have no data" is a warning nobody can act
+    on.
 
-    Names the ids, because "some accounts have no data" is a warning nobody can
-    act on and the caller's next move is to ask about a different account.
+    🔴 **Two sentences, because there are two states, and the difference is whether
+    this is a problem.** On a connection that has never completed a sync, nothing
+    has been recorded yet: an empty result is DATA NOT PRESENT. On one that has, the
+    feeds that would carry the account completed and returned nothing for it, and
+    the aggregator gives no signal that tells a quiet account from one its
+    institution does not report -- measured: a sync page lists only the accounts it
+    touched. Calling that "data not present" told an agent to report a fault the
+    store does not have; calling it "no activity" would claim a zero nobody
+    measured. It says what is known.
 
-    `listing` says which question the scope asked, and it has no default because
-    every caller must choose. A listing passes the accounts with nothing in any
-    feed (`AccountCoverage.no_data_in_any_feed`); a tool answering from the
-    transactions feed passes the accounts with no transaction
-    (`AccountCoverage.uncovered`), and its detail says where an investment
-    account's activity is recorded instead.
+    `listing` says which question the scope asked: a listing describes the account
+    itself, a transactions tool describes what it answers from, and the one clause
+    that differs says which. Both name only accounts with nothing in any feed; an
+    account whose activity is in the investments feed is routed by
+    `_other_feed_caveat` instead.
     """
     if not uncovered:
         return []
-    ids = ", ".join(
-        str(coverage.account_id) for coverage in sorted(uncovered, key=lambda c: c.account_id)
-    )
-    detail = (
-        f"nothing has ever been recorded for account(s) {ids} in any feed -- no transaction, "
-        f"no investment trade and no captured position -- so an empty or absent result for "
-        f"them means DATA NOT PRESENT, never no activity"
+
+    def ids(entries: list[AccountCoverage]) -> str:
+        return ", ".join(str(c.account_id) for c in sorted(entries, key=lambda c: c.account_id))
+
+    where = (
+        "in any feed -- no transaction, no investment trade and no captured position"
         if listing
-        else f"no transaction has ever been recorded for account(s) {ids}; an empty or "
-        f"absent result for them means DATA NOT PRESENT, never no activity. This counts "
-        f"the TRANSACTIONS feed alone -- an investment account's trades and positions are "
-        f"recorded apart from it: `investment_transaction_count` and `holdings_as_of` on "
-        f"`list_accounts` say what the store holds for it, and `list_holdings` serves its "
-        f"positions"
+        else "in any feed"
     )
-    return [Caveat(kind="accounts_without_coverage", detail=detail)]
+    caveats: list[Caveat] = []
+    completed = [c for c in uncovered if c.feeds_completed]
+    unfinished = [c for c in uncovered if not c.feeds_completed]
+    if unfinished:
+        caveats.append(
+            Caveat(
+                kind="accounts_without_coverage",
+                detail=(
+                    f"nothing has been recorded for account(s) {ids(unfinished)} {where}, and "
+                    f"their connection has not completed a sync, so an empty or absent result "
+                    f"for them means DATA NOT PRESENT, never no activity"
+                ),
+            )
+        )
+    if completed:
+        caveats.append(
+            Caveat(
+                kind="accounts_without_coverage",
+                detail=(
+                    f"nothing is recorded for account(s) {ids(completed)} {where}, though their "
+                    f"connection's sync has completed. The store cannot tell an account with no "
+                    f"activity from one whose institution does not report its activity, so say "
+                    f"the store holds no recorded activity for it -- not that data is missing, "
+                    f"and not that a sync failed"
+                ),
+            )
+        )
+    return caveats
+
+
+def _unreconciled_caveat(entries: list[AccountReconciliation]) -> list[Caveat]:
+    """The notice for accounts whose balance movement its transactions do not explain.
+
+    🔴 **The figures in the answer carrying this are internally consistent and may
+    still be wrong by the magnitude named.** That is the whole reason the kind
+    exists: a residual is precisely the case where every number a consumer can
+    see agrees with every other and the store still disagrees with the
+    institution. Nothing else on this surface can say so.
+
+    🔴 **Grouped by currency, with a count AND a signed magnitude**, because
+    `api-contract.md` § Direction binds any aggregate over stored amounts to
+    carry both and a residual aggregate inherits it. This aggregate spans
+    accounts, so it can span units even though one account's residual cannot:
+    summing across them would produce a number with no unit. A count alone would
+    hide whether the finding is a rounding artefact or a missing month, which is
+    the half `learnings.md` calls load-bearing.
+    """
+    # 🔴 **`unexplained` intervals ONLY, which is what every declaration of this
+    # kind promises** -- "no coverage gap or truncated window accounts for the
+    # difference". Selecting on a nonzero residual regardless of cause fires the
+    # kind on exactly the residuals the cause vocabulary has just EXPLAINED, and
+    # the guidance then tells the reading agent the opposite of what happened.
+    # Measured, not hypothetical: the production store's only nonzero residual is
+    # a `coverage_gap`, so the broad rule warned on a store with nothing
+    # unexplained in it. A residual with a cause is reported on the ROW, where it
+    # is itemized; the warning is for the one nothing accounts for.
+    # 🔴 Over `entry.unreconciled` in FULL, which is why the cap is not applied
+    # there. Filtering a list that had already been cut to the first ten meant an
+    # account whose first ten residuals were explained and whose next five were
+    # not raised no warning at all -- and the count and magnitude below silently
+    # described ten intervals out of however many there were.
+    by_currency: dict[str, list[tuple[int, ResidualInterval]]] = {}
+    for entry in entries:
+        for interval in entry.unreconciled:
+            if interval.cause == "unexplained":
+                by_currency.setdefault(interval.currency, []).append((entry.account_id, interval))
+    if not by_currency:
+        return []
+    caveats: list[Caveat] = []
+    for currency in sorted(by_currency):
+        found = by_currency[currency]
+        intervals = len(found)
+        net = sum(interval.residual_minor_units for _, interval in found)
+        named = ", ".join(str(account_id) for account_id in sorted({a for a, _ in found}))
+        caveats.append(
+            Caveat(
+                kind="balance_unreconciled",
+                detail=(
+                    f"account(s) {named} hold {intervals} interval(s) in {currency} whose "
+                    f"balance movement the recorded transactions do not explain, netting "
+                    f"{net} minor units. No coverage gap and no truncated history window "
+                    f"accounts for these -- money moved and nothing in the store records it. "
+                    f"🔴 The figures in this answer are internally consistent and may still be "
+                    f"wrong by that amount; read `unreconciled_detail` on the row for the "
+                    f"intervals themselves"
+                ),
+            )
+        )
+    return caveats
+
+
+def _not_reconcilable_caveat(
+    entries: list[AccountReconciliation], *, named: dict[int, str | None]
+) -> list[Caveat]:
+    """The notice for accounts AC-11.2 cannot be applied to at all.
+
+    🔴 **A warning rather than a silent omission, for `activity_in_another_feed`'s
+    reason**: a consumer that cannot see why an account is missing from a
+    verification surface reads the surface as having checked it. An investment
+    account's absence from the residuals is by construction, and construction is
+    exactly what an answer cannot convey by leaving something out.
+
+    🔴 Deliberately NOT `rule-applied`, which already means "rows were excluded
+    from this aggregate ON PURPOSE". That kind is about rows left out of a
+    FIGURE; this one is about an account that cannot be verified. Collapsing them
+    would leave a consumer unable to tell a scoping decision from an
+    unverifiable account -- `discovery-reconciliation-and-status.md` records the
+    rejection.
+    """
+    excluded = [entry for entry in entries if entry.state == "not_applicable_investment"]
+    if not excluded:
+        return []
+    listed = ", ".join(
+        f"{entry.account_id}"
+        + (f" ({named[entry.account_id]})" if named.get(entry.account_id) else "")
+        for entry in sorted(excluded, key=lambda e: e.account_id)
+    )
+    return [
+        Caveat(
+            kind="reconciliation_not_applicable",
+            detail=(
+                f"account(s) {listed} are investment accounts, whose balance moves with the "
+                f"market rather than with recorded activity, so the balance-to-transactions "
+                f"check does not apply to them. Their absence from the residuals is by "
+                f"construction, not a gap -- do not report them as unverified, and do not "
+                f"read a null `residual_minor_units` on their row as a missing measurement"
+            ),
+        )
+    ]
+
+
+def _other_feed_caveat(elsewhere: list[AccountCoverage]) -> list[Caveat]:
+    """The notice that an account's empty transactions answer has a home elsewhere.
+
+    Named, not silent: `query_transactions(account_id=...)` returning `[]` for a
+    brokerage account with no notice reads as an account that did nothing. And
+    routed, not alarmed: its activity is in the store, so the notice says where.
+    """
+    if not elsewhere:
+        return []
+    named = ", ".join(str(c.account_id) for c in sorted(elsewhere, key=lambda c: c.account_id))
+    return [
+        Caveat(
+            kind="activity_in_another_feed",
+            detail=(
+                f"account(s) {named} hold no transaction because their activity is recorded in "
+                f"the investments feed, which this tool does not read: "
+                f"`query_investment_transactions` serves their trades, contributions and "
+                f"dividends, and `list_holdings` their positions. Their absence here is where "
+                f"the data lives, not missing data"
+            ),
+        )
+    ]
 
 
 def _unmatched_transfer_caveat(
@@ -1646,9 +2354,10 @@ def _window_coverage_caveat(coverage: list[AccountCoverage], since: date | None)
     asked_from = calendar_date(since)
     cut: list[str] = []
     for entry in sorted(coverage, key=lambda c: c.account_id):
-        # Already named, in full, by `_uncovered_caveat`. Saying it twice in two
-        # kinds would have a caller reconcile two lists describing one set of
-        # accounts.
+        # Already named, in full: by `_uncovered_caveat` when it holds nothing in any
+        # feed, and by `_other_feed_caveat` when its activity is in another feed.
+        # Saying it again in a third notice would have a caller reconcile two lists
+        # describing one set of accounts.
         if entry.uncovered:
             continue
         if (
@@ -1824,6 +2533,8 @@ def _answer(
     lifecycle: dict[int, AccountLifecycle] | None = None,
     window_series: WindowSeries = "transactions",
     derivation_versions: tuple[int, ...] | None = None,
+    holding: frozenset[int] | None = None,
+    reads_transactions: bool | None = None,
 ) -> Answer:
     """One answer, and the one place a window is reconciled against coverage.
 
@@ -1857,6 +2568,20 @@ def _answer(
     if requested_window is not None and window_series == "balances":
         first, last = conn.execute(
             select(func.min(balances_daily.c.as_of_date), func.max(balances_daily.c.as_of_date))
+        ).one()
+        span = (
+            None if first is None else calendar_date(first),
+            None if last is None else calendar_date(last),
+        )
+    elif requested_window is not None and window_series == "investment_transactions":
+        # Clamped to the days trades were recorded, for the balance series' reason:
+        # the trades feed reaches back its own distance, and an investment-only
+        # store holds no transaction to clamp against at all.
+        first, last = conn.execute(
+            select(
+                func.min(investment_transactions.c.trade_date),
+                func.max(investment_transactions.c.trade_date),
+            ).where(investment_transactions.c.removed_at.is_(None))
         ).one()
         span = (
             None if first is None else calendar_date(first),
@@ -1897,7 +2622,19 @@ def _answer(
         # consumer reading top-down meets the standing state of the pipeline
         # before the thing that is specific to what they just asked.
         warnings=(
-            _pipeline_warnings(conn, now, window, derivation_versions)
+            _pipeline_warnings(
+                conn,
+                now,
+                window,
+                derivation_versions,
+                holding,
+                # Whether the rows came from the transactions feed: a windowed answer
+                # says so by its series, and an unwindowed one over another feed --
+                # positions -- says so explicitly.
+                window_series == "transactions"
+                if reads_transactions is None
+                else reads_transactions,
+            )
             + ([] if window is None else window.caveats)
             + ([] if truncation is None else truncation.caveats)
             + (extra_caveats or [])
@@ -2918,11 +3655,13 @@ def list_transactions(
         # ordinary result, and naming nine irrelevant accounts on every page of
         # every walk is the character-for-character noise the connection scope
         # already taught this codebase not to emit.
-        uncovered = (
-            [c for c in (_account_coverage(conn).get(account_id),) if c is not None and c.uncovered]
+        scoped = (
+            [c for c in (_account_coverage(conn).get(account_id),) if c is not None]
             if account_id is not None
             else []
         )
+        uncovered = [c for c in scoped if c.no_data_in_any_feed]
+        elsewhere = [c for c in scoped if c.activity_elsewhere]
         # 🔴 Same scoping, same reason, on the lifecycle axis (AC-12.1's
         # rationale). An agent asking
         # "what did I spend on this card" about an account the institution
@@ -2974,6 +3713,7 @@ def list_transactions(
             ),
             extra_caveats=(
                 _uncovered_caveat(uncovered, listing=False)
+                + _other_feed_caveat(elsewhere)
                 + _superseded_caveat(spans, account_id=account_id, since=since, until=until)
                 + _not_active_caveat(not_active)
                 + _roster_observed_empty_caveat(not_active)
@@ -3141,6 +3881,11 @@ def coverage_report(config: Config) -> Answer:
         # surface that contradicts the analysis surface is worse than one that
         # is absent (AC-12.7).
         lifecycle = _account_lifecycle(conn)
+        # 🔴 AC-11.2's residual, on the surface `api-contract.md` rules it
+        # belongs to: it is the same SHAPE as the facts above -- per account, in
+        # the verification domain -- so it joins this tool rather than becoming a
+        # new one. One producer, for the reason the two above share one.
+        reconciliation = _account_reconciliation(conn)
         # 🔴 Unwindowed, unlike every other caller: this surface answers about
         # the store rather than about a window, and a hold stranded outside
         # whatever window a caller happened to ask about is precisely the one
@@ -3225,6 +3970,7 @@ def coverage_report(config: Config) -> Answer:
                     "account": named.get(account_id),
                     **facts.to_wire(),
                     **lifecycle[account_id].to_wire(),
+                    **reconciliation[account_id].to_wire(),
                     # 🔴 AC-13.5, on the surface the contract puts it: a hold past
                     # any ordinary lifetime is a per-account finding, and
                     # `api-contract.md` rules a per-account finding belongs here
@@ -3301,6 +4047,12 @@ def coverage_report(config: Config) -> Answer:
                 # and neither suppresses the other.
                 + _not_active_caveat([e for e in lifecycle.values() if not e.active])
                 + _roster_observed_empty_caveat([e for e in lifecycle.values() if not e.active])
+                # Both fire from the same walk and neither suppresses the other:
+                # an account can be unreconcilable while another is unreconciled,
+                # and a reader told only one of those reads the surface as having
+                # checked what it did not.
+                + _unreconciled_caveat(list(reconciliation.values()))
+                + _not_reconcilable_caveat(list(reconciliation.values()), named=named)
             ),
             lifecycle=lifecycle,
         )
@@ -3849,7 +4601,8 @@ def money_summary(
         lifecycle = _account_lifecycle(conn)
         not_active = [entry for entry in lifecycle.values() if not entry.active]
         all_coverage = list(_account_coverage(conn).values())
-        uncovered = [entry for entry in all_coverage if entry.uncovered]
+        uncovered = [entry for entry in all_coverage if entry.no_data_in_any_feed]
+        elsewhere = [entry for entry in all_coverage if entry.activity_elsewhere]
         return _answer(
             config,
             conn,
@@ -3891,6 +4644,7 @@ def money_summary(
             # as settled.
             extra_caveats=(
                 _uncovered_caveat(uncovered, listing=False)
+                + _other_feed_caveat(elsewhere)
                 + _superseded_caveat(spans, account_id=None, since=since, until=until)
                 + _unmatched_transfer_caveat(conn, since=since, until=until)
                 + _window_coverage_caveat(all_coverage, since)
@@ -4013,6 +4767,7 @@ def pipeline_health(config: Config) -> Answer:
         measured = signs.measure(conn)
         conventions = {m.connection_id: m for m in measured}
         domains = _sync_domains(conn)
+        holding = _connections_holding_transactions(conn)
         rows = [
             {
                 "connection_id": int(r[0]),
@@ -4023,6 +4778,11 @@ def pipeline_health(config: Config) -> Answer:
                 "requested_history_days": None if r[5] is None else int(r[5]),
                 # 🔴 Null is reported as null, never as zero or as "complete".
                 "granted_history_days": None if r[6] is None else int(r[6]),
+                "granted_history_status": _granted_history_status(
+                    granted=r[6],
+                    backfill_complete=r[3] is not None,
+                    holds_transactions=int(r[0]) in holding,
+                ),
                 "history_starts": None if r[8] is None else str(r[8]),
                 # 🔴 Null means the Item has not been fetched since this column
                 # existed -- NEVER that consent does not expire, and never that
@@ -4053,6 +4813,7 @@ def pipeline_health(config: Config) -> Answer:
             requested_window=None,
             truncation=None,
             derivation_versions=derivation_versions,
+            holding=holding,
             # An inverted connection is reported here as well as on the
             # aggregates, because a health tool that showed the measurement in a
             # row and stayed silent in `warnings` would leave the one surface

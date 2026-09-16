@@ -59,7 +59,9 @@ MAX_ROWS = 500
 #: while transactions reach back through the history the institution granted, so
 #: a balance window clamped to the transactions' span would claim coverage over
 #: days no balance was ever captured on.
-WindowSeries = Literal["transactions", "balances"]
+#: Trades are a third series: they reach back as far as the investments feed returned,
+#: which is neither the transactions' granted span nor the days balances were captured.
+WindowSeries = Literal["transactions", "balances", "investment_transactions"]
 
 #: Warnings about the standing state of the pipeline. These ride EVERY response
 #: equally, because they describe the connection rather than the question: an
@@ -123,6 +125,14 @@ REQUEST_SCOPED_KINDS: tuple[str, ...] = (
     # request's scope actually holds an uncovered account, so an empty answer
     # about such an account carries it and an ordinary quiet window does not.
     "accounts_without_coverage",
+    # 🔴 An account in THIS request's scope holds no transaction because its
+    # activity is recorded in ANOTHER feed: it has trades or a positions capture.
+    # On a tool answering from the transactions feed its empty contribution is real
+    # and has a home, so it is named apart from `accounts_without_coverage`, whose
+    # "data not present" would be false of it -- and named at all, because an empty
+    # `query_transactions` about it with no notice reads as an account that did
+    # nothing.
+    "activity_in_another_feed",
     # An account in THIS request's scope is closed, or its institution has
     # stopped listing it. The balance beside it froze on the day it was last
     # reported and is not a fact about today, which is a wrong number with no
@@ -174,7 +184,51 @@ REQUEST_SCOPED_KINDS: tuple[str, ...] = (
     # searched answer rather than only an empty one, because a search that found
     # three of five refunds looks complete and an undercount gets believed.
     "search_is_literal",
+    # 🔴 An account in THIS request's scope has an interval whose balance
+    # movement the transactions recorded in it do not explain, with no coverage
+    # gap or truncated window accounting for the difference. Request-scoped
+    # because it fires only where this request's scope holds such an account.
+    #
+    # 🔴 **The answer carrying this is INTERNALLY CONSISTENT and may still be
+    # wrong by the magnitude named.** Every other kind here describes data that
+    # is absent, late or narrowed, and a careful consumer can reason about the
+    # shortfall. This one describes figures that agree with each other and
+    # disagree with the institution, which nothing else on any surface can say.
+    "balance_unreconciled",
+    # An account in THIS request's scope is an investment account, whose balance
+    # moves with the market rather than with recorded activity, so the
+    # balance-to-transactions check does not apply to it.
+    #
+    # 🔴 Named rather than silently omitted, for `activity_in_another_feed`'s
+    # reason: a consumer that cannot see WHY an account is missing from a
+    # verification surface reads the surface as having checked it. Kept apart
+    # from `rule-applied`, which is about rows excluded from a FIGURE rather than
+    # about an account that cannot be verified at all -- one kind for both would
+    # leave a consumer unable to tell a scoping decision from an unverifiable
+    # account.
+    "reconciliation_not_applicable",
 )
+
+#: 🔴 Request-scoped kinds that only the VERIFICATION surface emits, and the
+#: exception they carry to what `REQUEST_SCOPED_KINDS` otherwise promises.
+#:
+#: A request-scoped kind's absence is information — it fires whenever THIS
+#: request's scope holds the condition — and for these two that holds on
+#: `get_coverage_report` and nowhere else. Their emitters are per ACCOUNT and an
+#: analysis answer is a total, so an emitter there would have to decide which
+#: accounts a figure drew on, which is a design question rather than an addition.
+#:
+#: 🔴 Named here rather than described in the server-instructions prose, because
+#: that prose is GENERATED from this module: a hand-written caveat would go stale
+#: the first time a kind joined or left the restriction, and the stale form is the
+#: dangerous one — it tells an agent that silence means clean on an answer that
+#: can be wrong by a residual. `api-contract.md` records the same restriction for
+#: readers; this tuple is what makes the served text agree with it.
+VERIFICATION_SURFACE_ONLY_KINDS: tuple[str, ...] = (
+    "balance_unreconciled",
+    "reconciliation_not_applicable",
+)
+
 
 #: The warning vocabulary the API contract fixes. Named here as a tuple rather
 #: than left to string literals at each site, because a warning nobody spells the
@@ -911,6 +965,117 @@ def parse_series_cursor(
     return cursor
 
 
+#: The trade cursor's shape tag. Distinct from the transaction and series schemes, so each
+#: decoder refuses the others' cursors by name rather than resuming at a position that means
+#: something else in its own order.
+_TRADE_CURSOR_SCHEME = 4
+
+
+def _trade_fingerprint(
+    *,
+    since: date | None,
+    until: date | None,
+    account_id: int | None,
+    investment_type: str | None,
+) -> str:
+    """Which trade result set a cursor belongs to, for `_request_fingerprint`'s reason.
+
+    Its own function rather than a filter passed to that one: a transactions request and a
+    trades request with the same window and account must never share a fingerprint, and a
+    leading tag is what keeps them apart even before the scheme tag is compared.
+    """
+    material = json.dumps(
+        ["trades", iso_or_none(since), iso_or_none(until), account_id, investment_type],
+        separators=(",", ":"),
+    )
+    return hashlib.blake2s(material.encode(), digest_size=8).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class TradeCursor:
+    """Where a page of trades stopped, in the order `query_investment_transactions` returns them.
+
+    🔴 A keyset on (trade_date DESC, investment_transaction_id DESC), never an offset, for
+    `Cursor`'s reason. Fingerprinted against the request it was issued for.
+    """
+
+    trade_date: date
+    investment_transaction_id: int
+    request: str
+
+    @classmethod
+    def issued_for(
+        cls,
+        *,
+        trade_date: date,
+        investment_transaction_id: int,
+        since: date | None,
+        until: date | None,
+        account_id: int | None,
+        investment_type: str | None,
+    ) -> TradeCursor:
+        """The only route that should build one, so the fingerprint cannot be forgotten."""
+        return cls(
+            trade_date=trade_date,
+            investment_transaction_id=investment_transaction_id,
+            request=_trade_fingerprint(
+                since=since, until=until, account_id=account_id, investment_type=investment_type
+            ),
+        )
+
+    def encode(self) -> str:
+        """The wire form, URL-safe and unpadded for `Cursor.encode`'s reason."""
+        payload = json.dumps(
+            {
+                "v": _TRADE_CURSOR_SCHEME,
+                "d": self.trade_date.isoformat(),
+                "t": self.investment_transaction_id,
+                "q": self.request,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+    @classmethod
+    def decode(cls, text: str) -> TradeCursor:
+        """A trade cursor off the wire, or a refusal."""
+        payload = _cursor_payload(text, scheme=_TRADE_CURSOR_SCHEME)
+        day, trade_id, request = payload.get("d"), payload.get("t"), payload.get("q")
+        # `bool` is an `int`, and JSON `true` decodes to one; see `Cursor.decode`.
+        if (
+            not isinstance(day, str)
+            or isinstance(trade_id, bool)
+            or not isinstance(trade_id, int)
+            or not isinstance(request, str)
+        ):
+            raise MalformedCursorError(_CURSOR_REFUSAL)
+        try:
+            parsed = date.fromisoformat(day)
+        except ValueError:
+            raise MalformedCursorError(_CURSOR_REFUSAL) from None
+        return cls(trade_date=parsed, investment_transaction_id=trade_id, request=request)
+
+
+def parse_trade_cursor(
+    text: str | None,
+    *,
+    since: date | None,
+    until: date | None,
+    account_id: int | None,
+    investment_type: str | None,
+) -> TradeCursor | None:
+    """A `query_investment_transactions` cursor, decoded and checked against its request."""
+    if text is None:
+        return None
+    cursor = TradeCursor.decode(text)
+    if cursor.request != _trade_fingerprint(
+        since=since, until=until, account_id=account_id, investment_type=investment_type
+    ):
+        raise MalformedCursorError(_CURSOR_REFUSAL)
+    return cursor
+
+
 @dataclass(frozen=True, slots=True)
 class Truncation:
     """How many rows matched, how many came back, and therefore whether the cap bit.
@@ -956,7 +1121,7 @@ class Truncation:
     #: truncation staying inescapable — silently, on the success path, which is
     #: the failure mode this whole surface is being corrected for. `None` means
     #: there is no page to resume from, and it has to be written.
-    resume_from: Cursor | SeriesCursor | None
+    resume_from: Cursor | SeriesCursor | TradeCursor | None
     #: What the rows ARE, as the `rows_truncated` sentence names them. 🔴 No
     #: default: a series tool that inherited "transactions" would tell a caller
     #: that transactions match a question about balances.
@@ -969,7 +1134,7 @@ class Truncation:
         returned: int,
         remaining: int,
         matching: int,
-        resume_from: Cursor | SeriesCursor | None,
+        resume_from: Cursor | SeriesCursor | TradeCursor | None,
         counting: str,
     ) -> Truncation:
         """The only route that should build one, because a count can lag `returned`.
