@@ -81,10 +81,12 @@ check() {
 # --- the test keychain: why the gate swaps the default, and how it puts it back
 #
 # 🔴 THIS CHANGES A USER-LEVEL SETTING FOR THE DURATION OF THE RUN, and that is
-# not done lightly. Measured on this machine, same commit, same `-n auto`:
-#
-#     login keychain (populated)   542s suite   332ms per set+get+delete
-#     a fresh empty keychain        77s suite    12ms per set+get+delete
+# not done lightly. A populated login keychain costs roughly TWENTY-FIVE TIMES
+# what an empty one does per `keyring` round trip, and the suite spends most of
+# its wall clock there. The measured figures live in the change-log entry for
+# `scope=fast-keychain-suite` and are not restated here -- they were, and the two
+# copies disagreed within a day, which is the second-copy failure this file's own
+# header warns about.
 #
 # 1264 of the tests hold `keychain_service` against the REAL keychain, so the
 # suite spent most of its wall clock inside `securityd` rather than in this
@@ -114,15 +116,26 @@ check() {
 BMTEST_KEYCHAIN="bankmachine-test.keychain"
 BMTEST_STATE="$gate_dir/../.bankmachine-keychain-restore"
 keychain_swapped=""
+keychain_list_saved=""
 
 keychain_current_default() {
     security default-keychain 2>/dev/null | sed -e 's/^[[:space:]]*"//' -e 's/"$//'
 }
 
+# The WHOLE user search list, space-joined. `list-keychains -s` REPLACES the list
+# rather than adding to it, so restoring only the default would silently drop
+# every other keychain the user had searchable. `.github/workflows/check.yml`
+# captures it the same way for the same reason.
+keychain_current_list() {
+    security list-keychains -d user 2>/dev/null \
+        | sed -e 's/^[[:space:]]*"//' -e 's/"$//' | tr '\n' ' '
+}
+
 restore_keychain() {
     [[ -n $keychain_swapped ]] || return 0
     security default-keychain -s "$keychain_swapped" 2>/dev/null || true
-    security list-keychains -d user -s "$keychain_swapped" 2>/dev/null || true
+    # shellcheck disable=SC2086 -- the saved list is space-joined and must expand
+    [[ -n $keychain_list_saved ]] && security list-keychains -d user -s $keychain_list_saved 2>/dev/null
     security delete-keychain "$BMTEST_KEYCHAIN" 2>/dev/null || true
     rm -f "$BMTEST_STATE"
     keychain_swapped=""
@@ -130,12 +143,12 @@ restore_keychain() {
 
 # 🔴 Self-healing, and it is the half that makes the swap acceptable. A shell trap
 # covers a normal exit, a Ctrl-C and a SIGTERM; it cannot cover SIGKILL or a power
-# cut. So the ORIGINAL default is written to a state file BEFORE the swap, and a
-# run that finds a stale one repairs it rather than layering a second swap on top
-# -- which would otherwise record OUR keychain as the thing to restore to, and
-# strand the real default permanently.
+# cut. So the original default AND search list are written to a state file BEFORE
+# the swap, and a run that finds a stale one repairs it rather than layering a
+# second swap on top -- which would otherwise record OUR keychain as the thing to
+# restore to, and strand the real default permanently.
 repair_stale_keychain() {
-    local current recorded
+    local current recorded_default recorded_list
     current=$(keychain_current_default)
     case "$current" in
         *"$BMTEST_KEYCHAIN"*) ;;
@@ -143,44 +156,83 @@ repair_stale_keychain() {
     esac
     printf '\n*** the default keychain is this suite'"'"'s temporary one, so a previous run\n' >&2
     printf '*** was killed before it could restore yours. Repairing.\n' >&2
-    if [[ -r $BMTEST_STATE ]] && recorded=$(cat "$BMTEST_STATE") && [[ -n $recorded ]]; then
-        printf '***   restoring the recorded default: %s\n' "$recorded" >&2
-    else
-        recorded="$HOME/Library/Keychains/login.keychain-db"
-        printf '***   NO recorded default found; falling back to %s\n' "$recorded" >&2
-        printf '***   if that is not yours, set it by hand: security default-keychain -s <path>\n' >&2
+    recorded_default=""
+    recorded_list=""
+    if [[ -r $BMTEST_STATE ]]; then
+        recorded_default=$(sed -n '1p' "$BMTEST_STATE")
+        recorded_list=$(sed -n '2p' "$BMTEST_STATE")
     fi
-    security default-keychain -s "$recorded" 2>/dev/null || true
-    security list-keychains -d user -s "$recorded" 2>/dev/null || true
+    if [[ -n $recorded_default ]]; then
+        printf '***   restoring the recorded default: %s\n' "$recorded_default" >&2
+    else
+        recorded_default="$HOME/Library/Keychains/login.keychain-db"
+        printf '***   NO recorded default found; falling back to %s\n' "$recorded_default" >&2
+        printf '***   if that is not yours: security default-keychain -s <path>\n' >&2
+    fi
+    [[ -n $recorded_list ]] || recorded_list="$recorded_default"
+    security default-keychain -s "$recorded_default" 2>/dev/null || true
+    # shellcheck disable=SC2086 -- space-joined list, must expand
+    security list-keychains -d user -s $recorded_list 2>/dev/null || true
     security delete-keychain "$BMTEST_KEYCHAIN" 2>/dev/null || true
     rm -f "$BMTEST_STATE"
 }
 
 use_test_keychain() {
-    # Not macOS, or `security` unavailable: nothing to do and nothing to warn about.
+    # 🔴 RE-ENTRY GUARD, and it is load-bearing rather than defensive. The suite
+    # this gate launches contains `test_the_gate_runs_the_declared_checks.py`,
+    # which execs THIS SCRIPT. Without the marker each nested run would see the
+    # default already pointing at our keychain, read that as a killed previous
+    # run, restore the OUTER run's default, delete the keychain nine xdist
+    # workers are mid-`keyring` call against, and remove the outer run's state
+    # file -- leaving its own SIGKILL path with nothing to restore from.
+    #
+    # It does not fire today, and that is the reason to fix it rather than not:
+    # three of those call sites override HOME (so `security` cannot resolve a
+    # default and the guards below bail) and the fourth omits /usr/bin from PATH
+    # (so `security` is unreachable). Nobody wrote either property for this, and
+    # one new case without them makes it live. A guarantee that holds by
+    # coincidence is the kind this repo replaces with one that holds by
+    # construction.
+    [[ -z ${BANKMACHINE_KEYCHAIN_SWAPPED:-} ]] || return 0
     command -v security >/dev/null 2>&1 || return 0
     [[ ${BANKMACHINE_NO_KEYCHAIN_SWAP:-} != 1 ]] || return 0
 
     repair_stale_keychain
 
-    local original
+    local original original_list
     original=$(keychain_current_default)
     [[ -n $original ]] || return 0
+    original_list=$(keychain_current_list)
+    [[ -n $original_list ]] || original_list="$original"
 
     # Written BEFORE the swap. A state file that appears after it is useless to
-    # exactly the run that dies between the two.
-    printf '%s' "$original" >"$BMTEST_STATE" || return 0
+    # exactly the run that dies between the two. Line 1 default, line 2 list.
+    printf '%s\n%s\n' "$original" "$original_list" >"$BMTEST_STATE" || return 0
+
+    # 🔴 A random password, not an empty one. Anything written to the DEFAULT
+    # keychain during the run lands here, including -- through `secrets.py`, the
+    # one seam that stores it -- a datastore key. An empty-password keychain
+    # holding that would sit outside the "protected by the keychain's own unlock"
+    # boundary `security-model.md` states. The password lives only in this
+    # process; the keychain is deleted on the way out.
+    local pw
+    pw=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32) || return 0
 
     security delete-keychain "$BMTEST_KEYCHAIN" 2>/dev/null || true
-    security create-keychain -p "" "$BMTEST_KEYCHAIN" 2>/dev/null || { rm -f "$BMTEST_STATE"; return 0; }
+    security create-keychain -p "$pw" "$BMTEST_KEYCHAIN" 2>/dev/null || { rm -f "$BMTEST_STATE"; return 0; }
+    # No auto-lock: a keychain that relocks mid-suite fails every `keyring` write
+    # after it, which reads as a product bug rather than as a harness one.
     security set-keychain-settings "$BMTEST_KEYCHAIN" 2>/dev/null || true
-    security unlock-keychain -p "" "$BMTEST_KEYCHAIN" 2>/dev/null || true
+    security unlock-keychain -p "$pw" "$BMTEST_KEYCHAIN" 2>/dev/null || true
     security default-keychain -s "$BMTEST_KEYCHAIN" 2>/dev/null || { rm -f "$BMTEST_STATE"; return 0; }
-    # The original stays in the SEARCH list: `keyring` writes to the default but
-    # reads through the list, so anything already stored there still resolves.
-    security list-keychains -d user -s "$BMTEST_KEYCHAIN" "$original" 2>/dev/null || true
+    # The original list is KEPT and ours prepended: `keyring` writes to the
+    # default but reads through the list, so anything already stored resolves.
+    # shellcheck disable=SC2086 -- space-joined list, must expand
+    security list-keychains -d user -s "$BMTEST_KEYCHAIN" $original_list 2>/dev/null || true
 
     keychain_swapped="$original"
+    keychain_list_saved="$original_list"
+    export BANKMACHINE_KEYCHAIN_SWAPPED=1
     trap restore_keychain EXIT INT TERM
 }
 

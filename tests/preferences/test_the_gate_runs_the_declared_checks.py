@@ -480,3 +480,212 @@ def test_parallelism_is_configured_on_the_gate_and_never_in_addopts() -> None:
         "deliberately removed, remove this case in the same commit and say why -- do not "
         "leave it asserting a rule the repo no longer holds."
     )
+
+
+#: A stand-in for `security(1)` that reports the default keychain as the suite's
+#: OWN temporary one -- the state a nested gate run actually meets. Every call is
+#: logged, so a case can assert what the script tried to do to the keychain
+#: WITHOUT the machine having a real swap in progress.
+_STUB_SECURITY = """#!/usr/bin/env bash
+printf '%s\\n' "$*" >>"$SECURITY_LOG"
+case "$1" in
+    default-keychain)
+        # `-s` is a write; bare is a read. Only the read answers.
+        [ "$2" = "-s" ] || printf '    "/Users/x/Library/Keychains/bankmachine-test.keychain-db"\\n'
+        ;;
+    list-keychains)
+        case "$*" in
+            *-s*) ;;
+            *) printf '    "/Users/x/Library/Keychains/login.keychain-db"\\n' ;;
+        esac
+        ;;
+esac
+exit 0
+"""
+
+
+def _stub_env(tmp_path: Path, *, with_security: bool = False) -> tuple[Path, Path]:
+    """The stub `uv` and its invocation log, built the way `_run_gate` builds them.
+
+    Separate from `_run_gate` because these cases vary the ENVIRONMENT rather than
+    which tool goes red, and `_run_gate` fixes the env it passes.
+
+    `with_security` adds a stubbed `security(1)` reporting our own keychain as the
+    default. 🔴 Without it these cases are VACUOUS: the real `security` cannot
+    resolve a default under a fake `HOME`, so the script bails for a reason that
+    has nothing to do with the property under test, and the case passes with the
+    guard deleted.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "uv"
+    stub.write_text(_STUB_UV)
+    stub.chmod(0o755)
+    if with_security:
+        sec = bin_dir / "security"
+        sec.write_text(_STUB_SECURITY)
+        sec.chmod(0o755)
+    log = tmp_path / "invocations.log"
+    log.touch()
+    return log, bin_dir
+
+
+# --- the gate's keychain swap ------------------------------------------------
+#
+# The gate makes an empty keychain the default for the length of a run, because
+# the developer's populated login keychain costs ~332ms per `keyring` round trip
+# against ~12ms for an empty one -- 542s of suite against 56s. It changes a
+# USER-LEVEL setting, so what it puts back matters more than what it takes.
+#
+# These cases drive the REAL script, the way every other case in this file does
+# and the way `project-preferences.md` rules shell behaviour is tested. They run
+# it with `BANKMACHINE_NO_KEYCHAIN_SWAP=1` or with `security` off PATH, so no case
+# here ever touches the machine's actual keychain -- what is asserted is that the
+# script DECLINES in each of those states, which is the property the suite needs
+# to be able to run itself at all.
+
+KEYCHAIN_MARKER = "BANKMACHINE_KEYCHAIN_SWAPPED"
+
+
+def _gate_source() -> str:
+    return GATE.read_text()
+
+
+def test_a_nested_gate_run_does_not_touch_the_outer_run_s_keychain(tmp_path: Path) -> None:
+    """🔴 The suite this gate launches execs this gate. Without the re-entry
+    marker each nested run sees the default already pointing at our keychain,
+    reads that as a killed previous run, restores the OUTER run's default,
+    deletes the keychain nine xdist workers are mid-`keyring` call against, and
+    removes the outer state file -- leaving its own SIGKILL path nothing to
+    restore from.
+
+    `security` is STUBBED to report our keychain as the default, which is the
+    state a nested run meets. Without the stub this case is vacuous: the real
+    `security` cannot resolve a default under a fake HOME, so the script would
+    bail for an unrelated reason and the case would pass with the guard deleted.
+    """
+    log, bin_dir = _stub_env(tmp_path, with_security=True)
+    security_log = tmp_path / "security.log"
+    security_log.touch()
+    env = {
+        "PATH": f"{bin_dir}:/usr/bin:/bin",
+        "STUB_LOG": str(log),
+        "SECURITY_LOG": str(security_log),
+        "HOME": str(tmp_path),
+        KEYCHAIN_MARKER: "1",
+    }
+    result = subprocess.run(
+        ["bash", str(GATE), str(tmp_path / "r.xml")],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    calls = security_log.read_text().strip()
+    assert calls == "", (
+        "a nested gate run invoked `security` despite the re-entry marker; it would "
+        f"have altered the outer run's keychain. Calls:\n{calls}"
+    )
+    assert "Repairing" not in result.stderr
+
+
+def test_without_the_marker_a_run_meeting_our_keychain_does_act(tmp_path: Path) -> None:
+    """The control for the case above, and the reason it is not vacuous.
+
+    The same stubbed state WITHOUT the marker must reach the repair path. If this
+    ever goes green, the case above is proving nothing -- it would be passing
+    because the script never gets that far, not because the guard works.
+    """
+    log, bin_dir = _stub_env(tmp_path, with_security=True)
+    security_log = tmp_path / "security.log"
+    security_log.touch()
+    result = subprocess.run(
+        ["bash", str(GATE), str(tmp_path / "r.xml")],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "STUB_LOG": str(log),
+            "SECURITY_LOG": str(security_log),
+            "HOME": str(tmp_path),
+        },
+    )
+    assert "Repairing" in result.stderr, (
+        "with no re-entry marker and our keychain reported as default, the gate did "
+        "NOT take the repair path -- so the guarded case is vacuous:\n" + result.stderr
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_the_swap_is_skipped_when_opted_out(tmp_path: Path) -> None:
+    """`BANKMACHINE_NO_KEYCHAIN_SWAP=1` is the documented escape hatch, so it is
+    asserted rather than assumed -- an opt-out nobody checks is an opt-out that
+    silently stops working."""
+    log, bin_dir = _stub_env(tmp_path)
+    result = subprocess.run(
+        ["bash", str(GATE), str(tmp_path / "r.xml")],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "STUB_LOG": str(log),
+            "HOME": str(tmp_path),
+            "BANKMACHINE_NO_KEYCHAIN_SWAP": "1",
+        },
+    )
+    assert "Repairing" not in result.stderr
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_the_gate_still_runs_where_security_is_unavailable(tmp_path: Path) -> None:
+    """A non-macOS checkout has no `security`. The gate must run its four checks
+    anyway rather than aborting, so the swap is an optimisation and never a
+    prerequisite."""
+    log, bin_dir = _stub_env(tmp_path)
+    result = subprocess.run(
+        ["bash", str(GATE), str(tmp_path / "r.xml")],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        # No /usr/bin: `security` is unreachable, which is what a Linux box looks
+        # like from this script's point of view.
+        env={"PATH": f"{bin_dir}:/bin", "STUB_LOG": str(log), "HOME": str(tmp_path)},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    invoked = [line.split()[1] for line in log.read_text().splitlines()]
+    assert invoked == EXPECTED_ORDER, (
+        f"with no `security` on PATH the gate ran {invoked}, not {EXPECTED_ORDER}"
+    )
+
+
+def test_the_restore_puts_back_the_whole_search_list_not_just_the_default() -> None:
+    """🔴 `list-keychains -s` REPLACES the list. Restoring only the default would
+    drop every other keychain the user had searchable -- silently, and not
+    obviously connected to having run the tests.
+
+    Asserted against the script's text rather than by running it, because the
+    alternative is mutating the machine's real search list inside a test. The
+    structural claim is what can decay: that restore and repair both put back a
+    SAVED list rather than a single path.
+    """
+    gate = _gate_source()
+    assert "keychain_current_list" in gate, (
+        "the gate no longer captures the user search list before swapping"
+    )
+    for func, var in (
+        ("restore_keychain", "$keychain_list_saved"),
+        ("repair_stale_keychain", "$recorded_list"),
+    ):
+        body = gate.split(f"{func}() {{", 1)[1].split("\n}", 1)[0]
+        assert "list-keychains -d user -s" in body, f"{func} does not restore the search list"
+        assert var in body, (
+            f"{func} restores a search list that is not the saved one ({var} absent) -- "
+            "restoring a single path here is the defect this case exists for"
+        )

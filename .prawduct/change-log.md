@@ -81,9 +81,13 @@ worst case — stale default *and* no state file — takes the fallback. CI alre
 (`ci.keychain`), and the restore captures whatever was default, so it puts CI's back rather than
 assuming a login one.
 
-**The remaining exposure, stated plainly:** for the length of the run, another process writing to the
-default keychain writes to the test one. Reads are unaffected. The window is now ~56s rather than
-~542s.
+**The remaining exposure, stated plainly and without softening it:** for the length of the run,
+another process writing to the *default* keychain writes to the temporary one — and that write is
+**destroyed**, not merely misdirected, because the run deletes the keychain on its way out. Reads
+are unaffected: the original search list is kept and still searched. The temporary keychain is
+created with a random password rather than an empty one, so a secret that does land there before
+deletion is not sitting in a keychain anyone can open. The window is now ~56s rather than ~542s.
+`BANKMACHINE_NO_KEYCHAIN_SWAP=1` opts out entirely.
 
 ## 2026-09-16: The engine is MIT licensed, and the guard learns that an author is not an operator
 

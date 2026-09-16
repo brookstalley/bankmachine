@@ -131,6 +131,17 @@ Developer preferences for how code is written in this project. Captured during d
 
 Each preference above should be enforced by one of three mechanisms — assign the mechanism when you add the preference so it doesn't quietly become aspirational.
 
+🔴 **Running the gate changes a user-level macOS setting for the length of the run.**
+`scripts/check.sh` makes an empty keychain the default so the suite stops paying the developer's
+populated login keychain per `keyring` round trip, and puts the previous default **and the whole
+user search list** back on the way out. It self-heals a default left stale by a `kill -9`, and
+declines entirely when `security` is unreachable, so the swap is an optimisation and never a
+prerequisite. **Opt out with `BANKMACHINE_NO_KEYCHAIN_SWAP=1`.** The exposure, stated rather than
+implied: for the length of a run, another process writing to the *default* keychain writes to the
+temporary one and that write is **destroyed** when the run deletes it — misdirected *and* lost, not
+merely misdirected. Reads are unaffected, because the original list is kept and searched. Rationale
+and measurements: the `scope=fast-keychain-suite` change-log entry.
+
 | Mechanism | Where it lives | What it catches | Trade-off |
 |---|---|---|---|
 | **Linter** | Project's configured linter (ruff, eslint, swiftlint, etc.) | Mechanical style/naming rules | Best tool when configured. If no linter, preferences in this category fall through to Critic. |
