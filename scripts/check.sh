@@ -78,7 +78,21 @@ check() {
     failed="${failed}${name}"$'\n'
 }
 
-check "uv run pytest" uv run pytest --junit-xml="$junit_xml" -q
+# `-n auto` lives HERE rather than in `pyproject.toml`'s `addopts`, and the
+# difference matters. `addopts` would follow every pytest invocation in the repo,
+# including the single-test runs `tests/preferences/verify_norms_go_red.py`
+# shells out per norm case -- each spinning up a worker pool to run one test --
+# and including an explicit `-m sandbox`, which would parallelise live aggregator
+# calls into rate limits. This is the full-suite run and is none of those. The
+# reasoning in full is beside `addopts`.
+#
+# The suite is safe to run in parallel because isolation is per-test and already
+# checked: the keychain service is a per-test uuid, config is `tmp_path`-scoped,
+# the autouse logging fixture restores per test, and xdist forks processes, so
+# the `monkeypatch.setattr` sites each get their own module table. A differing
+# test COUNT between `-n auto` and serial would mean real shared state -- that is
+# a finding to chase, never a flake to retry.
+check "uv run pytest" uv run pytest --junit-xml="$junit_xml" -q -n auto
 check "uv run ruff check" uv run ruff check
 check "uv run ruff format --check" uv run ruff format --check
 check "uv run mypy" uv run mypy

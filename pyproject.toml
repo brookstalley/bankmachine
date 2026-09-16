@@ -51,6 +51,10 @@ dev = [
     "hypothesis>=6",
     "mypy>=1.11",
     "pytest>=8",
+    # Parallel test execution. Invoked as `-n auto` from `scripts/check.sh` and
+    # nowhere else -- deliberately NOT from `addopts`; the reason is beside that
+    # key below.
+    "pytest-xdist>=3",
     # Floor raised from >=0.6 on 2026-09-07: the tree is formatted against 0.16's
     # rules, and 0.6 formats several files differently. A floor that predates the
     # formatting it is meant to reproduce invites a churn diff on any fresh resolve.
@@ -114,4 +118,21 @@ markers = [
     # honest; `uv run pytest -m sandbox` makes the live calls deliberately.
     "sandbox: makes live calls to the aggregator's sandbox environment",
 ]
+# 🔴 NO `-n` HERE, AND THAT IS LOAD-BEARING. `addopts` applies to every pytest
+# invocation, including ones nobody had in mind when they edited this line.
+#
+# `tests/preferences/verify_norms_go_red.py` is the case that decides it. It is
+# not collected by pytest: it mutates a source file, shells out to run ONE test,
+# restores, and repeats -- once per norm case. With `-n auto` here, each of those
+# invocations would spin up a whole worker pool to run a single test. It fails
+# slowly rather than loudly, so the natural response is to switch the harness off
+# rather than find the interaction, which costs the repo its norm-break guard.
+#
+# Two more, same root cause. `--pdb` under xdist is a debugger you cannot drive,
+# and it is reached by someone already debugging something else. And `-m sandbox`
+# -- the one hazard that leaves this machine -- would fan LIVE aggregator calls
+# out across workers, into rate limits and the connection cap.
+#
+# Parallelism belongs on the invocation that wants it. `scripts/check.sh` passes
+# `-n auto`, which is the full-suite run and none of the cases above.
 addopts = "-m 'not sandbox'"
