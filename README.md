@@ -27,7 +27,7 @@ your Plaid account.
 You need [uv](https://docs.astral.sh/uv/). It fetches the pinned Python 3.14 for you.
 
 ```sh
-git clone <your remote> && cd bankmachine
+git clone https://github.com/brookstalley/bankmachine.git && cd bankmachine
 git config core.hooksPath .githooks   # per clone: turns on the pre-push guards
 uv sync
 ```
