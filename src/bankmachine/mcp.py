@@ -509,19 +509,23 @@ def _reconciliation_row_fields() -> dict[str, dict[str, Any]]:
                 "answer are internally consistent and may still be wrong by that amount"
             ),
         },
-        "reconciled_intervals": {
+        "intervals_compared": {
             "type": "integer",
             "description": (
                 "how many consecutive-snapshot intervals were actually compared. 🔴 The honest "
                 "denominator: a residual of 0 over 0 intervals is green by vacuity, and this is "
-                "what tells the two apart. Present and 0 whenever no comparison was made"
+                "what tells the two apart. Present and 0 whenever no comparison was made. 🔴 This "
+                "is the TOTAL and `unreconciled_intervals` is a SUBSET of it -- they do not "
+                "partition, so never add them: 5 compared with 2 unreconciled means 5 were "
+                "checked and 2 of those did not balance, never 7"
             ),
         },
         "unreconciled_intervals": {
             "type": "integer",
             "description": (
-                "how many of those intervals have a NONZERO residual, as MEASURED. The list "
-                "beside it is capped, so a shorter list means the rest were not enumerated"
+                "how many OF THOSE intervals have a nonzero residual, as MEASURED -- a subset of "
+                "`intervals_compared`, never a second category beside it. The list below is "
+                "capped, so a shorter list means the rest were not enumerated"
             ),
         },
         "unreconciled_detail": {
@@ -1865,7 +1869,15 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "`silence_ratio` above 1 means a full posting cycle has been "
                 "missed; a ratio near 1 is worth a second look even when the flag is false. "
                 "🔴 A non-active account's trailing silence is CLOSURE, not a hole: the flag "
-                "stays false for it and `lifecycle` on the row is what says why."
+                "stays false for it and `lifecycle` on the row is what says why. "
+                "🔴 This tool also answers WHETHER THE STORED DATA BALANCES: each row carries "
+                "`reconciliation_state` and `residual_minor_units` — the change in the account's "
+                "balance less the transactions recorded over the same interval, which should be 0 "
+                "— plus `unreconciled_detail` naming each interval that does not, with a cause. "
+                "🔴 Call it before quoting any figure from `money_summary` or "
+                "`query_transactions`: a nonzero residual means those answers are wrong by that "
+                "amount, and they carry no warning of their own about it. It also reports "
+                "unsettled authorisation holds per account (`stranded_holds`)."
             ),
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
             "outputSchema": _output_schema(

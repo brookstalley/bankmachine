@@ -71,8 +71,9 @@ precisely the residuals the cause vocabulary had just explained.
 
 🔴 **The figures stay out of this file, and that is the norm rather than discretion.**
 `project-state.yaml`'s signed REPOSITORY SCOPE decision admits no operator roster, account detail or
-balance into a tracked file, and this repository is now public — which voids the "the remote is
-private" reasoning that decision's accepted-risk alternative rested on. The counts, the magnitude
+balance into a tracked file. That decision is **unconditional** — it binds whatever the remote's
+visibility is, and this entry deliberately rests on it rather than on any claim about that
+visibility, which changes without the records knowing. The counts, the magnitude
 and the interval dates live in `deployment/reconciliation-measurement.md`, beside the history audit
 and the roster, with the command to re-derive them. 🔴 Note for anything that measures against this
 store next: `check-no-personal-data.sh` does **not** catch this class — it matches roster and

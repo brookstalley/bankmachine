@@ -210,7 +210,7 @@ against either one alone.
   <!-- Two source files are touched, but only their docstrings; no behaviour changes. The
        test-evidence check is waived on that basis, and test_schema.py still runs. -->
 - **Done when:**
-  1. Acceptance criteria met and tests pass
+  1. ~~Acceptance criteria met and tests pass~~ **DONE 2026-09-16.**
   2. `/prawduct:critic` run and blocking findings resolved
   3. Committed and chunk marked `[x]` in Status
 
@@ -303,7 +303,7 @@ against either one alone.
      residual, so it is NOT triggered and no separate scoping is owed.
      🔴 **The counts, magnitude and dates are deliberately not here.** `project-state.yaml`'s signed
      REPOSITORY SCOPE decision admits no operator roster, account detail or balance into a tracked
-     file, and this repository is public. They live in
+     file, and it binds unconditionally — whatever the remote's visibility is. They live in
      `deployment/reconciliation-measurement.md`, which also records the honest limit: the store
      holds three snapshots, so this is a weak measurement that strengthens as they accumulate.
      🔴 **Chunk 03 measures against the same store — put its figures there too.**

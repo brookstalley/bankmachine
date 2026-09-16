@@ -759,7 +759,7 @@ def test_the_coverage_report_carries_a_residual_per_account_with_its_cause(
     checking = rows[ids[CHECKING]]
     assert checking["reconciliation_state"] == "reconciled"
     assert checking["residual_minor_units"] == -1500
-    assert checking["reconciled_intervals"] == 1
+    assert checking["intervals_compared"] == 1
     assert checking["unreconciled_intervals"] == 1
     assert checking["balance_currency"] == "USD"
     (detail,) = checking["unreconciled_detail"]
@@ -947,7 +947,7 @@ def test_a_superseded_currency_is_not_netted_into_the_residual(
     An account whose unit changed has intervals measured in two different
     currencies. Netting them produces a number with no unit and labels it with
     whichever currency was picked first. Only the account's CURRENT run is
-    compared, and `reconciled_intervals` is what states that something was left out.
+    compared, and `intervals_compared` is what states that something was left out.
     """
 
     def priced(current: str, iso: str) -> dict[str, Any]:

@@ -113,7 +113,7 @@ creates one, because an empty encrypted store would answer every question with a
 | `query_investment_transactions` | an investment account's activity — buys, sells, dividends, contributions, withdrawals and fees — in a date window, newest first, paged, with totals by currency, type and subtype |
 | `money_summary` | money in and out over a window, grouped by category, merchant, account, month or flow class — split by flow class under every grouping, and carrying the totals block described below |
 | `get_pipeline_health` | every connection, when it last synced, what is wrong |
-| `get_coverage_report` | per account: what data exists, and how long it has been silent |
+| `get_coverage_report` | per account: what data exists, how long it has been silent, and whether the balance and the recorded transactions agree |
 
 🔴 **Eight of the nine specified tools.** The ones missing from this table — `find_recurring` —
 are not built yet; the descope is recorded in `.prawduct/artifacts/api-contract.md`.
@@ -195,6 +195,15 @@ with no new activity. `expired_holds` counts the ones that dropped off without e
 `settled_from_hold` the ones that became real transactions in this window; those two are what let
 you tell a total that shrank because a hold expired from one that shrank because data is missing.
 All six are always present and zero rather than absent.
+
+**`get_coverage_report` rows also say whether the stored data balances.** `reconciliation_state`
+says whether the check could run for that account and why not when it could not;
+`residual_minor_units` is the change in its balance less the transactions recorded over the same
+interval, which should be `0`; `unreconciled_detail` names each interval that does not balance, with
+a cause. 🔴 **Call this before quoting a figure from `money_summary` or `query_transactions`** — a
+nonzero residual means those answers are off by that amount for that account, and they raise no
+warning of their own about it. Investment accounts are excluded by construction and say so; their
+null residual is the correct answer, not a missing one.
 
 **`get_coverage_report` rows carry `stranded_holds`** — holds still outstanding past any ordinary
 authorisation lifetime, with `oldest_stranded_hold` naming the one to go look at (null when there

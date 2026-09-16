@@ -1227,8 +1227,8 @@ class AccountReconciliation:
         """Intervals with a nonzero residual, as MEASURED.
 
         🔴 Derived from the list rather than stored beside it, so the two cannot
-        disagree. Held as its own field, it went stale the moment the list was
-        capped anywhere, which is precisely what happened.
+        disagree. A stored count goes stale the moment anything caps the list,
+        and the cap in `to_wire` is exactly such a caller.
         """
         return len(self.unreconciled)
 
@@ -1244,7 +1244,7 @@ class AccountReconciliation:
         return {
             "reconciliation_state": self.state,
             "residual_minor_units": self.residual_minor_units,
-            "reconciled_intervals": self.intervals_compared,
+            "intervals_compared": self.intervals_compared,
             "unreconciled_intervals": self.unreconciled_count,
             "unreconciled_detail": [
                 interval.to_wire() for interval in self.unreconciled[:MAX_RESIDUALS_PER_ACCOUNT]

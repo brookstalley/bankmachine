@@ -279,7 +279,7 @@ distinguishable states into one value, the collapse is the defect.
 
 | `kind` | Meaning |
 |---|---|
-| `balance_unreconciled` | An account in the scope of THIS request has an interval whose balance movement is not explained by the transactions recorded in it, and no coverage gap, open hold or truncated window accounts for the difference. `detail` names the account, the interval and the magnitude. 🔴 The figures in this answer are internally consistent and may still be wrong by that amount |
+| `balance_unreconciled` | An account in the scope of THIS request has an interval whose balance movement is not explained by the transactions recorded in it, and no coverage gap or truncated window accounts for the difference. `detail` names the account, the interval and the magnitude. 🔴 The figures in this answer are internally consistent and may still be wrong by that amount |
 | `reconciliation_not_applicable` | An account in scope is an investment account, whose balance moves with the market rather than with recorded activity, so AC-11.2 does not apply to it. Its absence from the residuals is by construction, not a gap. `detail` names the accounts |
 
 `reconciliation_not_applicable` is a warning rather than a silent omission for the same reason

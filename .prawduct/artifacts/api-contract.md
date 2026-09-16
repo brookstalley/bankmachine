@@ -762,6 +762,21 @@ distinguished on purpose — an *expired* hold is one that never posted (`pendin
 while a row that settled and was later withdrawn left as a settled row, and counting the second as
 the first would tell a consumer a hold dropped off when a real transaction was retracted.
 
+🔴 **`balance_unreconciled` and `reconciliation_not_applicable` are request-scoped kinds that
+ONLY `get_coverage_report` emits, and that restriction is recorded here because their scope class
+alone would misdescribe them.** A request-scoped kind promises that its absence is information — it
+fires whenever THIS request's scope holds the condition — and on the analysis tools these two never
+fire at all. So an unexplained residual makes `money_summary` and `query_transactions` wrong by the
+residual over that account, silently, on answers whose silence the scope rule invites a consumer to
+read as clean. Two things follow and neither is optional: an agent establishes reconciliation on the
+**verification surface before** quoting an analysis figure, which is what that surface is for and
+what this document's headline instruction already says; and **extending either kind to an analysis
+answer is a change to this restriction, not an addition to a tool** — the row fields are per account
+and an analysis answer is not, so the emitter would have to decide which accounts a total drew on.
+Recorded rather than fixed by widening, because a kind that fires on some surfaces and not others is
+exactly the ambiguity the two scope tuples exist to remove, and the honest repair is to say where it
+fires.
+
 🔴 **`get_coverage_report` rows carry `stranded_holds` and `oldest_stranded_hold` (AC-13.5), and
 `get_pipeline_health` rows carry `sign_convention` with the counts it was judged on —
 `sign_convention_rows_judged` and `sign_convention_rows_positive` (AC-14.2).** The counts ride beside
@@ -1236,8 +1251,8 @@ without a second call — and carries the analysis `list_accounts` does not.
 | `source_breakdown` | object | this account's rows by provenance |
 | `reconciliation_state` | string | whether AC-11.2's balance-to-transactions check could be RUN for this account, and why not when it could not: `reconciled`, `not_applicable_investment`, `insufficient_snapshots`, `no_balance_recorded`. 🔴 `reconciled` means the comparison was PERFORMED, not that it came back clean — the residual beside it carries the verdict. 🔴 Its own required field rather than an inference from a null residual: three of these states would otherwise share one null, and an UNRECONCILABLE account is not an UNRECONCILED one |
 | `residual_minor_units` | integer, nullable | the net of (change in balance − sum of transactions) over every interval compared, in minor units, operator-signed. `0` is the expected value and the claim this product makes. Null EXACTLY when `reconciliation_state` is not `reconciled` |
-| `reconciled_intervals` | integer | how many consecutive-snapshot intervals were actually compared. 🔴 The honest denominator: a residual of `0` over `0` intervals is green by vacuity, and this is what tells the two apart. Present and `0` whenever no comparison was made |
-| `unreconciled_intervals` | integer | how many of those intervals have a NONZERO residual, as MEASURED. The list beside it is capped, so a shorter list means the rest were not enumerated |
+| `intervals_compared` | integer | how many consecutive-snapshot intervals were actually compared. 🔴 The honest denominator: a residual of `0` over `0` intervals is green by vacuity, and this is what tells the two apart. Present and `0` whenever no comparison was made. 🔴 **This is the TOTAL and `unreconciled_intervals` is a SUBSET of it — they do not partition, so never add them:** `5` compared with `2` unreconciled means five were checked and two of those did not balance, never seven. Named for what the producer measures rather than paired with its own subset, because the paired spelling reads as a partition and is not one |
+| `unreconciled_intervals` | integer | how many OF THOSE intervals have a nonzero residual, as MEASURED — a subset of `intervals_compared`, never a second category beside it. The list below is capped, so a shorter list means the rest were not enumerated |
 | `unreconciled_detail` | array | those intervals, oldest first, each an object of `from_date`, `to_date`, `balance_change_minor_units`, `transactions_sum_minor_units`, `residual_minor_units`, `cause` and `currency`. Present and empty when the account reconciles |
 | `balance_currency` | string, nullable | the unit `residual_minor_units` is denominated in; null when no balance was ever recorded. An aggregate over residuals groups by this, per this document's rule that a total over stored amounts carries a count and a signed magnitude per currency |
 
