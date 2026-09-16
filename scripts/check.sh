@@ -114,7 +114,13 @@ check() {
 # `ci.keychain`); the restore below captures whatever was default, so running
 # under CI restores CI's keychain rather than assuming a login one.
 BMTEST_KEYCHAIN="bankmachine-test.keychain"
-BMTEST_STATE="$gate_dir/../.bankmachine-keychain-restore"
+# 🔴 Overridable, and the tests MUST override it. A case exercising the unguarded
+# path is by construction a nested run doing the sabotage this guard prevents:
+# stubbing `security` keeps it off the real keychain, but the STATE FILE is a real
+# path, and clobbering the outer run's copy leaves that run's own SIGKILL path
+# with nothing to restore from. Measured, not theorised -- an early version of
+# those cases overwrote it with the stub's fake paths mid-suite.
+BMTEST_STATE="${BANKMACHINE_KEYCHAIN_STATE:-$gate_dir/../.bankmachine-keychain-restore}"
 keychain_swapped=""
 keychain_list_saved=""
 

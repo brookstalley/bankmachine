@@ -16,6 +16,7 @@ which is what lets the failure-reporting contract be tested at all.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import tomllib
 import xml.etree.ElementTree as ET
@@ -572,6 +573,8 @@ def test_a_nested_gate_run_does_not_touch_the_outer_run_s_keychain(tmp_path: Pat
         "STUB_LOG": str(log),
         "SECURITY_LOG": str(security_log),
         "HOME": str(tmp_path),
+        # Never the repo's own state file: see the note beside BMTEST_STATE.
+        "BANKMACHINE_KEYCHAIN_STATE": str(tmp_path / "keychain-restore"),
         KEYCHAIN_MARKER: "1",
     }
     result = subprocess.run(
@@ -612,6 +615,7 @@ def test_without_the_marker_a_run_meeting_our_keychain_does_act(tmp_path: Path) 
             "STUB_LOG": str(log),
             "SECURITY_LOG": str(security_log),
             "HOME": str(tmp_path),
+            "BANKMACHINE_KEYCHAIN_STATE": str(tmp_path / "keychain-restore"),
         },
     )
     assert "Repairing" in result.stderr, (
@@ -688,4 +692,37 @@ def test_the_restore_puts_back_the_whole_search_list_not_just_the_default() -> N
         assert var in body, (
             f"{func} restores a search list that is not the saved one ({var} absent) -- "
             "restoring a single path here is the defect this case exists for"
+        )
+
+
+def test_the_keychain_cases_never_write_the_repo_s_own_state_file() -> None:
+    """🔴 Every case that can reach the swap must redirect the state file.
+
+    A case exercising the UNGUARDED path is, by construction, a nested run doing
+    the sabotage the re-entry guard exists to prevent. Stubbing `security` keeps
+    it off the real keychain; it does not keep it off the state file, which is a
+    real path in the repo root. An early version of these cases overwrote the
+    outer run's copy with the stub's fake paths mid-suite, undoing the outer
+    swap and leaving that run's SIGKILL path nothing to restore from.
+
+    Asserted structurally because the failure is invisible from inside a single
+    case: each one passes while corrupting the run that launched it.
+    """
+    src = Path(__file__).read_text()
+    block = src.split("# --- the gate's keychain swap ---", 1)[1]
+    reaching = [
+        name
+        for name in re.findall(r"^def (test_\w+)\(", block, re.M)
+        if "with_security=True" in block.split(f"def {name}(", 1)[1].split("\ndef ", 1)[0]
+    ]
+    assert reaching, (
+        "no keychain case stubs `security`, so none of them reaches the swap at all -- "
+        "they would be passing without exercising the subject."
+    )
+    for name in reaching:
+        body = block.split(f"def {name}(", 1)[1].split("\ndef ", 1)[0]
+        assert "BANKMACHINE_KEYCHAIN_STATE" in body, (
+            f"{name} stubs `security` — so it reaches the swap — but does not redirect "
+            "BANKMACHINE_KEYCHAIN_STATE, so it writes the repo's own state file and "
+            "corrupts the gate run that launched it."
         )
