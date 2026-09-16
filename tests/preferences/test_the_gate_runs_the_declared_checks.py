@@ -106,6 +106,10 @@ def _gate_env(
         # Never the repo's own file: a nested run writing it corrupts the run
         # that launched it. See BMTEST_STATE in the gate.
         "BANKMACHINE_KEYCHAIN_STATE": str(tmp_path / "keychain-restore"),
+        # No operator is watching a test run, so the interrupt window is dead
+        # time. Zeroed here rather than per-case so a case added later cannot
+        # quietly reintroduce a 3s sleep.
+        "BANKMACHINE_KEYCHAIN_GRACE": "0",
     }
     if not reentrant:
         env[KEYCHAIN_MARKER] = "1"
@@ -524,9 +528,22 @@ def test_parallelism_is_configured_on_the_gate_and_never_in_addopts() -> None:
 _STUB_SECURITY = """#!/usr/bin/env bash
 printf '%s\\n' "$*" >>"$SECURITY_LOG"
 case "$1" in
+    show-keychain-info)
+        # Exit 0 = a leftover keychain exists. `STUB_NO_LEFTOVER=1` says none does.
+        [ "${STUB_NO_LEFTOVER:-}" = "1" ] && exit 1
+        exit 0
+        ;;
     default-keychain)
         # `-s` is a write; bare is a read. Only the read answers.
-        [ "$2" = "-s" ] || printf '    "/Users/x/Library/Keychains/bankmachine-test.keychain-db"\\n'
+        # `STUB_DEFAULT_IS_OURS=0` reports an ORDINARY default, which is what a
+        # run meets when the previous one restored properly.
+        if [ "$2" != "-s" ]; then
+            if [ "${STUB_DEFAULT_IS_OURS:-1}" = "0" ]; then
+                printf '    "/Users/x/Library/Keychains/login.keychain-db"\\n'
+            else
+                printf '    "/Users/x/Library/Keychains/bankmachine-test.keychain-db"\\n'
+            fi
+        fi
         ;;
     list-keychains)
         case "$*" in
@@ -573,11 +590,10 @@ def _stub_env(tmp_path: Path, *, with_security: bool = False) -> tuple[Path, Pat
 # USER-LEVEL setting, so what it puts back matters more than what it takes.
 #
 # These cases drive the REAL script, the way every other case in this file does
-# and the way `project-preferences.md` rules shell behaviour is tested. They run
-# it with `BANKMACHINE_NO_KEYCHAIN_SWAP=1` or with `security` off PATH, so no case
-# here ever touches the machine's actual keychain -- what is asserted is that the
-# script DECLINES in each of those states, which is the property the suite needs
-# to be able to run itself at all.
+# and the way `project-preferences.md` rules shell behaviour is tested. None of
+# them touches the machine's actual keychain: each either stubs `security` on
+# PATH, opts out with `BANKMACHINE_NO_KEYCHAIN_SWAP=1`, or puts `security` out of
+# reach -- so what the stub records is what the script TRIED to do.
 
 
 def _gate_source() -> str:
@@ -882,4 +898,115 @@ def test_neither_teardown_path_destroys_the_keychain() -> None:
     assert "delete-keychain" in setup, (
         "nothing removes a leftover keychain at the start of a run, so they accumulate "
         "in the user's keychain directory forever."
+    )
+
+
+def test_a_leftover_from_an_unclean_run_is_announced_before_it_is_deleted(
+    tmp_path: Path,
+) -> None:
+    """🔴 The interrupt window is the only thing between a stray write and its loss.
+
+    A leftover keychain beside a SURVIVING state file means the run that owned it
+    was killed — the case most likely to hold a write nobody has seen. That one is
+    announced and pauses.
+    """
+    log, bin_dir = _stub_env(tmp_path, with_security=True)
+    security_log = tmp_path / "security.log"
+    security_log.touch()
+    state = tmp_path / "keychain-restore"
+    state.write_text("/Users/someone/Library/Keychains/notlogin.keychain-db\n")
+
+    result = subprocess.run(
+        ["bash", str(GATE), str(tmp_path / "r.xml")],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=_gate_env(
+            tmp_path,
+            bin_dir,
+            reentrant=True,
+            STUB_LOG=str(log),
+            SECURITY_LOG=str(security_log),
+            BANKMACHINE_KEYCHAIN_STATE=str(state),
+        ),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "did NOT exit cleanly" in result.stderr, (
+        "a leftover beside a surviving state file was deleted with no warning — the "
+        "operator got no chance to keep it:\n" + result.stderr
+    )
+    assert "Ctrl-C" in result.stderr, "the announcement offers no way to act on it"
+    calls = security_log.read_text()
+    assert "show-keychain-info" in calls, (
+        "the gate deleted without first checking a leftover exists, so it would print "
+        f"the warning on a run that had nothing to remove. Calls:\n{calls}"
+    )
+    assert "delete-keychain" in calls, f"the leftover was never removed. Calls:\n{calls}"
+
+
+def test_a_leftover_from_a_clean_run_goes_quietly(tmp_path: Path) -> None:
+    """The other half, and the reason the case above is worth reading.
+
+    A clean run removes its state file. A leftover with none beside it is the
+    ordinary residue of a run that exited properly, and it is removed silently —
+    because a banner that fires on every single run is the one the operator
+    learns to skip, and this banner guards the datastore key.
+    """
+    log, bin_dir = _stub_env(tmp_path, with_security=True)
+    security_log = tmp_path / "security.log"
+    security_log.touch()
+    # No state file written, and an ordinary default: the previous run exited
+    # cleanly and left only its keychain behind.
+    result = subprocess.run(
+        ["bash", str(GATE), str(tmp_path / "r.xml")],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=_gate_env(
+            tmp_path,
+            bin_dir,
+            reentrant=True,
+            STUB_LOG=str(log),
+            SECURITY_LOG=str(security_log),
+            STUB_DEFAULT_IS_OURS="0",
+        ),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "did NOT exit cleanly" not in result.stderr, (
+        "the ordinary residue of a clean run was announced as suspect. A warning that "
+        "fires every run is one nobody reads:\n" + result.stderr
+    )
+    assert "delete-keychain" in security_log.read_text(), (
+        "the leftover was not removed, so they accumulate in the keychain directory"
+    )
+
+
+def test_nothing_is_deleted_when_there_is_no_leftover(tmp_path: Path) -> None:
+    """`show-keychain-info` is the guard. Without it the gate would issue a delete
+    on a first-ever run — harmless today, and the kind of unconditional destructive
+    call that stops being harmless when the name is ever reused."""
+    log, bin_dir = _stub_env(tmp_path, with_security=True)
+    security_log = tmp_path / "security.log"
+    security_log.touch()
+    result = subprocess.run(
+        ["bash", str(GATE), str(tmp_path / "r.xml")],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=_gate_env(
+            tmp_path,
+            bin_dir,
+            reentrant=True,
+            STUB_LOG=str(log),
+            SECURITY_LOG=str(security_log),
+            STUB_DEFAULT_IS_OURS="0",
+            STUB_NO_LEFTOVER="1",
+        ),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "delete-keychain" not in security_log.read_text(), (
+        "the gate issued a delete although `show-keychain-info` reported no leftover"
     )

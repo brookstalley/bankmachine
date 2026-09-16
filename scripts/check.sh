@@ -90,7 +90,7 @@ check() {
 #
 # Most of the tests hold `keychain_service` against the REAL keychain, so the
 # suite spent most of its wall clock inside `securityd` rather than in this
-# product. `-n auto` could not reach it: ten workers queue on one daemon, which
+# product. The figures are in the change-log entry, not here. `-n auto` could not reach it: ten workers queue on one daemon, which
 # is why parallelism alone bought 21%.
 #
 # WHY NOT TARGET A KEYCHAIN PER PROCESS, which would need no swap at all:
@@ -102,7 +102,7 @@ check() {
 #
 # WHY NOT FAKE `keyring` INSTEAD: `secrets.py` is the only module that imports it
 # (AC-10.1) and the security model leans on genuine keychain behaviour. A fake
-# would make 1264 tests stop exercising the real integration. A DEDICATED
+# would make most of the suite stop exercising the real integration. A DEDICATED
 # keychain is still a real keychain, so this buys the speed without trading the
 # coverage away.
 #
@@ -202,16 +202,21 @@ use_test_keychain() {
     # workers are mid-`keyring` call against, and remove the outer run's state
     # file -- leaving its own SIGKILL path with nothing to restore from.
     #
-    # It does not fire today, and that is the reason to fix it rather than not:
-    # three of those call sites override HOME (so `security` cannot resolve a
-    # default and the guards below bail) and the fourth omits /usr/bin from PATH
-    # (so `security` is unreachable). Nobody wrote either property for this, and
-    # one new case without them makes it live. A guarantee that holds by
-    # coincidence is the kind this repo replaces with one that holds by
-    # construction.
+    # The marker has to be HANDED to each nested run, not just exported: those
+    # call sites pass closed environments, and a child inherits nothing it is not
+    # given. `tests/preferences/test_the_gate_runs_the_declared_checks.py`
+    # routes every one of them through a single builder, and a case there fails
+    # on any exec that writes its own.
     [[ -z ${BANKMACHINE_KEYCHAIN_SWAPPED:-} ]] || return 0
     command -v security >/dev/null 2>&1 || return 0
     [[ ${BANKMACHINE_NO_KEYCHAIN_SWAP:-} != 1 ]] || return 0
+
+    # 🔴 Captured HERE, before this run writes its own state file and before
+    # `repair_stale_keychain` removes any it finds. Read later, it is always
+    # true, and the leftover warning would fire on every single run -- which is
+    # the warning nobody reads.
+    local had_state=0
+    [[ -e $BMTEST_STATE ]] && had_state=1
 
     repair_stale_keychain
 
@@ -230,7 +235,9 @@ use_test_keychain() {
     # one seam that stores it -- a datastore key. An empty-password keychain
     # holding that would sit outside the "protected by the keychain's own unlock"
     # boundary `security-model.md` states. The password lives only in this
-    # process; the keychain is deleted on the way out.
+    # process, which is also why the keychain is NOT deleted on the way out: a
+    # later reboot relocks it under a secret that died with this run, so leaving
+    # it is the only thing preserving any chance of recovering a stray write.
     #
     # 🔴 NOT `tr -dc ... </dev/urandom | head -c 32`. `head` exits at its byte
     # count, `tr` takes SIGPIPE, and the pipeline returns 141 under the
@@ -245,16 +252,27 @@ use_test_keychain() {
     # open. The suite stays slow, which is the safe direction to fail.
     [[ -n $pw ]] || { rm -f "$BMTEST_STATE"; return 0; }
 
-    # The one place the keychain is destroyed, and it says so. A leftover from a
-    # previous run may hold a write that landed on the default during that run;
-    # it is announced here rather than removed on the way out, so the loss is
-    # attributable to a command the operator just ran instead of happening
-    # invisibly at the end of the last one.
+    # The one place the keychain is destroyed, and whether it is announced
+    # depends on whether it is SUSPECT.
+    #
+    # 🔴 A warning that fires every run is the one nobody reads, and this one
+    # guards the only window between a stray write and its deletion. Since
+    # neither teardown path deletes any more, a leftover exists at the start of
+    # every run after the first -- so "a leftover exists" cannot be the trigger.
+    #
+    # The state file is the discriminator, and it costs nothing: a run that exits
+    # cleanly removes it, a run that is killed does not. A leftover with NO state
+    # file beside it is the ordinary residue of a clean run, and goes quietly. A
+    # leftover WITH one means the run that owned it died -- the case most likely
+    # to hold a write nobody has seen -- and that is worth interrupting for.
     if security show-keychain-info "$BMTEST_KEYCHAIN" >/dev/null 2>&1; then
-        printf '\n*** removing a leftover %s from a previous run.\n' "$BMTEST_KEYCHAIN" >&2
-        printf '*** if anything wrote to the DEFAULT keychain during that run it landed\n' >&2
-        printf '*** there, and is going now. Ctrl-C within 3s to keep it.\n' >&2
-        sleep 3
+        if (( had_state == 1 )); then
+            local grace="${BANKMACHINE_KEYCHAIN_GRACE:-3}"
+            printf '\n*** %s is left over from a run that did NOT exit cleanly.\n' "$BMTEST_KEYCHAIN" >&2
+            printf '*** Anything that wrote to the DEFAULT keychain during it landed there,\n' >&2
+            printf '*** and is about to be deleted. Ctrl-C within %ss to keep it.\n' "$grace" >&2
+            [[ $grace == 0 ]] || sleep "$grace"
+        fi
         security delete-keychain "$BMTEST_KEYCHAIN" 2>/dev/null || true
     fi
     security create-keychain -p "$pw" "$BMTEST_KEYCHAIN" 2>/dev/null || { rm -f "$BMTEST_STATE"; return 0; }
