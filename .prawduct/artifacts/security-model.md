@@ -142,6 +142,33 @@ data at rest and in transit.
 
 ## Authentication
 
+🔴 **There is none, and that is the design.**
+
+This is a single-operator tool. The authentication boundary is **the macOS user account** — login
+password, FileVault, and the keychain's own unlock. Adding an application-level password would store
+a second credential to protect data already protected by the first, and the operator would keep it in
+the same keychain.
+
+**What authenticates instead, per surface:**
+
+| Surface | Who may use it | Enforced by |
+|---|---|---|
+| CLI (`bankmachine …`) | Anyone in the operator's OS session | Filesystem + keychain ACL |
+| MCP server (stdio) | The process that spawned it — the MCP client | 🔴 **Process ancestry.** No socket, no listener, nothing to authenticate to |
+| Datastore file | Anyone holding the 256-bit key | SQLCipher |
+| Aggregator API | This installation's client credentials | Keychain-held secret |
+
+**Why the MCP transport decision is a security decision.** Local stdio only, confirmed 2026-09-05 and
+recorded because it had previously been an *unexamined default rather than a decision*. It is the one
+architectural choice that would have been expensive to reverse: a remote transport would require
+authentication, authorization, TLS, and rate limiting, and would expose a financial datastore to a
+socket. AC-10.5 — *the MCP server opens no network sockets and reads only its own datastore file* —
+**holds**, and holds structurally rather than by policy.
+
+---
+
+### The gate's temporary keychain
+
 🔴 **Running the gate temporarily changes which keychain is the default.**
 `scripts/check.sh` makes an empty, randomly-passworded keychain the default for the length of a
 suite run, because the developer's populated login keychain costs roughly twenty-five times what an
@@ -171,31 +198,6 @@ instead is its size — a window of roughly the suite's runtime, reads unaffecte
 not sitting in a keychain anyone can open. `BANKMACHINE_NO_KEYCHAIN_SWAP=1` opts out; where
 `security` is unreachable the swap declines and the suite simply runs slowly, so it is an
 optimisation and never a prerequisite.
-
-🔴 **There is none, and that is the design.**
-
-This is a single-operator tool. The authentication boundary is **the macOS user account** — login
-password, FileVault, and the keychain's own unlock. Adding an application-level password would store
-a second credential to protect data already protected by the first, and the operator would keep it in
-the same keychain.
-
-**What authenticates instead, per surface:**
-
-| Surface | Who may use it | Enforced by |
-|---|---|---|
-| CLI (`bankmachine …`) | Anyone in the operator's OS session | Filesystem + keychain ACL |
-| MCP server (stdio) | The process that spawned it — the MCP client | 🔴 **Process ancestry.** No socket, no listener, nothing to authenticate to |
-| Datastore file | Anyone holding the 256-bit key | SQLCipher |
-| Aggregator API | This installation's client credentials | Keychain-held secret |
-
-**Why the MCP transport decision is a security decision.** Local stdio only, confirmed 2026-09-05 and
-recorded because it had previously been an *unexamined default rather than a decision*. It is the one
-architectural choice that would have been expensive to reverse: a remote transport would require
-authentication, authorization, TLS, and rate limiting, and would expose a financial datastore to a
-socket. AC-10.5 — *the MCP server opens no network sockets and reads only its own datastore file* —
-**holds**, and holds structurally rather than by policy.
-
----
 
 ## Authorization
 

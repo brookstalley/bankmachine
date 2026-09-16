@@ -101,8 +101,9 @@ exists. Measuring the risk directly does not discriminate either: `security dump
 keychain's contents without prompting, but the suite's own tests leave entries behind (13 after a
 clean run), so "non-empty" is true every time too. What bounds the exposure instead is its size — a
 window of roughly the suite's runtime, reads unaffected — and `BANKMACHINE_NO_KEYCHAIN_SWAP=1`,
-which declines the mechanism entirely. `security-model.md` § Authentication carries the same
-statement where a reader of the security model meets it. The temporary keychain is
+which declines the mechanism entirely. `security-model.md` § *The gate's temporary keychain* carries the same statement where a reader of
+the security model meets it, and `docs/README.md` carries the short form beside the command that
+hands a contributor the gate — which is the surface someone actually reads before running it. The temporary keychain is
 created with a random password rather than an empty one, so a secret that does land there before
 deletion is not sitting in a keychain anyone can open. The window is now ~56s rather than ~542s.
 
