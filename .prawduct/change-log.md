@@ -60,9 +60,12 @@ only enforcement is the comment beside it decays to a comment. It reads `addopts
 as a line, since a multi-line array would otherwise carry `-n` on a line a scan never reads, which is
 the silent re-entry the case exists to block. It matches token PREFIXES rather than whole tokens, because `-n4` and `-nauto` are ordinary spellings that equality misses; `--no-header` cannot trip it, since every long option begins `--`. Seen red by hand against `-n auto`, `-n4`, `-nauto`, `--numprocesses=4` and a multi-line array, and seen green against `--no-header`.
 
-**Verified rather than argued:** the suite passes **1896 under `-n auto`, identical to serial** — the
-count is the acceptance criterion, because a differing one would mean real shared state and would be
-a finding rather than a flake. The go-red harness was run to completion: all 232 norm breaks still
+**Verified rather than argued:** the suite passes under `-n auto` with **the same count it passes
+serially** — that equality is the acceptance criterion, because a difference between the two would
+mean real shared state and would be a finding rather than a flake. 🔴 Stated as a relation and not as
+a number on purpose: this entry's own bundle then added the pinning test below and moved the absolute
+by one, and a reader comparing a fresh count against a stale literal would be sent hunting shared
+state that does not exist. `scripts/check.sh` states the criterion the same relational way. The go-red harness was run to completion: all 232 norm breaks still
 caught.
 
 🔴 **The win is 21%, and the measurement is the useful part of this entry.** 645s to 510s, at **126%
