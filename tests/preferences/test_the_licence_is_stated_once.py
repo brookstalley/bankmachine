@@ -1,4 +1,4 @@
-"""The licence is asserted in three places, and they say the same thing.
+"""Everywhere the licence is asserted, it is asserted as the same licence.
 
 `LICENSE` carries the grant, `pyproject.toml` carries the SPDX expression every
 installer and package index reads, and `README.md` tells a human which licence
