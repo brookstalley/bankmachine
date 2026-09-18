@@ -75,6 +75,27 @@ def test_the_json_rpc_error_codes_are_the_ones_mcp_types_defines() -> None:
     assert copied == oracle
 
 
+def test_the_tool_annotation_hints_are_ones_tool_annotations_declares() -> None:
+    """🔴 These are field NAMES copied from `ToolAnnotations`, and a dropped one is silent.
+
+    The wire base leaves pydantic's `extra="ignore"` in force, so a misspelled
+    hint is discarded in the client's parser -- present in the bytes, gone by
+    the time anything reads them. `destructiveHint` and `openWorldHint` both
+    default to the alarming answer, so a hint that fails to arrive is read as
+    the opposite of what is true here.
+
+    A SUBSET, not equality: this server states four of the five and deliberately
+    leaves `title` to the tool definitions.
+    """
+    declared = {
+        field.alias or name for name, field in mcp_types.ToolAnnotations.model_fields.items()
+    }
+    assert set(mcp._READ_ONLY_ANNOTATIONS) <= declared, (
+        f"{sorted(set(mcp._READ_ONLY_ANNOTATIONS) - declared)} are not fields of "
+        f"ToolAnnotations, so a client would drop them before reading"
+    )
+
+
 def _runtime_dependency_names() -> set[str]:
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     names: set[str] = set()

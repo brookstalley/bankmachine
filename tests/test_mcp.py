@@ -2231,7 +2231,13 @@ def test_an_argument_the_tool_does_not_advertise_is_refused(initialized_config: 
     result = _call(initialized_config, "money_summary", {"sinceX": "2024-09-09"})
 
     assert result["isError"] is True
-    message = result["content"][0]["text"]
+    error = result["structuredContent"]["error"]
+    # 🔴 The SENTENCE, read from the field that carries it. It used to be the
+    # whole of `content[0].text`; the text is now the error object as JSON, so
+    # reading the sentence off the text would be reading it out of a JSON
+    # document. The claim is unchanged: this sentence names the rejected
+    # argument and lists what the tool accepts.
+    message = error["message"]
     assert "sinceX" in message, "the refusal does not name the argument it rejected"
     # 🔴 An exact set, not `"since" in message`: the refusal already contains
     # 'sinceX', so that substring can never fail. When one valid value contains
@@ -2241,7 +2247,9 @@ def test_an_argument_the_tool_does_not_advertise_is_refused(initialized_config: 
     assert set(accepted.strip().split(", ")) == {"group_by", "since", "until"}, (
         f"the refusal offered {accepted.strip()!r}"
     )
-    assert result["structuredContent"]["error"]["code"] == "invalid_argument"
+    assert error["code"] == "invalid_argument"
+    # The same sentence still reaches a text-only client, inside the object.
+    assert message in result["content"][0]["text"]
 
 
 def _delivered_guidance(config: Config) -> str:

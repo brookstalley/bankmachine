@@ -34,6 +34,44 @@
      deliverable omitted from the body ships invisibly, and no tag ever
      caught that either. -->
 
+## 2026-09-16: A refused call hands back the correction, not just the complaint
+
+<!-- prawduct: scope=mcp-error-recovery-and-types -->
+
+**Why:** a refusal is the next turn's input. `invalid_argument` produced a well-written sentence and
+a `{code, message}` payload, so an agent had to parse prose to work out what to send instead (#31).
+
+**What shipped:**
+
+- An `invalid_argument` refusal carries the correction as fields: which argument to change, the
+  tool's required and optional arguments, and whichever of `valid_values`, `valid_values_from`,
+  `minimum`, `maximum`, `max_length` and `example` applies. A field is present only when it applies.
+  The sentence is unchanged and rides as `message`; no condition that refuses was added or removed.
+- 🔴 **The whole error object also rides the `content` text as compact JSON, as answers already
+  do.** Acceptance rounds 2 and 3 both measured that a real client forwarded only the error string
+  and never `structuredContent.error.code` — so fields in the structured half alone would have been
+  invisible to the agent they were written for.
+- One base refusal type carries the recovery, and its constructor requires it, so a raise site
+  cannot forget one. The MCP boundary catches the base type: a refusal added later is rendered as a
+  correctable one by construction instead of falling to the broad catch as "internal error".
+- A third reference document, `bankmachine://reference/refusals`, teaches recovery: every code,
+  whether each is worth retrying, and every field of the correction. Each refusal points at it
+  through `see`, which reaches a caller when it is wanted rather than in every session's opening
+  tokens.
+- 🔴 **The handshake primer names it too, and paid for the room out of its own wording.** A served
+  document the primer never mentions fails `test_the_instructions_name_every_resource_the_server_serves`,
+  and that rule is right: a document nobody is told about is one nobody reads. The primer is held
+  to a measured client truncation limit, so the third URI was fitted by tightening six phrases
+  rather than by raising the ceiling. No fact left the text.
+- The error-code vocabulary is now a type (`envelope.ErrorCode`), so a misspelled or invented code
+  is a type error at the call site. That is most of #60, which asked for a declared single source;
+  its AST scan is no longer the only route to the same guarantee.
+
+Every guard was seen red: the `see` pointer dropped, the fields dropped, the text reduced to the
+sentence, the boundary catch narrowed from the base type, and a documented field removed. The
+tests retry from the fields alone and assert the corrected call succeeds — a test that only checked
+the keys were present would pass on a correction that leads nowhere.
+
 ## 2026-09-16: The hand-copied protocol constants are held to their source
 
 <!-- prawduct: scope=mcp-error-recovery-and-types -->

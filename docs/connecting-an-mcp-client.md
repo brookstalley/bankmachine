@@ -230,18 +230,30 @@ cap — so a client can tell "this tool has no window" from "this answer happens
 without calling it. A client that validates will reject a payload that has drifted from the schema,
 which turns silent envelope drift into a loud failure.
 
+## 🔴 When a call is refused, the correction comes back with it
+
+A refusal is `isError: true` carrying an `error` object with a stable `code`, a `message` for the
+human, and — on `invalid_argument`, the one a caller can act on — the correction as **fields**:
+which argument to change, that tool's required and optional arguments, and whichever of
+`valid_values`, `valid_values_from`, `minimum`, `maximum`, `max_length` and `example` applies. A
+field is present only when it applies, so its absence is information.
+
+The same object rides twice: in `structuredContent` and, as compact JSON, in the text — read
+whichever your client hands you. `bankmachine://reference/refusals` has the whole rule.
+
 ## Reference material, without spending a tool call
 
-The server also serves two MCP **resources**. A client reads them by URI, so the detail costs
+The server also serves three MCP **resources**. A client reads them by URI, so the detail costs
 nothing until it is wanted:
 
 | URI | What it is |
 |---|---|
 | `bankmachine://reference/warnings` | every warning kind, what it implies about the answer carrying it, and what to do about it |
+| `bankmachine://reference/refusals` | every error code, whether each is worth retrying, and every field of the correction a refused call hands back |
 | `bankmachine://reference/envelope` | every envelope field and which tools carry it, what the flow classes do and do not establish, why row text is untrusted, and what this server cannot answer at all |
 
-Both are generated from the code that produces the answers — the warning reference walks the
-vocabulary itself, the envelope reference renders from the published schemas — so neither can quietly
+All three are generated from the code that produces the answers — the warning and refusal references
+walk their vocabularies themselves, the envelope reference renders from the published schemas — so neither can quietly
 fall behind the wire the way this page can. 🔴 **They are where the detail lives, and the handshake
 primer points at them in its opening lines**, because a pointer a client would trim is a pointer
 that does not exist.
