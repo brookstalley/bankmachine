@@ -381,6 +381,11 @@ def test_every_tool_refuses_an_unservable_store(unservable_config: Config, tool:
     result = _call_tool(unservable_config, tool, _arguments_for(tool))
     assert result["isError"] is True
     assert result["structuredContent"]["error"]["code"] == "datastore_unservable"
+    # 🔴 The TEXT too, because a measured client forwards only that half to the
+    # model. A refusal whose code reaches nothing but `structuredContent` is one
+    # the agent answers around, which is how "the store cannot be read" became
+    # "the household owns nothing" in the first place.
+    assert json.loads(result["content"][0]["text"]) == result["structuredContent"]
 
 
 def test_the_refusal_is_not_reported_as_an_internal_error(unservable_config: Config) -> None:

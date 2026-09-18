@@ -2359,9 +2359,14 @@ def test_the_primer_fits_inside_what_a_client_actually_delivers(
     read, and the surviving text reads complete. A primer that fits is the only
     version of this text that is actually delivered.
 
-    🔴 The two resource URIs are asserted to be in the FIRST lines rather than
+    🔴 Every resource URI is asserted to be in the FIRST lines rather than
     merely present, because a pointer that would be cut is a pointer that does
     not exist — and it is the pointer that makes everything else reachable.
+
+    🔴 Walked from the served registry, never listed here. Listed, this loop
+    kept passing over the URIs someone remembered while a third document's
+    pointer could be deleted from the primer with every test still green — the
+    exact class it exists to close, arriving through the door of a new document.
     """
     primer = mcp._instructions(initialized_config)
 
@@ -2370,7 +2375,9 @@ def test_the_primer_fits_inside_what_a_client_actually_delivers(
         f"{mcp.INSTRUCTIONS_BUDGET}; a client that trims will hand the model a prefix of it"
     )
     opening = "\n".join(primer.splitlines()[:3])
-    for uri in (mcp_resources.ENVELOPE_URI, mcp_resources.WARNINGS_URI):
+    served = [document.uri for document in mcp_resources.documents(mcp._tool_definitions())]
+    assert served, "the registry served no documents, so this loop checked nothing"
+    for uri in served:
         assert uri in opening, f"{uri} is not in the first three lines, so it can be cut"
 
 

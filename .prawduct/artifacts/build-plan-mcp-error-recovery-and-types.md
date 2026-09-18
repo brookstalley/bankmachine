@@ -77,8 +77,8 @@ names. The field vocabulary is a published wire shape, so it is written into `ap
 Context: plan written 2026-09-16 on `feature/mcp-error-recovery-and-types`, cut from `develop` at
 `6a617be`.
 
-Chunk 01 closed 2026-09-16 at `c08466a`. Gate green (1957 passed); five guards seen red by changing
-the fact each holds. Review found 0 blocking:
+Chunk 01 closed 2026-09-16 at `c08466a`. Gate green; five guards seen red by changing the fact each
+holds. Review found 0 blocking:
 
 **rev-20260916T225752Z-363710e8** — scope `mcp-error-recovery-and-types`, 2026-09-16T22:58:53Z
 

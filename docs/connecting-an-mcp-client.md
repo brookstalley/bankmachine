@@ -253,7 +253,7 @@ nothing until it is wanted:
 | `bankmachine://reference/envelope` | every envelope field and which tools carry it, what the flow classes do and do not establish, why row text is untrusted, and what this server cannot answer at all |
 
 All three are generated from the code that produces the answers — the warning and refusal references
-walk their vocabularies themselves, the envelope reference renders from the published schemas — so neither can quietly
+walk their vocabularies themselves, the envelope reference renders from the published schemas — so none of them can quietly
 fall behind the wire the way this page can. 🔴 **They are where the detail lives, and the handshake
 primer points at them in its opening lines**, because a pointer a client would trim is a pointer
 that does not exist.

@@ -822,4 +822,31 @@ verified, it has been demonstrated.
 
 ## An option you offer the owner is a requirement they sign: before writing a rule into a question, run it against the real store's shape, because the case that breaks it is usually already sitting in the data
 
+## An issue's proposal is not its requirement: build to the outcome sentence, and when the outcome depends on a consumer, find this repo's measurement of that consumer before designing the payload
+
+**A filed issue usually carries both a PROPOSAL ("add these fields") and an OUTCOME ("so an agent
+can retry without parsing prose"). Build to the outcome. A design that satisfies every acceptance
+line and misses the outcome ships as done and is finished by nobody — and where the outcome depends
+on how a CONSUMER behaves, this product has already measured that consumer somewhere, usually in an
+acceptance-round artifact.**
+
+The tell is a design whose value rests on an unexamined claim about something outside this code: a
+client forwards this, a scheduler reads that, an agent sees the other. Look for the measurement
+before choosing the payload, not after someone asks whether the feature actually works.
+
+**Instances:**
+
+- *2026-09-17, #31 structured refusals.* The issue asked for recovery fields "beside the sentence"
+  and named two sibling repos. Designing to that letter put the fields in `structuredContent` only
+  — and `mcp-acceptance-round-2.md` and `-3.md`, written here months earlier, both record that
+  through a real client only the error STRING was visible and `structuredContent.error.code` was
+  not. Every acceptance line would have passed with the stated outcome unreachable. The fix was
+  one line of code (the text carries the same object) and would not have been found by re-reading
+  the issue. Related: [[measure-what-the-client-delivers-not-what-the-server-sends]], which is the
+  same fact one surface over and was already in this file.
+
+**How to apply:** before designing a payload whose worth depends on a consumer, grep
+`.prawduct/artifacts/` for the rounds and reviews that watched that consumer. If no measurement
+exists, say so in the plan as an assumption rather than designing over the gap.
+
 ## A harness that edits source in place must never run under a tool timeout: run it detached, and after any interrupted run check the tree against the files the chunk changed
