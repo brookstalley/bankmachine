@@ -90,6 +90,36 @@ holds. Review found 0 blocking:
 
 **3 findings** (2 warning, 1 note) — accepted: 3.
 
+Chunk 02's reviews:
+
+**rev-20260918T053005Z-5acb101a** — scope `mcp-error-recovery-and-types`, chunk 02, 2026-09-18T05:32:55Z
+
+| Finding | Severity | State | Detail |
+|---|---|---|---|
+| R-1 | blocking | fixed | The primer's third reference pointer is unguarded: the opening-lines check still iterates two URIs |
+
+_Observations — read, not owed. Answering one is optional._
+
+| Observation | State | Detail |
+|---|---|---|
+| O-1 | accepted | Fixed in the same pass: the copied suite total is gone from the plan |
+| O-2 | accepted | Fixed in the same pass |
+| O-3 | accepted | Fixed in the same pass: the unservable refusal's text form is now asserted |
+
+**rev-20260918T053705Z-a45401f0** — scope `mcp-error-recovery-and-types`, chunk 02, 2026-09-18T05:38:34Z
+
+_No findings._
+
+_Observations — read, not owed. Answering one is optional._
+
+| Observation | State | Detail |
+|---|---|---|
+| O-1 | accepted | Accepted on the reviewer's own recommendation: a docstring under-count that nothing reads, and fixing it alone buys a review round on a judgeable file. The relational rewrite is written into the handoff notes so it rides the next commit that touches mcp.py |
+
+**4 findings** (1 blocking, 2 warning, 1 note) — accepted: 1, fixed: 3.
+**2 answered twice** — recorded as both resolved and dispositioned; check which answer is current.
+**4 observations demoted** — 4 answered. An observation gates nothing; answering one is optional.
+
 Chunk 02 closed 2026-09-17. Gate green; five guards seen red. One existing test changed with the
 wire it asserts on: the unknown-argument refusal's sentence is now read from `error.message` rather
 than from the whole of `content[0].text`, which is the error object as JSON — the same claim, read
