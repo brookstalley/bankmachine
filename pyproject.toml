@@ -1,6 +1,6 @@
 [project]
 name = "bankmachine"
-version = "0.2.1"
+version = "0.2.2"
 description = "Read-only local-first personal finance datastore and MCP server. It never moves money."
 readme = "README.md"
 # Matches `.python-version`, because that is the only interpreter anything here
