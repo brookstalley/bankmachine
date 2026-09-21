@@ -55,3 +55,9 @@ logs/
 # The gate writes the pre-swap default keychain here before it swaps, so a run
 # killed mid-suite can be repaired by the next one. Removed on a clean exit.
 .bankmachine-keychain-restore
+
+# Prawduct session files
+.prawduct/.test-report.xml
+.prawduct/.test-report.xml.scope.json
+.prawduct/.critic-review-dispatch.json
+.prawduct/.pr-review-dispatch.json
