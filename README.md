@@ -15,8 +15,9 @@ and file import. It is built for one person on one Mac.
 ### 1. Get a Plaid developer account
 
 Sign up at [dashboard.plaid.com](https://dashboard.plaid.com). That gives you a client ID and a
-sandbox secret, which is everything the Sandbox section needs. Production keys only exist once
-Plaid approves production access for your account.
+sandbox secret, which is everything the Sandbox section needs. Production keys are issued once
+Plaid approves production access for your account (for me this was automatic and about 15 minutes
+after registration).
 
 `enroll` links institutions through Plaid **Hosted Link**, so there is no redirect URI to
 register. If enrollment fails with *"returned no hosted_link_url"*, Hosted Link is not enabled on
