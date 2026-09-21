@@ -147,7 +147,7 @@ case to fall outside of. Prefer the second form even when the first is true toda
   failed was **mine**, and it failed silently.* The guard compared the WHERE clause of the row query
   against the WHERE clause of the count, to catch the two being built from different predicates. It
   extracted each by `statement.partition(" WHERE ")`. SQLAlchemy compiles with newlines
-  (`count_1 \nFROM transactions \nWHERE...`), so the separator never matched, the extraction
+  (`count_1 \nFROM transactions \nWHERE ...`), so the separator never matched, the extraction
   returned `""` for **both** sides, and `"" == ""` agreed with everything. It passed its first run
   and it passed every mutation aimed at it; only the *survival* of a mutation another test should
   not have caught exposed it.
@@ -568,7 +568,7 @@ a sibling produced by the same cycle exposed it.
   test existed, asserted the defect as a contract, and failed the suite on the next full run — which
   is the only reason it surfaced at all.
 - *2026-09-09, closing the backlog for one cycle.* A subagent ran
-  `grep -rn "^scope:\|^branch:".prawduct/artifacts/*.md | head -20`, got **exactly 20 lines**, and
+  `grep -rn "^scope:\|^branch:" .prawduct/artifacts/*.md | head -20`, got **exactly 20 lines**, and
   read it as the complete list of plans. There are 14; it saw 10, and the plan it needed sorted past
   the cut. It concluded "no plan carries this scope", substituted a branch name for the scope, and
   reported the substitution as a deliberate choice. Nothing downstream would have rejected it — the

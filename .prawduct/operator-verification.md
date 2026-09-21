@@ -1695,7 +1695,7 @@ carries this change (`build.commit` on any answer names it).
 
 ## VRF-041 — a refused call teaches a real client's agent how to correct it
 
-**Status:** pending
+**Status:** accepted
 
 **Chunk:** mcp error recovery and types, chunk 02 · **Raised:** 2026-09-17
 
@@ -1725,3 +1725,5 @@ carries this change (`build.commit` on any answer names it).
    from the newest row rather than treating the refusal as final.
 
 **Drain with:** `prawduct-hook verify-operator-verification VRF-041`
+
+**Accepted:** 2026-09-21 — rationale: Verification requires production running the release that carries this change (v0.2.2); it cannot precede that release. To be verified in the desktop client after production moves to v0.2.2.
