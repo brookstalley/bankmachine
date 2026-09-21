@@ -23,7 +23,13 @@ governed_by:
       - "no committed file holds a credential-like string → conforms; the only new committed strings are `uv.lock` package hashes, which `tests/preferences/check-no-personal-data.sh` already passes over as lock metadata"
 partition: serial — both chunks edit `mcp.py` and `tests/test_mcp.py`, and chunk 01 is small enough that a delegate's briefing would cost more wall clock than the work
 last_validated: 2026-09-16
+lifecycle: completed
+archived: 2026-09-21
+released_in: v0.2.2
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build plan: structured recovery on refusals (#31), and `mcp-types` as a test oracle (#32)
 
