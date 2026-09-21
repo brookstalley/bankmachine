@@ -210,6 +210,13 @@ repair_stale_keychain() {
     rm -f "$BMTEST_STATE"
 }
 
+# `create-keychain` with a bare name writes `<name>-db` into the user's keychain
+# directory on current macOS, and `<name>` on releases before the `-db` suffix.
+keychain_leftover_exists() {
+    local dir="$HOME/Library/Keychains"
+    [[ -e "$dir/$BMTEST_KEYCHAIN-db" || -e "$dir/$BMTEST_KEYCHAIN" ]]
+}
+
 use_test_keychain() {
     # 🔴 RE-ENTRY GUARD, and it is load-bearing rather than defensive. The suite
     # this gate launches contains `test_the_gate_runs_the_declared_checks.py`,
@@ -286,7 +293,12 @@ use_test_keychain() {
     # it could, in principle, hold such a write. The header says why that trade
     # is taken; `security-model.md` says it where a reader of the security model
     # will meet it.
-    if security show-keychain-info "$BMTEST_KEYCHAIN" >/dev/null 2>&1; then
+    # 🔴 Asked of the FILESYSTEM, never of `security`. A leftover is locked by
+    # construction -- its password died with the run that made it -- and
+    # `show-keychain-info` on a locked keychain puts a password dialog in front of
+    # the operator, for a keychain whose password nobody has. Existence is the
+    # whole question here, and a file test answers it without asking anyone.
+    if keychain_leftover_exists; then
         if (( had_state == 1 )); then
             # Harness-only, deliberately undocumented beside the operator-facing
             # opt-out: it exists so the suite's own cases do not pay three

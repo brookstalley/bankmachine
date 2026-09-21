@@ -294,6 +294,24 @@ def _call(config: Config, name: str, arguments: dict[str, Any] | None = None) ->
     return result
 
 
+def _refusal_message(result: dict[str, Any]) -> str:
+    """The refusal's SENTENCE, for assertions about what it says.
+
+    🔴 Never `in result["content"][0]["text"]` on a refusal. That text is the
+    whole error object as JSON, and the object always carries `arguments`,
+    `required` and `optional` -- so a check that the sentence names an argument
+    passes on those lists whatever the sentence says, and can no longer fail.
+    The text is held to the structured half here instead, once, so every caller
+    reads the sentence and still covers the text a client forwards.
+    """
+    assert result["isError"] is True, "the call was expected to be refused and was not"
+    assert json.loads(result["content"][0]["text"]) == result["structuredContent"], (
+        "the text a client forwards stopped agreeing with the structured error"
+    )
+    message: str = result["structuredContent"]["error"]["message"]
+    return message
+
+
 # --------------------------------------------------------------------------
 # The handshake
 # --------------------------------------------------------------------------
@@ -2062,7 +2080,7 @@ def test_a_malformed_date_is_refused_with_a_sentence_a_caller_can_act_on(
     result = _call(initialized_config, "money_summary", {"since": "August 2024"})
 
     assert result["isError"] is True
-    message = result["content"][0]["text"]
+    message = _refusal_message(result)
     assert "since" in message, "the message does not say which argument was wrong"
     assert "YYYY-MM-DD" in message, "the message does not say what form to use"
     assert "SELECT" not in message, "the refusal leaked the query"
@@ -2101,7 +2119,7 @@ def test_an_argument_of_the_wrong_json_type_is_refused_by_name(
     result = _call(initialized_config, "query_transactions", arguments)
 
     assert result["isError"] is True
-    assert field in result["content"][0]["text"]
+    assert field in _refusal_message(result)
 
 
 # --------------------------------------------------------------------------
@@ -2536,7 +2554,7 @@ def test_every_unrecognized_argument_is_named_at_once(initialized_config: Config
     result = _call(initialized_config, "money_summary", {"sinceX": "x", "untilX": "y"})
 
     assert result["isError"] is True
-    message = result["content"][0]["text"]
+    message = _refusal_message(result)
     assert "sinceX" in message and "untilX" in message
 
 
@@ -2557,7 +2575,7 @@ def test_a_limit_outside_the_servable_range_is_refused_not_clamped(
 
         assert result["isError"] is True, f"limit={value} was answered rather than refused"
         assert result["structuredContent"]["error"]["code"] == "invalid_argument"
-        assert "limit" in result["content"][0]["text"]
+        assert "limit" in _refusal_message(result)
 
 
 def test_a_window_whose_end_precedes_its_start_is_refused(initialized_config: Config) -> None:
@@ -2574,7 +2592,7 @@ def test_a_window_whose_end_precedes_its_start_is_refused(initialized_config: Co
 
         assert result["isError"] is True, f"{tool} answered a backwards window"
         assert result["structuredContent"]["error"]["code"] == "invalid_argument"
-        assert "swapped" in result["content"][0]["text"]
+        assert "swapped" in _refusal_message(result)
 
 
 def test_an_account_id_below_one_is_refused(initialized_config: Config) -> None:
@@ -2584,7 +2602,7 @@ def test_an_account_id_below_one_is_refused(initialized_config: Config) -> None:
     result = _call(initialized_config, "query_transactions", {"account_id": 0})
 
     assert result["isError"] is True
-    assert "account_id" in result["content"][0]["text"]
+    assert "account_id" in _refusal_message(result)
 
 
 def test_an_account_id_that_names_no_account_is_refused_not_answered_empty(
@@ -2604,7 +2622,7 @@ def test_an_account_id_that_names_no_account_is_refused_not_answered_empty(
 
     assert result["isError"] is True, "an account id naming nothing was answered"
     assert result["structuredContent"]["error"]["code"] == "invalid_argument"
-    message = result["content"][0]["text"]
+    message = _refusal_message(result)
     # 🔴 The whole phrase, not `"999" in message`: an id is a bare integer and
     # would match inside any longer number a future refusal happened to carry.
     assert "account_id 999 does not exist" in message, message
@@ -3234,7 +3252,7 @@ def test_a_cursor_this_server_did_not_issue_is_refused_by_name(
 
     assert result["isError"] is True, why
     assert result["structuredContent"]["error"]["code"] == "invalid_argument", why
-    message = result["content"][0]["text"]
+    message = _refusal_message(result)
     assert "cursor" in message, why
     assert "`next_cursor`" in message, why
     assert "Error" not in message, why
@@ -3264,7 +3282,7 @@ def test_a_cursor_from_a_different_question_is_refused_rather_than_answered(
     )
 
     assert changed["isError"] is True, "a cursor from another question was answered"
-    assert "cursor" in changed["content"][0]["text"]
+    assert "cursor" in _refusal_message(changed)
 
 
 def _walk_the_series(config: Config, *, limit: int) -> tuple[list[dict[str, Any]], int]:
@@ -3328,7 +3346,7 @@ def test_each_paged_tool_refuses_the_other_tools_cursor_at_the_boundary(
     ):
         result = _call(initialized_config, tool, {"limit": 1, "cursor": foreign})
         assert result["isError"] is True, f"{tool} answered with the other tool's cursor"
-        assert "cursor" in result["content"][0]["text"], tool
+        assert "cursor" in _refusal_message(result), tool
 
 
 def test_the_cursor_is_advertised_on_the_capped_tool_and_nowhere_else() -> None:

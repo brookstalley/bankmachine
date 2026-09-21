@@ -72,6 +72,24 @@ sentence, the boundary catch narrowed from the base type, and a documented field
 tests retry from the fields alone and assert the corrected call succeeds — a test that only checked
 the keys were present would pass on a correction that leads nowhere.
 
+**Fixed at the cumulative review, before release:**
+
+- 🔴 **Two refusals handed back a correction that is refused again.** An inverted amount range
+  returned `example: {max_amount_minor_units: -10000}`, the sentence's "$100 or more" illustration
+  lifted into a field that carries a form, never a value; a caller keeping its minimum stayed
+  inverted. A blank `search` returned `max_length`, which was not the fault, so truncating sent the
+  same blank back. Both now name the arguments alone, and each has a retry-from-the-fields case.
+  The transposed-window case now retries from the fields too, so the file's claim that every case
+  does is true.
+- Refusal assertions read the sentence through one helper, `_refusal_message`, instead of
+  substring-matching the `content` text. That text became the whole error object, whose argument
+  lists always name the argument, so ten such checks in `test_mcp.py` and three in
+  `test_query_filters.py` could no longer fail. Seen red with the field name dropped from a bound's
+  sentence, which the old form passed.
+- `scripts/check.sh` checks for a leftover test keychain on the filesystem instead of with
+  `security show-keychain-info`, which opens a password dialog on a locked keychain — and a
+  leftover is always locked, its random password gone with the run that made it.
+
 ## 2026-09-16: The hand-copied protocol constants are held to their source
 
 <!-- prawduct: scope=mcp-error-recovery-and-types -->

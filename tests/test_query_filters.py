@@ -35,7 +35,7 @@ from bankmachine.store.derivation import apply_response
 from bankmachine.store.engine import reader_connection, writer_connection
 from bankmachine.store.schema import connections, institutions, transactions
 from bankmachine.store.types import now_utc
-from test_mcp import _call
+from test_mcp import _call, _refusal_message
 from test_money_summary import _relinked_store
 
 #: (source id, account, aggregator amount, description, merchant, source category, days ago).
@@ -682,7 +682,7 @@ def test_a_malformed_filter_argument_is_refused_naming_it(
 
     assert result["isError"] is True, f"{arguments} was answered rather than refused"
     assert result["structuredContent"]["error"]["code"] == "invalid_argument"
-    assert named in result["content"][0]["text"]
+    assert named in _refusal_message(result)
 
 
 def test_a_transposed_range_is_refused_at_the_boundary(filtered_config: Config) -> None:
@@ -694,7 +694,7 @@ def test_a_transposed_range_is_refused_at_the_boundary(filtered_config: Config) 
 
     assert result["isError"] is True
     assert result["structuredContent"]["error"]["code"] == "invalid_argument"
-    assert "selects nothing" in result["content"][0]["text"]
+    assert "selects nothing" in _refusal_message(result)
 
 
 def test_an_unknown_category_is_refused_at_the_boundary(filtered_config: Config) -> None:
@@ -702,8 +702,9 @@ def test_an_unknown_category_is_refused_at_the_boundary(filtered_config: Config)
 
     assert result["isError"] is True
     assert result["structuredContent"]["error"]["code"] == "invalid_argument"
-    _, _, offered = result["content"][0]["text"].partition("The categories it holds: ")
+    _, _, offered = _refusal_message(result).partition("The categories it holds: ")
     assert "TRAVEL" in offered.split(", ")
+    assert "TRAVEL" in result["structuredContent"]["error"]["valid_values"]
 
 
 def test_a_cursor_sent_back_with_different_filters_is_refused_at_the_boundary(

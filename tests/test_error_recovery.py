@@ -210,18 +210,60 @@ def test_an_unknown_account_is_corrected_by_calling_the_tool_the_refusal_names(
 
 
 def test_a_transposed_window_names_both_bounds(initialized_config: Config) -> None:
-    """Both, because either one may be the one the caller meant to change."""
+    """Both, because either one may be the one the caller meant to change.
+
+    🔴 The fields cannot express a SWAP -- no field says "exchange these two" --
+    so the retry from the fields alone is the one that drops both bounds. That is
+    a real correction, just the widest one; the swap the sentence describes is
+    checked beside it rather than standing in for it.
+    """
     _seed(initialized_config)
-    refusal = _call(
-        initialized_config, "money_summary", {"since": "2024-06-30", "until": "2024-01-01"}
-    )
-    error = _error(refusal)
+    arguments = {"since": "2024-06-30", "until": "2024-01-01"}
+    error = _error(_call(initialized_config, "money_summary", arguments))
 
     assert set(error["arguments"]) == {"since", "until"}
     assert set(error["arguments"]) <= set(error["optional"])
+    assert "example" not in error, "the form of each date was fine; only the order was not"
 
+    _retry(initialized_config, "money_summary", arguments)
     swapped = {"since": "2024-01-01", "until": "2024-06-30"}
     assert _call(initialized_config, "money_summary", swapped)["isError"] is False
+
+
+def test_an_inverted_amount_range_offers_no_value_to_copy(initialized_config: Config) -> None:
+    """🔴 No `example`: the order was wrong, not the form, and a value here gets copied.
+
+    The refusal once handed back `max_amount_minor_units: -10000`, lifted from the
+    sentence's "$100 or more" illustration. A retry built from it keeps the
+    caller's minimum and takes that ceiling -- `min=5000, max=-10000` -- which is
+    still inverted and is refused again. The pair below is chosen so that retry
+    is exactly the one that fails.
+    """
+    _seed(initialized_config)
+    arguments = {"min_amount_minor_units": 5000, "max_amount_minor_units": 100}
+    error = _error(_call(initialized_config, "query_transactions", arguments))
+
+    assert set(error["arguments"]) == {"min_amount_minor_units", "max_amount_minor_units"}
+    assert "example" not in error
+
+    _retry(initialized_config, "query_transactions", arguments)
+
+
+def test_a_blank_search_is_corrected_by_omitting_it(initialized_config: Config) -> None:
+    """🔴 No `max_length`: length was not the fault, so the bound would mislead.
+
+    Truncating a blank to the longest accepted length sends the same blank back,
+    and it is refused again. The only correction is to leave the argument out,
+    which is what a refusal naming the argument and nothing else says.
+    """
+    _seed(initialized_config)
+    arguments = {"search": "   "}
+    error = _error(_call(initialized_config, "query_transactions", arguments))
+
+    assert error["arguments"] == ["search"]
+    assert "max_length" not in error
+
+    _retry(initialized_config, "query_transactions", arguments)
 
 
 def test_an_unusable_cursor_is_corrected_by_omitting_it(initialized_config: Config) -> None:

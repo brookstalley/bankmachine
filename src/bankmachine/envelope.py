@@ -717,7 +717,11 @@ class TransactionFilter:
             raise BadFilterError(
                 "search is empty or only whitespace, which would match every transaction. "
                 "Omit it to ask for every row, or give the text to look for",
-                recovery=Recovery(arguments=("search",), max_length=MAX_SEARCH_LENGTH),
+                # No `max_length`: length is not what was wrong, and a caller
+                # truncating to it would send the same blank back. Naming the
+                # argument alone is the correction the fields can express --
+                # change it, or leave it out.
+                recovery=Recovery(arguments=("search",)),
             )
         if self.search is not None and len(self.search) > MAX_SEARCH_LENGTH:
             raise BadFilterError(
@@ -731,9 +735,13 @@ class TransactionFilter:
                 f"min_amount_minor_units ({low}) is above max_amount_minor_units ({high}), "
                 f"so the range selects nothing. Amounts are signed and money out is "
                 f"negative: 'spent $100 or more' is max_amount_minor_units=-10000",
+                # No `example`: the form of each bound was fine, the ORDER was
+                # not, and `example` carries a form, never a value. The sentence's
+                # "$100 or more" illustration lifted into that field became a
+                # ceiling the caller never asked for -- one a swapped pair can
+                # still sit below, so the retry is refused again.
                 recovery=Recovery(
                     arguments=("min_amount_minor_units", "max_amount_minor_units"),
-                    example={"max_amount_minor_units": -10000},
                 ),
             )
 

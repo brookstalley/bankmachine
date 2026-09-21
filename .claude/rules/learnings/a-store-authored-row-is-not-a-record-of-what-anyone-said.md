@@ -1,5 +1,6 @@
 ---
 paths:
+  - "src/bankmachine/store/**"
   - "tests/store/**"
 ---
 
