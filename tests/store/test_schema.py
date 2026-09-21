@@ -1250,7 +1250,7 @@ def test_the_provenance_constant_still_agrees_with_the_ddl() -> None:
     The read surface reports a breakdown by `source` and must emit a zero for a
     source with no rows — which needs the full set spelled in Python, while the
     authority lives in the frozen DDL's `CHECK (source IN (...))`. Two homes for
-    one fact is exactly the drift `learnings.md` records: a rule that matched on
+    one fact is exactly the drift `.claude/rules/learnings/` records: a rule that matched on
     a name where it meant a relationship, and a list that was already wrong on
     the day it was written.
 

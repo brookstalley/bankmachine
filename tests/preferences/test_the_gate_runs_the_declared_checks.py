@@ -30,7 +30,7 @@ PREFERENCES = REPO_ROOT / ".prawduct" / "artifacts" / "project-preferences.md"
 
 #: The distinct tools the gate must run. `ruff` appears once here and twice in
 #: EXPECTED_ORDER: `ruff check` and `ruff format --check` are different halves, and
-#: the lint rules never reach layout -- learnings.md records seven files drifting
+#: the lint rules never reach layout -- `.claude/rules/learnings/` records seven files drifting
 #: behind a clean `ruff check`.
 DECLARED_TOOLS = ["pytest", "ruff", "mypy"]
 

@@ -3,7 +3,7 @@
 🔴 Every expected row set is derived from the table by an oracle written against
 the columns in Python, never through `_transaction_filters` or
 `_effective_category`. An oracle that shares the builder it checks agrees with it
-by construction and detects nothing, which `learnings.md` records more than once.
+by construction and detects nothing, which `.claude/rules/learnings/` records more than once.
 
 Every case asserts its oracle found rows before comparing, because an empty
 expectation and an empty answer agree about everything.

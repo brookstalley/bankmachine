@@ -1322,7 +1322,7 @@ class Truncation:
         appear there.
 
         The remedy names `limit` and derives its ceiling from `MAX_ROWS` rather
-        than quoting a figure: `learnings.md` records a ceiling written into a
+        than quoting a figure: `.claude/rules/learnings/` records a ceiling written into a
         fixture being falsified within a day by a commit that moved it.
 
         🔴 **A remedy the caller cannot follow is worse than none**, so which

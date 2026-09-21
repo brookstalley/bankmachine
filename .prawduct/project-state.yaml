@@ -911,7 +911,7 @@ build_state:
   # Set 2026-09-05 when build-plan-datastore-v1.md fixed the layout. Not deferred to Chunk 01:
   # the briefing's architecture-coverage probe only walks this path when it is set, and a null
   # value makes it report nothing forever without saying it did not run -- the absent-bad-news
-  # shape learnings.md already records for this project.
+  # shape `.claude/rules/learnings/` already records for this project.
 
 # pytest runs the shell leak guard too, via `tests/preferences/test_no_personal_data.py`,
 # so no separate invocation is needed for it.

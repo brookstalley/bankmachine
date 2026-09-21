@@ -470,7 +470,7 @@ def test_the_remedy_for_an_old_schema_version_actually_upgrades_the_store(
 ) -> None:
     """Run what the sentence says, on a store in that state, and check it worked.
 
-    🔴 `learnings.md`, *a documented remedy is a claim and is asserted like one*:
+    🔴 `.claude/rules/learnings/`, *a documented remedy is a claim and is asserted like one*:
     the last remedy this project prescribed for a store in this state — a
     `store rebuild` step — ROLLED BACK when it was finally run, because replaying
     the archive moved the content digest while `DERIVATION_VERSION` had not been
@@ -631,7 +631,7 @@ def test_no_refusal_in_any_state_carries_the_datastore_path(
 def test_no_remedy_prescribes_store_rebuild(unservable_config: Config) -> None:
     """🔴 The one command this file may not recommend without running it.
 
-    Recorded in `learnings-detail.md`: prescribed as the upgrade step, it rolled
+    Recorded in `.prawduct/change-log.md`: prescribed as the upgrade step, it rolled
     back on exactly this shape of store. If a future change has a reason to name
     it, that reason comes with a test that puts a store in the state and runs it
     — at which point this guard is the thing to update, deliberately.

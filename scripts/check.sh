@@ -37,7 +37,7 @@
 # WHY `ruff format --check` IS HERE, THOUGH #92 DID NOT NAME IT
 #
 # It was left out at first, on the reasoning that #92 names two commands and a
-# third would widen the contract. `learnings.md` settles it the other way, with an
+# third would widen the contract. `.claude/rules/learnings/` settles it the other way, with an
 # instance: on 2026-09-08, merging `feature/sync-v1`, SEVEN files had drifted
 # across two build steps that both reported "ruff clean" at every close -- because
 # both ran `ruff check` and neither ran `--check` on the formatter. The two are

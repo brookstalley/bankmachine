@@ -1118,7 +1118,7 @@ NOT_RECONCILABLE_ACCOUNT_TYPES: frozenset[str] = frozenset({"investment", "broke
 #: 🔴 Why a reconciliation produced no residual, spelled as its own closed set
 #: because three of these four would otherwise share one null.
 #:
-#: `learnings.md` § *A carve-out reaches every state that shares its return
+#: `.claude/rules/learnings/` § *A carve-out reaches every state that shares its return
 #: type*: when one function collapses distinguishable states into one value, the
 #: collapse is the defect. A null `residual_minor_units` alone would mean *this
 #: account can never be reconciled*, *it has only one snapshot so far* and *no
@@ -2098,7 +2098,7 @@ def _unreconciled_caveat(entries: list[AccountReconciliation]) -> list[Caveat]:
     accounts, so it can span units even though one account's residual cannot:
     summing across them would produce a number with no unit. A count alone would
     hide whether the finding is a rounding artefact or a missing month, which is
-    the half `learnings.md` calls load-bearing.
+    the half `.claude/rules/learnings/` calls load-bearing.
     """
     # 🔴 **`unexplained` intervals ONLY, which is what every declaration of this
     # kind promises** -- "no coverage gap or truncated window accounts for the
@@ -2780,7 +2780,7 @@ def _unservable_remedy(status: DatastoreStatus) -> str:
     time someone improves the English.
 
     Every branch names a command that is tested against a store actually put into
-    that state -- `learnings.md`, *a documented remedy is a claim and is asserted
+    that state -- `.claude/rules/learnings/`, *a documented remedy is a claim and is asserted
     like one*. No branch names `store rebuild`: that step is recorded as having
     rolled back on this very shape of store, and a remedy that fails spends the
     operator's trust on the way to failing.

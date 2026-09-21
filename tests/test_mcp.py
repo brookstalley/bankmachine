@@ -2148,7 +2148,7 @@ def dispatch_report(tmp_path_factory: pytest.TempPathFactory) -> str:
     🔴 The two snippet filenames deliberately share no substring. Naming them
     `narrowed.py` and `unnarrowed.py` made the positive control match the
     NEGATIVE file -- `in` cannot tell a name from a name that contains it, which
-    is the containment trap recorded in `learnings.md`.
+    is the containment trap recorded in `.claude/rules/learnings/`.
     """
     workspace = tmp_path_factory.mktemp("dispatch")
     (workspace / "forwards_raw.py").write_text(_UNNARROWED, encoding="utf-8")
@@ -2291,7 +2291,7 @@ def test_what_the_server_delivers_names_every_field_the_envelope_actually_carrie
     keys alone cannot see a key nested inside a block — so a guard written
     either way passes while the text a consuming agent reads denies a field
     exists. A check that samples one instance of the thing it generalises over
-    is a check whose bad news never arrives, which is the trap `learnings.md`
+    is a check whose bad news never arrives, which is the trap `.claude/rules/learnings/`
     records twice.
     """
     _seed(initialized_config)
@@ -2769,7 +2769,7 @@ def _request_kinds(wire: dict[str, Any]) -> list[str]:
     """🔴 The request-scoped warnings only, compared as a whole list.
 
     Never a substring test: `window_starts_before_coverage` and
-    `window_extends_past_coverage` share a prefix, and `learnings.md` records two
+    `window_extends_past_coverage` share a prefix, and `.claude/rules/learnings/` records two
     occasions where `in` passed against the value the assertion was written to
     exclude. Filtering to the request-scoped kinds and comparing the list also
     pins ABSENCE, which is the half that catches a warning firing on every
@@ -3995,7 +3995,7 @@ def _seed_second_connection(config: Config, *, degraded: bool) -> None:
     🔴 #24's defect is not that a warning lacks a field — it is that with one
     connection the field can never be shown to DO anything. A single-connection
     fixture attributes every warning correctly by having only one answer
-    available, which is the shape `learnings.md` names: a setup that cannot
+    available, which is the shape `.claude/rules/learnings/` names: a setup that cannot
     trigger the thing it tests passes forever.
     """
     now = now_utc()
