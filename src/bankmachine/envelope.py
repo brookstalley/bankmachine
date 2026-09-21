@@ -36,7 +36,7 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from bankmachine.build_id import build_identity
 from bankmachine.store.types import UtcInstant, calendar_date
@@ -356,7 +356,84 @@ def _parse_coverage_date(value: Any) -> date | None:
         return None
 
 
-class InvertedWindowError(ValueError):
+@dataclass(frozen=True, slots=True)
+class Recovery:
+    """What a caller needs to build the corrected call, as values rather than prose.
+
+    🔴 **A refusal is the next turn's input.** The sentence beside this is what a
+    person reads; this is what a caller acts on, and the two carry the same
+    facts on purpose -- an agent that had to regex the sentence would break the
+    day the wording improved.
+
+    Every field is optional except `arguments`, and a field is set only where it
+    applies: `api-contract.md` § `invalid_argument` carries the correction as
+    FIELDS fixes absence as information, the same rule the warning kinds follow.
+    A block of nulls is a block a reader learns to skip.
+
+    🔴 `valid_values` EMPTY and `valid_values` absent say different things. Empty
+    is a closed set that is genuinely empty -- the store holds no category at
+    all -- and absent is an argument whose values are not a closed set this
+    server can enumerate. Collapsing them would tell a caller to pick from a
+    list that does not exist.
+    """
+
+    #: The argument(s) to change. Never empty: a refusal that cannot name what
+    #: to correct is one this type has no way to make actionable, and the
+    #: constructor refuses it rather than emitting an empty list a caller would
+    #: read as "nothing to fix".
+    arguments: tuple[str, ...]
+    valid_values: tuple[str, ...] | None = None
+    #: The tool that lists the valid values, where they are DATA rather than a
+    #: fixed set. `account_id` is the case: the ids belong to the store.
+    valid_values_from: str | None = None
+    minimum: int | None = None
+    maximum: int | None = None
+    max_length: int | None = None
+    #: Arguments demonstrating the accepted FORM, never a suggested value -- the
+    #: caller's own intent is not this server's to guess.
+    example: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        if not self.arguments:
+            raise ValueError("a Recovery must name at least one argument to correct")
+
+
+#: The codes a refused tool call can carry. 🔴 The TYPE is the vocabulary, not a
+#: convention: `mcp._tool_error` takes this Literal, so a misspelled or invented
+#: code is a type error at the call site rather than a string nothing checks. A
+#: consumer branches on `code` to decide whether a retry is worth attempting, and
+#: a code it has never seen sends it down the wrong branch silently.
+#: `api-contract.md` § The error codes is the same vocabulary in prose.
+ErrorCode = Literal["invalid_argument", "datastore_unservable", "internal_error"]
+
+#: The same three, walkable -- for the reference document that renders them.
+ERROR_CODES: tuple[str, ...] = get_args(ErrorCode)
+
+
+class RefusedArgumentError(ValueError):
+    """The base every refusal the caller can correct derives from.
+
+    🔴 **The recovery is a constructor argument, so a raise site cannot forget
+    it.** The alternative -- an optional attribute filled in where someone
+    remembered -- fails silently and in the direction of looking finished: the
+    refusal still reads correctly to a human, and only the machine half is
+    missing, which is exactly the half nobody is looking at.
+
+    🔴 The MCP boundary catches THIS type rather than a tuple of the classes
+    below it, so a refusal added later is rendered as one by construction.
+    """
+
+    def __init__(self, message: str, *, recovery: Recovery) -> None:
+        super().__init__(message)
+        self.recovery = recovery
+
+
+#: What a transposed window's refusal hands back. Both bounds, because either
+#: one is the one the caller meant to change and this server cannot tell which.
+WINDOW_RECOVERY = Recovery(arguments=("since", "until"))
+
+
+class InvertedWindowError(RefusedArgumentError):
     """A window whose end precedes its start.
 
     🔴 Its own type, not a bare `ValueError`, so the MCP boundary can render it
@@ -403,7 +480,8 @@ def resolve_window(
         raise InvertedWindowError(
             f"until ({until.isoformat()}) is before since ({since.isoformat()}); "
             f"an inverted window selects nothing and there is no coverage fact that "
-            f"explains it. Refuse it at the boundary that has the caller's own words."
+            f"explains it. Refuse it at the boundary that has the caller's own words.",
+            recovery=WINDOW_RECOVERY,
         )
 
     # 🔴 The one place a UTC instant becomes a calendar date. `data-model.md`
@@ -554,7 +632,7 @@ def resolve_window(
     )
 
 
-class MalformedCursorError(ValueError):
+class MalformedCursorError(RefusedArgumentError):
     """A `cursor` this server did not issue for the question it arrived with.
 
     🔴 Its own type so the MCP boundary can refuse it by name, the way a
@@ -576,6 +654,11 @@ _CURSOR_REFUSAL = (
     "to start from the newest row"
 )
 
+#: A cursor's refusal recovery, fixed like the sentence above it and for the same
+#: reason: every way a cursor can be wrong has one correct response, so naming
+#: which way would tell the caller something they cannot act on differently.
+CURSOR_RECOVERY = Recovery(arguments=("cursor",))
+
 #: The cursor payload's shape tag. A cursor is opaque, so its internals are free
 #: to change — but the MCP server is a subprocess a client relaunches, so a
 #: cursor issued by one build and handed back to another is ordinary traffic,
@@ -590,7 +673,7 @@ _CURSOR_SCHEME = 2
 MAX_SEARCH_LENGTH = 200
 
 
-class BadFilterError(ValueError):
+class BadFilterError(RefusedArgumentError):
     """A filter value that can select nothing, refused rather than answered empty.
 
     Rides the same boundary path `InvertedWindowError` does, for its reason: a
@@ -633,19 +716,33 @@ class TransactionFilter:
             # argument by mistake would come back as the unfiltered answer.
             raise BadFilterError(
                 "search is empty or only whitespace, which would match every transaction. "
-                "Omit it to ask for every row, or give the text to look for"
+                "Omit it to ask for every row, or give the text to look for",
+                # No `max_length`: length is not what was wrong, and a caller
+                # truncating to it would send the same blank back. Naming the
+                # argument alone is the correction the fields can express --
+                # change it, or leave it out.
+                recovery=Recovery(arguments=("search",)),
             )
         if self.search is not None and len(self.search) > MAX_SEARCH_LENGTH:
             raise BadFilterError(
                 f"search is {len(self.search)} characters and at most {MAX_SEARCH_LENGTH} are "
-                f"accepted. Search for the distinctive part of the text instead"
+                f"accepted. Search for the distinctive part of the text instead",
+                recovery=Recovery(arguments=("search",), max_length=MAX_SEARCH_LENGTH),
             )
         low, high = self.min_amount_minor, self.max_amount_minor
         if low is not None and high is not None and low > high:
             raise BadFilterError(
                 f"min_amount_minor_units ({low}) is above max_amount_minor_units ({high}), "
                 f"so the range selects nothing. Amounts are signed and money out is "
-                f"negative: 'spent $100 or more' is max_amount_minor_units=-10000"
+                f"negative: 'spent $100 or more' is max_amount_minor_units=-10000",
+                # No `example`: the form of each bound was fine, the ORDER was
+                # not, and `example` carries a form, never a value. The sentence's
+                # "$100 or more" illustration lifted into that field became a
+                # ceiling the caller never asked for -- one a swapped pair can
+                # still sit below, so the retry is refused again.
+                recovery=Recovery(
+                    arguments=("min_amount_minor_units", "max_amount_minor_units"),
+                ),
             )
 
     def material(self) -> list[object]:
@@ -781,11 +878,11 @@ class Cursor:
             or not isinstance(transaction_id, int)
             or not isinstance(request, str)
         ):
-            raise MalformedCursorError(_CURSOR_REFUSAL)
+            raise MalformedCursorError(_CURSOR_REFUSAL, recovery=CURSOR_RECOVERY)
         try:
             ledger_date = date.fromisoformat(ledger)
         except ValueError:
-            raise MalformedCursorError(_CURSOR_REFUSAL) from None
+            raise MalformedCursorError(_CURSOR_REFUSAL, recovery=CURSOR_RECOVERY) from None
         return cls(ledger_date=ledger_date, transaction_id=transaction_id, request=request)
 
 
@@ -811,7 +908,7 @@ def parse_cursor(
     if cursor.request != _request_fingerprint(
         since=since, until=until, account_id=account_id, narrowed_by=narrowed_by
     ):
-        raise MalformedCursorError(_CURSOR_REFUSAL)
+        raise MalformedCursorError(_CURSOR_REFUSAL, recovery=CURSOR_RECOVERY)
     return cursor
 
 
@@ -836,9 +933,9 @@ def _cursor_payload(text: str, *, scheme: int) -> dict[str, Any]:
         #
         # `from None` because the cause is a decoder's internals, which
         # `api-contract.md` § Error Model keeps off the wire.
-        raise MalformedCursorError(_CURSOR_REFUSAL) from None
+        raise MalformedCursorError(_CURSOR_REFUSAL, recovery=CURSOR_RECOVERY) from None
     if not isinstance(payload, dict) or payload.get("v") != scheme:
-        raise MalformedCursorError(_CURSOR_REFUSAL)
+        raise MalformedCursorError(_CURSOR_REFUSAL, recovery=CURSOR_RECOVERY)
     return payload
 
 
@@ -941,11 +1038,11 @@ class SeriesCursor:
             or not isinstance(currency, str)
             or not isinstance(request, str)
         ):
-            raise MalformedCursorError(_CURSOR_REFUSAL)
+            raise MalformedCursorError(_CURSOR_REFUSAL, recovery=CURSOR_RECOVERY)
         try:
             parsed = date.fromisoformat(day)
         except ValueError:
-            raise MalformedCursorError(_CURSOR_REFUSAL) from None
+            raise MalformedCursorError(_CURSOR_REFUSAL, recovery=CURSOR_RECOVERY) from None
         return cls(day=parsed, account_key=key, currency=currency, request=request)
 
 
@@ -961,7 +1058,7 @@ def parse_series_cursor(
         return None
     cursor = SeriesCursor.decode(text)
     if cursor.request != _request_fingerprint(since=since, until=until, account_id=account_id):
-        raise MalformedCursorError(_CURSOR_REFUSAL)
+        raise MalformedCursorError(_CURSOR_REFUSAL, recovery=CURSOR_RECOVERY)
     return cursor
 
 
@@ -1049,11 +1146,11 @@ class TradeCursor:
             or not isinstance(trade_id, int)
             or not isinstance(request, str)
         ):
-            raise MalformedCursorError(_CURSOR_REFUSAL)
+            raise MalformedCursorError(_CURSOR_REFUSAL, recovery=CURSOR_RECOVERY)
         try:
             parsed = date.fromisoformat(day)
         except ValueError:
-            raise MalformedCursorError(_CURSOR_REFUSAL) from None
+            raise MalformedCursorError(_CURSOR_REFUSAL, recovery=CURSOR_RECOVERY) from None
         return cls(trade_date=parsed, investment_transaction_id=trade_id, request=request)
 
 
@@ -1072,7 +1169,7 @@ def parse_trade_cursor(
     if cursor.request != _trade_fingerprint(
         since=since, until=until, account_id=account_id, investment_type=investment_type
     ):
-        raise MalformedCursorError(_CURSOR_REFUSAL)
+        raise MalformedCursorError(_CURSOR_REFUSAL, recovery=CURSOR_RECOVERY)
     return cursor
 
 
@@ -1233,7 +1330,7 @@ class Truncation:
         appear there.
 
         The remedy names `limit` and derives its ceiling from `MAX_ROWS` rather
-        than quoting a figure: `learnings.md` records a ceiling written into a
+        than quoting a figure: `.claude/rules/learnings/` records a ceiling written into a
         fixture being falsified within a day by a commit that moved it.
 
         🔴 **A remedy the caller cannot follow is worse than none**, so which

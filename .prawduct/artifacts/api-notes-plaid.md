@@ -575,6 +575,40 @@ is filed as issue #32, and it turns on a unit this note did not price separately
 is separately installable and resolves to six packages with no transport of any kind, against the
 29-package figure that (correctly) ruled out `mcp` itself.
 
+### 🔴 Re-recorded 2026-09-16: `mcp-types` is a test oracle, and the SDK is still rejected at runtime
+
+The revisit clause fired on the evidence above, and the owner ruled on #32. The decision now reads:
+
+`[DECISION: the MCP server keeps its hand-written stdio loop and its hand-copied protocol
+constants; `mcp-types` is a DEV dependency, and
+`tests/preferences/test_the_protocol_constants_match_mcp_types.py` holds every copied constant to
+it | the four defects were stale or missing COPIES of facts `mcp_types` carries, so comparing the
+copies with the source catches that class in CI rather than at connection time. Importing the types
+at runtime would catch nothing more: the loop builds plain dicts and would use none of the
+generated models, while `mcp-types` would add pydantic and three more packages to a runtime tree
+that has none | the runtime SDK stays rejected for §18's original reason, which the evidence did
+not touch]`
+
+What is compared, and what is not:
+
+- **Compared:** `LATEST_HANDSHAKE_VERSION`, the fallback against `DEFAULT_NEGOTIATED_VERSION`, the
+  offered set against `HANDSHAKE_PROTOCOL_VERSIONS` (as an ordered sequence), and the JSON-RPC
+  error codes against `mcp_types.jsonrpc`. `tests/test_mcp.py` reads `Implementation`'s wire field
+  names from the type instead of a typed-out list.
+- **Also pinned:** `mcp-types`, `mcp` and `pydantic` are absent from `[project] dependencies`, and
+  no module under `src/` imports them. A dev dependency is installed wherever tests run, so an
+  accidental runtime import would pass every test and fail only on the operator's install.
+- **Not compared:** wire shapes `mcp.py` builds inline rather than naming as a constant. Those are
+  the handshake tests' job.
+
+🔴 **How a protocol change now arrives:** bumping `mcp-types` in `uv.lock`. If the new release
+moves a handshake revision or a code, the comparison goes red and names the constant. That is
+the maintenance the SDK would have done at runtime, done here at upgrade time.
+
+The dependency figure in §18's opening paragraph ("five direct dependencies and four transitive")
+was measured on 2026-09-08 and is not current. The runtime tree today is `uv tree --no-dev`, and
+this change leaves it unchanged.
+
 ---
 
 ## What is deliberately unused

@@ -2,7 +2,7 @@
 
 🔴 Assertions here compare warning kinds by EQUALITY on the whole list, never by
 `in` on a joined string. `window_starts_before_coverage` and
-`window_extends_past_coverage` share a `window_` prefix, and `learnings.md` records
+`window_extends_past_coverage` share a `window_` prefix, and `.claude/rules/learnings/` records
 two separate occasions where substring containment let an assertion pass against
 the value it was written to exclude. Comparing the list also pins the ABSENCE of
 a warning, which is the half that catches a resolver firing on every call — the
@@ -133,7 +133,7 @@ def test_an_end_after_today_is_named_and_clamped() -> None:
     assert window.effective_until == TODAY
     # Whole phrases. The loose forms ("after 2026-09-08") stayed green through a
     # rewording that changed what the sentence claimed, which is the containment
-    # trap `learnings.md` records -- caught here by re-reading, not by the test.
+    # trap `.claude/rules/learnings/` records -- caught here by re-reading, not by the test.
     assert window.caveats[0].detail == (
         "you asked until 2027-12-31, but this store holds nothing after 2026-09-08, "
         "so this answer covers through 2026-09-08"

@@ -675,6 +675,20 @@ design_decisions:
       exception — analysis over incomplete data has to be impossible to do accidentally (AC-9.3).
     date: 2026-09-05
 
+  api_error_recovery_fields:
+    envelope: >
+      An invalid_argument refusal carries the correction as FIELDS beside the sentence:
+      arguments, required, optional, and — when they apply — valid_values, valid_values_from,
+      minimum, maximum, max_length, example, see. The content text carries the same object as
+      compact JSON, as a successful answer already does.
+    status: active
+    rationale: >
+      A refusal is the next turn's input rather than a log line, so the caller must be able to
+      build the corrected call without parsing prose. The text copy is not redundancy: acceptance
+      rounds 2 and 3 measured that a real client forwarded only the error string, so fields in
+      structuredContent alone would be invisible to the agent they exist for.
+    date: 2026-09-16
+
   observability_approach: >
     Runs unattended, so silent failure is the default state to design against. Structured logs to a
     local log directory with per-run correlation, capturing per-Item outcome, rows added/modified/
@@ -897,7 +911,7 @@ build_state:
   # Set 2026-09-05 when build-plan-datastore-v1.md fixed the layout. Not deferred to Chunk 01:
   # the briefing's architecture-coverage probe only walks this path when it is set, and a null
   # value makes it report nothing forever without saying it did not run -- the absent-bad-news
-  # shape learnings.md already records for this project.
+  # shape `.claude/rules/learnings/` already records for this project.
 
 # pytest runs the shell leak guard too, via `tests/preferences/test_no_personal_data.py`,
 # so no separate invocation is needed for it.

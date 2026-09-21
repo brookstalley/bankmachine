@@ -20,8 +20,16 @@ from sqlalchemy import ColumnElement, and_, func, or_, select
 from sqlalchemy.engine import Connection as SAConnection
 
 from bankmachine.config import Config
-from bankmachine.envelope import MAX_ROWS, Answer, TradeCursor, Truncation
+from bankmachine.envelope import (
+    MAX_ROWS,
+    Answer,
+    Recovery,
+    RefusedArgumentError,
+    TradeCursor,
+    Truncation,
+)
 from bankmachine.query import (
+    ACCOUNT_RECOVERY,
     UnknownAccountError,
     _account_exists,
     _account_lifecycle,
@@ -47,7 +55,7 @@ _TRADES_STOPPED = (
 )
 
 
-class UnknownInvestmentTypeError(ValueError):
+class UnknownInvestmentTypeError(RefusedArgumentError):
     """An `investment_type` no stored trade carries, refused naming the ones that exist.
 
     Refused rather than answered empty, for `UnknownCategoryError`'s reason: an empty
@@ -182,14 +190,16 @@ def query_investment_transactions(
     with reader_connection(config) as conn:
         if account_id is not None and not _account_exists(conn, account_id):
             raise UnknownAccountError(
-                f"account_id {account_id} does not exist. list_accounts reports the ids that do."
+                f"account_id {account_id} does not exist. list_accounts reports the ids that do.",
+                recovery=ACCOUNT_RECOVERY,
             )
         if investment_type is not None:
             known = _known_types(conn)
             if investment_type not in known:
                 raise UnknownInvestmentTypeError(
                     f"investment_type {investment_type!r} is carried by no stored trade. The "
-                    f"types this store holds: {', '.join(known) or 'none'}"
+                    f"types this store holds: {', '.join(known) or 'none'}",
+                    recovery=Recovery(arguments=("investment_type",), valid_values=tuple(known)),
                 )
         filters = _filters(
             since=since,

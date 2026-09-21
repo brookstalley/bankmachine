@@ -259,7 +259,7 @@ def test_the_request_asks_for_a_hosted_session_not_just_reads_one_back(
     with nothing to print. Only the live sandbox call would have caught it, and it
     is deselected by default.
 
-    This is `two-descriptions-compared` from `learnings.md`: the request and the
+    This is `two-descriptions-compared` from `.claude/rules/learnings/`: the request and the
     response are two accounts of the same intent, and asserting only the one the
     fake authors is asserting the fake.
     """

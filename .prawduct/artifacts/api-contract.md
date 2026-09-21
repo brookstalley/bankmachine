@@ -1448,6 +1448,40 @@ applies regardless (`security-model.md`).
 | `datastore_unservable` | This build cannot serve this datastore, and data is in it. The message names the state and the operator's remedy | Not until the operator acts |
 | `internal_error` | Something failed and was logged. No detail crosses the boundary | No |
 
+#### `invalid_argument` carries the correction as FIELDS   <!-- recorded decision → api_error_recovery_fields -->
+
+**Status: active** (recorded 2026-09-16).
+
+🔴 **A refusal is the next turn's input, not a log line read by a human later.** Its quality decides
+whether the caller recovers or flails. The sentence stays — it is what a person reads — but every
+fact inside it that a caller needs in order to build the corrected call also rides as a field, so no
+consumer has to parse prose to retry.
+
+The fields ride `structuredContent.error` beside `code` and `message`, and **the `content` text
+carries the same object as compact JSON**, exactly as a successful answer mirrors its payload there.
+🔴 That second half is not redundancy: acceptance rounds 2 and 3 both measured that through a real
+MCP client only the error *string* was visible and `structuredContent.error.code` was not. Fields a
+client never forwards are fields the agent they exist for cannot read.
+
+| Field | Type | Present when | Means |
+|---|---|---|---|
+| `arguments` | list of names | always | The argument(s) to change. Changing one of these is what makes the call valid |
+| `required` | list of names | always | The tool's required arguments, read from its own `inputSchema` |
+| `optional` | list of names | always | The rest of the tool's arguments. A name absent from both lists is not an argument of this tool |
+| `valid_values` | list | the argument takes a closed set this server can enumerate | Every value that would be accepted. An EMPTY list means the set is genuinely empty — the store holds no such value at all — which is not the same as the field being absent |
+| `valid_values_from` | tool name | the valid values are data rather than a fixed set | The tool that lists them. `account_id` is the case: the ids are the store's, so they are looked up, not published |
+| `minimum` / `maximum` | integer | the argument is bounded | The bound the value crossed, in the argument's own units |
+| `max_length` | integer | the argument is length-bounded | The longest accepted text |
+| `example` | object | the FORM of the value is what was wrong | Arguments demonstrating the accepted form. A form, never a suggested value — the caller's own intent is not this server's to guess |
+| `see` | resource URI | always | A reference document this server serves, for the caller that wants the whole rule rather than this one correction |
+
+🔴 **A field is present only when it applies, and its absence is information** — the same rule the
+warning kinds already follow. A block of nulls trains a reader to skip the block.
+
+🔴 **Only `invalid_argument` carries recovery fields.** `datastore_unservable` and `internal_error`
+carry `{code, message}`, because neither has a corrected call for the caller to construct: one waits
+on the operator, the other on nobody.
+
 🔴 **`datastore_unservable` exists so a fixable state does not wear the label that means "retry is
 pointless".** The distinction the vocabulary carries is whether the caller can do anything, and
 folding this into `internal_error` — whose remedy sentence is *the failure has been logged* — buries

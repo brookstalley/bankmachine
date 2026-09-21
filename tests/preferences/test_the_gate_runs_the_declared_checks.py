@@ -30,7 +30,7 @@ PREFERENCES = REPO_ROOT / ".prawduct" / "artifacts" / "project-preferences.md"
 
 #: The distinct tools the gate must run. `ruff` appears once here and twice in
 #: EXPECTED_ORDER: `ruff check` and `ruff format --check` are different halves, and
-#: the lint rules never reach layout -- learnings.md records seven files drifting
+#: the lint rules never reach layout -- `.claude/rules/learnings/` records seven files drifting
 #: behind a clean `ruff check`.
 DECLARED_TOOLS = ["pytest", "ruff", "mypy"]
 
@@ -529,8 +529,8 @@ _STUB_SECURITY = """#!/usr/bin/env bash
 printf '%s\\n' "$*" >>"$SECURITY_LOG"
 case "$1" in
     show-keychain-info)
-        # Exit 0 = a leftover keychain exists. `STUB_NO_LEFTOVER=1` says none does.
-        [ "${STUB_NO_LEFTOVER:-}" = "1" ] && exit 1
+        # 🔴 The call that PROMPTS on a locked keychain. The gate must never make
+        # it; logged above so a case can prove it did not.
         exit 0
         ;;
     default-keychain)
@@ -567,6 +567,9 @@ def _stub_env(tmp_path: Path, *, with_security: bool = False) -> tuple[Path, Pat
     resolve a default under a fake `HOME`, so the script bails for a reason that
     has nothing to do with the property under test, and the case passes with the
     guard deleted.
+
+    It also leaves a leftover keychain FILE under the fake `HOME`, which is what
+    the gate asks about; a case that wants none removes it with `_no_leftover`.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -577,9 +580,20 @@ def _stub_env(tmp_path: Path, *, with_security: bool = False) -> tuple[Path, Pat
         sec = bin_dir / "security"
         sec.write_text(_STUB_SECURITY)
         sec.chmod(0o755)
+        _leftover_keychain(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+        _leftover_keychain(tmp_path).touch()
     log = tmp_path / "invocations.log"
     log.touch()
     return log, bin_dir
+
+
+def _leftover_keychain(home: Path) -> Path:
+    """Where a previous run's keychain sits under `home`, which the gate checks for."""
+    return home / "Library" / "Keychains" / "bankmachine-test.keychain-db"
+
+
+def _no_leftover(home: Path) -> None:
+    _leftover_keychain(home).unlink()
 
 
 # --- the gate's keychain swap ------------------------------------------------
@@ -980,10 +994,6 @@ def test_a_leftover_from_an_unclean_run_is_announced_before_it_is_deleted(
     )
     assert "Ctrl-C" in result.stderr, "the announcement offers no way to act on it"
     calls = security_log.read_text()
-    assert "show-keychain-info" in calls, (
-        "the gate deleted without first checking a leftover exists, so it would print "
-        f"the warning on a run that had nothing to remove. Calls:\n{calls}"
-    )
     assert "delete-keychain" in calls, f"the leftover was never removed. Calls:\n{calls}"
 
 
@@ -1026,10 +1036,11 @@ def test_a_leftover_from_a_clean_run_goes_quietly(tmp_path: Path) -> None:
 
 
 def test_nothing_is_deleted_when_there_is_no_leftover(tmp_path: Path) -> None:
-    """`show-keychain-info` is the guard. Without it the gate would issue a delete
+    """The leftover's FILE is the guard. Without it the gate would issue a delete
     on a first-ever run — harmless today, and the kind of unconditional destructive
     call that stops being harmless when the name is ever reused."""
     log, bin_dir = _stub_env(tmp_path, with_security=True)
+    _no_leftover(tmp_path)
     security_log = tmp_path / "security.log"
     security_log.touch()
     result = subprocess.run(
@@ -1045,10 +1056,44 @@ def test_nothing_is_deleted_when_there_is_no_leftover(tmp_path: Path) -> None:
             STUB_LOG=str(log),
             SECURITY_LOG=str(security_log),
             STUB_DEFAULT_IS_OURS="0",
-            STUB_NO_LEFTOVER="1",
         ),
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "delete-keychain" not in security_log.read_text(), (
-        "the gate issued a delete although `show-keychain-info` reported no leftover"
+        "the gate issued a delete although no leftover keychain file exists"
+    )
+
+
+def test_checking_for_a_leftover_never_asks_the_operator_for_a_password(
+    tmp_path: Path,
+) -> None:
+    """🔴 A leftover is LOCKED by construction: its random password died with the
+    run that made it. `security show-keychain-info` on a locked keychain opens a
+    password dialog -- measured on 2026-09-21, when a recorded gate run put two in
+    front of the operator for a keychain nobody holds the password to. The gate
+    asks the filesystem instead, and this case holds it there."""
+    log, bin_dir = _stub_env(tmp_path, with_security=True)
+    security_log = tmp_path / "security.log"
+    security_log.touch()
+    with_leftover = subprocess.run(
+        ["bash", str(GATE), str(tmp_path / "r.xml")],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=_gate_env(
+            tmp_path,
+            bin_dir,
+            reentrant=True,
+            STUB_LOG=str(log),
+            SECURITY_LOG=str(security_log),
+            STUB_DEFAULT_IS_OURS="0",
+        ),
+    )
+    assert with_leftover.returncode == 0, with_leftover.stdout + with_leftover.stderr
+    assert "delete-keychain" in security_log.read_text(), (
+        "the leftover file was not seen, so this case never reached the probe"
+    )
+    assert "show-keychain-info" not in security_log.read_text(), (
+        "the gate asked `security` about a leftover keychain, which prompts when it is locked"
     )
