@@ -1,23 +1,6 @@
-# Learnings
+# Learnings — core
 
-Accumulated wisdom from building this product. Entries use "When X, do Y because Z" format, and each rule carries its instances inline — they are what a reader pattern-matches their own case against.
-
-<!-- prawduct:descent-obligation — the statement below is the HOME of the
-     descent rule; `/prawduct:learnings` points here rather than restating
-     it. Reword the prose freely; keep this marker, above the first rule. -->
-
-**Reading a rule is not applying it.** The failure mode of a learnings file is not absence, it is assent: a rule arrives at the right moment, is read, is agreed with, and changes nothing, because nothing made you recognize the case in hand as an instance of it. So for any rule you read here, name the decision you are about to make and say what the rule changes about it — or say that it does not apply, which is also an answer.
-
----
-
-## Measure what the client delivers, not what the server sends
-
-**When a server's `instructions` (or any text a client forwards to a model) carries guidance that
-matters, measure the text the CLIENT actually hands the model — because a client may truncate at a
-budget the server never sees, and every test that holds the string in-process passes while the model
-reads a third of it.**
-
----
+**Reading a rule is not applying it.** For any rule below that bears on the decision in front of you, name the rule and say what it changes about that decision — or say that it does not apply, which is also an answer.
 
 ## Review coverage
 
@@ -560,19 +543,6 @@ caller's must anchor on the call.
 - *2026-09-09, `_coverage(conn, lifecycle=…)`.* The same defect, same bundle, one surface over —
   found by the cumulative rather than by me, after I had already fixed and written up its twin.
 
-## Reversing a ratified decision is a sweep, not an edit: grep the repo for the rejected spelling and the superseded claim before committing, because fixing the file a reviewer named and stopping there is what buys the second round
-
-## A documented remedy is a claim and is asserted like one: when a runbook tells an operator to run a command to recover from a state your change creates, write the test that puts a store in that state and runs it
-
-## Recording a policy is not ratifying one: an instruction given for one piece of work belongs in that work's plan, and a `project-preferences.md` norm row has prerequisites that file states for itself
-
-
-## Removing a value from every literal does not remove it from what those literals interpolate: a branch that builds its sentence from an exception string is the one that keeps leaking, and a guard exercising a single state proves nothing about it
-
-## A carve-out reaches every state that shares its return type: when one function collapses several distinguishable states into one value, an exception written for one of them silently governs all of them, and the collapse is the defect rather than the exception
-
----
-
 ## A truncated search proves nothing about what it did not reach: `| head -N` returning exactly N is the signature of a cut, and reading it as exhaustion turns a search into a false negative
 
 **When a search backs a NEGATIVE conclusion — "no plan carries this scope", "nothing else tests
@@ -647,43 +617,6 @@ scope and check it against the advisory's — an under-scoped prior item is the 
 and extending it beats filing beside it.
 
 ---
-
-## A store-authored row is not a record of what anyone said
-
-**When a preservation norm — never hard-delete, never overwrite in place — meets a row the product
-itself authored, rule that the norm does not reach it, because those norms protect *evidence of what
-an outside party told us*, and a row we wrote ourselves is a current belief instead.**
-
-`data-model.md` § Direction carries two preservation norms, and both are about the aggregator. *A
-source value is never overwritten in place* exists so provider drift stays distinguishable from a
-local decision. *A transaction is never hard-deleted* exists because a removal is evidence of a
-reversal or a correction, and because a rebuild from the archive can reproduce a removal but not a
-row nobody kept. Neither why survives contact with an annotation: nobody outside said it, the
-archive does not contain it, and no rebuild can reproduce it or lose it.
-
-**Applied mechanically, both norms would have made an annotation permanent.** An agent's note is its
-belief at a moment; a belief that can be added and never withdrawn becomes *permanently wrong* the
-first time the agent learns better, and it keeps being returned beside the row as though the store
-stood behind it. Preserving it would protect nothing and mislead every later reader — the exact
-inversion of what the norms were written to do.
-
-**The category, so the next case at this edge is pre-decided:** a preservation norm reaches rows
-whose author is outside this product. Rows this product's own operator or agents authored — the
-annotation table, and anything later built on the same footing — are governed by their own
-requirement, and their requirement may say *delete means delete*.
-
-**Instances:**
-
-- *2026-09-10, FR-11 · Agent annotations.* AC-16.7 requires that an annotation be rewritable and
-  deletable with no tombstone. Recorded as a ruling on both norms rather than as a silent exemption,
-  and linked from each entry's `Rulings:` line. Note the asymmetry it does **not** license:
-  `transactions.category_override` is operator-authored but sits on an aggregator-authored row, and
-  § 5's 2026-09-10 amendment keeps it out of an agent's reach for that reason. Authorship of the
-  **row** is the test, not authorship of the value.
-
-**How to apply:** at any preservation norm's edge, ask who wrote the row — not who wrote the field,
-and not whether the field looks derived. If the answer is "we did", the norm's why does not reach it
-and the ruling is already made here; record the instance and move on.
 
 ## A norm's reach is its why, not its wording: a mechanism that produces no answers is outside a norm about wrong answers, and the ruling belongs at the edge rather than in the norm
 
@@ -808,18 +741,68 @@ count moved). Verifying only the green path is the tell: the failure path is whe
 reporting bug can live, so a plan whose "Done when" mentions only success has not been
 verified, it has been demonstrated.
 
-## Evidence recorded over a tree you were editing is evidence about no tree: start the gate when you have nothing left to change, and never let a narrower re-run stand in for the declared command
+## An issue's proposal is not its requirement: build to the outcome sentence, and when the outcome depends on a consumer, find this repo's measurement of that consumer before designing the payload
 
-## A guard that greps tracked files is blind to the file you just created: stage a new fixture before a green says anything about it
+**A filed issue usually carries both a PROPOSAL ("add these fields") and an OUTCOME ("so an agent
+can retry without parsing prose"). Build to the outcome. A design that satisfies every acceptance
+line and misses the outcome ships as done and is finished by nobody — and where the outcome depends
+on how a CONSUMER behaves, this product has already measured that consumer somewhere, usually in an
+acceptance-round artifact.**
 
-## A fixture that cannot reach the subject passes forever: mutate the code, and check which branch the fixture actually took
+The tell is a design whose value rests on an unexamined claim about something outside this code: a
+client forwards this, a scheduler reads that, an agent sees the other. Look for the measurement
+before choosing the payload, not after someone asks whether the feature actually works.
 
-## A refactor is judged by what the old code stopped doing, not by what the new code does: enumerate the branches the replaced expression had, and name where each one went
+**Instances:**
 
-## A fixture built from the mechanism you are reasoning about cannot tell apart the worlds your reasoning separates: reproduce the state the real producer leaves, not the state your helper leaves
+- *2026-09-17, #31 structured refusals.* The issue asked for recovery fields "beside the sentence"
+  and named two sibling repos. Designing to that letter put the fields in `structuredContent` only
+  — and `mcp-acceptance-round-2.md` and `-3.md`, written here months earlier, both record that
+  through a real client only the error STRING was visible and `structuredContent.error.code` was
+  not. Every acceptance line would have passed with the stated outcome unreachable. The fix was
+  one line of code (the text carries the same object) and would not have been found by re-reading
+  the issue. Related: [[measure-what-the-client-delivers-not-what-the-server-sends]], which is the
+  same fact one surface over and was already in this file.
 
-## A conformance note clears a rule on the surface it was checked against, and a rule with two entry points is cleared on neither by checking one: name the surface, and re-check a shape rule whenever a new column stores a value whose type contradicts its meaning
+**How to apply:** before designing a payload whose worth depends on a consumer, grep
+`.prawduct/artifacts/` for the rounds and reviews that watched that consumer. If no measurement
+exists, say so in the plan as an assumption rather than designing over the gap.
 
-## An option you offer the owner is a requirement they sign: before writing a rule into a question, run it against the real store's shape, because the case that breaks it is usually already sitting in the data
+## Unsorted
 
-## A harness that edits source in place must never run under a tool timeout: run it detached, and after any interrupted run check the tree against the files the chunk changed
+### Measure what the client delivers, not what the server sends
+
+**When a server's `instructions` (or any text a client forwards to a model) carries guidance that
+matters, measure the text the CLIENT actually hands the model — because a client may truncate at a
+budget the server never sees, and every test that holds the string in-process passes while the model
+reads a third of it.**
+
+---
+
+### Reversing a ratified decision is a sweep, not an edit: grep the repo for the rejected spelling and the superseded claim before committing, because fixing the file a reviewer named and stopping there is what buys the second round
+
+### A documented remedy is a claim and is asserted like one: when a runbook tells an operator to run a command to recover from a state your change creates, write the test that puts a store in that state and runs it
+
+### Recording a policy is not ratifying one: an instruction given for one piece of work belongs in that work's plan, and a `project-preferences.md` norm row has prerequisites that file states for itself
+
+### Removing a value from every literal does not remove it from what those literals interpolate: a branch that builds its sentence from an exception string is the one that keeps leaking, and a guard exercising a single state proves nothing about it
+
+### A carve-out reaches every state that shares its return type: when one function collapses several distinguishable states into one value, an exception written for one of them silently governs all of them, and the collapse is the defect rather than the exception
+
+---
+
+### Evidence recorded over a tree you were editing is evidence about no tree: start the gate when you have nothing left to change, and never let a narrower re-run stand in for the declared command
+
+### A guard that greps tracked files is blind to the file you just created: stage a new fixture before a green says anything about it
+
+### A fixture that cannot reach the subject passes forever: mutate the code, and check which branch the fixture actually took
+
+### A refactor is judged by what the old code stopped doing, not by what the new code does: enumerate the branches the replaced expression had, and name where each one went
+
+### A fixture built from the mechanism you are reasoning about cannot tell apart the worlds your reasoning separates: reproduce the state the real producer leaves, not the state your helper leaves
+
+### A conformance note clears a rule on the surface it was checked against, and a rule with two entry points is cleared on neither by checking one: name the surface, and re-check a shape rule whenever a new column stores a value whose type contradicts its meaning
+
+### An option you offer the owner is a requirement they sign: before writing a rule into a question, run it against the real store's shape, because the case that breaks it is usually already sitting in the data
+
+### A harness that edits source in place must never run under a tool timeout: run it detached, and after any interrupted run check the tree against the files the chunk changed

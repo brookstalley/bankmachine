@@ -21,6 +21,7 @@ from sqlalchemy import and_, func, select
 from bankmachine.config import Config
 from bankmachine.envelope import MAX_ROWS, Answer, Caveat, SeriesCursor, Truncation, series_position
 from bankmachine.query import (
+    ACCOUNT_RECOVERY,
     UnknownAccountError,
     _account_exists,
     _account_lifecycle,
@@ -503,7 +504,8 @@ def balance_history(
     with reader_connection(config) as conn:
         if account_id is not None and not _account_exists(conn, account_id):
             raise UnknownAccountError(
-                f"account_id {account_id} does not exist. list_accounts reports the ids that do."
+                f"account_id {account_id} does not exist. list_accounts reports the ids that do.",
+                recovery=ACCOUNT_RECOVERY,
             )
         spans = select(
             balances_daily.c.account_id,

@@ -498,7 +498,7 @@ def test_the_repair_waits_for_the_item_rather_than_reading_it_once(
 
     A fake that always reports a healthy item passes against an implementation
     that never looks twice, which is the whole failure mode a one-shot fixture
-    hides (`learnings.md` -- write the guard from the failure's point of view).
+    hides (`.claude/rules/learnings/` -- write the guard from the failure's point of view).
     """
     FakeClient.error_codes = [LOGIN_REQUIRED, LOGIN_REQUIRED, LOGIN_REQUIRED, None]
 

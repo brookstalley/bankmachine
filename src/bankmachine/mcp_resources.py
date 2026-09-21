@@ -43,6 +43,7 @@ _SCHEME = "bankmachine://reference"
 
 WARNINGS_URI = f"{_SCHEME}/warnings"
 ENVELOPE_URI = f"{_SCHEME}/envelope"
+REFUSALS_URI = f"{_SCHEME}/refusals"
 
 #: Markdown rather than plain text: these are read by a model, and the headings
 #: are what let it find one kind without carrying all of them.
@@ -947,6 +948,101 @@ def _envelope_reference(tool_definitions: list[dict[str, Any]]) -> str:
     return "\n".join(parts).rstrip() + "\n"
 
 
+#: What each error code means for the caller holding it. Keyed by the vocabulary
+#: itself, so a code added to `envelope.ErrorCode` and not described here renders
+#: as unwritten rather than vanishing -- the warning document's rule, for the
+#: same reason: a reader who came for the whole vocabulary must not be left
+#: quietly short of it.
+_CODE_GUIDANCE: dict[str, tuple[str, str]] = {
+    "invalid_argument": (
+        "the call named an argument this tool does not take, or a value it cannot use",
+        "RETRY, corrected. Every fact you need to correct it rides beside the message as "
+        "fields -- see below -- so you never have to parse the sentence.",
+    ),
+    "datastore_unservable": (
+        "this build cannot serve this datastore, and there is data in it",
+        "DO NOT retry: nothing changes until the operator acts. The message names the state "
+        "and the command that clears it. 🔴 This is deliberately not `internal_error`: it is "
+        "fixable, and it is fixable by a person who is not you.",
+    ),
+    "internal_error": (
+        "something failed and was logged; no detail crosses this boundary",
+        "DO NOT retry the same call: it will fail the same way. Say that the question could "
+        "not be answered rather than answering it from anything else.",
+    ),
+}
+
+#: Every key the recovery block can carry, in the order the document renders
+#: them, and what a caller does with each. 🔴 Compared against
+#: `envelope.Recovery` by a test rather than trusted: a field added to the
+#: dataclass and not described here would reach the wire undocumented, which is
+#: the same defect as an undocumented answer field one surface over.
+_RECOVERY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("arguments", "the argument(s) to change — changing one of these is what makes the call valid"),
+    ("required", "every argument this tool requires, read from its own published schema"),
+    (
+        "optional",
+        "the rest of the arguments it accepts. A name in neither list is not an argument of "
+        "this tool, which is what an `unknown argument` refusal means",
+    ),
+    (
+        "valid_values",
+        "every value that would be accepted. 🔴 An EMPTY list is not the same as no list: it "
+        "means the set is genuinely empty — the store holds no such value at all — so there "
+        "is no corrected call, and the honest answer is that the data is not there",
+    ),
+    (
+        "valid_values_from",
+        "the tool that lists the valid values, where they are the store's data rather than a "
+        "fixed set. Call it, then retry with one of the values it returns",
+    ),
+    ("minimum", "the lowest accepted value, in the argument's own units"),
+    ("maximum", "the highest accepted value, in the argument's own units"),
+    ("max_length", "the longest accepted text"),
+    (
+        "example",
+        "arguments showing the accepted FORM. 🔴 A form, never a suggested value: what you "
+        "were asking about is yours to keep, so copy the shape and not the contents",
+    ),
+    ("see", "this document"),
+)
+
+_REFUSALS_INTRO = (
+    "A refused call is not the end of the conversation — it is the input to your next one. "
+    "Everything you need to correct the call rides in the payload, so nothing here has to be "
+    "read out of the sentence.\n\n"
+    "A refusal arrives as `isError: true` with an `error` object, carried BOTH in "
+    "`structuredContent` and, as compact JSON, in the text — read whichever your client hands "
+    "you. `code` says whether a retry is worth attempting at all; `message` is one sentence "
+    "for the human reading the transcript later."
+)
+
+_RECOVERY_INTRO = (
+    "🔴 These fields ride an `invalid_argument` refusal only, because it is the only one with "
+    "a corrected call for you to build. A field is present only when it applies, so its "
+    "ABSENCE is information: no `valid_values` means the argument is not a closed set, not "
+    "that anything goes."
+)
+
+
+def _refusals_reference() -> str:
+    """Every code, and every field of the correction, walked from the vocabularies themselves."""
+    parts = ["# When a call is refused", "", _REFUSALS_INTRO, "", "## The codes", ""]
+    for code in envelope.ERROR_CODES:
+        guidance = _CODE_GUIDANCE.get(code)
+        if guidance is None:
+            parts.append(
+                f"### `{code}`\n\n- **Means:** the vocabulary declares this code and no "
+                f"guidance for it has been written yet — read its `message`\n"
+            )
+            continue
+        means, act = guidance
+        parts.append(f"### `{code}`\n\n- **Means:** {means}\n- **Do:** {act}\n")
+    parts += ["## The correction, as fields", "", _RECOVERY_INTRO, ""]
+    parts += [f"- `{name}` — {description}" for name, description in _RECOVERY_FIELDS]
+    return "\n".join(parts).rstrip() + "\n"
+
+
 def documents(tool_definitions: list[dict[str, Any]]) -> list[Document]:
     """Every reference document this server serves, in listing order.
 
@@ -965,6 +1061,17 @@ def documents(tool_definitions: list[dict[str, Any]]) -> list[Document]:
                 "any answer as complete."
             ),
             text=_warning_reference(),
+        ),
+        Document(
+            uri=REFUSALS_URI,
+            name="refusals",
+            title="When a call is refused, and how to correct it",
+            description=(
+                "The three codes a refused call can carry, whether each is worth retrying, and "
+                "every field of the correction an `invalid_argument` refusal hands back. Read "
+                "this to turn a refusal into the corrected call rather than into a dead end."
+            ),
+            text=_refusals_reference(),
         ),
         Document(
             uri=ENVELOPE_URI,

@@ -1692,3 +1692,38 @@ carries this change (`build.commit` on any answer names it).
 **Drain with:** `prawduct-hook verify-operator-verification VRF-040`
 
 **Accepted:** 2026-09-15 — rationale: VRF-038/039 are production-data obligations (#22/#23) this branch doesn't touch; re-raised on the next branch. VRF-040 is verifiable only after release by construction and is drained after the production upgrade.
+
+## VRF-041 — a refused call teaches a real client's agent how to correct it
+
+**Status:** accepted
+
+**Chunk:** mcp error recovery and types, chunk 02 · **Raised:** 2026-09-17
+
+**Why a human:** this change rests on a claim about a client rather than about this code. Rounds 2
+and 3 measured that only the error *string* reached the model and that
+`structuredContent.error.code` did not, which is why the error object now rides the `content` text
+as well. The tests prove the payload is correct and that a retry built from the fields succeeds;
+only a session in the real client can show whether the agent reads the fields and corrects itself
+rather than apologising or guessing.
+
+**Where to verify:** the desktop agent client, restarted after production is on the release that
+carries this change (`build.commit` on any answer names it).
+
+**Verify:**
+
+1. Ask a question that names a category the store does not hold ("what did I spend on TRAVL last
+   year"). The agent retries with a real category from `valid_values` and answers, without asking
+   you which one to use.
+2. Ask for one account by an id that does not exist. The agent calls `list_accounts` — the tool
+   `valid_values_from` names — and then answers, rather than reporting an error.
+3. Ask for a window written as a phrase ("since August 2024"). The agent re-sends the date in
+   `YYYY-MM-DD` form on its own.
+4. 🔴 Read what the agent says after each refusal. It must not report the refusal as a data problem
+   or a broken tool: nothing was wrong with the store, and a refusal that reads as an outage is the
+   failure this work replaces.
+5. Ask it to page with a cursor from an earlier, different question. It drops the cursor and starts
+   from the newest row rather than treating the refusal as final.
+
+**Drain with:** `prawduct-hook verify-operator-verification VRF-041`
+
+**Accepted:** 2026-09-21 — rationale: Verification requires production running the release that carries this change (v0.2.2); it cannot precede that release. To be verified in the desktop client after production moves to v0.2.2.

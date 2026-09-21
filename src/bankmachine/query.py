@@ -42,6 +42,8 @@ from bankmachine.envelope import (
     Answer,
     Caveat,
     Cursor,
+    Recovery,
+    RefusedArgumentError,
     TransactionFilter,
     Truncation,
     Window,
@@ -1116,7 +1118,7 @@ NOT_RECONCILABLE_ACCOUNT_TYPES: frozenset[str] = frozenset({"investment", "broke
 #: 🔴 Why a reconciliation produced no residual, spelled as its own closed set
 #: because three of these four would otherwise share one null.
 #:
-#: `learnings.md` § *A carve-out reaches every state that shares its return
+#: `.claude/rules/learnings/` § *A carve-out reaches every state that shares its return
 #: type*: when one function collapses distinguishable states into one value, the
 #: collapse is the defect. A null `residual_minor_units` alone would mean *this
 #: account can never be reconciled*, *it has only one snapshot so far* and *no
@@ -2096,7 +2098,7 @@ def _unreconciled_caveat(entries: list[AccountReconciliation]) -> list[Caveat]:
     accounts, so it can span units even though one account's residual cannot:
     summing across them would produce a number with no unit. A count alone would
     hide whether the finding is a rounding artefact or a missing month, which is
-    the half `learnings.md` calls load-bearing.
+    the half `.claude/rules/learnings/` calls load-bearing.
     """
     # 🔴 **`unexplained` intervals ONLY, which is what every declaration of this
     # kind promises** -- "no coverage gap or truncated window accounts for the
@@ -2778,7 +2780,7 @@ def _unservable_remedy(status: DatastoreStatus) -> str:
     time someone improves the English.
 
     Every branch names a command that is tested against a store actually put into
-    that state -- `learnings.md`, *a documented remedy is a claim and is asserted
+    that state -- `.claude/rules/learnings/`, *a documented remedy is a claim and is asserted
     like one*. No branch names `store rebuild`: that step is recorded as having
     rolled back on this very shape of store, and a remedy that fails spends the
     operator's trust on the way to failing.
@@ -2975,7 +2977,7 @@ def list_accounts(config: Config) -> Answer:
         )
 
 
-class BadGroupingError(ValueError):
+class BadGroupingError(RefusedArgumentError):
     """A `group_by` naming no grouping this tool implements.
 
     Refused rather than defaulted: silently falling back to `category` would
@@ -2985,7 +2987,13 @@ class BadGroupingError(ValueError):
     """
 
 
-class UnknownAccountError(ValueError):
+#: What an unknown `account_id` hands back. The ids belong to the STORE, so the
+#: valid values are looked up rather than published: `valid_values_from` names
+#: the tool that lists them, which is the same route the sentence gives a human.
+ACCOUNT_RECOVERY = Recovery(arguments=("account_id",), valid_values_from="list_accounts")
+
+
+class UnknownAccountError(RefusedArgumentError):
     """An `account_id` naming no account, refused rather than answered empty.
 
     🔴 An id that names nothing and an account that was simply quiet in the
@@ -3000,7 +3008,7 @@ class UnknownAccountError(ValueError):
     """
 
 
-class UnknownCategoryError(ValueError):
+class UnknownCategoryError(RefusedArgumentError):
     """A `category` no transaction in the store carries, refused rather than answered empty.
 
     🔴 `UnknownAccountError`'s reasoning, one argument over. `TRAVL` and a
@@ -3515,7 +3523,8 @@ def list_transactions(
         # exist" is a claim about the data rather than about the connection.
         if account_id is not None and not _account_exists(conn, account_id):
             raise UnknownAccountError(
-                f"account_id {account_id} does not exist. list_accounts reports the ids that do."
+                f"account_id {account_id} does not exist. list_accounts reports the ids that do.",
+                recovery=ACCOUNT_RECOVERY,
             )
         spans = lineage.superseded_spans(conn)
         # Same ordering, same reason: which categories exist is a fact about the
@@ -3525,7 +3534,8 @@ def list_transactions(
             if narrowed_by.category not in known:
                 raise UnknownCategoryError(
                     f"category {narrowed_by.category!r} is carried by no transaction in this "
-                    f"store. The categories it holds: {', '.join(known) or 'none'}"
+                    f"store. The categories it holds: {', '.join(known) or 'none'}",
+                    recovery=Recovery(arguments=("category",), valid_values=tuple(known)),
                 )
         filters = _transaction_filters(
             since=since,
@@ -4374,7 +4384,10 @@ def money_summary(
     here by replacing an earlier hold's.
     """
     if group_by not in GROUPINGS:
-        raise BadGroupingError(f"group_by must be one of {', '.join(GROUPINGS)}, not {group_by!r}")
+        raise BadGroupingError(
+            f"group_by must be one of {', '.join(GROUPINGS)}, not {group_by!r}",
+            recovery=Recovery(arguments=("group_by",), valid_values=GROUPINGS),
+        )
     problem = _readable(config)
     if problem is not None:
         # Both blocks are present and EMPTY, on one rule: this tool carries them,

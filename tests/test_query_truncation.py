@@ -1,7 +1,7 @@
 """What a capped answer says about the rows it did not return.
 
 🔴 **The invariants come first in this file, and that ordering is the point.**
-`learnings.md` records the window resolver surviving nine mutations against a
+`.claude/rules/learnings/` records the window resolver surviving nine mutations against a
 hand-built boundary matrix while three real bugs stayed live: a matrix is
 written by the same mind, at the same sitting, from the same mental model as the
 code, so it reproduces the code's blind spot. The escape is to assert the RULE
@@ -272,7 +272,7 @@ def test_the_remedy_is_one_the_caller_can_actually_follow(
 def test_the_remedy_names_the_ceiling_the_code_enforces() -> None:
     """A ceiling written into a sentence decays; this one is derived.
 
-    `learnings.md` records a recorded fingerprint (`limit:9999` → "at most
+    `.claude/rules/learnings/` records a recorded fingerprint (`limit:9999` → "at most
     1000") falsified within a day by a commit moving the ceiling to 500. The
     caveat tells a caller what to raise `limit` to, so it must read the same
     constant the query clamps against.
@@ -299,7 +299,7 @@ def captured_sql() -> Iterator[list[str]]:
 
     🔴 Captured from the real execution rather than rebuilt in the test. A guard
     that constructed the two statements itself would compare the test's idea of
-    the predicates with itself and agree forever — `learnings.md` § *Two
+    the predicates with itself and agree forever — `.claude/rules/learnings/` § *Two
     descriptions, compared*: an oracle derived from the thing it checks teaches
     nothing.
     """
@@ -398,7 +398,7 @@ def test_the_count_and_the_row_query_select_from_the_same_predicates(
     if "after" in arguments:
         # 🔴 The comparison below fails OPEN if the cursor reached NEITHER
         # statement: two identical predicate lists agree whether or not they
-        # carry the clause this case exists to check. `learnings.md` records
+        # carry the clause this case exists to check. `.claude/rules/learnings/` records
         # exactly this shape — an extraction that can quietly find nothing turns
         # a strict equality into a tautology — so the operand is checked before
         # it is compared.
@@ -676,7 +676,7 @@ def _oracle_count(
     🔴 Written against the table directly rather than through
     `_transaction_filters`. Sharing the builder would make this agree with the
     implementation by construction and detect nothing, which is precisely the
-    self-derived oracle `learnings.md` warns produces a test that "would have
+    self-derived oracle `.claude/rules/learnings/` warns produces a test that "would have
     agreed with itself forever".
 
     The keyset half is spelled out here for the same reason, and it is the half

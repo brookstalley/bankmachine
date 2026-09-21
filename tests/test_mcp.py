@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import IO, Any, cast
 from unittest import mock
 
+import mcp_types
 import pytest
 from sqlalchemy import event, func, select
 from sqlalchemy.engine import Engine
@@ -291,6 +292,24 @@ def _call(config: Config, name: str, arguments: dict[str, Any] | None = None) ->
     )
     result: dict[str, Any] = replies[-1]["result"]
     return result
+
+
+def _refusal_message(result: dict[str, Any]) -> str:
+    """The refusal's SENTENCE, for assertions about what it says.
+
+    🔴 Never `in result["content"][0]["text"]` on a refusal. That text is the
+    whole error object as JSON, and the object always carries `arguments`,
+    `required` and `optional` -- so a check that the sentence names an argument
+    passes on those lists whatever the sentence says, and can no longer fail.
+    The text is held to the structured half here instead, once, so every caller
+    reads the sentence and still covers the text a client forwards.
+    """
+    assert result["isError"] is True, "the call was expected to be refused and was not"
+    assert json.loads(result["content"][0]["text"]) == result["structuredContent"], (
+        "the text a client forwards stopped agreeing with the structured error"
+    )
+    message: str = result["structuredContent"]["error"]["message"]
+    return message
 
 
 # --------------------------------------------------------------------------
@@ -2061,7 +2080,7 @@ def test_a_malformed_date_is_refused_with_a_sentence_a_caller_can_act_on(
     result = _call(initialized_config, "money_summary", {"since": "August 2024"})
 
     assert result["isError"] is True
-    message = result["content"][0]["text"]
+    message = _refusal_message(result)
     assert "since" in message, "the message does not say which argument was wrong"
     assert "YYYY-MM-DD" in message, "the message does not say what form to use"
     assert "SELECT" not in message, "the refusal leaked the query"
@@ -2100,7 +2119,7 @@ def test_an_argument_of_the_wrong_json_type_is_refused_by_name(
     result = _call(initialized_config, "query_transactions", arguments)
 
     assert result["isError"] is True
-    assert field in result["content"][0]["text"]
+    assert field in _refusal_message(result)
 
 
 # --------------------------------------------------------------------------
@@ -2147,7 +2166,7 @@ def dispatch_report(tmp_path_factory: pytest.TempPathFactory) -> str:
     🔴 The two snippet filenames deliberately share no substring. Naming them
     `narrowed.py` and `unnarrowed.py` made the positive control match the
     NEGATIVE file -- `in` cannot tell a name from a name that contains it, which
-    is the containment trap recorded in `learnings.md`.
+    is the containment trap recorded in `.claude/rules/learnings/`.
     """
     workspace = tmp_path_factory.mktemp("dispatch")
     (workspace / "forwards_raw.py").write_text(_UNNARROWED, encoding="utf-8")
@@ -2230,7 +2249,13 @@ def test_an_argument_the_tool_does_not_advertise_is_refused(initialized_config: 
     result = _call(initialized_config, "money_summary", {"sinceX": "2024-09-09"})
 
     assert result["isError"] is True
-    message = result["content"][0]["text"]
+    error = result["structuredContent"]["error"]
+    # 🔴 The SENTENCE, read from the field that carries it. It used to be the
+    # whole of `content[0].text`; the text is now the error object as JSON, so
+    # reading the sentence off the text would be reading it out of a JSON
+    # document. The claim is unchanged: this sentence names the rejected
+    # argument and lists what the tool accepts.
+    message = error["message"]
     assert "sinceX" in message, "the refusal does not name the argument it rejected"
     # 🔴 An exact set, not `"since" in message`: the refusal already contains
     # 'sinceX', so that substring can never fail. When one valid value contains
@@ -2240,7 +2265,9 @@ def test_an_argument_the_tool_does_not_advertise_is_refused(initialized_config: 
     assert set(accepted.strip().split(", ")) == {"group_by", "since", "until"}, (
         f"the refusal offered {accepted.strip()!r}"
     )
-    assert result["structuredContent"]["error"]["code"] == "invalid_argument"
+    assert error["code"] == "invalid_argument"
+    # The same sentence still reaches a text-only client, inside the object.
+    assert message in result["content"][0]["text"]
 
 
 def _delivered_guidance(config: Config) -> str:
@@ -2282,7 +2309,7 @@ def test_what_the_server_delivers_names_every_field_the_envelope_actually_carrie
     keys alone cannot see a key nested inside a block — so a guard written
     either way passes while the text a consuming agent reads denies a field
     exists. A check that samples one instance of the thing it generalises over
-    is a check whose bad news never arrives, which is the trap `learnings.md`
+    is a check whose bad news never arrives, which is the trap `.claude/rules/learnings/`
     records twice.
     """
     _seed(initialized_config)
@@ -2350,9 +2377,14 @@ def test_the_primer_fits_inside_what_a_client_actually_delivers(
     read, and the surviving text reads complete. A primer that fits is the only
     version of this text that is actually delivered.
 
-    🔴 The two resource URIs are asserted to be in the FIRST lines rather than
+    🔴 Every resource URI is asserted to be in the FIRST lines rather than
     merely present, because a pointer that would be cut is a pointer that does
     not exist — and it is the pointer that makes everything else reachable.
+
+    🔴 Walked from the served registry, never listed here. Listed, this loop
+    kept passing over the URIs someone remembered while a third document's
+    pointer could be deleted from the primer with every test still green — the
+    exact class it exists to close, arriving through the door of a new document.
     """
     primer = mcp._instructions(initialized_config)
 
@@ -2361,16 +2393,18 @@ def test_the_primer_fits_inside_what_a_client_actually_delivers(
         f"{mcp.INSTRUCTIONS_BUDGET}; a client that trims will hand the model a prefix of it"
     )
     opening = "\n".join(primer.splitlines()[:3])
-    for uri in (mcp_resources.ENVELOPE_URI, mcp_resources.WARNINGS_URI):
+    served = [document.uri for document in mcp_resources.documents(mcp._tool_definitions())]
+    assert served, "the registry served no documents, so this loop checked nothing"
+    for uri in served:
         assert uri in opening, f"{uri} is not in the first three lines, so it can be cut"
 
 
-#: What `Implementation` -- the type of `serverInfo` -- declares, read from
-#: `mcp_types` 2.2.0. Written out rather than imported because this product has
-#: no `mcp` dependency and is not acquiring one to run a test; the list is the
-#: fact the test needs, and it moves only when the SDK's type does.
+#: What `Implementation` -- the type of `serverInfo` -- declares, by WIRE name.
+#: Read from `mcp_types` rather than typed out: a list copied by hand is the kind
+#: of copy that let a key ride `serverInfo` and be dropped in the client's parser,
+#: and `mcp-types` is a dev dependency so the test can ask the type itself.
 _IMPLEMENTATION_FIELDS = frozenset(
-    {"name", "title", "version", "description", "websiteUrl", "icons"}
+    field.alias or name for name, field in mcp_types.Implementation.model_fields.items()
 )
 
 
@@ -2384,7 +2418,7 @@ def test_the_handshake_reports_the_running_build(initialized_config: Config) -> 
 
     🔴 Read from `_meta`, and `serverInfo` is checked for the ABSENCE of the
     same keys, because that is where the identity is actually readable.
-    `Implementation` declares six fields and the SDK's wire base leaves
+    `Implementation` declares a closed set of fields and the SDK's wire base leaves
     pydantic's `extra="ignore"` in force, so a `commit` on `serverInfo` is
     dropped in the client's parser -- present in the bytes, gone by the time
     anything reads them, which no assertion over the raw reply would catch.
@@ -2520,7 +2554,7 @@ def test_every_unrecognized_argument_is_named_at_once(initialized_config: Config
     result = _call(initialized_config, "money_summary", {"sinceX": "x", "untilX": "y"})
 
     assert result["isError"] is True
-    message = result["content"][0]["text"]
+    message = _refusal_message(result)
     assert "sinceX" in message and "untilX" in message
 
 
@@ -2541,7 +2575,7 @@ def test_a_limit_outside_the_servable_range_is_refused_not_clamped(
 
         assert result["isError"] is True, f"limit={value} was answered rather than refused"
         assert result["structuredContent"]["error"]["code"] == "invalid_argument"
-        assert "limit" in result["content"][0]["text"]
+        assert "limit" in _refusal_message(result)
 
 
 def test_a_window_whose_end_precedes_its_start_is_refused(initialized_config: Config) -> None:
@@ -2558,7 +2592,7 @@ def test_a_window_whose_end_precedes_its_start_is_refused(initialized_config: Co
 
         assert result["isError"] is True, f"{tool} answered a backwards window"
         assert result["structuredContent"]["error"]["code"] == "invalid_argument"
-        assert "swapped" in result["content"][0]["text"]
+        assert "swapped" in _refusal_message(result)
 
 
 def test_an_account_id_below_one_is_refused(initialized_config: Config) -> None:
@@ -2568,7 +2602,7 @@ def test_an_account_id_below_one_is_refused(initialized_config: Config) -> None:
     result = _call(initialized_config, "query_transactions", {"account_id": 0})
 
     assert result["isError"] is True
-    assert "account_id" in result["content"][0]["text"]
+    assert "account_id" in _refusal_message(result)
 
 
 def test_an_account_id_that_names_no_account_is_refused_not_answered_empty(
@@ -2588,7 +2622,7 @@ def test_an_account_id_that_names_no_account_is_refused_not_answered_empty(
 
     assert result["isError"] is True, "an account id naming nothing was answered"
     assert result["structuredContent"]["error"]["code"] == "invalid_argument"
-    message = result["content"][0]["text"]
+    message = _refusal_message(result)
     # 🔴 The whole phrase, not `"999" in message`: an id is a bare integer and
     # would match inside any longer number a future refusal happened to carry.
     assert "account_id 999 does not exist" in message, message
@@ -2753,7 +2787,7 @@ def _request_kinds(wire: dict[str, Any]) -> list[str]:
     """🔴 The request-scoped warnings only, compared as a whole list.
 
     Never a substring test: `window_starts_before_coverage` and
-    `window_extends_past_coverage` share a prefix, and `learnings.md` records two
+    `window_extends_past_coverage` share a prefix, and `.claude/rules/learnings/` records two
     occasions where `in` passed against the value the assertion was written to
     exclude. Filtering to the request-scoped kinds and comparing the list also
     pins ABSENCE, which is the half that catches a warning firing on every
@@ -3218,7 +3252,7 @@ def test_a_cursor_this_server_did_not_issue_is_refused_by_name(
 
     assert result["isError"] is True, why
     assert result["structuredContent"]["error"]["code"] == "invalid_argument", why
-    message = result["content"][0]["text"]
+    message = _refusal_message(result)
     assert "cursor" in message, why
     assert "`next_cursor`" in message, why
     assert "Error" not in message, why
@@ -3248,7 +3282,7 @@ def test_a_cursor_from_a_different_question_is_refused_rather_than_answered(
     )
 
     assert changed["isError"] is True, "a cursor from another question was answered"
-    assert "cursor" in changed["content"][0]["text"]
+    assert "cursor" in _refusal_message(changed)
 
 
 def _walk_the_series(config: Config, *, limit: int) -> tuple[list[dict[str, Any]], int]:
@@ -3312,7 +3346,7 @@ def test_each_paged_tool_refuses_the_other_tools_cursor_at_the_boundary(
     ):
         result = _call(initialized_config, tool, {"limit": 1, "cursor": foreign})
         assert result["isError"] is True, f"{tool} answered with the other tool's cursor"
-        assert "cursor" in result["content"][0]["text"], tool
+        assert "cursor" in _refusal_message(result), tool
 
 
 def test_the_cursor_is_advertised_on_the_capped_tool_and_nowhere_else() -> None:
@@ -3979,7 +4013,7 @@ def _seed_second_connection(config: Config, *, degraded: bool) -> None:
     🔴 #24's defect is not that a warning lacks a field — it is that with one
     connection the field can never be shown to DO anything. A single-connection
     fixture attributes every warning correctly by having only one answer
-    available, which is the shape `learnings.md` names: a setup that cannot
+    available, which is the shape `.claude/rules/learnings/` names: a setup that cannot
     trigger the thing it tests passes forever.
     """
     now = now_utc()

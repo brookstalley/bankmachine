@@ -237,7 +237,7 @@ def test_a_balance_that_moved_with_no_transaction_is_reported_with_its_magnitude
 ) -> None:
     """🔴 The finding. Money left the account and nothing in the store records it.
 
-    The magnitude is asserted as well as the flag: `learnings.md` records that
+    The magnitude is asserted as well as the flag: `.claude/rules/learnings/` records that
     the magnitude is the load-bearing half, because a flag cannot tell a rounding
     artefact from a missing month.
     """
@@ -322,7 +322,7 @@ def test_a_pending_row_is_not_counted_on_either_side(one_connection: Config) -> 
 # --------------------------------------------------------------------------- #
 #
 # 🔴 The three non-`reconciled` states must be distinguishable from ONE ANOTHER,
-# not merely from `reconciled`. `learnings.md` § *A carve-out reaches every state
+# not merely from `reconciled`. `.claude/rules/learnings/` § *A carve-out reaches every state
 # that shares its return type*: when one function collapses distinguishable
 # states into one value, the collapse is the defect -- and all three of these
 # produce a null residual, so a single null is precisely that collapse. These are
@@ -661,7 +661,7 @@ def test_the_residual_is_zero_whenever_the_transactions_are_the_balance_movement
 ) -> None:
     """🔴 The invariant, not enumerated cases. The invariant IS the feature.
 
-    `learnings.md` § *Guarantees by construction*: assert the invariant rather
+    `.claude/rules/learnings/` § *Guarantees by construction*: assert the invariant rather
     than instances -- the window-resolver's property test found a bug nine
     enumerated mutations missed, and this is the same shape. For ANY account
     class, ANY signs, and ANY number of movements, an interval whose transactions
@@ -792,8 +792,9 @@ def test_an_unexplained_residual_raises_the_warning_with_its_magnitude(
     (detail,) = _details(answer, "balance_unreconciled")
     assert "USD" in detail, "the warning does not name a currency, so its magnitude has no unit"
     assert "-1500" in detail, (
-        "the warning omits the magnitude. `learnings.md`: the magnitude is the load-bearing "
-        "half, not the flag -- a count alone cannot tell a rounding artefact from a lost month"
+        "the warning omits the magnitude. `.claude/rules/learnings/`: the magnitude is the "
+        "load-bearing half, not the flag -- a count alone cannot tell a rounding artefact "
+        "from a lost month"
     )
 
 

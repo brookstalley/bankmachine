@@ -258,7 +258,7 @@ def test_the_read_only_sentence_does_not_end_on_a_known_stranding_word() -> None
     strand. What actually protects the sentence is that there is now only ONE of
     it, reviewed once -- the list is a cheap tripwire on top, and claiming more
     for it would be the enumeration-shaped guarantee this repo has been bitten
-    by before (`learnings.md` § Guarantees by construction).
+    by before (`.claude/rules/learnings/` § Guarantees by construction).
     """
     from bankmachine.cli.sync import READ_ONLY_SENTENCE
 
