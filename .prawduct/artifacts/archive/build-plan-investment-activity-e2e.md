@@ -43,7 +43,13 @@ governed_by:
       - "no financial-institution, account or product name from the roster in code, schema, fixtures or anything pushed → conforms; every fixture is synthetic, and this plan names the production connections by their shape only"
 partition: serial — every chunk edits `query.py`, `mcp.py` and `mcp_resources.py`, and chunks 02 and 03 both extend the closed warning and tool vocabularies
 last_validated: 2026-09-14
+lifecycle: completed
+archived: 2026-09-21
+released_in: v0.2.0
+maintained: false
 ---
+
+> **Archived — no longer maintained.** This plan records what was built, not what will be. Do not edit it to reflect later changes; write those where they are true.
 
 # Build Plan: Investment Activity, End to End, With No False Alarms
 
