@@ -135,6 +135,10 @@ the balance-lifecycle norm names one unmigrated emitter it does not grandfather.
   > equally; once one member of one set behaves like the other's, the absence of ANY kind in
   > either set stops being readable as information, which is the guarantee the split exists to
   > make.
+  Re-affirmed: 2026-10-08 (owner) — #86: holds without it. #84: holds without it. Both are cited in
+  the 2026-09-10 amendment as examples of exclusions that needed announcing; the norm stands on the
+  product thesis in its Why, and fixing either item does not remove the class of deliberate
+  exclusion the amendment widened `rule-applied` to cover. The citations are kept deliberately.
   Status: steady-state.
 
 - **The CLI's three-way exit code is a contract: `0` success, `1` ran and found a problem, `2` could
@@ -204,6 +208,10 @@ the balance-lifecycle norm names one unmigrated emitter it does not grandfather.
   Born 2026-09-09, from the tool-surface consolidation work
   (`brookstalley/bankmachine#30`, since shipped). Derivation and the alternatives priced against it:
   `discovery-mcp-tool-surface.md`.
+  Re-affirmed: 2026-10-08 (owner) — brookstalley/bankmachine#30: holds without it. #30 is the
+  consolidation this norm was born from and records its one paid migration; the norm stands on the
+  per-tool `outputSchema` argument above and is enforced at registration by
+  `mcp._refuse_optional_row_fields`. The citation is provenance and is kept deliberately.
   Status: steady-state.
 
 - **A stored balance is reported with its lifecycle, and no total over balances is emitted without
@@ -231,6 +239,9 @@ the balance-lifecycle norm names one unmigrated emitter it does not grandfather.
   🔴 **Retroactivity: one debt, and it is named.** `query._coverage`'s `accounts` count is an
   unfiltered `COUNT(*)` sitting between two counts that both filter, and it is the one shipped
   emitter this norm already governs. It is not grandfathered; AC-12.8 covers it by name.
+  Re-affirmed: 2026-10-08 (owner) — #40: holds without it. #40 is where this norm was born; the
+  norm stands on the detectability asymmetry argued above and is enforced by AC-12.8's guards,
+  none of which depend on #40 being open. The citation is provenance and is kept deliberately.
   Status: steady-state since 2026-09-09, on the condition this entry set for itself. Every emitter
   AC-12.8 names carries the figure — `list_accounts`, `get_coverage_report`, `query_transactions`,
   `money_summary` and `get_pipeline_health` all reach it through one `_coverage`, and the unreadable
