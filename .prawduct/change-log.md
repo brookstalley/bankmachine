@@ -36,6 +36,22 @@
 
 <!-- Older entries live in .prawduct/change-log-archive/YYYY-MM.md, moved there verbatim by `prawduct-hook archive-change-log`. -->
 
+## 2026-10-08: Three api-contract norms re-affirmed past the work that birthed them
+
+<!-- prawduct: scope=governance-norm-reaffirm-2026-10 -->
+
+**Why:** the `dead-why` advisory (`norm-lifecycle-dead-why-v1-fcdc48`) flagged four citations in
+`api-contract.md`'s Direction norms whose backlog items are closed: #40, #84, #86 and
+`brookstalley/bankmachine#30`. The owner ruled to keep all three norms.
+
+**What shipped:**
+
+- Each affected entry carries a `Re-affirmed:` field naming its ids and the argument that holds the
+  norm without them. Every citation is provenance or a worked example, not a premise, so all are
+  kept: dropping them would make the norm's history untraceable. No cleanup item is owed.
+- Verified with `norm_probes.probe_dead_why`, which fires all four pairs on the unedited tree and is
+  silent on the edited one.
+
 ## 2026-09-21: The change log says which release shipped what
 
 <!-- prawduct: scope=release-bookkeeping-v0.2.x -->
