@@ -19,4 +19,4 @@ live work.
   test docstring citing a story that moved now points at the archive.
 
 ## Consumer note
-none: migrated from the legacy change log, which held no consumer note; replace this line with the note if consumers need one
+none: governance bookkeeping only; it tags which release carried earlier changes and changes nothing an operator or MCP client sees.

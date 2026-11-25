@@ -18,4 +18,4 @@ title: Three api-contract norms re-affirmed past the work that birthed them
   silent on the edited one.
 
 ## Consumer note
-none: migrated from the legacy change log, which held no consumer note; replace this line with the note if consumers need one
+none: governance bookkeeping only; the re-affirmed norms keep their meaning, so nothing an operator or MCP client sees changes.
