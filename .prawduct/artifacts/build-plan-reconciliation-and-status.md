@@ -355,7 +355,9 @@ against either one alone.
   - `.prawduct/artifacts/api-contract.md` (CLI verb table), `.prawduct/artifacts/operational-spec.md`
   - `deployment/deployment-requirements.md` — DAC-5.2/5.3 gain the file's location and format.
     🔴 Gitignored; this edit never reaches a remote.
-  - `.prawduct/change-log.md` — one entry, `scope=reconciliation-and-status`, **no `release=`**
+  - `.prawduct/changes/reconciliation-and-status.md` — one change fragment (frontmatter `type`,
+    `scope: reconciliation-and-status`, `date`, `title`, and a `## Consumer note`). Not a
+    `change-log.md` entry: since 2026-11-25 releases read only `.prawduct/changes/`.
 - **Tests:** unit — each of the three inventory states; the absent-file case asserting the section
   renders `not supplied`; the **malformed**-file case asserting exit `2`, separately, because these
   are the two outcomes most likely to be collapsed; the duplication signal firing on a true

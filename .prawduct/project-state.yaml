@@ -1240,8 +1240,8 @@ operator_verification_required: true
 # =============================================================================
 # CHANGE LOG
 # =============================================================================
-# Change log is in .prawduct/change-log.md (separate file to reduce merge conflicts).
-# See that file for format and instructions.
+# Changes are recorded one file per scope in .prawduct/changes/ (since 2026-11-25);
+# .prawduct/change-log.md holds shipped history only.
 
 # Distribution mode — set by /prawduct:migrate (v2.0.0 plugin cutover).
 # `plugin` tells the legacy file-sync hook to stand down (Chunk 8).
@@ -1292,6 +1292,12 @@ backlog_last_groomed_at: 2026-09-16
 # still clears `project-state.yaml` (79KB). The knob is repo-wide, so this also
 # relaxes the ceiling for build plans; those run an order of magnitude smaller,
 # so a build plan reaching 150KB remains a real finding.
+#
+# 🔴 Superseded in part on 2026-11-25: the change-log reasoning above is history.
+# Release-pending work now lives in .prawduct/changes/, and every entry left in
+# change-log.md carries `release=`, so trimming or archiving the log no longer
+# unships anything. `prawduct-hook archive-change-log` moves shipped entries out
+# once the log passes this threshold.
 oversized_file_threshold_kb: 150
 
 # =============================================================================

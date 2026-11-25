@@ -113,12 +113,13 @@ Developer preferences for how code is written in this project. Captured during d
 - **Commit attribution**: none (default: none — no `Co-Authored-By`, `Signed-off-by`, or "Generated with …" trailers on commits or PR bodies; set to "co-authored" to add a Claude `Co-Authored-By` trailer)
 - **Delegation**: (unset — `/prawduct:methodology delegation` states the default and anything written here overrides it. Say in prose how much this project wants fanned out to subagents and what it is worth fanning out for. `off` is a complete answer: it means no delegation at all, it is honoured without ceremony, and nothing nags a repo that has said it.)
 - **Delegate verification**: (unset — what a delegate here may run to prove its own change, and what it must leave to the coordinator's integration run. In this project's own words: prawduct does not know this project's test regime and will not invent a vocabulary for it. `/prawduct:doctor` will propose a starting point from what this repo already encodes about running part of its suite.)
-- **Change-log merge strategy**: `.prawduct/change-log.md` is `merge=union` in `.gitattributes`.
-  Every branch prepends a new entry to the same first lines, so a plain three-way merge conflicts
-  there every single time. Union merge takes both sides instead. 🔴 **It never conflicts, which is
-  the cost as well as the benefit:** a branch that *edits an existing entry* silently gets both
-  versions concatenated rather than a conflict to resolve. The strategy assumes the file is
-  append-only. If you find a duplicated entry, this is why.
+- **Change-log merge strategy**: none — each change is its own file,
+  `.prawduct/changes/<scope>.md`, so branches no longer write to one shared file and there is
+  nothing to merge. `.prawduct/change-log.md` holds shipped history only and takes no new entries.
+  Amended 2026-11-25 on the owner's ruling (`.prawduct/owner-rulings.md`): the `merge=union` line
+  in `.gitattributes` was removed with the move to fragments, because once no branch prepends to
+  the log, union merge could only let an archive move merge archived entries back. A duplicated
+  entry in the shipped history predates this and came from that union merge.
 - **Delegation approval**: ask-on-reason (default: ask-on-reason — a plan that will delegate discloses it and proceeds, asking for approval only on one of the enumerated reasons in `methodology/planning.md` "Partition: Serial or Delegated"; set to "pre-approved" once you have seen it work here, and the ask stops returning with every plan)
 
 ---

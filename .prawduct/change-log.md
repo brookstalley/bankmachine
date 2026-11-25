@@ -1,73 +1,12 @@
 # Change Log — bankmachine
 
-<!-- Append new entries at the top. Each entry is a ## section.
-     This file is separate from project-state.yaml to reduce merge conflicts
-     when multiple branches add entries simultaneously.
-
-     # Tagged entries
-
-     This file is PROSE. Its body is what a reader — and a release note —
-     actually gets. Two machine-read keys ride in a tag-line directly under
-     the ## header, and `check-releasability` is the only thing that reads
-     them:
-
-         ## YYYY-MM-DD: title (vN.M.P)
-
-         <!-- prawduct: scope=v1.4 | release=v1.3.18 -->
-
-         **Why:** ...
-
-     Recognized keys:
-       scope    - rollup identifier (e.g., v1.4), matching the `scope:`
-                  frontmatter of the build plan that governs the work.
-       release  - the version that carried this entry. Its ABSENCE is what
-                  marks the entry release-pending, so write NO release= on
-                  the feature branch and add it at release. Any value at all
-                  — including a placeholder naming the absence, e.g.
-                  `release=unreleased` — drops the whole scope out of the
-                  release-pending set and silently unships the work.
-
-     Nothing else is read. `chunks=` and `status=` were retired along with the
-     derived views they fed; entries in older logs still carry them and are
-     parsed as inert — leave them. Which chunks an entry shipped belongs in
-     the entry BODY, where release notes and readers actually find it: a
-     deliverable omitted from the body ships invisibly, and no tag ever
-     caught that either. -->
+<!-- Shipped history only. New changes do NOT go here: since 2026-11-25 each change is its own
+     file, `.prawduct/changes/<scope>.md`, and releases read only that directory. A release refuses
+     while this file holds an entry with no `release=` tag, so an entry added here would block the
+     next release rather than ship. Entries below keep their `prawduct:` tag lines (scope and
+     release) as the record of which release carried them. -->
 
 <!-- Older entries live in .prawduct/change-log-archive/YYYY-MM.md, moved there verbatim by `prawduct-hook archive-change-log`. -->
-
-## 2026-10-08: Three api-contract norms re-affirmed past the work that birthed them
-
-<!-- prawduct: scope=governance-norm-reaffirm-2026-10 -->
-
-**Why:** the `dead-why` advisory (`norm-lifecycle-dead-why-v1-fcdc48`) flagged four citations in
-`api-contract.md`'s Direction norms whose backlog items are closed: #40, #84, #86 and
-`brookstalley/bankmachine#30`. The owner ruled to keep all three norms.
-
-**What shipped:**
-
-- Each affected entry carries a `Re-affirmed:` field naming its ids and the argument that holds the
-  norm without them. Every citation is provenance or a worked example, not a premise, so all are
-  kept: dropping them would make the norm's history untraceable. No cleanup item is owed.
-- Verified with `norm_probes.probe_dead_why`, which fires all four pairs on the unedited tree and is
-  silent on the edited one.
-
-## 2026-09-21: The change log says which release shipped what
-
-<!-- prawduct: scope=release-bookkeeping-v0.2.x -->
-
-**Why:** v0.2.0 through v0.2.2 were cut without tagging their change-log entries, so
-`check-releasability` reported six shipped scopes as still pending, and finished build plans read as
-live work.
-
-**What shipped:**
-
-- Ten entries carry the release that first contained them, found by the commit that introduced each
-  heading: eight in v0.2.0, two in v0.2.2. v0.2.1 shipped none.
-- The investment-activity and MCP-error-recovery plans are archived as shipped. The
-  reconciliation-and-status plan stays live: its Chunk 03 (`bankmachine status`) never finished.
-- The shipped history moved verbatim into `.prawduct/change-log-archive/2026-09.md`, and the one
-  test docstring citing a story that moved now points at the archive.
 
 ## 2026-09-16: A refused call hands back the correction, not just the complaint
 
