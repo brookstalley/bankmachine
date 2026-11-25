@@ -101,6 +101,12 @@ the balance-lifecycle norm names one unmigrated emitter it does not grandfather.
   Status: in-transition — brookstalley/bankmachine#87 tracks the build. **Interim rule:** until #87
   lands there is no mutation tool and no agent-writable declaration, every MCP handle stays
   `mode=ro`, and new work does not open a writable handle in the server process.
+  Stopgap: recorded 2026-11-25, expires 2027-02-25. `[DECISION: #87 is paused on purpose, not
+  stalled — its own sequencing puts the build after production onboarding and after #48's AC-15.4
+  check ships, and #48 is still open; the interim rule above holds unchanged until then | the
+  norm's why is that no agent may move derived financial data, and the interim rule (no mutation
+  tool, every handle `mode=ro`) is the strictest form of it, so waiting costs the norm nothing |
+  user can veto/override]`
 
 - **Every response carries a freshness stamp, and incompleteness rides the success path as a warning
   field rather than as an exception.** Warnings distinguish at minimum `stale`, `degraded`, `gapped`,
